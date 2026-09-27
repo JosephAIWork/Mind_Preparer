@@ -1,5 +1,82 @@
 # Changelog
 
+## 1.7.2
+
+### One verdict, one vocabulary, and no more endless Prep rounds
+
+A real model prepared with 1.7.1 went through seven Prep rounds (v8 to v14)
+without anything blocking being fixed, while the two problems Mind actually
+refused the file for had no automatic repair and were never singled out.
+This release answers the only question that matters on every screen, tells
+a change Mind *needs* from one it merely benefits from, and removes the two
+causes of the endless rounds.
+
+- **Readiness verdict** (`app/readiness.py`, `GET /api/sessions/{id}/readiness`,
+  and the `readiness` field on every analysis, apply and recalculation
+  response). Three states: `blocked` (a REQUIRED rule is in ERROR or waits for
+  user input -- Mind's converter refuses the file or computes it wrong),
+  `unverified` (nothing blocks, but this version was not recalculated in
+  Excel, or the recalculation found genuine formula errors), `ready` (nothing
+  blocks and a clean recalculation of *this* version). Each blocking finding
+  says how it can be fixed (`prep` / `prep_skipped` / `assistant`), and
+  `next_step` names the single next screen. The front-end shows it as a
+  banner under the top bar, with the five workflow steps.
+- **Levels everywhere.** Findings carry the rule's `priority` (models.Finding,
+  `run_rule`); every Prep action carries `level` (`blocking` when its rule is
+  REQUIRED, `optional` otherwise), an optional `level_note` and a `caution`.
+  Blocking actions are on by default -- `fix_broken_refs` was off before,
+  which left the one blocking repair unticked while cosmetic ones were ticked.
+  Findings gained a Level column, a "Blocking only" filter and blocking-first
+  ordering; Prep is split into *Blocking / By hand / Optional*.
+- **Prep gauge** (`prep_progress`, kept per session in `Session.plan_history`):
+  blocking problems, blocking and optional operations planned, the planned
+  operations of every analysed version, and a `stalled` flag when three
+  analyses in a row leave work planned without a net decrease.
+- **Endless round 1 fixed.** `plan_separate_merged_grids` inserted an empty
+  row above a '#Title' that sat on its grid's *first* row (next to a label or
+  a header); the block moved down and the next scan proposed the same insert.
+  Such a title is now left for review with the reason ("shares the grid's
+  first row with other content -- move it by hand").
+- **Endless round 2 fixed.** A title written into a non-first cell of a merged
+  range is silently ignored by Excel; Prep reported "applied, verified" and
+  re-proposed it forever. `plan_actions` now drops such targets into the skip
+  list (`merged_ranges` / `merged_conflict`, from the inventory's
+  `merged_cells`), and the Excel executor refuses them (`_merged_guard`) and
+  reads every cell back after writing (`_read_back_guard`): a silent no-op is
+  a failure, never an applied change.
+- **Broken ranges.** `fix_broken_refs` only patched a #REF! that stood for a
+  value; a #REF! standing for a range (a deleted column inside SUMIFS) was
+  left for review with no way forward. New action `fix_broken_refs_whole`
+  replaces the whole formula with `=NA()` (the cell already returned an
+  error), with its own checkbox and caution.
+- **Recalculation errors the original already had are the model's own.**
+  The first recalculation of a session also recalculates a copy of the
+  ORIGINAL upload once (`Session.original_baseline`); every error cell of a
+  prepared version that the recalculated original also has (same
+  sheet+address, or same formula text on the same sheet when rows were
+  inserted, or a formula that already contained #REF!) is marked
+  `preexisting` (`recalc.classify_errors`). Cached values are never the
+  baseline -- they can be stale (a number saved before the column a formula
+  pointed to was deleted). The verdict only counts *new* errors, so a model
+  with legitimate #DIV/0! cells can still turn green, and a wrong assistant
+  fix (VALUE("") where NUMBERVALUE("") returned 0) shows up as new errors
+  before anyone ships the file. The recalculate response carries
+  `preexisting_errors`, `new_errors` and `compared_with_original`; the
+  assistant is told to keep a replacement's behaviour on blanks.
+- **Merged first cell.** Excel refuses `ClearContents` / a value on the single
+  first cell of a merged range ("We can't do that to a merged cell"); the
+  executor now writes to the merge area instead, so a caption in a merged
+  band can still become a title.
+- **Style actions no longer run in 5000-cell batches**
+  (`inventory.MAX_STYLE_CELL_REFS` 5000 -> 250 000).
+- **Assistant proposals** get 4000 output tokens (`chat_context.PROPOSAL_MAX_TOKENS`)
+  instead of the 1200 default that truncated a ```changes block at ~35
+  operations with nothing said; the Fix panel warns when a proposal covers
+  fewer cells than the finding counts.
+- **History: "Restore as current"** re-analyses an earlier version and makes
+  it current (later versions stay). Prep shows what the last Apply did and
+  what is left; the upload screen no longer hard-codes a rule count.
+
 ## 1.7.1
 
 ### One backend again: the Shlomo copy's size gate and scan status folded into the main app

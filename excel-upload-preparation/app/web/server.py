@@ -47,9 +47,10 @@ from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, str
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
+from app.readiness import compute_readiness, plan_counts, prep_progress  # noqa: E402
 from app.prep import ASSISTANT_OPS, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
-from app.recalc import group_errors, recalculate  # noqa: E402
+from app.recalc import classify_against_original, classify_errors, formulas_with_broken_refs, group_errors, recalculate  # noqa: E402
 from app.prep import _cells_of as _array_cells  # noqa: E402
 from app.prep import array_size_hint  # noqa: E402
 from app.rules_engine import RulesEngine  # noqa: E402
@@ -103,7 +104,18 @@ class Session:
     ignore_sheets: list[str] = field(default_factory=list)  # sheets the user chose not to scan
     pending: bool = False  # uploaded and inspected, not analysed yet (deferred upload)
     scan: dict[str, Any] = field(default_factory=dict)  # live status of the current/last scan
+    # 1.7.2 -- one entry per analysis: how much prep work each version still needs (the Prep gauge)
+    plan_history: list[dict[str, Any]] = field(default_factory=list)
+    # 1.7.2 -- the ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
+    # (computed once per session, the baseline every later recalculation is compared with)
+    original_baseline: dict[str, Any] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def readiness(self) -> dict[str, Any] | None:
+        """The verdict for the current version (None before the first analysis)."""
+        if not self.result:
+            return None
+        return compute_readiness(self.result["validation_report"], self.plan, self.recalc, self.current_version_id)
 
     @property
     def current_path(self) -> Path:
@@ -324,7 +336,25 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     delta = _delta(previous, report, s.current_version_id)
     summary = _summary(result["workbook_analysis"])
     summary["size"] = s.size
-    return {"summary": summary, "report": {k: v for k, v in report.items() if k != "_version_id"}, "plan": s.plan, "delta": delta}
+    # 1.7.2: the verdict and the Prep gauge travel with every analysis
+    readiness = s.readiness()
+    counts = plan_counts(s.plan)
+    s.plan_history.append({
+        "version_id": s.current_version_id,
+        "blocking_ops": readiness["prep"]["blocking_ops"] if readiness else 0,
+        "optional_ops": readiness["prep"]["optional_ops"] if readiness else 0,
+        "total_ops": sum(counts.values()),
+        "blocking_findings": readiness["blocking_count"] if readiness else 0,
+        "by_action": counts,
+    })
+    return {
+        "summary": summary,
+        "report": {k: v for k, v in report.items() if k != "_version_id"},
+        "plan": s.plan,
+        "delta": delta,
+        "readiness": readiness,
+        "prep_progress": prep_progress(s.plan_history),
+    }
 
 
 def _convert(s: Session, path: Path, progress) -> Path:
@@ -579,7 +609,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     if applied:
         s.grid_names.update({k: v for k, v in proposed.items() if v})
         s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None)
-    return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None}
+    return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
 
 
 # --- the app runs itself against real Mind (1.6.8) ------------------------------------
@@ -739,7 +769,12 @@ def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]
             )
             question = f"[About the recalculation error {focus.get('error', '')}{where}{formula}.{siblings}{array_note}] {question}"
         else:
-            question = f"[About finding {focus['rule_id']}{where}] {question}"
+            # 1.7.2: a replacement is judged by a full Excel recalculation afterwards -- say so up front
+            question = (
+                f"[About finding {focus['rule_id']}{where}. If you propose a replacement formula, it must behave like the original on "
+                "blank cells, text and errors (e.g. wrap with IF(x=\"\",0,...) when the original tolerated blanks); every new error "
+                "after recalculation counts against the fix.] " + question
+            )
     reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra)
     proposal = None
     if reply.get("proposal") or reply.get("proposal_errors"):
@@ -749,6 +784,24 @@ def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]
         "proposal": proposal,
         "provenance": {"context_chars": reply.get("context_chars", 0), "detail_chars": reply.get("detail_chars", 0), "lookups": reply.get("lookups", 0)},
     }
+
+
+def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
+    """The original upload after the same full Excel recalculation: its error
+    cells (and its formulas that already contain #REF!). Computed once per
+    session on a fresh copy; None when Excel could not recalculate it, in which
+    case the caller falls back to the original's cached values."""
+    if s.original_baseline is None:
+        copy_path, _ = make_immutable_copy(original, s.work_dir / "recalc_original")
+        res = recalculate(copy_path)
+        ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED"))
+        s.original_baseline = {
+            "ran": ran,
+            "errors": list(res.get("formula_errors") or []) + list(res.get("addin_gap_errors") or []) if ran else [],
+            "ref_formulas": formulas_with_broken_refs(original),
+            "message": res.get("message"),
+        }
+    return s.original_baseline if s.original_baseline.get("ran") else None
 
 
 @app.post("/api/sessions/{session_id}/recalculate")
@@ -768,10 +821,41 @@ def recalc(session_id: str) -> dict[str, Any]:
         "addin_gap_errors": [{"sheet": e.get("sheet", ""), "cell": e.get("cell", ""), "formula": e.get("formula", "")} for e in res.get("addin_gap_errors", [])],
     }
     out["groups"] = group_errors(out["formula_errors"], out["addin_gap_errors"])
+    # 1.7.2: errors the original already had are the model's own, not the preparation's.
+    # The baseline is the ORIGINAL after the same full recalculation (once per
+    # session), never its cached values -- those can be stale.
+    original = next((s.paths[v["id"]] for v in s.versions if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
+    if original is not None and out["formula_errors"]:
+        base = _original_baseline(s, original)
+        if base is not None:
+            cls = classify_errors(out["formula_errors"], base["errors"], base["ref_formulas"])
+        else:
+            cls = classify_against_original(original, out["formula_errors"])
+            cls["message"] = (cls.get("message") or "") + " -- compared with the original's cached values, its own recalculation did not run"
+        out["formula_errors"] = cls["errors"]
+        out["preexisting_errors"], out["new_errors"] = cls["preexisting"], cls["new"]
+        out["compared_with_original"] = cls["compared"]
+        if cls.get("message"):
+            out["message"] = f"{out['message']} ({cls['message'].strip(' -')})"
+    else:
+        out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
+        out["compared_with_original"] = original is not None
     s.recalc = out
     s.recalc_version_id = s.current_version_id
     s.recalc_path = copy_path
+    out["readiness"] = s.readiness()  # 1.7.2: a clean recalculation is what turns the verdict green
     return out
+
+
+@app.get("/api/sessions/{session_id}/readiness")
+def readiness(session_id: str) -> dict[str, Any]:
+    """1.7.2: the one verdict -- blocked / unverified / ready -- with what stands
+    in the way and the next step, plus the Prep gauge history."""
+    s = _session(session_id)
+    r = s.readiness()
+    if r is None:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    return {"readiness": r, "prep_progress": prep_progress(s.plan_history)}
 
 
 @app.get("/api/sessions/{session_id}/cells")

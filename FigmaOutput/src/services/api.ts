@@ -1,4 +1,4 @@
-import type { ApplyResult, CellWindow, ChatMessage, ChatReply, Delta, FixTarget, Mode, Operation, PrepAction, RecalcResult, ReportBuild, ScanStatus, SizeInfo, ValidationReport, Version, WorkbookSummary } from "../types";
+import type { ApplyResult, CellWindow, ChatMessage, ChatReply, Delta, FixTarget, Mode, Operation, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SizeInfo, ValidationReport, Version, WorkbookSummary } from "../types";
 
 import workbookMock from "../mocks/workbook.json";
 import reportMock from "../mocks/report.json";
@@ -57,6 +57,9 @@ export interface SessionStart {
   size?: SizeInfo | null;
   scan?: ScanStatus;
   pending?: false;
+  /** 1.7.2: the verdict and the Prep gauge travel with every analysis */
+  readiness?: Readiness | null;
+  prep_progress?: PrepProgress | null;
 }
 
 /**
@@ -85,6 +88,13 @@ export interface Reanalysis {
   plan: PrepAction[];
   delta?: Delta;
   versions?: Version[];
+  readiness?: Readiness | null;
+  prep_progress?: PrepProgress | null;
+}
+
+/** 1.7.2: the verdict for the current version, on demand (it also comes with every analysis). */
+export async function getReadiness(sessionId: string): Promise<{ readiness: Readiness; prep_progress: PrepProgress }> {
+  return unwrap(await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/readiness`));
 }
 
 /** applyOperations also returns the re-analysis of the new file when the backend ran one. */
@@ -302,6 +312,7 @@ export interface GridNamesResult {
   message: string | null;
   applied: boolean;
   plan?: PrepAction[] | null;
+  readiness?: Readiness | null;
 }
 
 /**

@@ -26,6 +26,7 @@ def run_rule(rule: dict[str, Any], analysis: dict[str, Any], config: dict[str, A
         "confidence": rule["confidence"],
         "source": rule.get("source", {}),
         "correction_available": bool(rule.get("correction", {}).get("automatic") is True),
+        "priority": rule.get("priority"),
     }
 
     if fn is None:

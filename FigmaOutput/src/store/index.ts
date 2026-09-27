@@ -9,6 +9,8 @@ import type {
   Delta,
   FixTarget,
   RecalcResult,
+  Readiness,
+  PrepProgress,
 } from "../types";
 
 interface SessionState {
@@ -29,6 +31,12 @@ interface SessionState {
   /** Last real Excel recalculation in this session (shared by the Recalculate screen and the Fix panel). */
   recalcResult: RecalcResult | null;
   setRecalcResult: (r: RecalcResult | null) => void;
+  /** 1.7.2: the one verdict for the current version, and the Prep gauge history. */
+  readiness: Readiness | null;
+  prepProgress: PrepProgress | null;
+  /** 1.7.2: what the last Apply did, shown on the Prep screen until the next one. */
+  lastApply: { label: string; applied: number; failed: number; versionLabel: string; verified: boolean | null } | null;
+  setLastApply: (a: SessionState["lastApply"]) => void;
 
   setMode: (mode: Mode) => void;
   setSession: (
@@ -50,8 +58,16 @@ interface SessionState {
   setLastDelta: (delta: Delta | null) => void;
   openFix: (target: FixTarget) => void;
   closeFix: () => void;
-  /** Apply a fresh analysis (summary/report/plan, optional delta and versions) in one go. */
-  applyAnalysis: (a: { summary?: WorkbookSummary; report?: ValidationReport; plan?: PrepAction[]; delta?: Delta; versions?: Version[] }) => void;
+  /** Apply a fresh analysis (summary/report/plan, optional delta, versions, verdict and gauge) in one go. */
+  applyAnalysis: (a: {
+    summary?: WorkbookSummary;
+    report?: ValidationReport;
+    plan?: PrepAction[];
+    delta?: Delta;
+    versions?: Version[];
+    readiness?: Readiness | null;
+    prep_progress?: PrepProgress | null;
+  }) => void;
   resetSession: () => void;
 }
 
@@ -69,11 +85,16 @@ export const useStore = create<SessionState>((set) => ({
   lastDelta: null,
   fixTarget: null,
   recalcResult: null,
-  setRecalcResult: (recalcResult) => set({ recalcResult }),
+  readiness: null,
+  prepProgress: null,
+  lastApply: null,
+  setLastApply: (lastApply) => set({ lastApply }),
+  // A recalculation carries the verdict it produces (a clean one is what turns it green).
+  setRecalcResult: (recalcResult) => set((s) => ({ recalcResult, readiness: recalcResult?.readiness ?? s.readiness })),
 
   setMode: (mode) => set({ mode }),
   setSession: (sessionId, summary, report, plan, version) =>
-    set({ sessionId, summary, report, plan, versions: [version], currentVersion: version, lastDelta: null, fixTarget: null, recalcResult: null }),
+    set({ sessionId, summary, report, plan, versions: [version], currentVersion: version, lastDelta: null, fixTarget: null, recalcResult: null, readiness: null, prepProgress: null, lastApply: null }),
   setReport: (report, plan) => set({ report, plan }),
   setSummary: (summary) => set({ summary }),
   addVersion: (version) =>
@@ -95,6 +116,8 @@ export const useStore = create<SessionState>((set) => ({
       plan: a.plan ?? s.plan,
       lastDelta: a.delta ?? s.lastDelta,
       versions: a.versions ?? s.versions,
+      readiness: a.readiness === undefined ? s.readiness : a.readiness,
+      prepProgress: a.prep_progress === undefined ? s.prepProgress : a.prep_progress,
     })),
   resetSession: () =>
     set({
@@ -110,5 +133,8 @@ export const useStore = create<SessionState>((set) => ({
       lastDelta: null,
       fixTarget: null,
       recalcResult: null,
+      readiness: null,
+      prepProgress: null,
+      lastApply: null,
     }),
 }));

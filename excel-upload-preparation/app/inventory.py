@@ -41,7 +41,11 @@ from .grids import detect_grids, is_occupied, json_safe
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25
-MAX_STYLE_CELL_REFS = 5000  # coordinates kept per sheet for app/prep.py actions
+# Coordinates kept per sheet for app/prep.py actions. 1.7.2: raised from 5000 --
+# that cap made the theme-colour and empty-style actions run in 5000-cell
+# batches, so a large sheet needed several Prep rounds for one action. 250k
+# short strings cost a few MB at most; the public API still truncates lists.
+MAX_STYLE_CELL_REFS = 250_000
 
 _WORKBOOK_CACHE: dict[str, Any] = {}
 

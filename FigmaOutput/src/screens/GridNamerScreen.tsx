@@ -203,7 +203,7 @@ export default function GridNamerScreen() {
         nameRest
       );
       addVersion(out.version);
-      applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta });
+      applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta, readiness: out.readiness, prep_progress: out.prep_progress });
       setOutcome(out);
       setPending([]);
       setSel(null);

@@ -98,6 +98,9 @@ class Finding(BaseModel):
     readiness_impact: Status
     correction_available: bool = False
     source: dict[str, Any] = Field(default_factory=dict)
+    # 1.7.2: the rule's own priority (REQUIRED / RECOMMENDED / INFORMATIONAL),
+    # so the UI can tell a change Mind *needs* from one it merely benefits from.
+    priority: str | None = None
 
 
 class WorkbookAnalysis(BaseModel):

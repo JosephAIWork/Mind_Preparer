@@ -260,7 +260,7 @@ export default function FixPanel() {
     try {
       const out = await api.applyOperations(sessionId, ops, { reanalyze: true });
       addVersion(out.version);
-      applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta });
+      applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta, readiness: out.readiness, prep_progress: out.prep_progress });
       const verified = out.result.verified_opens_in_excel ? "verified" : "not verified";
       const vlabel = out.version.label.split(" — ")[0];
       const failed = out.result.failed ?? [];
@@ -614,6 +614,17 @@ export default function FixPanel() {
             {proposal && (
               <div className="border border-[#1F3A5F]/30 rounded-xl bg-[#EEF2FF] p-3">
                 {proposal.summary && <p className="text-[12px] font-semibold text-[#1F3A5F] mb-2">{proposal.summary}</p>}
+                {/* 1.7.2: a proposal that covers fewer cells than the finding counts is said so, before Apply -- not discovered after the rescan */}
+                {(() => {
+                  const expected = isGroup ? targetCells.length : sites.length;
+                  const covered = new Set(proposal.operations.map((o) => `${o.sheet}!${String(o.cell ?? o.range ?? "").split(":")[0]}`)).size;
+                  const rangeOps = proposal.operations.some((o) => String(o.cell ?? o.range ?? "").includes(":"));
+                  return expected > 1 && covered < expected && !rangeOps ? (
+                    <div className="mb-2 text-[11px] text-[#8A5A00] bg-[#FFF1CC] border border-[#8A5A00]/20 rounded px-2 py-1">
+                      ⚠ Covers {covered} of {expected} cells. Apply it, then ask again for the rest (or ask for one range operation covering all of them).
+                    </div>
+                  ) : null;
+                })()}
                 {proposal.operations.length > 0 && <OperationsTable operations={proposal.operations} compact />}
                 {proposal.errors.map((e, i) => (
                   <div key={i} className="mt-1 text-[11px] text-[#8A5A00] bg-[#FFF1CC] rounded px-2 py-1">⚠ {e}</div>

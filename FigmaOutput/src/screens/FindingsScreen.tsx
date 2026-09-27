@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store";
-import type { Finding, Grid, Status } from "../types";
+import { findingLevel, type Finding, type Grid, type Status } from "../types";
 import StatusPill from "../components/StatusPill";
+import LevelBadge from "../components/LevelBadge";
 import KpiTiles from "../components/KpiTile";
 import EvidenceTag from "../components/EvidenceTag";
 import GridCard, { worstStatus } from "../components/GridCard";
@@ -45,6 +46,10 @@ function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBad
           {fixedBadge && (
             <span className="ml-2 text-[10px] font-semibold text-[#0F766E] bg-[#F0FDFA] border border-[#0F766E]/20 rounded px-1.5 py-0.5">FIXED</span>
           )}
+        </td>
+        <td className="px-4 py-2.5 whitespace-nowrap">
+          {/* 1.7.2: blocking (Mind needs it) vs optional (Mind reads the file as it is) -- from the rule's priority */}
+          <LevelBadge level={findingLevel(finding)} />
         </td>
         <td className="px-4 py-2.5">
           <span className="text-[12px] font-mono text-[#6B7280]">{finding.severity ?? "—"}</span>
@@ -90,7 +95,7 @@ function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBad
       </tr>
       {expanded && (
         <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
-          <td colSpan={7} className="px-6 py-4">
+          <td colSpan={8} className="px-6 py-4">
             <div className="flex flex-col gap-3 text-[13px]">
               <p className="text-[#374151]">{finding.message}</p>
               {finding.source.document && (
@@ -138,6 +143,8 @@ export default function FindingsScreen() {
   const [tab, setTab] = useState<"table" | "map">("table");
   const [kpiFilter, setKpiFilter] = useState<Status | null>(null);
   const [showFixed, setShowFixed] = useState(true);
+  // 1.7.2: the shortest path -- only what Mind needs fixed
+  const [blockingOnly, setBlockingOnly] = useState(false);
 
   const fixedIds = useMemo(() => new Set((lastDelta?.fixed ?? []).map((d) => d.rule_id)), [lastDelta]);
 
@@ -171,6 +178,7 @@ export default function FindingsScreen() {
   const filtered = report.findings
     .filter((f) => {
       const isFixedRow = showFixed && fixedIds.has(f.rule_id) && f.status === "PASS";
+      if (blockingOnly && findingLevel(f) !== "blocking" && !isFixedRow) return false;
       if (kpiFilter) return f.status === kpiFilter || isFixedRow;
       if (!activeStatuses.has(f.status) && !isFixedRow) return false;
       if (search) {
@@ -184,7 +192,11 @@ export default function FindingsScreen() {
       }
       return true;
     })
-    .sort((a, b) => (severityOrder[a.severity ?? "INFO"] ?? 4) - (severityOrder[b.severity ?? "INFO"] ?? 4));
+    .sort((a, b) => {
+      // blocking first, then verify, then optional; severity inside each band
+      const band = (f: Finding) => ({ blocking: 0, verify: 1, optional: 2, pass: 3 }[findingLevel(f)]);
+      return band(a) - band(b) || (severityOrder[a.severity ?? "INFO"] ?? 4) - (severityOrder[b.severity ?? "INFO"] ?? 4);
+    });
 
   const deltaHasChanges = lastDelta && (lastDelta.fixed.length + lastDelta.improved.length + lastDelta.regressed.length > 0);
 
@@ -253,6 +265,16 @@ export default function FindingsScreen() {
       {tab === "table" ? (
         <>
           <div className="px-6 py-3 border-b border-[#E5E7EB] bg-white flex items-center gap-3 flex-shrink-0">
+            <button
+              onClick={() => setBlockingOnly((v) => !v)}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+                blockingOnly ? "border-[#9F1D1D] bg-[#9F1D1D] text-white" : "border-[#9F1D1D]/40 text-[#9F1D1D] hover:bg-[#FDE2E2]"
+              }`}
+              title="Only what Mind needs fixed (REQUIRED rules in error)"
+            >
+              ● Blocking only
+            </button>
+            <div className="w-px h-5 bg-[#E5E7EB]" />
             <div className="flex gap-1.5 flex-wrap">
               {statusFilterOrder.map((s) => {
                 const on = activeStatuses.has(s);
@@ -286,7 +308,7 @@ export default function FindingsScreen() {
               <table className="w-full border-collapse text-[13px]">
                 <thead className="bg-[#F9FAFB] border-b border-[#E5E7EB] sticky top-0 z-10">
                   <tr>
-                    {["Rule", "Severity", "Status", "Location", "Finding", "Evidence", "Fix"].map((h) => (
+                    {["Rule", "Level", "Severity", "Status", "Location", "Finding", "Evidence", "Fix"].map((h) => (
                       <th key={h} className="px-4 py-2.5 text-left text-[11px] font-semibold text-[#6B7280] tracking-wide whitespace-nowrap">
                         {h.toUpperCase()}
                       </th>

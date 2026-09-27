@@ -1,10 +1,23 @@
 export type Status = "PASS" | "WARNING" | "ERROR" | "REQUIRES_USER_INPUT" | "NOT_SUPPORTED";
 export type Evidence = "DOCUMENTED_RULE" | "DETERMINISTIC_FINDING" | "USER_PROVIDED" | "INFERENCE" | "RECOMMENDATION";
 export type Mode = "plan" | "prep_loops" | "fix_formulas" | "structure_fix";
+/** The rule's own priority (rules/*.yaml). REQUIRED = Mind needs it; the rest is quality. */
+export type Priority = "REQUIRED" | "RECOMMENDED" | "INFORMATIONAL";
+/** blocking: Mind refuses the file (or computes it wrong) without the change; optional: Mind reads the file as it is. */
+export type ActionLevel = "blocking" | "optional";
+
+/** Is a finding one Mind needs fixed? (Same rule as the backend's readiness.level_of.) */
+export function findingLevel(f: Finding): ActionLevel | "pass" | "verify" {
+  if (f.rule_id === "READY-001") return "verify";
+  if (f.status === "PASS") return "pass";
+  if ((f.status === "ERROR" || f.status === "REQUIRES_USER_INPUT") && f.priority === "REQUIRED") return "blocking";
+  return "optional";
+}
 
 export interface Finding {
   rule_id: string;
   status: Status;
+  priority?: Priority;
   severity?: "HIGH" | "MEDIUM" | "LOW" | "BLOCKER" | "INFO";
   confidence: "HIGH" | "MEDIUM" | "LOW";
   evidence: Evidence;
@@ -178,9 +191,59 @@ export interface PrepAction {
   title: string;
   rule_ids: string[];
   default_on: boolean;
+  /** 1.7.2: blocking (Mind needs it) or optional (Mind reads the file as it is) */
+  level: ActionLevel;
+  /** why an optional action still matters (e.g. untitled grids show as "Untitled" in Mind) */
+  level_note?: string | null;
+  /** why a blocking action deserves a look before Apply (e.g. it rewrites formulas) */
+  caution?: string | null;
   operations: Operation[];
   count: number;
   skipped: string[];
+}
+
+/** One thing that stands between the workbook and Mind (readiness.blocking[]). */
+export interface BlockingItem {
+  rule_id: string;
+  status: Status;
+  message: string;
+  location: { sheet?: string; cell?: string; [k: string]: unknown };
+  /** prep: a Prep action holds operations for it; prep_skipped: the action exists but left every site for review; assistant: no automatic fix */
+  fix: "prep" | "prep_skipped" | "assistant";
+  action_id: string | null;
+  sites: number | null;
+}
+
+/** The one verdict (1.7.2): is this version acceptable by Mind, and if not, what stands in the way. */
+export interface Readiness {
+  state: "blocked" | "unverified" | "ready";
+  headline: string;
+  version_id: string;
+  blocking: BlockingItem[];
+  blocking_count: number;
+  manual_blocking_count: number;
+  optional_count: number;
+  prep: { blocking_ops: number; optional_ops: number };
+  /** new_errors: error cells that were NOT errors in the original upload (the preparation's doing); preexisting_errors: the model's own */
+  recalc: { ran: boolean; clean: boolean; version_id: string | null; formula_errors: number; new_errors: number; preexisting_errors: number; addin_gap_errors: number; message: string | null };
+  next_step: { screen: "prep" | "findings" | "recalculate" | "reports"; label: string; detail: string | null; rule_id?: string };
+}
+
+/** The Prep gauge: how much prep work each analysed version still needed. */
+export interface PrepProgressEntry {
+  version_id: string;
+  blocking_ops: number;
+  optional_ops: number;
+  total_ops: number;
+  blocking_findings: number;
+  by_action: Record<string, number>;
+}
+export interface PrepProgress {
+  entries: PrepProgressEntry[];
+  /** three analyses in a row with work planned and no net decrease: Prep cannot resolve what is left */
+  stalled: boolean;
+  repeating_actions: string[];
+  message: string | null;
 }
 
 export interface ApplyResult {
@@ -214,7 +277,7 @@ export interface ChatReply {
   provenance: { context_chars: number; detail_chars: number; lookups: number };
 }
 
-export interface RecalcCell { sheet: string; cell: string; formula: string; error: string; array?: string }
+export interface RecalcCell { sheet: string; cell: string; formula: string; error: string; array?: string; /** 1.7.2: this cell was already an error in the original upload */ preexisting?: boolean }
 
 /** Recalculation errors that share one root cause (same unknown function, same formula shape, same missing add-in function). */
 export interface RecalcGroup {
@@ -237,6 +300,12 @@ export interface RecalcResult {
   formula_errors: RecalcCell[];
   addin_gap_errors: { sheet: string; cell: string; formula: string }[];
   groups?: RecalcGroup[];
+  /** 1.7.2: errors split against the original upload -- the model's own vs the preparation's */
+  preexisting_errors?: number;
+  new_errors?: number;
+  compared_with_original?: boolean;
+  /** 1.7.2: the verdict after this recalculation (a clean one turns it green) */
+  readiness?: Readiness | null;
 }
 
 export interface ReportBuild {

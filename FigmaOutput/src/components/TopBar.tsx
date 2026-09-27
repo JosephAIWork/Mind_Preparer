@@ -21,7 +21,7 @@ export default function TopBar() {
     try {
       // Always the current (latest) version; the response carries the delta vs the previous analysis.
       const res = await api.reanalyze(sessionId, currentVersion.id);
-      applyAnalysis({ summary: res.summary, report: res.report, plan: res.plan, delta: res.delta, versions: res.versions });
+      applyAnalysis({ summary: res.summary, report: res.report, plan: res.plan, delta: res.delta, versions: res.versions, readiness: res.readiness, prep_progress: res.prep_progress });
     } catch (e) {
       window.alert(`Re-analysis failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

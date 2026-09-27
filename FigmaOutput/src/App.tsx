@@ -12,6 +12,7 @@ import HistoryScreen from "./screens/HistoryScreen";
 import MindScreen from "./screens/MindScreen";
 import GridNamerScreen from "./screens/GridNamerScreen";
 import FixPanel from "./components/FixPanel";
+import ReadinessBanner from "./components/ReadinessBanner";
 import { health } from "./services/api";
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
         <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <TopBar />
+          <ReadinessBanner />
           <main className="flex-1 overflow-auto flex flex-col">
             <Routes>
               <Route path="/" element={<WorkbookScreen />} />

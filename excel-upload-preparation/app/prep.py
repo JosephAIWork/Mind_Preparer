@@ -260,6 +260,13 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
             if not ref:
                 continue
             row = ref["r1"]
+            if row <= g["first_row"]:
+                # 1.7.2: a '#Title' on the grid's own first row (next to a label or
+                # a header) is not separated by a row above it -- the whole block
+                # just moves down and the next scan finds the same trapped title.
+                # This was an endless Prep round; it is a manual job.
+                skipped.append(f"{g['sheet']}!{cell}: the title shares the grid's first row with other content -- an empty row above would not separate it; move the title to its own row by hand")
+                continue
             others = _row_insert_is_safe(grids, g["sheet"], row, own=g)
             if others:
                 skipped.append(f"{g['sheet']}!{cell}: inserting a row would also split {', '.join(o['display_name'] for o in others[:3])} -- separate manually")
@@ -815,19 +822,10 @@ def plan_fix_broken_refs(analysis, report) -> tuple[list[dict], list[str]]:
     rewritten as arrays; a #REF! that cannot be safely swapped (range endpoint) is
     skipped for review."""
     ops, skipped = [], []
-    wb0 = analysis["workbooks"][0]
-    broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
-    name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
-    lit_re = re.compile(r"#REF!")
-    for f in wb0.get("formulas", []):
-        formula = f.get("formula") or ""
-        masked = mask_strings(formula)
-        if not ((name_re is not None and name_re.search(masked)) or lit_re.search(masked)):
-            continue
-        sheet, cell = f["sheet"], f["cell"]
-        fixed, unfixable = _na_fix_formula(formula, broken)
-        if fixed == formula or unfixable:
-            skipped.append(f"{sheet}!{cell}: broken reference could not be safely rewritten to NA() -- left for review: {formula[:80]}")
+    for f, fixed, unfixable in _broken_reference_sites(analysis):
+        sheet, cell, formula = f["sheet"], f["cell"], f["formula"]
+        if unfixable:
+            skipped.append(f"{sheet}!{cell}: the broken reference stands for a whole range (e.g. a deleted column inside SUMIFS) -- NA() cannot replace a range; see the action 'Replace formulas built on a broken range with =NA()'")
             continue
         note = "replaced broken #REF! / broken-name reference with NA() (error stays an error; valid result preserved)"
         if f.get("array_ref"):
@@ -837,19 +835,112 @@ def plan_fix_broken_refs(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, Any], str, bool]]:
+    """Every formula with a broken reference: (formula record, NA()-rewritten
+    formula, unfixable) where `unfixable` means a #REF! remains after the
+    rewrite -- it stood for a range ('Sheet'!#REF!, A1:#REF!), which NA() cannot
+    replace without changing the formula's meaning."""
+    wb0 = analysis["workbooks"][0]
+    broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
+    name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
+    lit_re = re.compile(r"#REF!")
+    out = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        masked = mask_strings(formula)
+        if not ((name_re is not None and name_re.search(masked)) or lit_re.search(masked)):
+            continue
+        fixed, unfixable = _na_fix_formula(formula, broken)
+        out.append((f, fixed, unfixable or fixed == formula))
+    return out
+
+
+def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]:
+    """REF-001, the range case (1.7.2): a formula whose broken reference stands
+    for a whole range cannot be patched piecewise, so the *whole* formula
+    becomes =NA(). Conservative for the same reason as the piecewise fix: the
+    cell already evaluated to an error, and it still does -- no valid value
+    changes. It is a bigger decision (a calculation is replaced, not repaired),
+    so it is its own action with its own checkbox and a caution note."""
+    ops, skipped = [], []
+    for f, _fixed, unfixable in _broken_reference_sites(analysis):
+        if not unfixable:
+            continue
+        sheet, cell, formula = f["sheet"], f["cell"], f["formula"]
+        note = "the broken reference stood for a range; the whole formula is replaced by =NA() (the cell already returned an error)"
+        if f.get("array_ref"):
+            ops.append(_op("set_array_formula", "fix_broken_refs_whole", "REF-001", sheet, range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after="=NA()", note=note))
+        else:
+            ops.append(_op("set_formula", "fix_broken_refs_whole", "REF-001", sheet, cell=cell, before=formula, after="=NA()", note=note))
+    return ops, skipped
+
+
+# 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
+# refuses the workbook (or computes wrong) without it, "optional" when Mind reads
+# the file as it is and the change only improves it. The level is the priority
+# of the rule the action serves (rules/*.yaml: REQUIRED -> blocking); it is not
+# a judgment about any particular workbook. Blocking actions are on by default;
+# `caution` says why a blocking action still deserves a look before Apply.
+BLOCKING, OPTIONAL = "blocking", "optional"
 ACTIONS: list[dict[str, Any]] = [
-    {"id": "fix_broken_refs", "title": "Replace broken (#REF!) references with NA() so Mind can compile", "rule_ids": ["REF-001"], "default_on": False, "planner": plan_fix_broken_refs},
-    {"id": "hide_marker", "title": "Add '&&Hide' to hidden sheet names", "rule_ids": ["STR-007"], "default_on": True, "planner": plan_hide_marker},
-    {"id": "loop_name_case", "title": "Normalise loop-name capitalisation (MM_LOOP / MM_RESULT / MM_DIMSIZE ...)", "rule_ids": ["LOOP-002", "RES-002"], "default_on": True, "planner": plan_loop_name_case},
-    {"id": "reorder_input_flag", "title": "Add /Input to /Reorder grids", "rule_ids": ["INP-005"], "default_on": True, "planner": plan_reorder_input_flag},
-    {"id": "flag_spelling", "title": "Correct misspelt flags to the documented spelling", "rule_ids": ["FLG-001"], "default_on": True, "planner": plan_flag_spelling},
-    {"id": "special_headers", "title": "Correct headers of /ExportSettings, /ProjectSettings, /Parameters, /InputSettings grids", "rule_ids": ["EXP-003", "PRJ-002", "PAR-002", "INP-003"], "default_on": True, "planner": plan_special_headers},
-    {"id": "separate_merged_grids", "title": "Insert an empty row before a '#Title' trapped inside a grid", "rule_ids": ["STR-001"], "default_on": True, "planner": plan_separate_merged_grids},
-    {"id": "create_grid_titles", "title": "Give every untitled grid one '#Name' title taken from the cells around it (captions, labels, headers)", "rule_ids": ["STR-004", "STR-002", "STR-001"], "default_on": True, "planner": plan_create_grid_titles},
-    {"id": "explicit_colors", "title": "Replace theme colours with explicit RGB", "rule_ids": ["FMT-002"], "default_on": True, "planner": plan_explicit_colors},
-    {"id": "keep_empty_styles", "title": "Put an apostrophe + space in styled empty cells", "rule_ids": ["FMT-003"], "default_on": False, "planner": plan_keep_empty_styles},
-    {"id": "unprotect_sheets", "title": "Remove sheet protection", "rule_ids": ["FMT-005"], "default_on": False, "planner": plan_unprotect_sheets},
+    {"id": "fix_broken_refs", "title": "Replace broken (#REF!) references with NA() so Mind can compile", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: a broken reference becomes NA(); the cell already returned an error, so no valid result changes", "planner": plan_fix_broken_refs},
+    {"id": "fix_broken_refs_whole", "title": "Replace formulas built on a broken range with =NA()", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
+     "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
+    {"id": "separate_merged_grids", "title": "Insert an empty row before a '#Title' trapped inside a grid", "rule_ids": ["STR-001"], "default_on": True, "level": BLOCKING,
+     "caution": "inserts whole rows through Excel; formulas follow, but VBA code or other workbooks addressing these rows by number will not", "planner": plan_separate_merged_grids},
+    {"id": "loop_name_case", "title": "Normalise loop-name capitalisation (MM_LOOP / MM_RESULT / MM_DIMSIZE ...)", "rule_ids": ["LOOP-002", "RES-002"], "default_on": True, "level": BLOCKING, "planner": plan_loop_name_case},
+    {"id": "reorder_input_flag", "title": "Add /Input to /Reorder grids", "rule_ids": ["INP-005"], "default_on": True, "level": BLOCKING, "planner": plan_reorder_input_flag},
+    {"id": "special_headers", "title": "Correct headers of /ExportSettings, /ProjectSettings, /Parameters, /InputSettings grids", "rule_ids": ["EXP-003", "PRJ-002", "PAR-002", "INP-003"], "default_on": True, "level": BLOCKING, "planner": plan_special_headers},
+    {"id": "create_grid_titles", "title": "Give every untitled grid one '#Name' title taken from the cells around it (captions, labels, headers)", "rule_ids": ["STR-004", "STR-002", "STR-001"], "default_on": True, "level": OPTIONAL,
+     "level_note": "Mind accepts an untitled grid but lists it as 'Untitled' -- unusable for whoever opens the model", "planner": plan_create_grid_titles},
+    {"id": "flag_spelling", "title": "Correct misspelt flags to the documented spelling", "rule_ids": ["FLG-001"], "default_on": True, "level": OPTIONAL, "planner": plan_flag_spelling},
+    {"id": "hide_marker", "title": "Add '&&Hide' to hidden sheet names", "rule_ids": ["STR-007"], "default_on": True, "level": OPTIONAL, "planner": plan_hide_marker},
+    {"id": "explicit_colors", "title": "Replace theme colours with explicit RGB", "rule_ids": ["FMT-002"], "default_on": True, "level": OPTIONAL, "planner": plan_explicit_colors},
+    {"id": "keep_empty_styles", "title": "Put an apostrophe + space in styled empty cells", "rule_ids": ["FMT-003"], "default_on": False, "level": OPTIONAL, "planner": plan_keep_empty_styles},
+    {"id": "unprotect_sheets", "title": "Remove sheet protection", "rule_ids": ["FMT-005"], "default_on": False, "level": OPTIONAL, "planner": plan_unprotect_sheets},
 ]
+ACTION_LEVELS: dict[str, str] = {a["id"]: a["level"] for a in ACTIONS}
+
+
+def merged_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int, int]]]:
+    """Per sheet, every merged range as (r1, r2, c1, c2) -- from the inventory."""
+    out: dict[str, list[tuple[int, int, int, int]]] = {}
+    for s in analysis["workbooks"][0].get("sheets", []):
+        rects = []
+        for m in s.get("merged_cells", []) or []:
+            ref = parse_ref(str(m))
+            if ref and not ref.get("whole_column") and not ref.get("whole_row"):
+                rects.append((ref["r1"], ref["r2"], ref["c1"], ref["c2"]))
+        out[s["name"]] = rects
+    return out
+
+
+def merged_conflict(merged: dict[str, list[tuple[int, int, int, int]]], sheet: str, cell: str) -> str | None:
+    """The merged range that contains `cell` without `cell` being its first cell
+    (Excel ignores a write there), else None."""
+    ref = parse_ref(str(cell))
+    if not ref:
+        return None
+    for r1, r2, c1, c2 in merged.get(sheet, []):
+        if r1 <= ref["r1"] <= r2 and c1 <= ref["c1"] <= c2 and (ref["r1"], ref["c1"]) != (r1, c1):
+            return f"{ref_text(c1, r1)}:{ref_text(c2, r2)}"
+    return None
+
+
+def _drop_merged_targets(ops: list[dict[str, Any]], skipped: list[str], merged: dict[str, list[tuple[int, int, int, int]]]) -> list[dict[str, Any]]:
+    """1.7.2: a cell write aimed at a non-first cell of a merged range is moved
+    from the operations to the skip list (Excel would ignore it silently).
+    Writes planned for post-insert coordinates are left to the executor's guard."""
+    kept = []
+    for o in ops:
+        if o["op"] in ("set_value", "set_formula", "clear_cell") and not o.get("after_inserts"):
+            span = merged_conflict(merged, o["sheet"], str(o.get("cell", "")))
+            if span:
+                skipped.append(f"{o['sheet']}!{o['cell']}: inside the merged range {span} -- Excel only writes into its first cell; unmerge it or write '{o.get('after')}' there by hand")
+                continue
+        kept.append(o)
+    return kept
 
 
 def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -859,15 +950,21 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
     (app/grid_naming.suggest_names) and is only used by `create_grid_titles`,
     and there only where the deterministic name would be a weak one."""
     out = []
+    merged = merged_ranges(analysis)
     for a in ACTIONS:
         try:
             if a["id"] == "create_grid_titles":
                 ops, skipped = a["planner"](analysis, validation_report, grid_names)
             else:
                 ops, skipped = a["planner"](analysis, validation_report)
+            ops = _drop_merged_targets(list(ops), skipped, merged)
         except Exception as exc:  # a planner bug must never hide the other actions
             ops, skipped = [], [f"planner error: {exc}"]
-        out.append({"id": a["id"], "title": a["title"], "rule_ids": a["rule_ids"], "default_on": a["default_on"], "operations": ops, "count": len(ops), "skipped": skipped})
+        out.append({
+            "id": a["id"], "title": a["title"], "rule_ids": a["rule_ids"], "default_on": a["default_on"],
+            "level": a["level"], "level_note": a.get("level_note"), "caution": a.get("caution"),
+            "operations": ops, "count": len(ops), "skipped": skipped,
+        })
     return out
 
 
@@ -920,6 +1017,51 @@ def _com_message(exc: BaseException) -> str:
 
 def _cells_of(ref_or_range: Any) -> list[str]:
     return [c.upper() for c in _range_cells(str(ref_or_range or "").replace("$", "").upper())]
+
+
+def _merged_guard(rng: Any, sheet: str, target: str) -> None:
+    """Raise when `rng` (a single cell or a range) touches a merged area it does
+    not own: Excel ignores a value written into a merged cell other than the
+    area's first cell, with no error. A write on the first cell is fine."""
+    try:
+        merged = rng.MergeCells
+    except Exception:
+        return
+    if not merged:
+        return
+    area = None
+    try:
+        area = rng.Cells(1, 1).MergeArea
+        first = str(area.Cells(1, 1).Address).replace("$", "")
+        span = str(area.Address).replace("$", "")
+    finally:
+        area = None
+    top_left = _cells_of(target)[0]
+    if first.upper() != top_left.upper():
+        raise ValueError(
+            f"{sheet}!{target} is part of the merged range {span} -- Excel only accepts a value in its first cell ({first}); "
+            "unmerge it or write the title into that cell by hand"
+        )
+
+
+def _read_back_guard(rng: Any, o: dict[str, Any], sheet: str, target: str) -> None:
+    """After a write, confirm the cell is no longer empty (set_value / set_formula)
+    or is empty (clear_cell). A silent no-op must never be reported as applied."""
+    try:
+        first = rng.Cells(1, 1)
+        try:
+            formula = first.Formula
+        finally:
+            first = None
+    except Exception:
+        return  # cannot read back: keep the operation, the verify-opens step still runs
+    has_content = formula is not None and str(formula) != ""
+    if o["op"] == "clear_cell":
+        if has_content:
+            raise ValueError(f"{sheet}!{target} still has content after clearing")
+    elif o.get("after") not in (None, ""):
+        if not has_content:
+            raise ValueError(f"{sheet}!{target}: Excel accepted the write but the cell is still empty (protected, merged or otherwise refused)")
 
 
 def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
@@ -978,6 +1120,22 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
                     break
         rng = ws.Range(target)
         try:
+            # 1.7.2 guard: Excel silently ignores a write into any cell of a merged
+            # range other than its first cell -- no error, nothing written. Prep
+            # then reported "applied, verified" and the next scan proposed the
+            # same write again, forever. Refuse, and say why.
+            _merged_guard(rng, sheet, target)
+            try:
+                merged = bool(rng.MergeCells)
+            except Exception:
+                merged = False
+            if merged:
+                # The first cell of a merged range: Excel refuses ClearContents /
+                # value writes on that single cell ("We can't do that to a merged
+                # cell") but accepts them on the whole merge area.
+                area = rng.Cells(1, 1).MergeArea
+                rng = None
+                rng = area
             if o["op"] == "set_formula":
                 if rng.HasArray:  # single-cell array formula: replace it entirely
                     rng.ClearContents()
@@ -988,6 +1146,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
                 rng.Value = o["after"]
             else:
                 rng.ClearContents()
+            _read_back_guard(rng, o, sheet, target)
         finally:
             rng = None
         return record

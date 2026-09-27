@@ -36,6 +36,7 @@ MAX_RETRIEVAL_CHARS = 6000
 MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
 MAX_PROPOSAL_RETRIES = 2  # a rejected ```changes block is sent back (twice at most) with the validation errors
+PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block (1.7.2)
 CELL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:(?P<sheet>'[^']+'|[A-Za-z0-9_]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![A-Za-z0-9_(])")
 RULE_ID_RE = re.compile(r"\b([A-Z]{2,7})-(\d{3})\b")
 MM_FN_RE = re.compile(r"\bMM_[A-Za-z0-9_]+\b", re.IGNORECASE)
@@ -48,6 +49,7 @@ You are given the tool's analysis of ONE workbook: its sheets, grids and flags, 
 Rules for you:
 - Ground every answer in the context; quote rule ids, sheet!cell locations and grid names. If the context doesn't contain what is needed, look it up (below) or say what is missing instead of guessing.
 - Explain findings in plain language and say concretely what to change in Excel to fix them.
+- When you replace a function with another, keep the formula's behaviour on blank cells, text and errors: e.g. NUMBERVALUE("") returns 0 but VALUE("") returns #VALUE!, so wrap the replacement (IF(x="",0,VALUE(x))) when the original tolerated blanks; the app recalculates the file in Excel afterwards and every new error is counted against the fix.
 - The app has these sections: "Findings" (rule results), "Prep workbook" (applies the listed prep actions and user-edited formula replacements), "Ask the assistant" (you), "Recalculate" (real Excel recalculation -- the only way READY-001 clears), "Reports" (downloads).
 - PASS for upload is only ever granted after a real recalculation; never tell the user the workbook is ready.
 - If a <recalculation> block is present it is the result of a real Excel recalculation of the current file: a genuine formula error (#NAME?, #REF!, #VALUE!, #DIV/0!, #N/A ...) at a cell must be explained from that cell's formula and, when the user asks, fixed with a changes block; a #NAME? on an MM_ function listed as an add-in gap is NOT a workbook defect (the MMForExcel add-in is missing on this machine) and must not be "fixed" by rewriting the formula.
@@ -302,7 +304,12 @@ def answer_question(
         system += "\n\n<recalculation>\n" + _trim(extra_context, 6000) + "\n</recalculation>"
     turn = question if not detail else f"{question}\n\n<retrieved_detail>\n{detail}\n</retrieved_detail>"
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]] + [{"role": "user", "content": turn}]
-    kwargs = {"model_id": model_id} if model_id else {}
+    # 1.7.2: a ```changes block costs ~30 tokens per cell; the old 1200-token
+    # default silently truncated proposals at ~35 operations (the rest of the
+    # finding's cells never made it into the proposal and nothing said so).
+    kwargs: dict[str, Any] = {"max_tokens": PROPOSAL_MAX_TOKENS}
+    if model_id:
+        kwargs["model_id"] = model_id
     lookups = 0
     result: dict[str, Any] = {"available": False, "text": None, "message": "no call made"}
     while True:

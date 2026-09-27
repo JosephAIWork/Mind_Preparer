@@ -143,7 +143,8 @@ def test_chat_focus_pulls_the_finding_into_the_turn(client, flagged_model_broken
     monkeypatch.setattr(chat_context, "chat_completion", fake_chat)
     res = client.post(f"/api/sessions/{sid}/chat", json={"history": [], "question": "Explain this finding", "focus": {"rule_id": "RES-002", "sheet": "Model", "cell": "J6"}})
     assert res.status_code == 200 and res.json()["text"] == "explained"
-    assert seen["turn"].startswith("[About finding RES-002 at Model!J6]")
+    assert seen["turn"].startswith("[About finding RES-002 at Model!J6.")
+    assert "behave like the original on blank cells" in seen["turn"]  # 1.7.2: a replacement is judged by the recalculation
     assert "## Finding RES-002" in seen["turn"] and "J6 = =MM_RESULT(J5,\"scenario\",1)" in seen["turn"]
 # --- 1.6.2: recalculation errors in the Fix panel -------------------------------------------
 
@@ -358,3 +359,22 @@ def test_one_shot_upload_carries_size_facts_and_honours_ignore_sheets(client, fl
     assert client.get(f"/api/sessions/{out['sessionId']}/status").json()["ignore_sheets"] == ["Settings"]
     with flagged_model_broken_xlsx.open("rb") as f:
         assert client.post("/api/sessions", files={"file": ("x.xlsx", f, "application/octet-stream")}, data={"mode": "plan", "ignore_sheets": '["Nope"]'}).status_code == 422
+
+
+# --- 1.7.2: the readiness verdict and the Prep gauge travel with every analysis ------------
+def test_analysis_carries_the_verdict_levels_and_gauge(client, flagged_model_broken_xlsx):
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    rd, pp = body["readiness"], body["prep_progress"]
+    assert rd["state"] in ("blocked", "unverified", "ready") and rd["version_id"] == "ver-001"
+    assert set(rd) >= {"headline", "blocking", "blocking_count", "manual_blocking_count", "optional_count", "prep", "recalc", "next_step"}
+    assert rd["recalc"]["ran"] is False and rd["state"] != "ready"
+    for b in rd["blocking"]:
+        assert b["fix"] in ("prep", "prep_skipped", "assistant")
+    assert all(f.get("priority") in ("REQUIRED", "RECOMMENDED", "INFORMATIONAL") for f in body["report"]["findings"])
+    assert all(a["level"] in ("blocking", "optional") for a in body["plan"])
+    assert pp["entries"][-1]["version_id"] == "ver-001" and pp["stalled"] is False
+    # the same verdict on demand
+    got = client.get(f"/api/sessions/{sid}/readiness").json()
+    assert got["readiness"]["state"] == rd["state"] and got["prep_progress"]["entries"] == pp["entries"]
+    assert client.get("/api/sessions/nope/readiness").status_code == 404
