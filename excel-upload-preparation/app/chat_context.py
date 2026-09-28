@@ -25,7 +25,7 @@ import json
 import re
 from typing import Any
 
-from .formula_utils import parse_ref, ref_text
+from .formula_utils import STORAGE_PREFIX_RE, parse_ref, ref_text
 from .grids import all_grids
 from .inventory import cell_value
 from .llm import chat_completion
@@ -199,7 +199,7 @@ def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[st
     for m in {t.upper() for t in MM_FN_RE.findall(question)}:
         sites = [x for x in wb["formulas"] if m in x["formula"].upper()][:15]
         if sites:
-            out.append(f"## {m} call sites\n" + "\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(x['formula'], 160)}" for x in sites))
+            out.append(f"## {m} call sites\n" + "\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(STORAGE_PREFIX_RE.sub('', x['formula']), 160)}" for x in sites))
 
     if "flag" in q_low and not out:
         flagged = [g for g in grids if g["flags"]]
@@ -237,7 +237,7 @@ def retrieve_structured(spec: Any, analysis: dict[str, Any], max_chars: int = MA
     for fn in spec.get("functions", []) or []:
         fn_u = str(fn).upper()
         sites = [x for x in wb["formulas"] if fn_u in x["formula"].upper()][:20]
-        out.append(f"## {fn_u} call sites\n" + ("\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(x['formula'], 160)}" for x in sites) if sites else "(none)"))
+        out.append(f"## {fn_u} call sites\n" + ("\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(STORAGE_PREFIX_RE.sub('', x['formula']), 160)}" for x in sites) if sites else "(none)"))
     return _trim("\n\n".join(out) or "(nothing requested)", max_chars)
 
 

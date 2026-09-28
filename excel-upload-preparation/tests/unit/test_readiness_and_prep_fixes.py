@@ -311,3 +311,25 @@ def test_classify_errors_uses_the_recalculated_original_as_baseline():
     out = classify_errors(errors, original_errors, {("S", "A9")})
     assert out["preexisting"] == 3 and out["new"] == 1
     assert [e["preexisting"] for e in out["errors"]] == [True, True, True, False]
+
+
+def test_formulas_shown_to_the_user_drop_excel_storage_prefixes(tmp_path):
+    """openpyxl reads `=_xlfn.NUMBERVALUE(A1)`; Excel shows `=NUMBERVALUE(A1)`.
+    The cell window and the FRM-002 call sites show the Excel form, so a user
+    who copies a formula into the assistant never carries the prefix along."""
+    from app.inventory import build_analysis, cell_window
+    from app.validators.formula import unsupported_functions
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"] = "12"
+    ws["B1"] = "=_xlfn.NUMBERVALUE(A1)"
+    p = tmp_path / "prefix.xlsx"
+    wb.save(p)
+    analysis = build_analysis(p, tmp_path / "an", "t")
+    assert cell_window(analysis, "Calc", "B1", 0, 0)["rows"][0]["cells"][0]["formula"] == "=NUMBERVALUE(A1)"
+    rule = RulesEngine().rules["FRM-002"]
+    out = unsupported_functions(rule, analysis, load_config())
+    assert out["status"] == "ERROR"
+    assert [s["formula"] for s in out["observed"]["call_sites"]] == ["=NUMBERVALUE(A1)"]

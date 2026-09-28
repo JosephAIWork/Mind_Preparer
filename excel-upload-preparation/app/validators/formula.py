@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from ..formula_utils import called_functions, mask_strings
+from ..formula_utils import STORAGE_PREFIX_RE, called_functions, mask_strings
 from ._common import finding, fmt_sites
 from .excel_functions import EXCEL_FUNCTIONS
 
@@ -76,7 +76,7 @@ def _first_sites(analysis: dict[str, Any], names: set[str], limit_per_name: int 
         for f in wb["formulas"]:
             hits = remaining & set(called_functions(f["formula"]))
             for h in hits:
-                sites[h].append({"sheet": f["sheet"], "cell": f["cell"], "formula": f["formula"][:200]})
+                sites[h].append({"sheet": f["sheet"], "cell": f["cell"], "formula": STORAGE_PREFIX_RE.sub("", f["formula"])[:200]})
                 if len(sites[h]) >= limit_per_name:
                     remaining.discard(h)
             if not remaining:

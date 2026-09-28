@@ -36,7 +36,7 @@ from openpyxl.reader.excel import ExcelReader
 from openpyxl.styles.numbers import is_date_format
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
-from .formula_utils import called_functions, find_calls, range_length, storage_prefixes
+from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, range_length, storage_prefixes
 from .grids import detect_grids, is_occupied, json_safe
 
 STEP_LABELS_MARKER = "steplabels"
@@ -269,10 +269,10 @@ def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, 
             formula = None
             array_ref = None
             if isinstance(raw, str) and raw.startswith("="):
-                formula = raw
+                formula = STORAGE_PREFIX_RE.sub("", raw)  # `_xlfn.` etc. are storage artefacts, not what Excel shows
             elif isinstance(raw, ArrayFormula):
                 text = raw.text if str(raw.text).startswith("=") else "=" + str(raw.text)
-                formula, array_ref = "{" + text + "}", str(raw.ref)
+                formula, array_ref = "{" + STORAGE_PREFIX_RE.sub("", text) + "}", str(raw.ref)
             elif isinstance(raw, DataTableFormula):
                 formula = "=TABLE()"
             if formula is None:
