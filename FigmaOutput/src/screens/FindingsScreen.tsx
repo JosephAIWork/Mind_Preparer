@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useStore } from "../store";
-import { findingLevel, type Finding, type Grid, type Status } from "../types";
+import { findingLevel, type Finding, type Grid, type PrepAction, type Status } from "../types";
 import StatusPill from "../components/StatusPill";
 import LevelBadge from "../components/LevelBadge";
 import KpiTiles from "../components/KpiTile";
@@ -31,7 +32,21 @@ export function findingsForGrid(grid: Grid, findings: Finding[]): Finding[] {
   });
 }
 
-function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBadge: boolean; onFix: () => void }) {
+/** 1.7.2: how a finding gets fixed -- the same routing as the readiness banner.
+ *  prep: a Prep action holds operations for the rule; prep_skipped: Prep looked
+ *  and left every site for review (by hand or the assistant); assistant: no
+ *  automatic repair exists for the rule. */
+export type FixRoute = { kind: "prep" | "prep_skipped" | "assistant"; action?: PrepAction };
+
+export function fixRouteFor(ruleId: string, plan: PrepAction[]): FixRoute {
+  const withOps = plan.find((a) => a.rule_ids.includes(ruleId) && a.count > 0);
+  if (withOps) return { kind: "prep", action: withOps };
+  const skipped = plan.find((a) => a.rule_ids.includes(ruleId) && a.skipped.length > 0);
+  if (skipped) return { kind: "prep_skipped", action: skipped };
+  return { kind: "assistant" };
+}
+
+function FindingRow({ finding, fixedBadge, route, onFix }: { finding: Finding; fixedBadge: boolean; route: FixRoute; onFix: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const loc = [finding.location.sheet, finding.location.cell].filter(Boolean).join("!");
   const actionable = finding.status !== "PASS";
@@ -77,19 +92,34 @@ function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBad
           <EvidenceTag evidence={finding.evidence} />
         </td>
         <td className="px-4 py-2.5 whitespace-nowrap">
-          {actionable ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); onFix(); }}
-              className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
-                finding.correction_available
-                  ? "bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
-                  : "border border-[#1F3A5F] text-[#1F3A5F] hover:bg-[#EEF2FF]"
-              }`}
-            >
-              {finding.correction_available ? "Fix" : "Ask"}
-            </button>
-          ) : (
+          {!actionable ? (
             <span className="text-[12px] text-[#9CA3AF]">—</span>
+          ) : route.kind === "prep" && route.action ? (
+            <Link
+              to="/prep"
+              onClick={(e) => e.stopPropagation()}
+              title={`Prep "${route.action.title}" holds ${route.action.count} change(s) for this rule`}
+              className="inline-block px-2.5 py-1 rounded-md text-[12px] font-medium bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
+            >
+              Repair in Prep ({route.action.count})
+            </Link>
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              {route.kind === "prep_skipped" && (
+                <span title="Prep looked at it and left every cell for review" className="text-[10px] font-semibold text-[#92400E] bg-[#FEF3C7] border border-[#F59E0B]/30 rounded px-1.5 py-0.5">BY HAND</span>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); onFix(); }}
+                title={route.kind === "prep_skipped" ? "Ask the assistant for a cell-by-cell fix" : "No automatic repair for this rule: ask the assistant"}
+                className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
+                  finding.correction_available
+                    ? "bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
+                    : "border border-[#1F3A5F] text-[#1F3A5F] hover:bg-[#EEF2FF]"
+                }`}
+              >
+                {finding.correction_available ? "Fix with assistant" : "Ask assistant"}
+              </button>
+            </span>
           )}
         </td>
       </tr>
@@ -135,6 +165,7 @@ export default function FindingsScreen() {
   const summary = useStore((s) => s.summary);
   const lastDelta = useStore((s) => s.lastDelta);
   const openFix = useStore((s) => s.openFix);
+  const plan = useStore((s) => s.plan);
   const currentVersion = useStore((s) => s.currentVersion);
   const [activeStatuses, setActiveStatuses] = useState<Set<Status>>(
     new Set(["ERROR", "REQUIRES_USER_INPUT", "WARNING"] as Status[])
@@ -217,7 +248,7 @@ export default function FindingsScreen() {
         <KpiTiles counts={counts} onFilter={handleKpiClick} activeFilter={kpiFilter} />
         {report.status !== "PASS" && (
           <p className="text-[12px] text-[#6B7280] mt-2">
-            PASS requires a clean recalculation. Click a status or "Fix" to open the fix panel; grids in the Workbook Map are clickable too.
+            PASS requires a clean recalculation. "Repair in Prep" means Prep already holds the change; the assistant handles the rest, cell by cell. Grids in the Workbook Map are clickable too.
           </p>
         )}
         {lastDelta && (
@@ -321,6 +352,7 @@ export default function FindingsScreen() {
                       key={`${f.rule_id}-${i}`}
                       finding={f}
                       fixedBadge={fixedIds.has(f.rule_id) && f.status === "PASS"}
+                      route={fixRouteFor(f.rule_id, plan)}
                       onFix={() => fixFinding(f)}
                     />
                   ))}
