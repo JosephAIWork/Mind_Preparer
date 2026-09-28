@@ -403,7 +403,9 @@ def test_spilled_range_references_are_blocking_and_frozen_by_prep(tmp_path):
     after = {(o["sheet"], o["cell"]): o["after"] for o in ops}
     assert after[("Model Inputs", "E169")] == "=INDEX(A1:A3,2)"
     assert after[("Model Inputs", "E171")] == "=SUM(A1:A3)"
-    assert after[("Cluster", "BG74")] == "=SUMPRODUCT('Model Inputs'!A1:A3)"
+    assert after[("Cluster", "BG74")] == "=SUMPRODUCT('Model Inputs'!$A$1:$A$3)"  # absolute stays absolute
+    notes = {(o["sheet"], o["cell"]): o["note"] for o in ops}
+    assert notes[("Cluster", "BG74")].startswith("'Model Inputs'!$A$1# -> 'Model Inputs'!$A$1:$A$3")
     assert all(o["rule_id"] == "FRM-003" and o["action_id"] == "freeze_spill_refs" for o in ops)
     assert len(skipped) == 1 and "E173" in skipped[0] and "Z9#" in skipped[0]
     assert ACTION_LEVELS["freeze_spill_refs"] == "blocking"

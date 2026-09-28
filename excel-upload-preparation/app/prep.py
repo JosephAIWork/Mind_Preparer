@@ -887,6 +887,12 @@ SPILL_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?ANCHORARRAY\(\s*((?:'
 SPILL_HASH_RE = re.compile(r"(?<![A-Za-z0-9_.#])((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})#", re.IGNORECASE)
 
 
+def _absolute(ref: str) -> str:
+    """'B12' -> '$B$12' (a single A1 reference)."""
+    m = re.match(r"^[$]?([A-Za-z]{1,3})[$]?([0-9]{1,7})$", ref)
+    return "$" + m.group(1) + "$" + m.group(2) if m else ref
+
+
 def _spill_anchors(analysis: dict[str, Any]) -> dict[tuple[str, str], str]:
     """(sheet, anchor cell) -> the range its array formula covers, from the inventory."""
     out: dict[tuple[str, str], str] = {}
@@ -904,6 +910,7 @@ def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], s
     formula in the inventory, so the spill extent is unknown)."""
     masked = mask_strings(formula)  # string literals become spaces; positions line up with `formula`
     unresolved: list[str] = []
+    frozen: list[str] = []
     pieces: list[tuple[int, int, str]] = []
     for pattern in (SPILL_CALL_RE, SPILL_HASH_RE):
         for m in pattern.finditer(masked):
@@ -914,7 +921,10 @@ def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], s
             if rng is None:
                 unresolved.append(f"{prefix}{cell}#")
                 continue
+            if "$" in cell:  # keep the reference absolute when the original was
+                rng = ":".join(_absolute(part) for part in rng.split(":"))
             pieces.append((m.start(), m.end(), f"{prefix}{rng}"))
+            frozen.append(f"{prefix}{cell}# -> {prefix}{rng}")
     if not pieces:
         return formula, unresolved
     pieces.sort()
@@ -926,7 +936,11 @@ def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], s
         out.append(text)
         pos = end
     out.append(formula[pos:])
+    FROZEN_NOTES[formula] = frozen
     return "".join(out), unresolved
+
+
+FROZEN_NOTES: dict[str, list[str]] = {}  # last rewrite's "A1# -> A1:A3" texts, for the operation note
 
 
 def plan_freeze_spill_refs(analysis, report) -> tuple[list[dict], list[str]]:
@@ -943,7 +957,8 @@ def plan_freeze_spill_refs(analysis, report) -> tuple[list[dict], list[str]]:
         if unresolved:
             skipped.append(f"{sheet}!{cell}: the spill extent of {', '.join(unresolved)} is unknown (its anchor is not an array formula in the file) -- replace the reference by the real range by hand")
             continue
-        note = "spilled-range reference frozen to the range the spill covers today (Mind rejects ANCHORARRAY)"
+        what = "; ".join(FROZEN_NOTES.get(formula, []))
+        note = f"{what} -- frozen to the range the spill covers today (Mind rejects ANCHORARRAY); a 1-cell range means the source spills one cell in this file"
         if f.get("array_ref") and ":" in str(f["array_ref"]):
             ops.append(_op("set_array_formula", "freeze_spill_refs", "FRM-003", sheet, range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after=fixed, note=note))
         else:
