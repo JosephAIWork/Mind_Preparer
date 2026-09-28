@@ -165,12 +165,25 @@ def frm_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
                 spill_sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:160]})
     observed = {"implicit_intersection_sites": at_sites[:50], "array_formula_sites": array_sites[:50], "spill_reference_sites": spill_sites[:50],
                 "counts": {"implicit_intersection": len(at_sites), "array_formulas": len(array_sites), "spill_references": len(spill_sites)}}
-    if at_sites or spill_sites:
-        first = (at_sites or spill_sites)[0]
+    if spill_sites:
+        # Mind's own validation rejects every one of these as "Unsupported formula: ANCHORARRAY()"
+        # (the token Excel stores for a spilled-range reference such as INDEX(A1#, ...)).
+        first = spill_sites[0]
+        return finding(
+            "ERROR",
+            f"{len(spill_sites)} formula(s) reference spilled ranges ('A1#', stored as ANCHORARRAY) -- Mind rejects each of them with "
+            f"'Unsupported formula: ANCHORARRAY()'; Prep replaces the reference by the fixed range the spill covers today (Mind has no Office 365 dynamic arrays)"
+            + (f"; {len(at_sites)} formula(s) also use the implicit-intersection '@' operator" if at_sites else "")
+            + f". Sites: {fmt_sites(spill_sites + at_sites)}",
+            observed,
+            location={"sheet": first["sheet"], "cell": first["cell"]},
+        )
+    if at_sites:
+        first = at_sites[0]
         return finding(
             "WARNING",
-            f"{len(at_sites)} formula(s) use the implicit-intersection '@' operator and {len(spill_sites)} reference spilled ranges ('A1#'); "
-            f"Mind resizes arrays with MM_RANGE / MM_GETRANGE, not Office 365 dynamic arrays. Review: {fmt_sites(at_sites + spill_sites)}",
+            f"{len(at_sites)} formula(s) use the implicit-intersection '@' operator; "
+            f"Mind resizes arrays with MM_RANGE / MM_GETRANGE, not Office 365 dynamic arrays. Review: {fmt_sites(at_sites)}",
             observed,
             location={"sheet": first["sheet"], "cell": first["cell"]},
         )

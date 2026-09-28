@@ -333,3 +333,78 @@ def test_formulas_shown_to_the_user_drop_excel_storage_prefixes(tmp_path):
     out = unsupported_functions(rule, analysis, load_config())
     assert out["status"] == "ERROR"
     assert [s["formula"] for s in out["observed"]["call_sites"]] == ["=NUMBERVALUE(A1)"]
+
+
+def test_assistant_gets_the_tool_verdict_on_function_support(tmp_path):
+    """"Is IFNA supported?" must be answered from the Mind list the tool owns,
+    not from general knowledge: the retrieval carries the verdict, the usage
+    and the fact that `_xlfn.` is only Excel's storage prefix."""
+    from app.chat_context import SYSTEM_PROMPT, function_support, retrieve
+    from app.inventory import build_analysis
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"] = 3
+    ws["B1"] = "=_xlfn.IFNA(A1,0)"
+    ws["C1"] = "=_xlfn.NUMBERVALUE(\"1\")"
+    p = tmp_path / "fn.xlsx"
+    wb.save(p)
+    analysis = build_analysis(p, tmp_path / "an", "t")
+    report = {"findings": []}
+    block = retrieve("Is _xlfn.IFNA a problem for Mind? and NUMBERVALUE?", analysis, report)
+    assert "## Function support" in block
+    # IFNA is NOT on the Mind list (IFERROR is): the assistant must say so, and give the behaviour-preserving equivalent
+    assert "IFNA: NOT on the Mind supported-function list" in block and "used in 1 formula(s), first at Calc!B1" in block
+    assert "IF(ISNA(x),alt,x)" in block
+    assert "NUMBERVALUE: NOT on the Mind supported-function list" in block and 'IF(x="",0,VALUE(x))' in block
+    assert "IFERROR: on the Mind supported-function list" in function_support(["IFERROR"], analysis)
+    assert "storage prefix, not a defect" in block
+    # ordinary words are not functions
+    assert function_support(["problem", "the"], analysis) == ""
+    assert "MM_LOOP" in function_support(["mm_loop"], analysis)
+    assert "never hedge" in SYSTEM_PROMPT and "storage prefixes" in SYSTEM_PROMPT
+
+
+def test_spilled_range_references_are_blocking_and_frozen_by_prep(tmp_path):
+    """Mind rejects INDEX(A1#, ...) with 'Unsupported formula: ANCHORARRAY()'.
+    FRM-003 must fail (ERROR, blocking) and Prep must replace each reference
+    by the fixed range the spill covers today, on the same sheet or across
+    sheets, leaving unresolvable ones for review."""
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    from app.inventory import build_analysis
+    from app.prep import ACTION_LEVELS, freeze_spill_refs, plan_freeze_spill_refs
+    from app.validators.formula import frm_003
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Model Inputs"
+    for r in range(1, 4):
+        ws.cell(r, 2, r)
+    ws["A1"] = ArrayFormula("A1:A3", "=B1:B3*2")  # a spill anchor covering A1:A3
+    ws["E169"] = "=INDEX(_xlfn.ANCHORARRAY(A1),2)"  # how Excel stores INDEX(A1#,2)
+    ws["E171"] = "=SUM(A1#)"  # the visible form
+    ws["E173"] = '=SUM(Z9#)&"A1#"'  # anchor unknown -> review; the string literal stays untouched
+    other = wb.create_sheet("Cluster")
+    other["BG74"] = "=SUMPRODUCT('Model Inputs'!$A$1#)"
+    p = tmp_path / "spill.xlsx"
+    wb.save(p)
+    analysis = build_analysis(p, tmp_path / "an", "t")
+
+    rule = RulesEngine().rules["FRM-003"]
+    out = frm_003(rule, analysis, load_config())
+    assert out["status"] == "ERROR" and "ANCHORARRAY()" in out["message"]
+    assert level_of({"rule_id": "FRM-003", "status": out["status"], "priority": rule["priority"]}) == "blocking"
+
+    ops, skipped = plan_freeze_spill_refs(analysis, {"findings": []})
+    after = {(o["sheet"], o["cell"]): o["after"] for o in ops}
+    assert after[("Model Inputs", "E169")] == "=INDEX(A1:A3,2)"
+    assert after[("Model Inputs", "E171")] == "=SUM(A1:A3)"
+    assert after[("Cluster", "BG74")] == "=SUMPRODUCT('Model Inputs'!A1:A3)"
+    assert all(o["rule_id"] == "FRM-003" and o["action_id"] == "freeze_spill_refs" for o in ops)
+    assert len(skipped) == 1 and "E173" in skipped[0] and "Z9#" in skipped[0]
+    assert ACTION_LEVELS["freeze_spill_refs"] == "blocking"
+    # the rewrite never touches string literals
+    fixed, unresolved = freeze_spill_refs('=A1#&"A1#"', "Model Inputs", {("Model Inputs", "A1"): "A1:A3"})
+    assert fixed == '=A1:A3&"A1#"' and unresolved == []

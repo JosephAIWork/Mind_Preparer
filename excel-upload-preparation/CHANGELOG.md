@@ -77,6 +77,41 @@ causes of the endless rounds.
   it current (later versions stay). Prep shows what the last Apply did and
   what is left; the upload screen no longer hard-codes a rule count.
 
+Follow-ups from the first test sessions on real models:
+
+- **Spilled-range references are blocking and repaired.** Mind's own
+  validation refuses every `INDEX(A1#, ...)` with "Unsupported formula:
+  ANCHORARRAY()" (the token Excel stores for `A1#`). FRM-003 now fails with
+  ERROR on such references (a bare `@` stays a WARNING), and the new blocking
+  Prep action `freeze_spill_refs` replaces each `A1#` / `ANCHORARRAY(A1)` by
+  the fixed range the spill covers today, taken from the anchor's array
+  extent in the file, on the same sheet or across sheets; a consumer that
+  spills itself becomes a fixed-size array formula over its current range.
+  References whose anchor is not an array formula are left for review.
+  Verified through Excel on real dynamic arrays: values unchanged, FRM-003
+  passes afterwards.
+- **The assistant answers "is X supported?" from the tool's list, not from
+  memory.** Any Excel or MM_ function named in a question gets a
+  "## Function support" block in the retrieval: on the Mind list / not on it
+  (FRM-002 flags it) / registered MM_ function, with the workbook's usage and
+  a supported equivalent the tool vouches for (`NUMBERVALUE`, `IFNA`,
+  `XLOOKUP`, `CONCAT`, `TEXTJOIN`, `SWITCH`, `ANCHORARRAY`). The system prompt
+  forbids hedging ("most platforms...") and explains that `_xlfn.` is Excel's
+  storage prefix, not a defect. Motivating case: the assistant called 54
+  `IFNA` calls "a non-issue" while FRM-002 flags IFNA (IFERROR is on the
+  list, IFNA is not).
+- **Formulas are shown the way Excel shows them**: the cell window, the
+  FRM-002 call sites and the sites quoted to the assistant drop `_xlfn.`,
+  `_xll.` and the other storage prefixes.
+- **Findings routes each row like the banner**: "Repair in Prep (N)" when a
+  Prep action holds the change, BY HAND when Prep left every site for
+  review, "Fix with assistant" otherwise.
+- **A repair gauge in the Fix panel and on Findings**: blocking problems and
+  open findings per version, with the trend and the verdict, so a run of
+  assistant fixes reads as a curve going down like Prep does. Each analysis
+  records `open_findings` and `status_counts` in the gauge history.
+- **Launcher** uses the project's `.venv` interpreter when it exists.
+
 ## 1.7.1
 
 ### One backend again: the Shlomo copy's size gate and scan status folded into the main app

@@ -875,6 +875,82 @@ def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]
     return ops, skipped
 
 
+# --- FRM-003: spilled-range references (1.7.2) --------------------------------------------
+# Excel stores `A1#` (a reference to the range a dynamic-array formula spills
+# into) as `_xlfn.ANCHORARRAY(A1)`. Mind rejects every such formula with
+# "Unsupported formula: ANCHORARRAY()". The spill's current extent is known:
+# Excel writes the anchor as an array formula whose `ref` is the spilled
+# range. Replacing the reference by that fixed range keeps today's result and
+# gives Mind a formula it compiles; if the source grows later, the range will
+# not follow (the caution says so).
+SPILL_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?ANCHORARRAY\(\s*((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})\s*\)", re.IGNORECASE)
+SPILL_HASH_RE = re.compile(r"(?<![A-Za-z0-9_.#])((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})#", re.IGNORECASE)
+
+
+def _spill_anchors(analysis: dict[str, Any]) -> dict[tuple[str, str], str]:
+    """(sheet, anchor cell) -> the range its array formula covers, from the inventory."""
+    out: dict[tuple[str, str], str] = {}
+    for f in analysis["workbooks"][0].get("formulas", []):
+        ref = f.get("array_ref")
+        if ref:
+            out[(f["sheet"], str(f["cell"]).replace("$", "").upper())] = str(ref).replace("$", "").upper()
+    return out
+
+
+def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], str]) -> tuple[str, list[str]]:
+    """Rewrite every `A1#` / ANCHORARRAY(A1) in `formula` (a formula on `sheet`)
+    as the fixed range the anchor spills into today. Returns (fixed formula,
+    references that could not be resolved -- their anchor is not an array
+    formula in the inventory, so the spill extent is unknown)."""
+    masked = mask_strings(formula)  # string literals become spaces; positions line up with `formula`
+    unresolved: list[str] = []
+    pieces: list[tuple[int, int, str]] = []
+    for pattern in (SPILL_CALL_RE, SPILL_HASH_RE):
+        for m in pattern.finditer(masked):
+            prefix = formula[m.start(1):m.end(1)] if m.group(1) else ""
+            cell = formula[m.start(2):m.end(2)]
+            anchor_sheet = prefix[:-1].strip("'") if prefix else sheet
+            rng = anchors.get((anchor_sheet, cell.replace("$", "").upper()))
+            if rng is None:
+                unresolved.append(f"{prefix}{cell}#")
+                continue
+            pieces.append((m.start(), m.end(), f"{prefix}{rng}"))
+    if not pieces:
+        return formula, unresolved
+    pieces.sort()
+    out, pos = [], 0
+    for start, end, text in pieces:
+        if start < pos:  # overlapping match (cannot happen with these patterns, but never corrupt a formula)
+            continue
+        out.append(formula[pos:start])
+        out.append(text)
+        pos = end
+    out.append(formula[pos:])
+    return "".join(out), unresolved
+
+
+def plan_freeze_spill_refs(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-003: each spilled-range reference becomes the range it covers today."""
+    ops, skipped = [], []
+    anchors = _spill_anchors(analysis)
+    for f in analysis["workbooks"][0].get("formulas", []):
+        formula = f.get("formula") or ""
+        masked = mask_strings(formula)
+        if not (SPILL_CALL_RE.search(masked) or SPILL_HASH_RE.search(masked)):
+            continue
+        sheet, cell = f["sheet"], f["cell"]
+        fixed, unresolved = freeze_spill_refs(formula, sheet, anchors)
+        if unresolved:
+            skipped.append(f"{sheet}!{cell}: the spill extent of {', '.join(unresolved)} is unknown (its anchor is not an array formula in the file) -- replace the reference by the real range by hand")
+            continue
+        note = "spilled-range reference frozen to the range the spill covers today (Mind rejects ANCHORARRAY)"
+        if f.get("array_ref") and ":" in str(f["array_ref"]):
+            ops.append(_op("set_array_formula", "freeze_spill_refs", "FRM-003", sheet, range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after=fixed, note=note))
+        else:
+            ops.append(_op("set_formula", "freeze_spill_refs", "FRM-003", sheet, cell=cell, before=formula, after=fixed, note=note))
+    return ops, skipped
+
+
 # 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
@@ -887,6 +963,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: a broken reference becomes NA(); the cell already returned an error, so no valid result changes", "planner": plan_fix_broken_refs},
     {"id": "fix_broken_refs_whole", "title": "Replace formulas built on a broken range with =NA()", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
      "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
+    {"id": "freeze_spill_refs", "title": "Replace spilled-range references (A1#) by the fixed range they cover today", "rule_ids": ["FRM-003"], "default_on": True, "level": BLOCKING,
+     "caution": "Mind rejects ANCHORARRAY() (Office 365 dynamic arrays); each 'A1#' becomes the range the spill covers now, so a source that grows later will not be followed -- add MM_RANGE by hand if it must", "planner": plan_freeze_spill_refs},
     {"id": "separate_merged_grids", "title": "Insert an empty row before a '#Title' trapped inside a grid", "rule_ids": ["STR-001"], "default_on": True, "level": BLOCKING,
      "caution": "inserts whole rows through Excel; formulas follow, but VBA code or other workbooks addressing these rows by number will not", "planner": plan_separate_merged_grids},
     {"id": "loop_name_case", "title": "Normalise loop-name capitalisation (MM_LOOP / MM_RESULT / MM_DIMSIZE ...)", "rule_ids": ["LOOP-002", "RES-002"], "default_on": True, "level": BLOCKING, "planner": plan_loop_name_case},
