@@ -364,6 +364,8 @@ def test_assistant_gets_the_tool_verdict_on_function_support(tmp_path):
     assert function_support(["problem", "the"], analysis) == ""
     assert "MM_LOOP" in function_support(["mm_loop"], analysis)
     assert "never hedge" in SYSTEM_PROMPT and "storage prefixes" in SYSTEM_PROMPT
+    # the general rule: no conclusion about Mind from anything but the Mind documentation the tool holds
+    assert "must come from the Mind documentation the tool holds" in SYSTEM_PROMPT and "is NOT evidence about Mind" in SYSTEM_PROMPT
 
 
 def test_spilled_range_references_are_blocking_and_frozen_by_prep(tmp_path):
