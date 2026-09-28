@@ -374,6 +374,9 @@ def test_analysis_carries_the_verdict_levels_and_gauge(client, flagged_model_bro
     assert all(f.get("priority") in ("REQUIRED", "RECOMMENDED", "INFORMATIONAL") for f in body["report"]["findings"])
     assert all(a["level"] in ("blocking", "optional") for a in body["plan"])
     assert pp["entries"][-1]["version_id"] == "ver-001" and pp["stalled"] is False
+    last = pp["entries"][-1]
+    assert last["open_findings"] == sum(1 for f in body["report"]["findings"] if f["status"] != "PASS")
+    assert sum(last["status_counts"].values()) == len(body["report"]["findings"])
     # the same verdict on demand
     got = client.get(f"/api/sessions/{sid}/readiness").json()
     assert got["readiness"]["state"] == rd["state"] and got["prep_progress"]["entries"] == pp["entries"]

@@ -7,6 +7,7 @@ import LevelBadge from "../components/LevelBadge";
 import KpiTiles from "../components/KpiTile";
 import EvidenceTag from "../components/EvidenceTag";
 import GridCard, { worstStatus } from "../components/GridCard";
+import RepairGauge from "../components/RepairGauge";
 
 const severityOrder: Record<string, number> = { BLOCKER: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
 const statusFilterOrder: Status[] = ["ERROR", "REQUIRES_USER_INPUT", "NOT_SUPPORTED", "WARNING", "PASS"];
@@ -246,6 +247,8 @@ export default function FindingsScreen() {
           </div>
         </div>
         <KpiTiles counts={counts} onFilter={handleKpiClick} activeFilter={kpiFilter} />
+        {/* 1.7.2: the repair gauge -- blocking problems and open findings per version */}
+        <div className="mt-3 border border-[#E5E7EB] rounded-lg bg-white px-4 py-2"><RepairGauge /></div>
         {report.status !== "PASS" && (
           <p className="text-[12px] text-[#6B7280] mt-2">
             PASS requires a clean recalculation. "Repair in Prep" means Prep already holds the change; the assistant handles the rest, cell by cell. Grids in the Workbook Map are clickable too.

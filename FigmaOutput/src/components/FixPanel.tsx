@@ -5,6 +5,7 @@ import type { CellWindow, ChatMessage, Finding, FixTarget, Operation, Proposal }
 import StatusPill from "./StatusPill";
 import OperationsTable from "./OperationsTable";
 import ChatMarkdown from "./ChatMarkdown";
+import RepairGauge from "./RepairGauge";
 
 interface Site { sheet: string; cell: string; detail: string }
 
@@ -397,6 +398,8 @@ export default function FixPanel() {
           {loc && !isGroup && <code className="text-[12px] font-mono text-[#374151] bg-[#F3F4F6] px-1.5 py-0.5 rounded mt-1 inline-block">{loc}</code>}
           {isGroup && target.cause && <div className="text-[12px] text-[#374151] mt-1">{target.cause}</div>}
           {target.grid && <div className="text-[11px] text-[#9CA3AF] font-mono mt-1">grid {target.grid}</div>}
+          {/* 1.7.2: the repair gauge -- how the run of fixes is going, version by version */}
+          <div className="mt-2"><RepairGauge compact /></div>
         </div>
         <button onClick={closeFix} className="text-[#9CA3AF] hover:text-[#374151] text-lg leading-none" aria-label="Close">×</button>
       </div>

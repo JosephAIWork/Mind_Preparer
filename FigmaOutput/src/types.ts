@@ -236,6 +236,9 @@ export interface PrepProgressEntry {
   optional_ops: number;
   total_ops: number;
   blocking_findings: number;
+  /** findings still open (not PASS) after that analysis -- the repair gauge */
+  open_findings?: number;
+  status_counts?: Partial<Record<Status, number>>;
   by_action: Record<string, number>;
 }
 export interface PrepProgress {

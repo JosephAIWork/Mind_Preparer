@@ -165,7 +165,7 @@ def prep_progress(history: list[dict[str, Any]]) -> dict[str, Any]:
     """How the prep work evolves over the session's versions: one entry per
     analysis with the operation counts, and whether the last rounds stalled
     (the same operations coming back -- Prep cannot resolve them)."""
-    entries = [{k: h.get(k) for k in ("version_id", "blocking_ops", "optional_ops", "total_ops", "blocking_findings", "by_action")} for h in history]
+    entries = [{k: h.get(k) for k in ("version_id", "blocking_ops", "optional_ops", "total_ops", "blocking_findings", "open_findings", "status_counts", "by_action")} for h in history]
     # Stalled: three analyses in a row with work planned and no net decrease.
     # (Exact repetition is not required -- a row insert that never resolves
     # shifts its row number every round, yet the count never goes down.)

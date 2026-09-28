@@ -318,6 +318,14 @@ def _scan_snapshot(s: Session) -> dict[str, Any]:
     return sc
 
 
+def _status_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for f in findings:
+        st = str(f.get("status") or "UNKNOWN")
+        out[st] = out.get(st, 0) + 1
+    return out
+
+
 def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     label, module = MODE_MAP[s.mode]
     work = s.work_dir / "analysis" / s.current_version_id
@@ -345,6 +353,10 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         "optional_ops": readiness["prep"]["optional_ops"] if readiness else 0,
         "total_ops": sum(counts.values()),
         "blocking_findings": readiness["blocking_count"] if readiness else 0,
+        # the repair gauge: every finding still open, by status, so the Fix panel
+        # and Findings can show the run going down even when Prep has no work left
+        "open_findings": sum(1 for f in report["findings"] if f.get("status") != "PASS"),
+        "status_counts": _status_counts(report["findings"]),
         "by_action": counts,
     })
     return {
