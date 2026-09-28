@@ -111,6 +111,26 @@ Follow-ups from the first test sessions on real models:
   assistant fixes reads as a curve going down like Prep does. Each analysis
   records `open_findings` and `status_counts` in the gauge history.
 - **Launcher** uses the project's `.venv` interpreter when it exists.
+- **Apply says what it is doing.** The Prep bar used to walk through four
+  phase names on a timer and then sit on "Change log" for as long as Excel
+  worked. `apply_operations(progress=...)` now reports its stages
+  (`progress.APPLY_STAGES`: copy, write, save, verify, change log) and, while
+  writing, every operation (`done` / `total`) -- and the cells done inside a
+  colour operation, which is one operation over thousands of cells. The
+  server keeps it per session and returns it in `GET /status` (field
+  `apply`); Prep and the Fix panel show the step ("Step 2 of 6"), the changes
+  written, the elapsed time, then the re-analysis stages.
+- **Prep gauge redrawn**: the four steps to Mind with "you are here", one bar
+  per kind of work (blocking problems, blocking repairs, optional repairs:
+  done / left, measured against the most the session ever planned), and the
+  figures of every analysed version in words instead of 4-pixel columns.
+- **An automatic repair is never the only way.** A finding Prep holds a
+  repair for only offered "Repair in Prep"; it now also offers "By hand"
+  (Findings, the banner) and "Fix by hand" (the Prep action), which open the
+  Fix panel on the same cells.
+- **Launcher** opens the browser once the server answers; the check goes to
+  127.0.0.1 (through `localhost` the first request of a process can spend 2 s
+  on IPv6, longer than the check's timeout).
 
 ## 1.7.1
 

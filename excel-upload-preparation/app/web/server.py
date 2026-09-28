@@ -54,7 +54,7 @@ from app.recalc import classify_against_original, classify_errors, formulas_with
 from app.prep import _cells_of as _array_cells  # noqa: E402
 from app.prep import array_size_hint  # noqa: E402
 from app.rules_engine import RulesEngine  # noqa: E402
-from app.progress import STAGE_TITLES, overall_progress  # noqa: E402
+from app.progress import APPLY_STAGE_TITLES, STAGE_TITLES, overall_progress  # noqa: E402
 from app.sizing import MB, size_gate  # noqa: E402
 
 MODE_MAP = {
@@ -109,6 +109,8 @@ class Session:
     # 1.7.2 -- the ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
     # (computed once per session, the baseline every later recalculation is compared with)
     original_baseline: dict[str, Any] | None = None
+    # 1.7.2 -- live status of the current/last Apply (GET /status, field "apply")
+    apply_status: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def readiness(self) -> dict[str, Any] | None:
@@ -315,7 +317,88 @@ def _scan_snapshot(s: Session) -> dict[str, Any]:
     sc.pop("stage_started", None)
     sc["state"] = sc.get("state") or ("pending" if s.pending else "idle")
     sc["version_id"] = sc.get("version_id") or s.current_version_id
+    sc["apply"] = _apply_snapshot(s)
     return sc
+
+
+# --- apply status (1.7.2) -----------------------------------------------------------------
+def _apply_start(s: Session, total: int, reanalyze: bool) -> None:
+    now = time.time()
+    s.apply_status = {
+        "state": "running",
+        "stage": None,
+        "title": "Starting",
+        "message": "Starting",
+        "fraction": None,
+        "done": 0,
+        "total": total,
+        "reanalyze": reanalyze,
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": None,
+        "stage_started": now,
+        "stages": [],
+        "applied": None,
+        "failed": None,
+        "error": None,
+        "from_version_id": s.current_version_id,
+    }
+
+
+def _apply_progress_for(s: Session):
+    def cb(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        st = s.apply_status
+        now = time.time()
+        if st.get("stage") != stage:
+            if st.get("stage"):
+                st["stages"].append({"stage": st["stage"], "seconds": round(now - st["stage_started"], 2)})
+            st["stage"], st["stage_started"] = stage, now
+        st.update(title=APPLY_STAGE_TITLES.get(stage, stage), message=message, fraction=fraction, updated_at=now)
+        if "done" in facts:
+            st["done"] = facts["done"]
+        if "total" in facts:
+            st["total"] = facts["total"]
+
+    return cb
+
+
+def _apply_finish(s: Session, res: dict[str, Any] | None = None, error: str | None = None) -> None:
+    st = s.apply_status
+    now = time.time()
+    if st.get("stage"):
+        st["stages"].append({"stage": st["stage"], "seconds": round(now - st.get("stage_started", now), 2)})
+    st.update(state="error" if error else "done", finished_at=now, updated_at=now, error=error, fraction=None if error else 1.0)
+    if res is not None:
+        st["applied"], st["failed"] = len(res.get("applied", [])), len(res.get("failed", []))
+    st["title"] = "Failed" if error else "Done"
+    st["message"] = error or f"{st.get('applied') or 0} change(s) applied" + (f", {st['failed']} not applied" if st.get("failed") else "")
+    st["stage"] = st.get("stage") if error else "done"
+
+
+def _apply_snapshot(s: Session) -> dict[str, Any] | None:
+    if not s.apply_status:
+        return None
+    st = dict(s.apply_status)
+    started, finished = st.get("started_at"), st.get("finished_at")
+    st["elapsed_s"] = round(((finished or time.time()) - started), 1) if started else 0.0
+    st.pop("stage_started", None)
+    return st
+
+
+def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool) -> dict[str, Any]:
+    """apply_operations on the current version, every stage and every written
+    operation reported into `s.apply_status` (GET /status, field "apply")."""
+    _apply_start(s, len(ops), reanalyze)
+    try:
+        res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s))
+    except Exception as exc:
+        _apply_finish(s, error=f"apply failed: {exc}")
+        raise
+    if res["status"] == "NOT_APPLICABLE":
+        _apply_finish(s, error=res.get("message", "nothing to apply"))
+        raise HTTPException(status_code=422, detail=res.get("message", "nothing to apply"))
+    _apply_finish(s, res)
+    return res
 
 
 def _status_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
@@ -547,9 +630,7 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
 def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     s = _session(session_id)
     ops = _validate_ops(payload.get("operations"))
-    res = apply_operations(s.current_path, s.work_dir / "apply", ops)
-    if res["status"] == "NOT_APPLICABLE":
-        raise HTTPException(status_code=422, detail=res.get("message", "nothing to apply"))
+    res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
     output = Path(res["output_path"])
     action_ids = {o.get("action_id") for o in ops}
     source = "assistant" if action_ids == {"assistant"} else "formula" if action_ids == {"formula_replacement"} else "prep"
@@ -990,9 +1071,7 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         skipped += auto_skipped
         auto_count = len(auto_ops)
 
-    res = apply_operations(s.current_path, s.work_dir / "apply", ops)
-    if res["status"] == "NOT_APPLICABLE":
-        raise HTTPException(status_code=422, detail=res.get("message", "nothing to apply"))
+    res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
     output = Path(res["output_path"])
     verified = res.get("verified_opens_in_excel")
     label = f"Grid Namer: {len(manual['named'])} named area(s) + {auto_count} automatic title op(s) · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"

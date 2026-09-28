@@ -40,7 +40,16 @@ function BlockingLine({ item }: { item: BlockingItem }) {
         {loc && <span className="font-mono text-[#9F1D1D]/70"> · {loc}</span>}
       </span>
       {item.fix === "prep" ? (
-        <Link to="/prep" className="whitespace-nowrap px-2 py-0.5 rounded bg-[#9F1D1D] text-white font-semibold hover:bg-[#7F1D1D]">Repair in Prep</Link>
+        <span className="flex items-center gap-1 whitespace-nowrap">
+          <Link to="/prep" className="px-2 py-0.5 rounded bg-[#9F1D1D] text-white font-semibold hover:bg-[#7F1D1D]">Repair in Prep</Link>
+          <button
+            onClick={() => openFix({ rule_id: item.rule_id, sheet: item.location?.sheet, cell: item.location?.cell })}
+            className="px-2 py-0.5 rounded border border-[#9F1D1D] text-[#9F1D1D] font-semibold hover:bg-[#9F1D1D]/10"
+            title="Open the Fix panel: every cell, the formula behind it, and a fix you write or ask the assistant for"
+          >
+            By hand
+          </button>
+        </span>
       ) : (
         <button
           onClick={() => openFix({ rule_id: item.rule_id, sheet: item.location?.sheet, cell: item.location?.cell })}

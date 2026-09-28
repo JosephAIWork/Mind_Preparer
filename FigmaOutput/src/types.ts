@@ -131,6 +131,31 @@ export interface ScanStatus {
   version_id?: string;
   needs_convert?: boolean;
   ignore_sheets?: string[];
+  /** epoch seconds the scan started (to tell a re-analysis that follows an Apply from the scan before it) */
+  started_at?: number | null;
+  /** 1.7.2: the current (or last) Apply of the session; null before the first one */
+  apply?: ApplyStatus | null;
+}
+
+/** Live Apply status (GET /api/sessions/{id}/status, field "apply"): the stage, and while writing, how many operations are done. */
+export interface ApplyStatus {
+  state: "running" | "done" | "error";
+  stage: "apply_copy" | "apply_write" | "apply_save" | "apply_verify" | "apply_log" | "done" | null;
+  title: string | null;
+  message: string | null;
+  /** progress within the writing stage, 0..1; null for the stages that cannot say */
+  fraction: number | null;
+  done: number;
+  total: number;
+  /** a re-analysis follows this Apply */
+  reanalyze: boolean;
+  started_at: number | null;
+  finished_at: number | null;
+  elapsed_s: number;
+  stages: { stage: string; seconds: number }[];
+  applied: number | null;
+  failed: number | null;
+  error: string | null;
 }
 
 export interface WorkbookSummary {

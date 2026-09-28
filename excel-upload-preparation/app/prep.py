@@ -1157,7 +1157,13 @@ def _read_back_guard(rng: Any, o: dict[str, Any], sheet: str, target: str) -> No
             raise ValueError(f"{sheet}!{target}: Excel accepted the write but the cell is still empty (protected, merged or otherwise refused)")
 
 
-def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+def _op_target(o: dict[str, Any]) -> str:
+    """'Sheet!Cell' (or row / column / the sheet alone) an operation writes to, for progress messages."""
+    where = o.get("range") or o.get("cell") or (f"row {o['row']}" if o.get("row") is not None else None) or (f"column {o['column']}" if o.get("column") else None)
+    return f"{o['sheet']}!{where}" if where else str(o["sheet"])
+
+
+def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None) -> tuple[list[dict], list[dict]]:
     applied: list[dict] = []
     failed: list[dict] = []
     # Every cell any operation writes. A multi-cell array formula (Ctrl+Shift+Enter)
@@ -1266,8 +1272,14 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
     def _run(excel: Any) -> None:
         wb = None
         try:
+            ordered = _ordered(operations)
+            total = len(ordered)
+            if progress is not None:
+                progress("apply_write", "Opening the copy in Excel", 0.0, done=0, total=total)
             wb = open_workbook(excel, copy_path, read_only=False)
-            for o in _ordered(operations):
+            for i, o in enumerate(ordered, start=1):
+                if progress is not None:
+                    progress("apply_write", f"Change {i} of {total}: {_op_target(o)}", (i - 1) / total, done=i - 1, total=total, sheet=o["sheet"])
                 ws = None
                 try:
                     ws = wb.Worksheets(o["sheet"])
@@ -1281,7 +1293,11 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
                     elif o["op"] == "set_sheet_visibility":
                         ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
                     elif o["op"] == "explicit_colors":
-                        for cell in o["cells"]:
+                        n_cells = len(o["cells"])
+                        for k, cell in enumerate(o["cells"]):
+                            # one operation, thousands of cells: say how far it is inside it
+                            if progress is not None and k % 25 == 0:
+                                progress("apply_write", f"Change {i} of {total}: {o['sheet']}, colours of cell {k + 1} of {n_cells}", (i - 1 + k / n_cells) / total, done=i - 1, total=total, sheet=o["sheet"], inner_done=k, inner_total=n_cells)
                             c = ws.Range(cell)
                             try:
                                 c.Font.Color = c.Font.Color
@@ -1305,6 +1321,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
                     failed.append({**o, "error": _com_message(exc)[:300]})
                 finally:
                     ws = None
+            if progress is not None:
+                progress("apply_save", "Excel is saving the copy", None, done=total, total=total)
             wb.Save()
         finally:
             close_quietly(wb)
@@ -1321,10 +1339,15 @@ def _range_cells(ref_text_: str) -> list[str]:
     return [ref_text(c, r) for r in range(ref["r1"], ref["r2"] + 1) for c in range(ref["c1"], ref["c2"] + 1)]
 
 
-def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None) -> tuple[list[dict], list[dict]]:
     applied, failed = [], []
+    total = len(operations)
+    if progress is not None:
+        progress("apply_write", "Opening the copy (openpyxl)", 0.0, done=0, total=total)
     wb = openpyxl.load_workbook(copy_path, data_only=False, keep_vba=copy_path.suffix.lower() == ".xlsm")
-    for o in operations:
+    for i, o in enumerate(operations, start=1):
+        if progress is not None:
+            progress("apply_write", f"Change {i} of {total}: {_op_target(o)}", (i - 1) / total, done=i - 1, total=total, sheet=o["sheet"])
         if o["op"] in STRUCTURAL_OPS or o["op"] == "set_array_formula" or o.get("after_inserts"):
             failed.append({**o, "error": "requires Excel (references/styles would not be kept intact)"})
             continue
@@ -1335,16 +1358,24 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]]) -> t
             applied.append(o)
         except Exception as exc:
             failed.append({**o, "error": str(exc)[:200]})
+    if progress is not None:
+        progress("apply_save", "Saving the copy", None, done=total, total=total)
     wb.save(copy_path)
     wb.close()
     return applied, failed
 
 
-def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True) -> dict[str, Any]:
-    """Apply approved operations to a fresh copy of `source_path`."""
+def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None) -> dict[str, Any]:
+    """Apply approved operations to a fresh copy of `source_path`.
+
+    `progress(stage, message, fraction, **facts)` (optional) is told every
+    stage (app.progress.APPLY_STAGES) and, while writing, every operation
+    (`done` / `total`)."""
     if not operations:
         return {"status": "NOT_APPLICABLE", "message": "No operations selected."}
     source_path = Path(source_path).resolve()
+    if progress is not None:
+        progress("apply_copy", "Copying the workbook (the source is never modified)", None, done=0, total=len(operations))
     copy_path, source_sha256 = make_immutable_copy(source_path, work_dir)
     warnings: list[str] = []
     method = "openpyxl"
@@ -1352,13 +1383,15 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     failed: list[dict] = []
     if prefer_excel and com_available():
         try:
-            applied, failed = _apply_with_excel(copy_path, operations)
+            applied, failed = _apply_with_excel(copy_path, operations, progress)
             method = "excel_com"
         except Exception as exc:
             warnings.append(f"Excel COM apply failed ({str(exc)[:160]}); fell back to openpyxl.")
     if method == "openpyxl":
-        applied, failed = _apply_with_openpyxl(copy_path, operations)
+        applied, failed = _apply_with_openpyxl(copy_path, operations, progress)
         warnings.append("Written with openpyxl (reduced fidelity): structural operations were refused and the file may not open in Excel.")
+    if progress is not None:
+        progress("apply_verify", "Opening the copy in Excel to check it" if com_available() else "Excel is not available here: the copy is not verified", None, done=len(operations), total=len(operations))
     verification = verify_opens_in_excel(copy_path) if com_available() else {"opens": None}
     entry = {
         "rule_id": sorted({o["rule_id"] for o in operations}),
@@ -1374,6 +1407,8 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
         "verified_opens_in_excel": verification.get("opens"),
         "warnings": warnings,
     }
+    if progress is not None:
+        progress("apply_log", "Writing the change log", None, done=len(operations), total=len(operations))
     append_change_log(copy_path, entry)
     status = "APPLIED" if applied and not failed else ("PARTIAL" if applied else "ERROR")
     return {

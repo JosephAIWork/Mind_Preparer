@@ -6,6 +6,8 @@ import StatusPill from "./StatusPill";
 import OperationsTable from "./OperationsTable";
 import ChatMarkdown from "./ChatMarkdown";
 import RepairGauge from "./RepairGauge";
+import ApplyProgress from "./ApplyProgress";
+import { useScanStatus } from "./ScanProgress";
 
 interface Site { sheet: string; cell: string; detail: string }
 
@@ -171,6 +173,9 @@ export default function FixPanel() {
   const [win, setWin] = useState<CellWindow | null>(null);
   const [winLoading, setWinLoading] = useState(false);
   const [showFormulas, setShowFormulas] = useState(false);
+  // a running Apply: the operations sent, when, and the backend's own account of it
+  const [applyRun, setApplyRun] = useState<{ total: number; startedAt: number } | null>(null);
+  const applyStatus = useScanStatus(sessionId, busy === "apply", 500);
 
   const isRecalc = target?.kind === "recalc";
   const isGroup = target?.kind === "recalc-group";
@@ -257,6 +262,7 @@ export default function FixPanel() {
   async function applyOps(ops: Operation[], label: string) {
     if (!sessionId || ops.length === 0) return;
     setBusy("apply");
+    setApplyRun({ total: ops.length, startedAt: Date.now() });
     setError(null);
     try {
       const out = await api.applyOperations(sessionId, ops, { reanalyze: true });
@@ -296,6 +302,7 @@ export default function FixPanel() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
+      setApplyRun(null);
     }
   }
 
@@ -543,6 +550,11 @@ export default function FixPanel() {
         {error && (
           <div className="text-[12px] text-[#9F1D1D] bg-[#FDE2E2] border border-[#9F1D1D]/20 rounded-lg px-3 py-2" role="alert">
             {error}
+          </div>
+        )}
+        {busy === "apply" && applyRun && (
+          <div className="border border-[#1F3A5F]/30 rounded-lg bg-white px-3 py-2">
+            <ApplyProgress status={applyStatus} total={applyRun.total} startedAt={applyRun.startedAt} compact />
           </div>
         )}
 

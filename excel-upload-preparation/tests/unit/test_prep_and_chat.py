@@ -71,6 +71,26 @@ def test_apply_value_and_formula_operations_without_excel_improves_findings(tmp_
     assert run_rule(engine.get("PAR-002"), after, cfg)["status"] == "PASS"
 
 
+def test_apply_reports_every_stage_and_every_operation(tmp_path, flagged_model_broken_xlsx):
+    """1.7.2: the Apply indicator is fed by the executor itself -- the stages in
+    order, and one call per operation while writing (done / total)."""
+    from app.progress import APPLY_STAGES
+
+    result, _ = _run(tmp_path, flagged_model_broken_xlsx)
+    plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))
+    ops = plan["flag_spelling"]["operations"] + plan["loop_name_case"]["operations"] + plan["special_headers"]["operations"]
+    calls = []
+    out = apply_operations(flagged_model_broken_xlsx, tmp_path / "prep", ops, prefer_excel=False, progress=lambda stage, message, fraction=None, **facts: calls.append((stage, message, fraction, facts)))
+    assert out["status"] == "APPLIED"
+    stages = list(dict.fromkeys(c[0] for c in calls))
+    assert stages == APPLY_STAGES
+    writes = [c for c in calls if c[0] == "apply_write" and c[1].startswith("Change ")]
+    assert [c[3]["done"] for c in writes] == list(range(len(ops))) and all(c[3]["total"] == len(ops) for c in writes)
+    assert all(0.0 <= c[2] < 1.0 for c in writes) and writes[0][1].startswith(f"Change 1 of {len(ops)}: {ops[0]['sheet']}!")
+    # without a callback nothing changes
+    assert apply_operations(flagged_model_broken_xlsx, tmp_path / "prep2", ops, prefer_excel=False)["status"] == "APPLIED"
+
+
 def test_structural_operations_are_refused_without_excel(tmp_path, messy_workbook_xlsx):
     result, _ = _run(tmp_path, messy_workbook_xlsx)
     plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))

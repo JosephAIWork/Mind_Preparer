@@ -96,14 +96,24 @@ function FindingRow({ finding, fixedBadge, route, onFix }: { finding: Finding; f
           {!actionable ? (
             <span className="text-[12px] text-[#9CA3AF]">—</span>
           ) : route.kind === "prep" && route.action ? (
-            <Link
-              to="/prep"
-              onClick={(e) => e.stopPropagation()}
-              title={`Prep "${route.action.title}" holds ${route.action.count} change(s) for this rule`}
-              className="inline-block px-2.5 py-1 rounded-md text-[12px] font-medium bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
-            >
-              Repair in Prep ({route.action.count})
-            </Link>
+            <span className="inline-flex items-center gap-1.5">
+              <Link
+                to="/prep"
+                onClick={(e) => e.stopPropagation()}
+                title={`Prep "${route.action.title}" holds ${route.action.count} change(s) for this rule`}
+                className="inline-block px-2.5 py-1 rounded-md text-[12px] font-medium bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
+              >
+                Repair in Prep ({route.action.count})
+              </Link>
+              {/* the automatic repair is a proposal, never the only way */}
+              <button
+                onClick={(e) => { e.stopPropagation(); onFix(); }}
+                title="Open the Fix panel: every cell, the formula behind it, and a fix you write or ask the assistant for"
+                className="px-2.5 py-1 rounded-md text-[12px] font-medium border border-[#1F3A5F] text-[#1F3A5F] hover:bg-[#EEF2FF]"
+              >
+                By hand
+              </button>
+            </span>
           ) : (
             <span className="inline-flex items-center gap-1.5">
               {route.kind === "prep_skipped" && (
@@ -251,7 +261,7 @@ export default function FindingsScreen() {
         <div className="mt-3 border border-[#E5E7EB] rounded-lg bg-white px-4 py-2"><RepairGauge /></div>
         {report.status !== "PASS" && (
           <p className="text-[12px] text-[#6B7280] mt-2">
-            PASS requires a clean recalculation. "Repair in Prep" means Prep already holds the change; the assistant handles the rest, cell by cell. Grids in the Workbook Map are clickable too.
+            PASS requires a clean recalculation. "Repair in Prep" means Prep already holds the change; "By hand" opens the Fix panel on the same cells, to write the fix yourself or ask the assistant. Grids in the Workbook Map are clickable too.
           </p>
         )}
         {lastDelta && (

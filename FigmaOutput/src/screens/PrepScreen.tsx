@@ -6,6 +6,8 @@ import * as api from "../services/api";
 import OperationsTable from "../components/OperationsTable";
 import LevelBadge from "../components/LevelBadge";
 import PrepGauge from "../components/PrepGauge";
+import ApplyProgress from "../components/ApplyProgress";
+import { useScanStatus } from "../components/ScanProgress";
 
 /**
  * Prep (1.7.2): three blocks, one vocabulary.
@@ -51,6 +53,22 @@ function ActionCard({ action, checked, onChange }: { action: PrepAction; checked
               <span key={r} className="text-[11px] font-mono text-[#1F3A5F] bg-[#EEF2FF] px-1.5 py-0.5 rounded">{r}</span>
             ))}
           </div>
+          {/* the automatic repair is a proposal, never the only way: the Fix panel lists the cells and takes a fix written by hand */}
+          {action.count > 0 && action.rule_ids.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap mt-1.5 text-[11px] text-[#6B7280]">
+              <span>Rather decide it yourself?</span>
+              {action.rule_ids.map((r) => (
+                <button
+                  key={r}
+                  onClick={() => openFix({ rule_id: r })}
+                  className="px-2 py-0.5 rounded-md border border-[#1F3A5F] text-[#1F3A5F] font-semibold hover:bg-[#EEF2FF]"
+                  title={`Open the Fix panel for ${r}: every cell, the formula behind it, and a fix you write or ask the assistant for`}
+                >
+                  Fix {action.rule_ids.length > 1 ? `${r} ` : ""}by hand →
+                </button>
+              ))}
+            </div>
+          )}
           {action.level_note && <div className="text-[12px] text-[#6B7280] mt-1">{action.level_note}</div>}
           {action.caution && action.count > 0 && (
             <div className="text-[12px] text-[#8A5A00] bg-[#FFF1CC] border border-[#8A5A00]/20 rounded px-2 py-0.5 inline-block mt-1.5">⚠ {action.caution}</div>
@@ -247,7 +265,9 @@ export default function PrepScreen() {
   const defaults = (p: PrepAction[]) => new Set(p.filter((a) => a.default_on && a.count > 0).map((a) => a.id));
   const [selected, setSelected] = useState<Set<string>>(defaults(plan));
   const [applying, setApplying] = useState(false);
-  const [applyPhase, setApplyPhase] = useState("");
+  const [applyStarted, setApplyStarted] = useState<number | null>(null);
+  // the backend's own account of the running Apply (stage, changes written) and of the re-analysis after it
+  const applyStatus = useScanStatus(sessionId, applying, 500);
   const [result, setResult] = useState<ApplyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -278,11 +298,7 @@ export default function PrepScreen() {
     setApplying(true);
     setResult(null);
     setError(null);
-    const phases = ["Copy", "Excel", "Verify", "Change log"];
-    for (const p of phases) {
-      setApplyPhase(p);
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    setApplyStarted(Date.now());
     try {
       const out = await api.applyOperations(sessionId, allOps, { reanalyze: true });
       setResult(out.result);
@@ -299,7 +315,7 @@ export default function PrepScreen() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setApplying(false);
-      setApplyPhase("");
+      setApplyStarted(null);
     }
   }
 
@@ -374,11 +390,7 @@ export default function PrepScreen() {
 
       <div className="fixed bottom-0 left-52 right-0 bg-white border-t border-[#E5E7EB] px-6 py-3 flex items-center gap-4 z-20">
         {applying ? (
-          <div className="flex items-center gap-3 text-[13px] text-[#6B7280]" aria-live="assertive" aria-label="Applying changes">
-            <div className="w-4 h-4 border-2 border-[#1F3A5F] border-t-transparent rounded-full animate-spin" />
-            <span>Phase: <strong className="text-[#111827]">{applyPhase}</strong></span>
-            <span>Copy · Excel · Verify · Change log · Re-analyze</span>
-          </div>
+          <ApplyProgress status={applyStatus} total={allOps.length} startedAt={applyStarted} />
         ) : (
           <>
             <span className="text-[13px] text-[#6B7280]">

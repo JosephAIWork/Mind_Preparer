@@ -37,6 +37,21 @@ STAGE_TITLES = {
     "done": "Done",
 }
 
+# 1.7.2 -- the stages of an Apply (Prep, Fix panel, Grid Namer), reported by
+# app/prep.py `apply_operations(progress=...)`. Only "apply_write" carries
+# facts `done` / `total` (operations written so far / to write): the others
+# are single Excel calls that cannot say how far they are.
+APPLY_STAGES: list[str] = ["apply_copy", "apply_write", "apply_save", "apply_verify", "apply_log"]
+
+APPLY_STAGE_TITLES = {
+    "apply_copy": "Copying the workbook",
+    "apply_write": "Writing the changes",
+    "apply_save": "Saving the copy",
+    "apply_verify": "Checking the copy opens in Excel",
+    "apply_log": "Writing the change log",
+    "done": "Done",
+}
+
 
 def overall_progress(stage: str | None, fraction: float | None, needs_convert: bool = False) -> float:
     """0..1 across the whole scan: the completed stages' weights plus the

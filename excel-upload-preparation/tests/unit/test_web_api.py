@@ -80,6 +80,25 @@ def test_apply_creates_a_verified_version_and_reanalyzes(client, flagged_model_b
     assert client.post(f"/api/sessions/{sid}/apply", json={"operations": [{"op": "explode", "sheet": "Model"}]}).status_code == 422
 
 
+def test_status_carries_the_apply_progress(client, flagged_model_broken_xlsx):
+    """1.7.2: GET /status says what the Apply did stage by stage, so the
+    front-end shows the real step and the changes written, not a timer."""
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    assert client.get(f"/api/sessions/{sid}/status").json()["apply"] is None  # no Apply yet
+    ops = {a["id"]: a for a in body["plan"]}["flag_spelling"]["operations"]
+    out = client.post(f"/api/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True})
+    assert out.status_code == 200, out.text
+    status = client.get(f"/api/sessions/{sid}/status").json()
+    ap = status["apply"]
+    assert ap["state"] == "done" and ap["stage"] == "done" and ap["error"] is None and ap["reanalyze"] is True
+    assert ap["total"] == len(ops) and ap["done"] == len(ops) and ap["applied"] == len(ops) and ap["failed"] == 0
+    assert [s["stage"] for s in ap["stages"]] == ["apply_copy", "apply_write", "apply_save", "apply_verify", "apply_log"]
+    assert ap["elapsed_s"] >= 0 and ap["finished_at"] >= ap["started_at"]
+    # the re-analysis that followed is the scan of the same status, started after the Apply
+    assert status["state"] == "ready" and status["version_id"] == "ver-002" and status["started_at"] >= ap["started_at"]
+
+
 def test_chat_returns_reply_and_validated_proposal(client, flagged_model_broken_xlsx, monkeypatch):
     body = _upload(client, flagged_model_broken_xlsx)
     sid = body["sessionId"]
