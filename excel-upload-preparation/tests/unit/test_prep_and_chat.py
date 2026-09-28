@@ -145,6 +145,7 @@ def test_chat_completion_payload_shape(monkeypatch):
             return {"content": [{"type": "text", "text": "ok"}]}
 
     def fake_post(url, headers=None, json=None, timeout=None):
+        calls["url"] = url
         calls["payload"] = json
         return FakeResp()
 
@@ -154,9 +155,13 @@ def test_chat_completion_payload_shape(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     out = llm.chat_completion([{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2"}], "SYS")
     assert out["text"] == "ok"
+    # 1.7.2: native Messages API through the gateway's /anthropic/v1/messages
+    # passthrough -- `system` is a top-level field, never a leading message.
+    assert calls["url"].endswith("/anthropic/v1/messages")
+    assert calls["payload"]["system"] == "SYS"
     msgs = calls["payload"]["messages"]
-    assert msgs[0] == {"role": "system", "content": "SYS"}
-    assert [m["role"] for m in msgs[1:]] == ["user", "assistant", "user"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert all(m["role"] != "system" for m in msgs)
     assert llm.extract_formula("Use this:\n=INDEX(A:A,1)\nbecause...") == "=INDEX(A:A,1)"
     assert llm.extract_formula("no formula here") is None
 # --- context-aware grid titles (1.5.0) ------------------------------------------------

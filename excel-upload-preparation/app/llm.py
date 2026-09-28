@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_AZURE_ENDPOINT = "https://apim-aiservices-prod-01.azure-api.net"
-CLAUDE_APIM_PATH = "/claude/invocations"
+# 1.7.2: the gateway's Anthropic Messages passthrough. The former
+# "/claude/invocations" operation answers HTTP 200 with an empty body since
+# 2026-09 (any payload, even {}), which the app reported as "Request failed:
+# Expecting value". This path speaks the native Messages API: `system` is a
+# top-level field, never a leading {"role": "system"} message (400 otherwise).
+CLAUDE_APIM_PATH = "/anthropic/v1/messages"
 DEFAULT_MODEL_ID = "claude-sonnet-4-6"
 
 _KV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\S.*?)\s*$")
@@ -129,8 +134,9 @@ def chat_completion(
 ) -> dict[str, Any]:
     """Send a multi-turn conversation (`messages`: [{role: user|assistant,
     content: str}, ...]) through the gateway. Returns {available, text,
-    message}. The same payload shape as `suggest_formula_fix` uses -- the
-    proven one for this gateway (system as a leading message)."""
+    message}. Native Anthropic Messages payload (top-level `system`, content
+    blocks), which is what the gateway's /anthropic/v1/messages passthrough
+    expects; `suggest_formula_fix` goes through the same function."""
     found = find_api_key()
     if found is None:
         return {"available": False, "text": None, "message": "No secret.key found nearby; the assistant isn't configured in this environment."}
@@ -140,11 +146,11 @@ def chat_completion(
 
         url = endpoint.rstrip("/") + CLAUDE_APIM_PATH
         headers = {"Content-Type": "application/json", "api-key": api_key, "anthropic-version": "2023-06-01"}
-        payload_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        payload_messages: list[dict[str, Any]] = []
         for m in messages:
             role = "assistant" if m["role"] == "assistant" else "user"
             payload_messages.append({"role": role, "content": _text_block(m["content"])})
-        payload = {"model": model_id, "max_tokens": max_tokens, "temperature": temperature, "messages": payload_messages}
+        payload = {"model": model_id, "max_tokens": max_tokens, "temperature": temperature, "system": system_prompt, "messages": payload_messages}
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         resp.raise_for_status()
         body = resp.json()
