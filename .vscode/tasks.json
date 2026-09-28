@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Mind Ready (run_mind_ready_web.bat)",
+      "type": "shell",
+      "command": "cmd.exe",
+      "args": ["/c", "run_mind_ready_web.bat"],
+      "options": { "cwd": "${workspaceFolder}/excel-upload-preparation" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    }
+  ]
+}
