@@ -63,6 +63,22 @@ blocking problem was still there after each round, with no sign of why.
   flags names with no definition -- table names, names of any alphabet,
   names with '?', sheet-qualified references and LET variables excluded --
   and proposes the closest existing name.
+- **Two more refusals, from Mind's runner and compiler** (real models,
+  2026-09-30), detected before upload, with no automatic repair by design:
+  **FRM-005 circular references** -- "Run error: Circular reference found".
+  The dependency graph of every formula cell (references, ranges, defined
+  names; INDIRECT/OFFSET targets cannot be followed and are counted;
+  ROW/COLUMN arguments are coordinates, not dependencies) is searched for
+  cycles and each one is reported as its chain of cells; Excel's iterative
+  calculation setting is reported too. Ranges are shared nodes, so a model of
+  57k formulas is searched in under 30 s; a work budget makes the rule say
+  NOT_SUPPORTED rather than run forever. Fix by hand: the Mind mechanism for
+  a value feeding the next round is MM_ITERATIONS with /iterationinput and
+  /iterationoutput. **FRM-006 3-D references** -- `'First:Last'!cell`:
+  Mind reads `First:Last` as one sheet name ("Sheet ... not found in workbook
+  on compiling formula"). The sheets the reference spans are listed in tab
+  order and the explicit per-sheet formula is proposed for the assistant or
+  the user to apply.
 - **Front-end.** Prep and the Fix panel show that outcome after every Apply
   ("What the last Apply did"); a blocking repair that resolved its problem
   stays in the Blocking block as *Resolved* instead of vanishing; a repair

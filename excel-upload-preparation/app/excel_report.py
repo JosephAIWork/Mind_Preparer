@@ -68,6 +68,8 @@ FIX_HINTS: dict[str, str] = {
     "FRM-004": "Not a blocker -- Mind ignores VBA it can't run. Confirm nothing needed depends on the macro actually executing; if something does, reimplement that logic as native formulas/MM_ functions.",
     "FRM-002": "An MM_ function missing from the MM_ registry must be corrected. A native Excel function the Mind documentation does not list is neither documented as supported nor as refused: convert the model in Mind to know, and replace the function only if Mind refuses it.",
     "FRM-001": "Inventory only -- review the function mix; the per-function verdicts are in FRM-002 / FORMULA-002.",
+    "FRM-005": "Break each circular reference by hand: a value that feeds the next round is what MM_ITERATIONS with /iterationinput and /iterationoutput is for; otherwise reference the previous period or a fixed starting value. Turn Excel's iterative calculation off afterwards.",
+    "FRM-006": "Replace each 'First:Last'!cell reference by the explicit list of the sheets it spans (the finding proposes the formula), by hand or with the assistant.",
     "FRM-003": "Remove the implicit-intersection '@' where the formula returns a single value; replace spilled/array results Mind must resize with MM_RANGE (single-cell table) or fixed-size array formulas.",
     "FORMULA-002": "Re-implement the VBA user-defined function as native formulas / MM_ functions, or register it as a custom C# formula in Mind -- VBA does not run in Mind.",
     "LOOP-002": "Use one consistent capitalization for this loop name everywhere it's defined (loop names are case-sensitive in Mind).",

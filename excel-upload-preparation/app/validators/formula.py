@@ -301,3 +301,8 @@ def vba_presence(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict
         else "No VBA project detected.",
         {"has_vba": has_vba, "vba_project_bytes": analysis["features"].get("vba_project_bytes", 0)},
     )
+
+
+# FRM-005 / FRM-006 live in validators/references.py; exposed here so the rule's
+# category ("formula") and its implementation path agree.
+from .references import circular_references, three_d_references  # noqa: E402,F401

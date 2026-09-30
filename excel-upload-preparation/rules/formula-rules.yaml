@@ -90,3 +90,45 @@ rules:
   fail_if:
   - VBA logic is required.
   severity_source: BLOCKER
+- id: FRM-005
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Circular References -- a cycle among formula cells stops Mind''s runner ("Run error: Circular reference found").'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-09-30, model RAROK)
+    article: FRM-005
+  validation:
+    deterministic: true
+    implementation: validators.formula.circular_references
+  correction:
+    automatic: false
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula cell depends on itself, directly or through other cells, ranges or defined names.
+  fail_if:
+  - A cycle exists among formula cells.
+  severity_source: BLOCKER
+- id: FRM-006
+  version: 1.0.0
+  status: active
+  category: formula
+  description: '3-D References -- ''First:Last''!cell spans several sheets; Mind reads ''First:Last'' as one sheet name ("Sheet ... not found in workbook on compiling formula").'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-09-30, model PVFP)
+    article: FRM-006
+  validation:
+    deterministic: true
+    implementation: validators.formula.three_d_references
+  correction:
+    automatic: false
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula references a sheet range ('First:Last'!cell).
+  fail_if:
+  - A formula references a sheet range.
+  severity_source: BLOCKER

@@ -596,6 +596,8 @@ def build_analysis(
 
     features = {
         "sheet_count": len(sheets),
+        # Excel's "enable iterative calculation" -- the setting that lets circular references compute (FRM-005)
+        "iterative_calculation": bool(getattr(getattr(wb, "calculation", None), "iterate", False)),
         "ignored_sheet_count": len(ignored_sheets),
         "total_sheet_count": len(all_sheets),
         "hidden_sheet_count": hidden_sheet_count,

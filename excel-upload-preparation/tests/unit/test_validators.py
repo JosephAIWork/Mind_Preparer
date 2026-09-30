@@ -360,3 +360,105 @@ def test_a_merged_header_spans_its_columns_and_an_array_past_it_exceeds_the_grid
     assert "column headers cover the entire array formula" in f["message"]
     wide = model("H")  # headers cover every column of the arrays: nothing exceeds
     assert _finding(engine, config, wide, "RSK-002")["status"] == "PASS"
+
+
+# --- 1.7.3: two refusals from Mind's runner / compiler, detected before upload -----------------
+def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, config):
+    """Mind: "Run error: Circular reference found" (WGM input!I11). A cycle through
+    cells, a range and a defined name is found; an acyclic model passes."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "WGM input"
+    ws["A1"] = "h"
+    ws["I11"] = "=J11*2"  # I11 -> J11 -> K11 -> (range) I11 : a 3-cell cycle
+    ws["J11"] = "=K11+1"
+    ws["K11"] = "=SUM(I10:I12)"
+    ws["B2"] = "=Total+1"  # B2 -> name Total -> C2 -> B2 : a cycle through a defined name
+    ws["C2"] = "=B2*3"
+    wb.defined_names["Total"] = DefinedName("Total", attr_text="'WGM input'!$C$2")
+    ws["D2"] = "=D2"  # a cell reading itself
+    ws["E2"] = "=SUM(A1:A5)+INDIRECT(\"F2\")"  # no static cycle; the dynamic target is not followed
+    other = wb.create_sheet("Calc")
+    other["A1"] = "='WGM input'!I11"  # reads a cycle but is not part of it
+    # ROW($A10) uses A10 as a coordinate, not its value: A10 <-> B10 is not a cycle (a real model's pattern)
+    ws["A10"] = "=IF(B10=1,1,0)"
+    ws["B10"] = '=INDIRECT("Cluster"&(ROW($A10)-ROW($A$7)))'
+    # CI14 <-> CJ14 through IF branches that never evaluate together (a real model's pattern): a conditional cycle
+    ws["F1"] = "=IF($G$9=1,H1*2,IFERROR(H1/G1,0))"
+    ws["G1"] = "=IF(H1=0,0,IF($G$9=1,H1/F1,H1))"
+    ws["H1"] = 3
+    wb.calculation.iterate = True
+    p = tmp_path / "circular.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "c"), "FRM-005")
+    assert f["status"] == "ERROR"
+    obs = f["observed"]
+    assert obs["cycle_count"] == 4 and obs["cells_in_cycles"] == 8 and obs["iterative_calculation"] is True
+    assert obs["unconditional_cycles"] == 3 and obs["conditional_cycles"] == 1
+    assert [c["unconditional"] for c in obs["cycles"]] == [True, True, True, False]
+    assert obs["cycles"][-1]["chain"] == ["WGM input!F1", "WGM input!G1", "WGM input!F1"]
+    assert "1 more cycle(s) close only through an IF/IFERROR/CHOOSE branch" in f["message"]
+    chains = {tuple(c["chain"]) for c in obs["cycles"]}
+    assert ("WGM input!I11", "WGM input!J11", "WGM input!K11", "WGM input!I11") in chains
+    assert ("WGM input!B2", "WGM input!C2", "WGM input!B2") in chains
+    assert ("WGM input!D2", "WGM input!D2") in chains
+    assert obs["dynamic_reference_formulas_not_followed"] == 2
+    assert "WGM input!A10" not in str(chains)
+    assert "Circular reference found" in f["message"] and "MM_ITERATIONS" in f["message"]
+    assert "Calc!A1" not in str(chains)
+
+    clean = openpyxl.Workbook()
+    ws = clean.active
+    ws.title = "S"
+    ws["A1"], ws["A2"], ws["A3"] = 1, "=A1*2", "=SUM(A1:A2)"
+    p2 = tmp_path / "acyclic.xlsx"
+    clean.save(p2)
+    clean.close()
+    assert _finding(engine, config, build_analysis(p2, tmp_path / "w2", "a"), "FRM-005")["status"] == "PASS"
+
+    # only a conditional cycle: a warning, not a blocker -- Excel computes it, Mind's answer is not documented
+    soft = openpyxl.Workbook()
+    ws = soft.active
+    ws.title = "S"
+    ws["A1"], ws["B1"], ws["C1"] = "=IF($C$1=1,B1*2,0)", "=IF($C$1=1,0,A1+1)", 1
+    p3 = tmp_path / "conditional.xlsx"
+    soft.save(p3)
+    soft.close()
+    w = _finding(engine, config, build_analysis(p3, tmp_path / "w3", "s"), "FRM-005")
+    assert w["status"] == "WARNING" and w["observed"]["conditional_cycles"] == 1 and "not documented" in w["message"]
+
+
+def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_path, engine, config):
+    """Mind: "Sheet '>> Reporting:>>>' not found in workbook ... on compiling formula:
+    SUM('>> Reporting:>>>'!RC)". The sheets between the two tabs are listed and the
+    per-sheet formula is proposed; nothing is written."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    first = wb.active
+    first.title = ">> Reporting"
+    for name in ("LoB A", "LoB B", ">>>"):
+        wb.create_sheet(name)
+    total = wb.create_sheet("Reporting_LoB Total")
+    for ws in wb.worksheets[:4]:
+        ws["E5"] = 1
+    total["E5"] = "=SUM('>> Reporting:>>>'!E5)"
+    total["E19"] = "=AVERAGE('>> Reporting:>>>'!E5:E7)/2"
+    total["G37"] = "=SUM('>> Reporting:Nope'!G37)"  # an endpoint that does not exist
+    total["H1"] = "=SUM('LoB A'!E5)"  # an ordinary sheet reference: not 3-D
+    p = tmp_path / "3d.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "d"), "FRM-006")
+    assert f["status"] == "ERROR"
+    sites = {s["cell"]: s for s in f["observed"]["sites"]}
+    assert set(sites) == {"E5", "E19", "G37"}
+    assert sites["E5"]["references"][0]["sheets"] == [">> Reporting", "LoB A", "LoB B", ">>>"]
+    assert sites["E5"]["suggested_formula"] == "=SUM('>> Reporting'!E5,'LoB A'!E5,'LoB B'!E5,'>>>'!E5)"
+    assert sites["E19"]["suggested_formula"] == "=AVERAGE('>> Reporting'!E5:E7,'LoB A'!E5:E7,'LoB B'!E5:E7,'>>>'!E5:E7)/2"
+    assert sites["G37"]["suggested_formula"] is None and "Nope" in sites["G37"]["issue"]
+    assert "not found in workbook" in f["message"] and "No automatic repair" in f["message"]
