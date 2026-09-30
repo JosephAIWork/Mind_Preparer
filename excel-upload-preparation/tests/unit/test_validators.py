@@ -390,6 +390,8 @@ def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, 
     ws["F1"] = "=IF($G$9=1,H1*2,IFERROR(H1/G1,0))"
     ws["G1"] = "=IF(H1=0,0,IF($G$9=1,H1/F1,H1))"
     ws["H1"] = 3
+    # OFFSET($G452,,n) in G452 starts from G452 without reading it (a real model's pattern): not a cycle
+    ws["G5"] = "=OFFSET($G5,,$H$1+1)"
     wb.calculation.iterate = True
     p = tmp_path / "circular.xlsx"
     wb.save(p)
@@ -406,8 +408,8 @@ def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, 
     assert ("WGM input!I11", "WGM input!J11", "WGM input!K11", "WGM input!I11") in chains
     assert ("WGM input!B2", "WGM input!C2", "WGM input!B2") in chains
     assert ("WGM input!D2", "WGM input!D2") in chains
-    assert obs["dynamic_reference_formulas_not_followed"] == 2
-    assert "WGM input!A10" not in str(chains)
+    assert "WGM input!A10" not in str(chains) and "WGM input!G5" not in str(chains)
+    assert obs["dynamic_reference_formulas_not_followed"] == 3
     assert "Circular reference found" in f["message"] and "MM_ITERATIONS" in f["message"]
     assert "Calc!A1" not in str(chains)
 
@@ -419,6 +421,21 @@ def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, 
     clean.save(p2)
     clean.close()
     assert _finding(engine, config, build_analysis(p2, tmp_path / "w2", "a"), "FRM-005")["status"] == "PASS"
+
+    # a cell reading its own address on a run-time sheet (INDIRECT + ADDRESS(ROW(),COLUMN())): Mind stopped there
+    own = openpyxl.Workbook()
+    ws = own.active
+    ws.title = "WGM input"
+    ws["A1"] = "Run A"
+    ws["I11"] = '=INDIRECT("'"&$A$1&"'!"&ADDRESS(ROW(),COLUMN()),TRUE)'
+    ws["I12"] = '=INDIRECT("'"&$A$1&"'!"&ADDRESS(ROW(),COLUMN()),TRUE)'
+    own.create_sheet("Run A")["I11"] = 5
+    p4 = tmp_path / "self_address.xlsx"
+    own.save(p4)
+    own.close()
+    e = _finding(engine, config, build_analysis(p4, tmp_path / "w4", "o"), "FRM-005")
+    assert e["status"] == "ERROR" and e["observed"]["self_addressing_indirect"] == {"count": 2, "by_sheet": {"WGM input": 2}, "first": e["observed"]["self_addressing_indirect"]["first"]}
+    assert e["location"] == {"sheet": "WGM input", "cell": "I11"} and "read their own address" in e["message"]
 
     # only a conditional cycle: a warning, not a blocker -- Excel computes it, Mind's answer is not documented
     soft = openpyxl.Workbook()

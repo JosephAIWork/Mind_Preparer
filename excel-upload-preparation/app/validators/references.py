@@ -27,14 +27,19 @@ from ..formula_utils import called_functions, cell_refs_in_formula, mask_strings
 from ._common import finding
 
 DYNAMIC_REFERENCE_FUNCTIONS = {"INDIRECT", "OFFSET"}
-# ROW($A10), COLUMN(B:B), ROWS(...), COLUMNS(...) use a reference as a coordinate and never read its
-# value: Excel does not count it as a dependency (=ROW(A1) in A1 is not circular), so neither do we.
+# ROW($A10), COLUMN(B:B), ROWS(...), COLUMNS(...) and OFFSET's first argument use a reference as a
+# coordinate and never read its value: Excel does not count it as a dependency (=ROW(A1) in A1 and
+# =OFFSET(A1,0,1) in A1 are not circular), so neither do we. "all" = every argument, else the positions.
 # Arguments a function evaluates only on some path: IF's two branches, IFERROR/IFNA's fallback,
 # CHOOSE's and SWITCH's values, IFS' pairs after the first condition. A cycle that only closes
 # through such an argument is one Excel computes (the branches never evaluate together).
 CONDITIONAL_ARGS: dict[str, Any] = {"IF": {1, 2}, "IFERROR": {1}, "IFNA": {1}, "CHOOSE": "rest", "SWITCH": "rest", "IFS": "rest"}
-COORDINATE_ARGS_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:ROW|COLUMN|ROWS|COLUMNS)\(([^()]*)\)", re.IGNORECASE)
+COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}}
 MAX_CYCLES_REPORTED = 12
+# INDIRECT("'"&sheet&"'!"&ADDRESS(ROW(),COLUMN())): the cell reads its own address on a sheet chosen
+# at run time. Mind resolved that to the cell itself and stopped ("Run error: Circular reference found",
+# 70k such cells on one sheet of a real model, 2026-09-30).
+SELF_ADDRESS_RE = re.compile(r"ADDRESS\(\s*ROW\(\s*\)\s*,\s*COLUMN\(\s*\)", re.IGNORECASE)
 MAX_CHAIN = 12
 
 QUOTED_3D_RE = re.compile(r"'((?:[^']|'')*:(?:[^']|'')*)'!")
@@ -43,12 +48,13 @@ SHEET_NEEDS_QUOTES_RE = re.compile(r"[^A-Za-z0-9_.]")
 
 
 # --- FRM-005 -----------------------------------------------------------------------------
-def unconditional_text(formula: str) -> str:
-    """The formula with every conditionally evaluated argument blanked (same
-    length, so positions hold): what is left is read on every calculation."""
+def blank_arguments(formula: str, spec: dict[str, Any]) -> str:
+    """The formula with the chosen arguments of the chosen functions blanked
+    (same length, so positions hold). `spec`: function -> set of argument
+    positions, "rest" (every argument but the first) or "all"."""
     masked = mask_strings(formula)
     out = list(formula)
-    for name, positions in CONDITIONAL_ARGS.items():
+    for name, positions in spec.items():
         pattern = re.compile(rf"(?<![A-Za-z0-9_.])(?:_xl[a-z]+\.)?{name}\s*\(", re.IGNORECASE)
         for m in pattern.finditer(masked):
             i = m.end()
@@ -70,10 +76,15 @@ def unconditional_text(formula: str) -> str:
                     arg_start = i + 1
                 i += 1
             for k, a, b in spans:
-                if (positions == "rest" and k >= 1) or (positions != "rest" and k in positions):
+                if positions == "all" or (positions == "rest" and k >= 1) or (positions not in ("all", "rest") and k in positions):
                     for j in range(a, b):
                         out[j] = " "
     return "".join(out)
+
+
+def unconditional_text(formula: str) -> str:
+    """What a formula reads on every calculation: its conditionally evaluated arguments blanked."""
+    return blank_arguments(formula, CONDITIONAL_ARGS)
 
 
 class _Graph:
@@ -125,7 +136,7 @@ class _Graph:
         if unconditional:
             formula = unconditional_text(formula)
         refs = []
-        for r in cell_refs_in_formula(COORDINATE_ARGS_RE.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)] + " " * len(m.group(1)) + ")", formula)):
+        for r in cell_refs_in_formula(blank_arguments(formula, COORDINATE_ARGS)):
             sheet = r.get("sheet") or f["sheet"]
             if sheet.startswith("["):  # another workbook
                 continue
@@ -322,8 +333,17 @@ def circular_references(rule, analysis: dict[str, Any], config: dict[str, Any]) 
     cycles.sort(key=lambda c: (not c["unconditional"], -c["cells"], c["sheet"], c["cell"]))
     hard = [c for c in cycles if c["unconditional"]]
     soft = [c for c in cycles if not c["unconditional"]]
+    self_address = [
+        {"sheet": f["sheet"], "cell": f["cell"], "formula": str(f.get("formula") or "")[:160]}
+        for f in graph.formulas
+        if "INDIRECT" in str(f.get("formula") or "").upper() and SELF_ADDRESS_RE.search(mask_strings(str(f.get("formula") or "")))
+    ]
+    by_sheet: dict[str, int] = {}
+    for x in self_address:
+        by_sheet[x["sheet"]] = by_sheet.get(x["sheet"], 0) + 1
     observed = {
         "cycles": cycles[:MAX_CYCLES_REPORTED],
+        "self_addressing_indirect": {"count": len(self_address), "by_sheet": by_sheet, "first": self_address[:12]},
         "cycle_count": len(comps),
         "unconditional_cycles": len(hard),
         "conditional_cycles": len(soft),
@@ -339,6 +359,19 @@ def circular_references(rule, analysis: dict[str, Any], config: dict[str, Any]) 
     fix = ("No automatic repair: break each cycle by hand (a value that feeds the next round is what MM_ITERATIONS with /iterationinput and /iterationoutput is for; "
            "otherwise reference the previous period or a fixed starting value).")
     dyn = f" {dynamic} formula(s) use INDIRECT/OFFSET, whose targets cannot be followed here." if dynamic else ""
+    if self_address:
+        first = self_address[0]
+        sheets = ", ".join(f"{k} ({v:,})" for k, v in sorted(by_sheet.items(), key=lambda kv: -kv[1])[:6])
+        return finding(
+            "ERROR",
+            f"{len(self_address):,} cell(s) read their own address on a sheet chosen at run time -- INDIRECT(...ADDRESS(ROW(),COLUMN())) -- on {sheets}. "
+            f"Mind resolves that reference to the cell itself and stops ('Run error: Circular reference found' at the first such cell, as it did on a real model built this way). First: {first['sheet']}!{first['cell']}. "
+            "No automatic repair: replace the run-time sheet choice by direct references to the sheet (or by a lookup Mind can follow) by hand or with the assistant."
+            + (f" Also {len(hard)} unconditional and {len(soft)} conditional cycle(s) among the other formulas (see observed.cycles)." if comps else "")
+            + dyn,
+            observed,
+            location={"sheet": first["sheet"], "cell": first["cell"]},
+        )
     if hard:
         first = hard[0]
         return finding(

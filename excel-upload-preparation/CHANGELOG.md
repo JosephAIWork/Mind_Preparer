@@ -68,7 +68,9 @@ blocking problem was still there after each round, with no sign of why.
   **FRM-005 circular references** -- "Run error: Circular reference found".
   The dependency graph of every formula cell (references, ranges, defined
   names; INDIRECT/OFFSET targets cannot be followed and are counted;
-  ROW/COLUMN arguments are coordinates, not dependencies) is searched for
+  ROW/COLUMN arguments and OFFSET's base are coordinates, not dependencies;
+  a cell reading its own address on a run-time sheet -- INDIRECT with
+  ADDRESS(ROW(),COLUMN()) -- is the pattern Mind stopped on and is an error) is searched for
   cycles and each one is reported as its chain of cells; Excel's iterative
   calculation setting is reported too. Ranges are shared nodes, so a model of
   57k formulas is searched in under 30 s; a work budget makes the rule say
