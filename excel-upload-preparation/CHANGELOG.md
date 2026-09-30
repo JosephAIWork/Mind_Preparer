@@ -1,5 +1,74 @@
 # Changelog
 
+## 1.7.3
+
+### An Apply that says what it did -- and that really writes
+
+On a workbook saved with "read-only recommended", Apply ran through every
+stage, reported "38 changes applied, verified" and changed nothing: the
+blocking problem was still there after each round, with no sign of why.
+
+- **The save went to the wrong place.** With alerts off, Excel answers the
+  "open as read-only?" prompt of such a workbook with yes, whatever
+  `ReadOnly=False` says; `Save()` on a read-only workbook then writes a copy
+  into the user's default folder (their Documents) and returns normally. The
+  working copy stayed byte-identical to its source, the re-analysis read the
+  same file, and a stray copy of the model appeared in Documents.
+  `open_workbook` now passes `IgnoreReadOnlyRecommended`; every in-place
+  write (Prep apply, formula edits, recalculation, report workbook) goes
+  through `open_for_write` -- which refuses a workbook Excel opened read-only
+  all the same (locked by another program, password to modify) -- and
+  `save_in_place`, which wants the file itself written.
+- **Nothing is "applied" that is not in the file.** `apply_operations`
+  compares the output with its source: identical means nothing was written,
+  every operation is reported as refused with that reason, status `ERROR`.
+- **Apply outcome** (`app/readiness.apply_outcome`, field `outcome` of
+  `POST .../apply` and `.../grid-namer`). Repair by repair: changes sent,
+  written, refused; each rule's status and cell count before and after; what
+  the new analysis still plans and what it leaves by hand; a verdict
+  (`resolved` / `partial` / `unchanged` / `failed` / `written`) and one
+  sentence. Also the repairs the new analysis plans that the previous one
+  did not (`appeared`), the rules that got worse (`regressed`), and the
+  blocking problems before and after with who acts next on each.
+- **Applied-changes gauge** (`prep_progress.applies` / `.written`, kept per
+  session in `Session.apply_history`). One entry per Apply with the changes
+  really written into the file, by level, the refusals and the blocking
+  problems it resolved; the Prep gauge shows *written / still planned* for
+  blocking and optional changes and the figure of every Apply, the repair
+  gauge (Fix panel, Findings) the total written.
+- **FRM-002 says what the Mind documentation says, no more.** The KB page
+  "Supported Excel formulas" (last updated 2021-11-17, read again on
+  2026-09-28) names the functions Mind supports and says nothing about the
+  others -- and FILTER, which it omits, converts in Mind. A native function
+  missing from the page was reported as an ERROR and a blocker, and the
+  assistant and the report told the user to replace it. It is now a WARNING
+  ("neither documented as supported nor as refused; a conversion in Mind is
+  the proof"); only an MM_ name missing from the MM_ registry stays an
+  ERROR. Functions Mind accepts beyond the page live in
+  `references/mind-confirmed-functions.yaml`, each with its evidence
+  (`MIND_CONVERSION` or `USER_PROVIDED`): FILTER, and IFNA / INDIRECT /
+  XLOOKUP as stated by the tool's owner. The assistant no longer proposes a
+  replacement for an unlisted function unless the user asks for one.
+- **Two refusals Mind reported that the app had let through** (a real model,
+  2026-09-29). *"The array formula on sheet Temp, cell F5 exceeds the grid
+  size. Ensure that the column headers cover the entire array formula"*: the
+  header was one cell merged over B4:E4 and the arrays ran to DZ; the app read
+  the merge as one cell, split the block into two grids, and RSK-002 saw
+  nothing. Grid detection now lets a merged cell occupy every cell it covers
+  (`grids.MergedInto`), so the header row is as wide as Mind reads it and
+  RSK-002 names the first cell outside the grid, in Mind's words. *"No
+  function found ... (not a function : Semi_dynamic_increase_rates_array)"*:
+  the formula referred to a name the workbook does not define (a misspelling
+  of `Semi_dynamic_increase_rates`; Excel shows #NAME?). REF-001 now also
+  flags names with no definition -- table names, names of any alphabet,
+  names with '?', sheet-qualified references and LET variables excluded --
+  and proposes the closest existing name.
+- **Front-end.** Prep and the Fix panel show that outcome after every Apply
+  ("What the last Apply did"); a blocking repair that resolved its problem
+  stays in the Blocking block as *Resolved* instead of vanishing; a repair
+  that is back says so ("new since the last Apply", "back after the last
+  Apply -- it had no effect").
+
 ## 1.7.2
 
 ### One verdict, one vocabulary, and no more endless Prep rounds

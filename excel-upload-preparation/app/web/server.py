@@ -47,7 +47,7 @@ from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, str
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
-from app.readiness import compute_readiness, plan_counts, prep_progress  # noqa: E402
+from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress  # noqa: E402
 from app.prep import ASSISTANT_OPS, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
 from app.recalc import classify_against_original, classify_errors, formulas_with_broken_refs, group_errors, recalculate  # noqa: E402
@@ -106,6 +106,8 @@ class Session:
     scan: dict[str, Any] = field(default_factory=dict)  # live status of the current/last scan
     # 1.7.2 -- one entry per analysis: how much prep work each version still needs (the Prep gauge)
     plan_history: list[dict[str, Any]] = field(default_factory=list)
+    # 1.7.3 -- one entry per Apply: the changes really written into the file (the applied-changes gauge)
+    apply_history: list[dict[str, Any]] = field(default_factory=list)
     # 1.7.2 -- the ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
     # (computed once per session, the baseline every later recalculation is compared with)
     original_baseline: dict[str, Any] | None = None
@@ -215,9 +217,6 @@ def _summary(analysis: dict[str, Any]) -> dict[str, Any]:
         "native_function_usage": dict(sorted(f.get("native_function_usage", {}).items(), key=lambda kv: -kv[1])[:40]),
         "sheets": sheets,
     }
-
-
-STATUS_RANK = {"PASS": 0, "WARNING": 1, "REQUIRES_USER_INPUT": 2, "NOT_SUPPORTED": 3, "ERROR": 4}
 
 
 def _delta(previous: dict[str, Any] | None, current: dict[str, Any], version_id: str) -> dict[str, Any]:
@@ -448,7 +447,7 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         "plan": s.plan,
         "delta": delta,
         "readiness": readiness,
-        "prep_progress": prep_progress(s.plan_history),
+        "prep_progress": prep_progress(s.plan_history, s.apply_history),
     }
 
 
@@ -530,6 +529,20 @@ def _apply_result(res: dict[str, Any], output_name: str) -> dict[str, Any]:
         "warnings": res.get("warnings", []),
         "message": res.get("message", ""),
     }
+
+
+def _before_apply(s: Session) -> dict[str, Any]:
+    """What the analysis said before an Apply -- the other half of its outcome."""
+    return {"plan": s.plan, "report": s.result["validation_report"] if s.result else None, "version_id": s.current_version_id}
+
+
+def _outcome(s: Session, ops: list[dict[str, Any]], res: dict[str, Any], before: dict[str, Any], reanalyzed: bool) -> dict[str, Any]:
+    """The Apply, repair by repair (app.readiness.apply_outcome), against the
+    analysis that preceded it and -- when one ran -- the one that followed."""
+    after_report = s.result["validation_report"] if reanalyzed and s.result else None
+    outcome = apply_outcome(ops, res, before["plan"], before["report"], s.plan if reanalyzed else None, after_report, s.current_version_id, before["version_id"])
+    s.apply_history.append(apply_record(outcome))
+    return outcome
 
 
 def _validate_ops(raw_ops: Any) -> list[dict[str, Any]]:
@@ -630,6 +643,7 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
 def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     s = _session(session_id)
     ops = _validate_ops(payload.get("operations"))
+    before = _before_apply(s)
     res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
     output = Path(res["output_path"])
     action_ids = {o.get("action_id") for o in ops}
@@ -639,8 +653,11 @@ def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any
     label = f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
     version = _add_version(s, output, source, label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"])
     out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version}
-    if payload.get("reanalyze", True) and res["status"] in ("APPLIED", "PARTIAL"):
+    reanalyzed = bool(payload.get("reanalyze", True)) and res["status"] in ("APPLIED", "PARTIAL")
+    if reanalyzed:
         out.update(_run_scan(s, output))
+    out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
+    out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     return out
 
 
@@ -948,7 +965,7 @@ def readiness(session_id: str) -> dict[str, Any]:
     r = s.readiness()
     if r is None:
         raise HTTPException(status_code=409, detail="no analysis yet")
-    return {"readiness": r, "prep_progress": prep_progress(s.plan_history)}
+    return {"readiness": r, "prep_progress": prep_progress(s.plan_history, s.apply_history)}
 
 
 @app.get("/api/sessions/{session_id}/cells")
@@ -1071,6 +1088,7 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         skipped += auto_skipped
         auto_count = len(auto_ops)
 
+    before = _before_apply(s)
     res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
     output = Path(res["output_path"])
     verified = res.get("verified_opens_in_excel")
@@ -1084,8 +1102,11 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         "manual_ops": len(manual["ops"]),
         "auto_ops": auto_count,
     }
-    if payload.get("reanalyze", True) and res["status"] in ("APPLIED", "PARTIAL"):
+    reanalyzed = bool(payload.get("reanalyze", True)) and res["status"] in ("APPLIED", "PARTIAL")
+    if reanalyzed:
         out.update(_run_scan(s, output))
+    out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
+    out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     return out
 
 
@@ -1148,10 +1169,48 @@ else:
         return JSONResponse({"detail": f"front-end build not found at {DIST_DIR}; run `npm run build` in FigmaOutput or set MIND_READY_DIST"}, status_code=404)
 
 
+def _answers_as_mind_ready(port: int, timeout: float = 20) -> bool:
+    """A Mind Ready server already answers on `port` (slowly, when it is in
+    the middle of analysing a large workbook -- hence the long timeout)."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=timeout) as res:
+            body = json.loads(res.read().decode("utf-8"))
+    except Exception:
+        return False
+    return isinstance(body, dict) and "version" in body and "rules" in body
+
+
+def _port_is_taken(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def main() -> None:
     import uvicorn
 
     port = int(os.environ.get("MIND_READY_PORT", "8600"))
+    url = f"http://localhost:{port}"
+    # Started a second time (F5 while the .bat window is open, or the reverse): say so and
+    # open the app, instead of failing on "only one usage of each socket address".
+    if _port_is_taken(port):
+        print(f"Port {port} is already in use. Checking whether it is Mind Ready (up to 20 s) ...")
+        if _answers_as_mind_ready(port):
+            import webbrowser
+
+            print(f"Mind Ready is already running: {url}")
+            print("Opening it in the browser. To restart it (after a code change), stop the running one first:")
+            print("close its window, or press the red square / Shift+F5 in VS Code, then start again.")
+            webbrowser.open(url)
+            return
+        print(f"Whatever uses port {port} did not answer as Mind Ready.")
+        print(f"- If Mind Ready is already running and busy with a large workbook, it is at {url}: wait, then reload the page.")
+        print("- Otherwise close the program that uses the port, or choose another one: set MIND_READY_PORT=8601 and start again.")
+        raise SystemExit(1)
     uvicorn.run("app.web.server:app", host="127.0.0.1", port=port, reload=False)
 
 

@@ -10,7 +10,12 @@
       "python": "${workspaceFolder}/excel-upload-preparation/.venv/Scripts/python.exe",
       "env": { "MIND_READY_PORT": "8600", "PYTHONIOENCODING": "utf-8" },
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "serverReadyAction": {
+        "pattern": "Uvicorn running on (https?://[^\\s]+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
     }
   ]
 }

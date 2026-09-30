@@ -5,6 +5,7 @@ import type {
   PrepAction,
   Version,
   ChatMessage,
+  ApplyReport,
   Mode,
   Delta,
   FixTarget,
@@ -35,7 +36,17 @@ interface SessionState {
   readiness: Readiness | null;
   prepProgress: PrepProgress | null;
   /** 1.7.2: what the last Apply did, shown on the Prep screen until the next one. */
-  lastApply: { label: string; applied: number; failed: number; versionLabel: string; verified: boolean | null } | null;
+  lastApply: {
+    label: string;
+    applied: number;
+    failed: number;
+    versionLabel: string;
+    verified: boolean | null;
+    /** the file the Apply produced, by its download name */
+    outputName?: string;
+    /** 1.7.3: the Apply repair by repair (absent from an older backend) */
+    outcome?: ApplyReport | null;
+  } | null;
   setLastApply: (a: SessionState["lastApply"]) => void;
 
   setMode: (mode: Mode) => void;

@@ -266,8 +266,25 @@ export interface PrepProgressEntry {
   status_counts?: Partial<Record<Status, number>>;
   by_action: Record<string, number>;
 }
+/** One Apply of the session: the changes it really wrote into the file, by level. */
+export interface ApplyRecord {
+  version_id: string;
+  previous_version_id: string | null;
+  sent: number;
+  applied: number;
+  failed: number;
+  blocking_applied: number;
+  blocking_failed: number;
+  optional_applied: number;
+  optional_failed: number;
+  verdicts: Partial<Record<ApplyVerdict, number>>;
+  resolved_blocking: string[];
+}
 export interface PrepProgress {
   entries: PrepProgressEntry[];
+  /** 1.7.3: the applied-changes gauge -- every Apply, and the totals written in this session */
+  applies?: ApplyRecord[];
+  written?: { sent: number; applied: number; failed: number; blocking_applied: number; blocking_failed: number; optional_applied: number; optional_failed: number };
   /** three analyses in a row with work planned and no net decrease: Prep cannot resolve what is left */
   stalled: boolean;
   repeating_actions: string[];
@@ -284,6 +301,60 @@ export interface ApplyResult {
   verified_opens_in_excel: boolean | null;
   warnings: string[];
   message: string;
+}
+
+/** What an Apply did to one rule: its status and its cell count, before and after. */
+export interface ApplyRuleMove {
+  rule_id: string;
+  from: Status | null;
+  /** null when the new file was not re-analyzed */
+  to: Status | null;
+  sites_from: number | null;
+  sites_to: number | null;
+  blocking_before: boolean;
+  blocking_after: boolean;
+}
+
+/** resolved: the rules pass and nothing more is planned; partial: something moved; unchanged: written, same analysis as before; failed: nothing written; written: not re-analyzed. */
+export type ApplyVerdict = "resolved" | "partial" | "unchanged" | "failed" | "written";
+
+/** One repair of an Apply (a Prep action, or an assistant/manual fix for one rule). */
+export interface ApplyActionOutcome {
+  id: string;
+  title: string;
+  level: ActionLevel;
+  sent: number;
+  applied: number;
+  failed: number;
+  /** repairs the analysis planned for this action before / after (null for a fix that is not a Prep action) */
+  planned_before: number | null;
+  planned_after: number | null;
+  skipped_after: number | null;
+  rules: ApplyRuleMove[];
+  errors: string[];
+  verdict: ApplyVerdict;
+  /** the whole sentence; `next` is its conclusion alone (what is left, who acts) */
+  summary: string;
+  next?: string;
+}
+
+/** 1.7.3: what the last Apply did, repair by repair (POST /apply, field "outcome"). */
+export interface ApplyReport {
+  version_id: string;
+  previous_version_id: string | null;
+  reanalyzed: boolean;
+  sent: number;
+  applied: number;
+  failed: number;
+  headline: string;
+  actions: ApplyActionOutcome[];
+  /** repairs the new analysis plans that the previous one did not (or planned fewer of) */
+  appeared: { id: string; title: string; level: ActionLevel; rule_ids: string[]; planned_before: number; planned_after: number }[];
+  regressed: DeltaEntry[];
+  blocking_before: number;
+  blocking_after: number | null;
+  resolved_blocking: string[];
+  remaining_blocking: { rule_id: string; fix: BlockingItem["fix"]; action_id: string | null; sites: number | null; touched: boolean; new: boolean }[];
 }
 
 export interface ChatMessage {

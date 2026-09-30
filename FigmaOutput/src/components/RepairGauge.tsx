@@ -44,6 +44,15 @@ export default function RepairGauge({ compact = false }: { compact?: boolean }) 
           <Trend now={open} before={prev?.open_findings ?? null} />
         </div>
       )}
+      {/* 1.7.3: the changes every Apply of this session really wrote into the file */}
+      {progress?.written && (progress.applies?.length ?? 0) > 0 && (
+        <div title={(progress.applies ?? []).map((a) => `${short(a.version_id)}: +${a.applied}${a.failed ? `, ${a.failed} refused` : ""}`).join(" · ")}>
+          <span className="text-[10px] font-semibold tracking-wider text-[#9CA3AF]">CHANGES WRITTEN</span>{" "}
+          <span className="font-semibold text-[#0F766E]">{progress.written.applied.toLocaleString()}</span>
+          <span className="ml-1 font-mono text-[11px] text-[#0F766E]">+{(progress.applies ?? [])[(progress.applies ?? []).length - 1].applied.toLocaleString()} last</span>
+          {progress.written.failed > 0 && <span className="ml-1 font-mono text-[11px] text-[#9F1D1D]">{progress.written.failed.toLocaleString()} refused</span>}
+        </div>
+      )}
       {shown.length > 1 && (
         <div className="flex items-end gap-1" title="Open findings per version (red part: blocking)">
           {shown.map((e) => {

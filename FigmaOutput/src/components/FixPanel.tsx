@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import * as api from "../services/api";
-import type { CellWindow, ChatMessage, Finding, FixTarget, Operation, Proposal } from "../types";
+import type { ApplyReport, CellWindow, ChatMessage, Finding, FixTarget, Operation, Proposal } from "../types";
 import StatusPill from "./StatusPill";
 import OperationsTable from "./OperationsTable";
 import ChatMarkdown from "./ChatMarkdown";
 import RepairGauge from "./RepairGauge";
 import ApplyProgress from "./ApplyProgress";
+import ApplyReportCard from "./ApplyReportCard";
 import { useScanStatus } from "./ScanProgress";
 
 interface Site { sheet: string; cell: string; detail: string }
@@ -165,6 +166,8 @@ export default function FixPanel() {
   const [busy, setBusy] = useState<"chat" | "apply" | "recalc" | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
+  // 1.7.3: what the last Apply of this panel did, repair by repair
+  const [applyReport, setApplyReport] = useState<{ report: ApplyReport; verified: boolean | null } | null>(null);
   const [recalcNote, setRecalcNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -187,6 +190,7 @@ export default function FixPanel() {
     setInput("");
     setProposal(null);
     setOutcome(null);
+    setApplyReport(null);
     setRecalcNote(null);
     setError(null);
     setView(null);
@@ -268,6 +272,7 @@ export default function FixPanel() {
       const out = await api.applyOperations(sessionId, ops, { reanalyze: true });
       addVersion(out.version);
       applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta, readiness: out.readiness, prep_progress: out.prep_progress });
+      setApplyReport(out.outcome ? { report: out.outcome, verified: out.result.verified_opens_in_excel } : null);
       const verified = out.result.verified_opens_in_excel ? "verified" : "not verified";
       const vlabel = out.version.label.split(" — ")[0];
       const failed = out.result.failed ?? [];
@@ -547,6 +552,7 @@ export default function FixPanel() {
             {recalcNote && <span>{recalcNote}</span>}
           </div>
         )}
+        {applyReport && <ApplyReportCard report={applyReport.report} verified={applyReport.verified} compact />}
         {error && (
           <div className="text-[12px] text-[#9F1D1D] bg-[#FDE2E2] border border-[#9F1D1D]/20 rounded-lg px-3 py-2" role="alert">
             {error}

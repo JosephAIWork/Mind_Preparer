@@ -36,7 +36,7 @@ from typing import Any
 import openpyxl
 
 from .change_apply import append_change_log, plan_loop_case_fix
-from .excel_com import close_quietly, com_available, excel_session, open_workbook, verify_opens_in_excel
+from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place, verify_opens_in_excel
 from .formula_utils import cell_refs_in_formula, col_to_num, mask_strings, num_to_col, parse_ref, ref_text
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
 from .inventory import cell_value, make_immutable_copy, sha256_of
@@ -1276,7 +1276,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             total = len(ordered)
             if progress is not None:
                 progress("apply_write", "Opening the copy in Excel", 0.0, done=0, total=total)
-            wb = open_workbook(excel, copy_path, read_only=False)
+            wb = open_for_write(excel, copy_path)
             for i, o in enumerate(ordered, start=1):
                 if progress is not None:
                     progress("apply_write", f"Change {i} of {total}: {_op_target(o)}", (i - 1) / total, done=i - 1, total=total, sheet=o["sheet"])
@@ -1323,7 +1323,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                     ws = None
             if progress is not None:
                 progress("apply_save", "Excel is saving the copy", None, done=total, total=total)
-            wb.Save()
+            save_in_place(wb, copy_path)
         finally:
             close_quietly(wb)
 
@@ -1390,6 +1390,13 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     if method == "openpyxl":
         applied, failed = _apply_with_openpyxl(copy_path, operations, progress)
         warnings.append("Written with openpyxl (reduced fidelity): structural operations were refused and the file may not open in Excel.")
+    # 1.7.3 guard: changes that did not reach the file were not applied, whatever
+    # the writer reported. A copy still byte-identical to its source holds none of them.
+    if applied and sha256_of(copy_path) == source_sha256:
+        reason = "the changes were made in Excel but the file was not saved: the output is identical to the source"
+        failed = [{**o, "error": reason} for o in applied] + failed
+        applied = []
+        warnings.append(f"Nothing was written: {reason}.")
     if progress is not None:
         progress("apply_verify", "Opening the copy in Excel to check it" if com_available() else "Excel is not available here: the copy is not verified", None, done=len(operations), total=len(operations))
     verification = verify_opens_in_excel(copy_path) if com_available() else {"opens": None}

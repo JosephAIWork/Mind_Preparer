@@ -7,6 +7,14 @@ set MIND_READY_PORT=8600
 set PY=python
 if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
 
+rem Already running (started earlier, or from VS Code)? Then only open it.
+powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:%MIND_READY_PORT%/api/health -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }"
+if not errorlevel 1 (
+  echo Mind Ready is already running. Opening the browser.
+  start "" http://localhost:%MIND_READY_PORT%
+  exit /b 0
+)
+
 echo Starting Mind Ready on http://localhost:%MIND_READY_PORT% ...
 rem The server runs in its own window (kept open on error so the message can be read).
 start "Mind Ready server - close this window to stop" cmd /k "%PY% -m app.web.server"

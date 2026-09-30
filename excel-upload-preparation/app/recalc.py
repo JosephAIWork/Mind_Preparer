@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .excel_com import close_quietly, com_available, excel_session, open_workbook
+from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place
 from .formula_utils import called_functions, mask_strings
 
 # Excel COM's Range.Value returns error cells as these negative integer xlErr*
@@ -77,9 +77,9 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
     mmforexcel_loaded = _mmforexcel_loaded(excel)
     wb = None
     try:
-        wb = open_workbook(excel, copy_path, read_only=False)
+        wb = open_for_write(excel, copy_path)
         excel.CalculateFullRebuild()
-        wb.Save()
+        save_in_place(wb, copy_path)
 
         formula_errors: list[dict[str, Any]] = []
         addin_gap_errors: list[dict[str, Any]] = []

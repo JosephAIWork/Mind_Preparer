@@ -34,7 +34,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .excel_com import bgr, close_quietly, com_available, excel_session, excel_text, open_workbook, verify_opens_in_excel
+from .excel_com import bgr, close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
 
 REPORT_SHEET_NAME = "Mind_Readiness_Report"
 SUMMARY_SHEET_NAME = f"{REPORT_SHEET_NAME}_Summary"
@@ -66,7 +66,7 @@ HEADER_RGB = "305496"
 # on-demand "suggest a fix" feature used only in the UI.
 FIX_HINTS: dict[str, str] = {
     "FRM-004": "Not a blocker -- Mind ignores VBA it can't run. Confirm nothing needed depends on the macro actually executing; if something does, reimplement that logic as native formulas/MM_ functions.",
-    "FRM-002": "Replace each function that is not on the KB 'Supported Excel formulas' list / MM_ registry with a supported equivalent (e.g. XLOOKUP -> INDEX/MATCH or MM_READTABLE, IFNA -> IFERROR, TEXTJOIN -> CONCATENATE), or confirm it is a custom C# formula registered in Mind.",
+    "FRM-002": "An MM_ function missing from the MM_ registry must be corrected. A native Excel function the Mind documentation does not list is neither documented as supported nor as refused: convert the model in Mind to know, and replace the function only if Mind refuses it.",
     "FRM-001": "Inventory only -- review the function mix; the per-function verdicts are in FRM-002 / FORMULA-002.",
     "FRM-003": "Remove the implicit-intersection '@' where the formula returns a single value; replace spilled/array results Mind must resize with MM_RANGE (single-cell table) or fixed-size array formulas.",
     "FORMULA-002": "Re-implement the VBA user-defined function as native formulas / MM_ functions, or register it as a custom C# formula in Mind -- VBA does not run in Mind.",
@@ -313,7 +313,7 @@ def _append_report_excel(copy_path: Path, validation_report: dict[str, Any], out
     rows = findings_rows(validation_report, rules_by_id)
     summary = summary_rows(validation_report, source_name, "Excel (COM automation, full fidelity)")
     def _write(excel: Any) -> None:
-        wb = open_workbook(excel, output_path, read_only=False)
+        wb = open_for_write(excel, output_path)
         try:
             for name in (REPORT_SHEET_NAME, SUMMARY_SHEET_NAME):
                 try:
@@ -381,7 +381,7 @@ def _append_report_excel(copy_path: Path, validation_report: dict[str, Any], out
                 w = None
             ws.Visible = 0
             sws.Visible = 0
-            wb.Save()
+            save_in_place(wb, output_path)
         finally:
             close_quietly(wb)
 

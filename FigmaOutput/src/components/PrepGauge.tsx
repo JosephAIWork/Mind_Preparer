@@ -1,11 +1,13 @@
-import type { PrepProgress, PrepProgressEntry, Readiness } from "../types";
+import type { ApplyRecord, PrepProgress, PrepProgressEntry, Readiness } from "../types";
 
 /**
  * 1.7.2: the Prep gauge. Two questions, answered with the session's own
  * figures: where am I on the way to Mind (four steps, one is "you are here"),
- * and how much is done (one bar per kind of work, measured against the most
- * that was ever planned in this session). The history underneath shows every
- * analysed version, so a run that stops going down is visible.
+ * and how much is done. The history underneath shows every analysed version,
+ * so a run that stops going down is visible.
+ * 1.7.3: the applied-changes gauge -- the changes every Apply really wrote
+ * into the file (counted by the backend from what Excel saved), against what
+ * is still planned.
  */
 type StepState = "done" | "current" | "todo";
 
@@ -56,8 +58,43 @@ function Bar({ label, left, most, note }: { label: string; left: number; most: n
   );
 }
 
+/** Changes written by the Applies of this session against the ones still planned. */
+function WrittenBar({ label, written, refused, left, note }: { label: string; written: number; refused: number; left: number; note: string }) {
+  const total = written + left;
+  const pct = total > 0 ? Math.round((written / total) * 100) : 0;
+  const finished = total > 0 && left === 0;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-36 flex-shrink-0 text-[12px] font-medium text-[#374151]">{label}</div>
+      <div
+        className="flex-1 h-3 bg-[#E5E7EB] rounded-full overflow-hidden"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={written}
+        aria-label={`${label}: ${written} written, ${left} still planned`}
+      >
+        <div className={`h-full rounded-full transition-all duration-500 ${finished ? "bg-[#0F6E3A]" : "bg-[#0F766E]"}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="w-60 flex-shrink-0 text-[12px] text-[#374151]">
+        {total === 0 && refused === 0 ? (
+          <span className="text-[#6B7280]">none planned, none written</span>
+        ) : (
+          <>
+            <span className="font-mono font-semibold text-[#0F766E]">{written.toLocaleString()}</span> written
+            {" · "}
+            <span className={`font-mono font-semibold ${left === 0 ? "text-[#0F6E3A]" : "text-[#374151]"}`}>{left.toLocaleString()}</span> still planned
+            {refused > 0 && <span className="text-[#9F1D1D]"> · <span className="font-mono font-semibold">{refused.toLocaleString()}</span> refused</span>}
+          </>
+        )}
+        <div className="text-[10px] text-[#9CA3AF]">{note}</div>
+      </div>
+    </div>
+  );
+}
+
 function short(v: string): string {
-  return v.replace("ver-0", "v").replace("ver-", "v");
+  return v.replace("ver-0", "v").replace("ver-", "v").replace(/^v0+(\d)/, "v$1");
 }
 
 export default function PrepGauge({ readiness, progress }: { readiness: Readiness | null; progress: PrepProgress | null }) {
@@ -70,6 +107,8 @@ export default function PrepGauge({ readiness, progress }: { readiness: Readines
   const path = steps(readiness);
   const here = path.findIndex((s) => s.state === "current");
   const shown = entries.slice(-6);
+  const applies: ApplyRecord[] = progress?.applies ?? [];
+  const written = progress?.written ?? null;
 
   return (
     <div className="border border-[#E5E7EB] rounded-xl bg-white p-4 mb-3" aria-label="Preparation progress">
@@ -100,12 +139,49 @@ export default function PrepGauge({ readiness, progress }: { readiness: Readines
       <div className="text-[10px] font-semibold tracking-wider text-[#9CA3AF] mt-4 mb-2">HOW MUCH IS DONE</div>
       <div className="flex flex-col gap-2">
         <Bar label="Blocking problems" left={blocking} most={most((e) => e.blocking_findings ?? 0, blocking)} note="must reach 0 left for Mind to take the file" />
-        <Bar label="Blocking repairs" left={blockingOps} most={most((e) => e.blocking_ops ?? 0, blockingOps)} note="changes Prep can apply for the blocking problems" />
-        <Bar label="Optional repairs" left={optionalOps} most={most((e) => e.optional_ops ?? 0, optionalOps)} note="Mind reads the file without them" />
+        {written ? (
+          <>
+            <WrittenBar label="Blocking changes" written={written.blocking_applied} refused={written.blocking_failed} left={blockingOps} note="written into the file by Apply, for the blocking problems" />
+            <WrittenBar label="Optional changes" written={written.optional_applied} refused={written.optional_failed} left={optionalOps} note="Mind reads the file without them" />
+          </>
+        ) : (
+          <>
+            <Bar label="Blocking repairs" left={blockingOps} most={most((e) => e.blocking_ops ?? 0, blockingOps)} note="changes Prep can apply for the blocking problems" />
+            <Bar label="Optional repairs" left={optionalOps} most={most((e) => e.optional_ops ?? 0, optionalOps)} note="Mind reads the file without them" />
+          </>
+        )}
       </div>
 
+      {written && (
+        <div className="mt-3 flex items-center gap-1.5 flex-wrap text-[11px]" aria-label="Changes written by every Apply">
+          <span className="text-[10px] font-semibold tracking-wider text-[#9CA3AF] mr-1">CHANGES APPLIED</span>
+          {applies.length === 0 ? (
+            <span className="text-[#6B7280]">no Apply yet in this session — nothing has been written</span>
+          ) : (
+            <>
+              <span className="rounded px-1.5 py-0.5 border border-[#0F766E]/30 bg-[#F0FDFA] text-[#0F766E]">
+                <span className="font-mono font-semibold">{written.applied.toLocaleString()}</span> written in {applies.length} {applies.length !== 1 ? "Applies" : "Apply"}
+                {written.failed > 0 && <span className="text-[#9F1D1D]"> · {written.failed.toLocaleString()} refused</span>}
+              </span>
+              {applies.slice(-6).map((a) => (
+                <span
+                  key={a.version_id}
+                  className={`rounded px-1.5 py-0.5 border ${a.applied === 0 ? "border-[#9F1D1D]/30 bg-[#FFF7F7]" : "border-[#E5E7EB] bg-[#F9FAFB]"}`}
+                  title={`${short(a.previous_version_id ?? "")} → ${short(a.version_id)}: ${a.blocking_applied} blocking and ${a.optional_applied} optional change(s) written, ${a.failed} refused`}
+                >
+                  <span className="font-mono font-semibold text-[#111827]">{short(a.version_id)}</span>
+                  <span className={a.applied === 0 ? "text-[#9F1D1D]" : "text-[#0F766E]"}> +{a.applied.toLocaleString()}</span>
+                  {a.failed > 0 && <span className="text-[#9F1D1D]"> · {a.failed.toLocaleString()} refused</span>}
+                  {a.resolved_blocking.length > 0 && <span className="text-[#0F6E3A]"> · resolved {a.resolved_blocking.join(", ")}</span>}
+                </span>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
       {shown.length > 1 && (
-        <div className="mt-3 flex items-center gap-1.5 flex-wrap text-[11px]" aria-label="Figures of every analysed version">
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap text-[11px]" aria-label="Figures of every analysed version">
           <span className="text-[10px] font-semibold tracking-wider text-[#9CA3AF] mr-1">VERSION BY VERSION</span>
           {shown.map((e, i) => (
             <span key={e.version_id} className="flex items-center gap-1.5">

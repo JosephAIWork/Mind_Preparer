@@ -31,7 +31,7 @@ from typing import Any
 
 import openpyxl
 
-from .excel_com import FILE_FORMAT_CODES, close_quietly, com_available, excel_session, open_workbook, verify_opens_in_excel
+from .excel_com import FILE_FORMAT_CODES, close_quietly, com_available, excel_session, open_for_write, open_workbook, save_in_place, verify_opens_in_excel
 from .inventory import loop_definitions, make_immutable_copy, sha256_of
 
 
@@ -102,7 +102,7 @@ def apply_formula_edits(copy_path: Path, edits: list[dict[str, Any]], prefer_exc
         def _edit(excel: Any) -> None:
             wb = None
             try:
-                wb = open_workbook(excel, copy_path, read_only=False)
+                wb = open_for_write(excel, copy_path)
                 for edit in edits:
                     rng = None
                     try:
@@ -116,7 +116,7 @@ def apply_formula_edits(copy_path: Path, edits: list[dict[str, Any]], prefer_exc
                         failed.append({**edit, "error": str(exc)[:200]})
                     finally:
                         rng = None
-                wb.Save()
+                save_in_place(wb, copy_path)
             finally:
                 close_quietly(wb)
 

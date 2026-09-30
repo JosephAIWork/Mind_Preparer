@@ -1,0 +1,31 @@
+version: 1.0.0
+note: >-
+  Native Excel functions Mind accepts although the KB page 'Supported Excel formulas'
+  does not list them. The page names the functions Mind supports; it says nothing about
+  the others, so a function missing from it is not documented as refused. Every entry
+  here says where its evidence comes from: MIND_CONVERSION (a model using the function
+  converted in Mind) or USER_PROVIDED (stated by a Milliman Mind user). Add an entry only
+  with one of these two; general knowledge of Excel is not evidence about Mind.
+kb_page:
+  title: Supported Excel formulas
+  url: https://kb.milliman-mind.com/en_US/basic-model-design/supported-excel-formulas
+  last_updated: '2021-11-17'
+  read_on: '2026-09-28'
+  says_about_unlisted_functions: nothing
+functions:
+- function: FILTER
+  evidence: MIND_CONVERSION
+  detail: the Shlomo_IFRS model converted cleanly using FILTER (Cashflows!M4)
+  date: '2026-08-30'
+- function: IFNA
+  evidence: USER_PROVIDED
+  detail: stated as supported by Mind by the tool's owner
+  date: '2026-09-28'
+- function: INDIRECT
+  evidence: USER_PROVIDED
+  detail: stated as supported by Mind by the tool's owner
+  date: '2026-09-28'
+- function: XLOOKUP
+  evidence: USER_PROVIDED
+  detail: stated as supported by Mind by the tool's owner
+  date: '2026-09-28'

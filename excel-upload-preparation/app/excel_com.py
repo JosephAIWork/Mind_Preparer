@@ -71,7 +71,47 @@ def excel_session() -> Iterator[Any]:
 
 
 def open_workbook(excel: Any, path: Path, read_only: bool = True) -> Any:
-    return excel.Workbooks.Open(str(Path(path).resolve()), UpdateLinks=0, ReadOnly=read_only, CorruptLoad=0)
+    # IgnoreReadOnlyRecommended: a workbook saved with "read-only recommended"
+    # is otherwise opened read-only whenever alerts are off (the prompt's
+    # default answer), whatever ReadOnly says.
+    return excel.Workbooks.Open(str(Path(path).resolve()), UpdateLinks=0, ReadOnly=read_only, IgnoreReadOnlyRecommended=True, CorruptLoad=0)
+
+
+class NotSavedError(RuntimeError):
+    """Excel did not write the workbook to the file it was opened from."""
+
+
+def open_for_write(excel: Any, path: Path) -> Any:
+    """Open `path` to change it and save it in place. Refuses a workbook Excel
+    opened read-only all the same (the file is locked by another program, or
+    carries a password to modify): with alerts off, Save() on a read-only
+    workbook writes a copy into the user's default folder and reports success,
+    leaving `path` untouched."""
+    wb = open_workbook(excel, path, read_only=False)
+    try:
+        read_only = bool(wb.ReadOnly)
+    except Exception:
+        read_only = False
+    if read_only:
+        close_quietly(wb)
+        wb = None
+        raise NotSavedError(f"Excel opened {Path(path).name} read-only (it is open in another program, or it has a password to modify): it cannot be changed in place")
+    return wb
+
+
+def _file_stamp(path: Path) -> tuple[int, int]:
+    st = Path(path).stat()
+    return st.st_mtime_ns, st.st_size
+
+
+def save_in_place(wb: Any, path: Path) -> None:
+    """wb.Save(), then the proof that `path` itself was written: a save that
+    went elsewhere (or nowhere) leaves the file's time and size as they were,
+    and must never be reported as done."""
+    before = _file_stamp(path)
+    wb.Save()
+    if _file_stamp(path) == before:
+        raise NotSavedError(f"Excel reported the save as done but {Path(path).name} was not written")
 
 
 def close_quietly(wb: Any) -> None:

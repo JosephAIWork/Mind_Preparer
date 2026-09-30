@@ -1,4 +1,4 @@
-import type { ApplyResult, CellWindow, ChatMessage, ChatReply, Delta, FixTarget, Mode, Operation, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SizeInfo, ValidationReport, Version, WorkbookSummary } from "../types";
+import type { ApplyReport, ApplyResult, CellWindow, ChatMessage, ChatReply, Delta, FixTarget, Mode, Operation, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SizeInfo, ValidationReport, Version, WorkbookSummary } from "../types";
 
 import workbookMock from "../mocks/workbook.json";
 import reportMock from "../mocks/report.json";
@@ -101,6 +101,8 @@ export async function getReadiness(sessionId: string): Promise<{ readiness: Read
 export interface ApplyOutcome extends Partial<Reanalysis> {
   result: ApplyResult;
   version: Version;
+  /** 1.7.3: the Apply, repair by repair (absent from an older backend) */
+  outcome?: ApplyReport | null;
 }
 
 export interface UploadOptions {
@@ -375,6 +377,7 @@ export interface NamedArea { sheet: string; ref: string; name: string; flags: st
 export interface GridNamerOutcome extends Partial<Reanalysis> {
   result: ApplyResult;
   version: Version;
+  outcome?: ApplyReport | null;
   /** Grid keys ("Sheet!Ref") a title was written for. */
   named: string[];
   /** Refused areas and automatic-titler skips, each with its reason. */

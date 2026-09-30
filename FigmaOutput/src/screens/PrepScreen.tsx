@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useStore } from "../store";
-import type { PrepAction, ApplyResult, BlockingItem } from "../types";
+import type { PrepAction, ApplyActionOutcome, ApplyResult, BlockingItem } from "../types";
 import * as api from "../services/api";
 import OperationsTable from "../components/OperationsTable";
 import LevelBadge from "../components/LevelBadge";
 import PrepGauge from "../components/PrepGauge";
 import ApplyProgress from "../components/ApplyProgress";
+import ApplyReportCard, { RuleMove, shortVersion } from "../components/ApplyReportCard";
 import { useScanStatus } from "../components/ScanProgress";
 
 /**
@@ -16,8 +17,10 @@ import { useScanStatus } from "../components/ScanProgress";
  *   By hand   -- blocking problems Prep has no repair for: straight to the Fix panel.
  * Every action shows what it left for review up front, with a Fix button, so
  * nothing is discovered only after the next scan.
+ * 1.7.3: after an Apply the screen says what it did -- a repair that resolved
+ * its problem stays in its block as "resolved", one that is back says so.
  */
-function ActionCard({ action, checked, onChange }: { action: PrepAction; checked: boolean; onChange: (id: string, checked: boolean) => void }) {
+function ActionCard({ action, checked, onChange, since }: { action: PrepAction; checked: boolean; onChange: (id: string, checked: boolean) => void; since?: string | null }) {
   const [expanded, setExpanded] = useState(false);
   const openFix = useStore((s) => s.openFix);
   const disabled = action.count === 0;
@@ -40,6 +43,11 @@ function ActionCard({ action, checked, onChange }: { action: PrepAction; checked
             <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${action.count ? "text-[#111827] bg-[#F3F4F6]" : "text-[#9CA3AF] bg-[#F9FAFB]"}`}>
               {action.count} change{action.count !== 1 ? "s" : ""}
             </span>
+            {since && action.count > 0 && (
+              <span className="text-[11px] font-semibold text-[#8A5A00] bg-[#FFF1CC] border border-[#8A5A00]/20 px-1.5 py-0.5 rounded" title="Planned by the analysis of the version the last Apply produced">
+                {since}
+              </span>
+            )}
             {leftover > 0 && (
               <button
                 onClick={() => setExpanded(true)}
@@ -139,6 +147,25 @@ function ManualCard({ item }: { item: BlockingItem }) {
       >
         Fix with assistant
       </button>
+    </div>
+  );
+}
+
+/** A repair of the last Apply that resolved its problem: it stays where it was, said as done. */
+function ResolvedCard({ action, version }: { action: ApplyActionOutcome; version: string }) {
+  return (
+    <div className="border border-[#0F6E3A]/30 rounded-xl bg-[#F0FDF4] p-4 flex items-start gap-3">
+      <span className="mt-0.5 w-4 h-4 flex-shrink-0 rounded-full bg-[#0F6E3A] text-white text-[10px] font-bold flex items-center justify-center" aria-hidden>✓</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] font-semibold tracking-wide rounded border px-1.5 py-0.5 bg-[#DFF5E6] text-[#0F6E3A] border-[#0F6E3A]/20">RESOLVED IN {shortVersion(version).toUpperCase()}</span>
+          <span className="font-semibold text-[13px] text-[#111827] line-through decoration-[#0F6E3A]/50">{action.title}</span>
+          <span className="text-[11px] font-mono text-[#0F6E3A] bg-white border border-[#0F6E3A]/20 px-1.5 py-0.5 rounded">{action.applied.toLocaleString()} change{action.applied !== 1 ? "s" : ""} written</span>
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+          {action.rules.map((r) => <RuleMove key={r.rule_id} move={r} />)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -270,6 +297,7 @@ export default function PrepScreen() {
   const applyStatus = useScanStatus(sessionId, applying, 500);
   const [result, setResult] = useState<ApplyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const reportRef = useRef<HTMLDivElement>(null);
 
   // A new plan (after a re-analysis) resets the selection to its defaults.
   useEffect(() => {
@@ -287,6 +315,15 @@ export default function PrepScreen() {
   const blockingActions = useMemo(() => plan.filter((a) => a.level === "blocking"), [plan]);
   const optionalActions = useMemo(() => plan.filter((a) => a.level !== "blocking"), [plan]);
   const manual = useMemo(() => (readiness?.blocking ?? []).filter((b) => b.fix !== "prep"), [readiness]);
+  // What the last Apply did, as long as the screen still shows the version it produced.
+  const outcome = lastApply?.outcome && lastApply.outcome.version_id === readiness?.version_id ? lastApply.outcome : null;
+  const resolvedBlocking = useMemo(() => (outcome?.actions ?? []).filter((a) => a.level === "blocking" && a.verdict === "resolved"), [outcome]);
+  const sinceApply = useMemo(() => {
+    const notes: Record<string, string> = {};
+    for (const a of outcome?.appeared ?? []) notes[a.id] = a.planned_before > 0 ? `more since the last Apply (was ${a.planned_before})` : "new since the last Apply";
+    for (const a of outcome?.actions ?? []) if (a.planned_after) notes[a.id] = a.verdict === "unchanged" ? "back after the last Apply — it had no effect" : `${a.applied.toLocaleString()} written by the last Apply, these are left`;
+    return notes;
+  }, [outcome]);
   const selectedActions = plan.filter((a) => selected.has(a.id) && a.count > 0);
   const allOps = selectedActions.flatMap((a) => a.operations);
   const selectedBlocking = selectedActions.filter((a) => a.level === "blocking").reduce((n, a) => n + a.count, 0);
@@ -310,7 +347,11 @@ export default function PrepScreen() {
         failed: out.result.failed.length,
         versionLabel: out.version.label.split(" — ")[0],
         verified: out.result.verified_opens_in_excel,
+        outputName: out.result.output_name,
+        outcome: out.outcome ?? null,
       });
+      // the answer to "what did it do" is at the top of the screen: bring it into view
+      window.setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -347,7 +388,23 @@ export default function PrepScreen() {
 
           {error && <div className="mb-3 text-[12px] text-[#9F1D1D] bg-[#FDE2E2] border border-[#9F1D1D]/20 rounded px-3 py-2" role="alert">{error}</div>}
 
-          {lastApply && (
+          <div ref={reportRef} />
+          {lastApply?.outcome && sessionId && (
+            <div className="mb-4">
+              <ApplyReportCard
+                report={lastApply.outcome}
+                verified={lastApply.verified}
+                downloadHref={lastApply.outputName ? api.downloadUrl(sessionId, lastApply.outputName) : undefined}
+                downloadName={lastApply.outputName}
+              />
+              {outcome && readiness?.state === "unverified" && (
+                <div className="mt-2 text-[12px] text-[#8A5A00]">
+                  Nothing blocks any more: <Link to="/recalculate" className="underline underline-offset-2 font-semibold">recalculate in Excel →</Link> to verify the file.
+                </div>
+              )}
+            </div>
+          )}
+          {lastApply && !lastApply.outcome && (
             <div className="mb-3 text-[12px] text-[#0F766E] bg-[#F0FDFA] border border-[#0F766E]/20 rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap" aria-live="polite">
               <span>
                 <strong>{lastApply.versionLabel} created:</strong> {lastApply.applied} change{lastApply.applied !== 1 ? "s" : ""} applied
@@ -363,14 +420,17 @@ export default function PrepScreen() {
               {readiness?.state === "unverified" && <Link to="/recalculate" className="underline underline-offset-2 font-semibold">Recalculate →</Link>}
             </div>
           )}
-          {result && sessionId && <div className="mb-4"><ResultCard result={result} sessionId={sessionId} /></div>}
+          {result && !lastApply?.outcome && sessionId && <div className="mb-4"><ResultCard result={result} sessionId={sessionId} /></div>}
 
           <div className="flex flex-col gap-3">
             <Section title="BLOCKING — MIND NEEDS THESE" hint={blockingActions.some((a) => a.count > 0) ? "on by default; read the caution before Apply" : "nothing blocking is left for Prep to do"} tone="blocking">
+              {outcome && resolvedBlocking.map((a) => <ResolvedCard key={a.id} action={a} version={outcome.version_id} />)}
               {blockingActions.filter((a) => a.count > 0 || a.skipped.length > 0).length === 0 ? (
-                <div className="text-[12px] text-[#0F6E3A] bg-[#DFF5E6] border border-[#0F6E3A]/20 rounded-lg px-3 py-2">✓ No blocking repair to apply.</div>
+                <div className="text-[12px] text-[#0F6E3A] bg-[#DFF5E6] border border-[#0F6E3A]/20 rounded-lg px-3 py-2">
+                  ✓ No blocking repair {resolvedBlocking.length > 0 ? "left " : ""}to apply{manual.length > 0 ? ` — the ${manual.length} blocking problem${manual.length !== 1 ? "s" : ""} below ${manual.length !== 1 ? "have" : "has"} no automatic repair` : ""}.
+                </div>
               ) : (
-                blockingActions.filter((a) => a.count > 0 || a.skipped.length > 0).map((a) => <ActionCard key={a.id} action={a} checked={selected.has(a.id)} onChange={toggle} />)
+                blockingActions.filter((a) => a.count > 0 || a.skipped.length > 0).map((a) => <ActionCard key={a.id} action={a} checked={selected.has(a.id)} onChange={toggle} since={sinceApply[a.id]} />)
               )}
             </Section>
 
@@ -382,7 +442,7 @@ export default function PrepScreen() {
 
             <Section title="OPTIONAL — MIND READS THE FILE WITHOUT THESE" hint="quality and readability; apply them before delivery, not before testing" tone="optional">
               {sessionId && <GridNamesPanel sessionId={sessionId} onPlan={(r) => applyAnalysis({ plan: r.plan ?? undefined, readiness: r.readiness ?? undefined })} />}
-              {optionalActions.map((a) => <ActionCard key={a.id} action={a} checked={selected.has(a.id)} onChange={toggle} />)}
+              {optionalActions.map((a) => <ActionCard key={a.id} action={a} checked={selected.has(a.id)} onChange={toggle} since={sinceApply[a.id]} />)}
             </Section>
           </div>
         </div>
