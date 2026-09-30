@@ -67,9 +67,11 @@ def test_looplabels_is_registered_via_the_kb_registry(tmp_path, engine, config, 
 def test_native_function_off_the_kb_list_and_vba_udf_are_flagged(tmp_path, engine, config, array_formula_xlsx):
     analysis = build_analysis(array_formula_xlsx, tmp_path / "work", "t4c")
     frm = _finding(engine, config, analysis, "FRM-002")
-    assert frm["status"] == "ERROR"
-    assert "XLOOKUP" in frm["observed"]["unsupported_native_functions"]
-    assert "MYMACROFUNCTION" not in frm["observed"]["unsupported_native_functions"]
+    # XLOOKUP is not on the KB page; it is accepted on the evidence recorded for it, and said so
+    assert "XLOOKUP" in frm["observed"]["accepted_beyond_kb_list"]
+    assert "XLOOKUP" not in frm["observed"]["undocumented_native_functions"]
+    assert "MYMACROFUNCTION" not in frm["observed"]["undocumented_native_functions"]
+    assert frm["status"] != "ERROR"
     udf = _finding(engine, config, analysis, "FORMULA-002")
     assert udf["status"] == "WARNING"  # no VBA project in this fixture -> unknown function, not a confirmed UDF
     assert "MYMACROFUNCTION" in udf["observed"]["udf_candidates"]
@@ -230,6 +232,45 @@ def test_ref_001_flags_broken_defined_name_references(tmp_path, engine, config):
     assert any(s["cell"] == "A3" for s in f["observed"]["sites"])
 
 
+def test_a_native_function_the_mind_documentation_does_not_list_is_a_warning_not_a_blocker(tmp_path, engine, config):
+    """The KB page names what Mind supports and says nothing about the rest:
+    a function missing from it is undocumented, not refused. Only an MM_
+    name missing from the MM_ registry stays an error."""
+    import openpyxl
+
+    from app.readiness import level_of
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"] = "12"
+    ws["B1"] = "=_xlfn.NUMBERVALUE(A1)"
+    ws["B2"] = "=_xlfn.IFNA(A1,0)+INDIRECT(\"A1\")"
+    p = tmp_path / "undocumented.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "u"), "FRM-002")
+    assert f["status"] == "WARNING" and level_of(f) == "optional"
+    assert f["observed"]["undocumented_native_functions"] == ["NUMBERVALUE"]
+    assert set(f["observed"]["accepted_beyond_kb_list"]) == {"IFNA", "INDIRECT"}
+    assert "neither documented as supported nor as refused" in f["message"] and "last updated 2021-11-17" in f["message"]
+    ws_mm = openpyxl.Workbook()
+    ws_mm.active["A1"] = "=MM_TOTALLYMADEUP(1)+_xlfn.NUMBERVALUE(\"1\")"
+    p2 = tmp_path / "mm.xlsx"
+    ws_mm.save(p2)
+    ws_mm.close()
+    assert _finding(engine, config, build_analysis(p2, tmp_path / "w2", "m"), "FRM-002")["status"] == "ERROR"
+
+
+def test_every_function_accepted_beyond_the_kb_page_names_its_evidence():
+    from app.validators.formula import _confirmed, confirmed_functions
+
+    entries = confirmed_functions()
+    assert {"FILTER", "IFNA", "INDIRECT", "XLOOKUP"} <= set(entries)
+    assert all(e["evidence"] in ("MIND_CONVERSION", "USER_PROVIDED") and e.get("detail") and e.get("date") for e in entries.values())
+    assert _confirmed()["kb_page"]["says_about_unlisted_functions"] == "nothing"
+
+
 def test_filter_is_treated_as_mind_supported():
     """FILTER is a native function the KB scrape omits but real Mind conversion accepts
     (proven by uploading the Shlomo model); FRM-002 must not flag it as unsupported."""
@@ -252,3 +293,70 @@ def test_rep_001_parse_total_recognises_pure_totals():
     assert _parse_total("=SUM(Sheet2!A1:A10)") is None
     assert _parse_total("=A1*2") is None
     assert _parse_total("=A1") is None
+
+
+# --- 1.7.3: two refusals Mind reported on a real model that the app had let through ------------
+def test_a_name_that_does_not_exist_is_a_broken_reference(tmp_path, engine, config):
+    """Mind: "No function found ... (not a function : Semi_dynamic_increase_rates_array)"
+    -- the formula referred to a name the workbook does not define (a misspelling
+    of an existing one). Names of any alphabet, '?' in a name, table names,
+    sheet-qualified references and LET variables are not names to flag."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.table import Table
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"], ws["A2"], ws["A3"] = "h", 1, 2
+    for name, ref in (("Semi_dynamic_increase_rates", "Calc!$A$2:$A$3"), ("Rate_λG", "Calc!$A$2"), ("Full_Run?", "Calc!$A$3")):
+        wb.defined_names[name] = DefinedName(name, attr_text=ref)
+    ws["C1"], ws["D1"], ws["C2"], ws["D2"] = "K", "V", 1, 2
+    ws.add_table(Table(displayName="Rates", ref="C1:D2"))
+    ws["F1"] = "=HLOOKUP(1,Semi_dynamic_increase_rates_array,1,FALSE)"  # misspelt
+    ws["F2"] = "=Rate_λG+Full_Run?+SUM(Rates[V])+ROWS(Rates)+Calc!A2+TRUE"  # all fine
+    ws["F3"] = "=LET(x,A2,x*Nope)"  # LET variables: not workbook names (RSK-004)
+    p = tmp_path / "names.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "n"), "REF-001")
+    assert f["status"] == "ERROR"
+    assert f["observed"]["undefined_names"] == {"Semi_dynamic_increase_rates_array": {"cells": 1, "closest": "Semi_dynamic_increase_rates"}}
+    assert [s["cell"] for s in f["observed"]["sites"]] == ["F1"]
+    assert "closest existing name: Semi_dynamic_increase_rates" in f["message"] and "#NAME?" in f["message"]
+
+
+def test_a_merged_header_spans_its_columns_and_an_array_past_it_exceeds_the_grid(tmp_path, engine, config):
+    """Mind: "The array formula on sheet Temp, cell F5 exceeds the grid size. Ensure
+    that the column headers cover the entire array formula." The header was one
+    cell merged over B4:E4; the arrays ran to DZ. Read as one cell, the merge
+    hid the grid boundary the converter applies."""
+    import openpyxl
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    def model(merge_to: str):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Temp"
+        ws["B4"] = "Per Policy Projection"
+        ws.merge_cells(f"B4:{merge_to}4")
+        for r, label in ((5, "ME charge"), (6, "Admin cost")):
+            ws[f"B{r}"] = label
+            ws[f"C{r}"] = ArrayFormula(f"C{r}:H{r}", "=TRANSPOSE($A$10:$A$15)")
+        for r in range(10, 16):
+            ws[f"A{r}"] = r
+        p = tmp_path / f"merged_{merge_to}.xlsx"
+        wb.save(p)
+        wb.close()
+        return build_analysis(p, tmp_path / f"w_{merge_to}", "m")
+
+    short = model("E")
+    grids = [(g["display_name"], g["ref"]) for g in short["workbooks"][0]["sheets"][0]["grids"]]
+    assert ("untitled B4", "B4:E6") in grids  # the merge counts for B..E
+    f = _finding(engine, config, short, "RSK-002")
+    assert f["status"] == "ERROR"
+    first = f["observed"]["oversized_array_formulas"][0]
+    assert (first["cell"], first["array_ref"], first["first_cell_outside"]) == ("C5", "C5:H5", "F5")
+    assert "column headers cover the entire array formula" in f["message"]
+    wide = model("H")  # headers cover every column of the arrays: nothing exceeds
+    assert _finding(engine, config, wide, "RSK-002")["status"] == "PASS"

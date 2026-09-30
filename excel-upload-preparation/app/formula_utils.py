@@ -30,6 +30,42 @@ REF_RE = re.compile(
     r"(?![A-Za-z0-9_(])"
 )
 SINGLE_REF_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d{1,7})$")
+# a bare identifier: not a function call (no '(' after), not sheet-qualified (no '!' around),
+# not a structured reference (no '[' after), not part of a reference ('$' before)
+# name characters as Excel allows them: letters of any alphabet, digits, '_', '.', '?', '\'
+NAME_TOKEN_RE = re.compile(r"(?<![\w.$!'\[#?\\])([^\W\d\\][\w.?\\]*)(?![\w.(!\[?\\])")
+ERROR_LITERAL_RE = re.compile(r"#(?:N/A|REF!|DIV/0!|NAME\?|VALUE!|NUM!|NULL!|SPILL!|CALC!|GETTING_DATA)", re.IGNORECASE)
+LOCAL_SCOPE_FUNCTIONS = {"LET", "LAMBDA"}  # their arguments define names of their own
+
+
+def name_tokens(formula: str) -> list[str]:
+    """Every bare name a formula refers to (defined names, tables, or names
+    that do not exist): string literals, quoted sheet names, cell and range
+    references, function calls and error literals are left out. A formula
+    that calls LET or LAMBDA is skipped: its own variables are not workbook
+    names, and RSK-004 reviews LET."""
+    if LOCAL_SCOPE_FUNCTIONS & {fn.upper() for fn in called_functions(formula)}:
+        return []
+    masked = mask_strings(formula)
+    masked = ERROR_LITERAL_RE.sub(lambda m: " " * len(m.group(0)), masked)
+    masked = REF_RE.sub(lambda m: " " * len(m.group(0)), masked)
+    out = []
+    for m in NAME_TOKEN_RE.finditer(masked):
+        tok = m.group(1)
+        if tok.upper() in ("TRUE", "FALSE") or STORAGE_PREFIX_RE.match(tok):
+            continue
+        out.append(tok)
+    return out
+
+
+def undefined_names(formula: str, known: set[str]) -> list[str]:
+    """Names the formula refers to that are not in `known` (upper-cased
+    defined names and table names of the workbook), in order, once each."""
+    seen: list[str] = []
+    for tok in name_tokens(formula):
+        if tok.upper() not in known and tok not in seen:
+            seen.append(tok)
+    return seen
 
 
 def mask_strings(formula: str, mask_sheet_quotes: bool = True) -> str:

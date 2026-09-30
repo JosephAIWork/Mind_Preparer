@@ -37,7 +37,7 @@ from openpyxl.styles.numbers import is_date_format
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, range_length, storage_prefixes
-from .grids import detect_grids, is_occupied, json_safe
+from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25
@@ -434,7 +434,16 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
             if cell.hyperlink is not None:
                 hyperlinks.append({"cell": cell.coordinate, "target": cell.hyperlink.target})
 
+    # a merged range whose first cell is occupied occupies every cell it covers (see grids.MergedInto)
+    for rng in ws.merged_cells.ranges:
+        anchor = (rng.min_row, rng.min_col)
+        if anchor in occupied:
+            for r in range(rng.min_row, rng.max_row + 1):
+                for c in range(rng.min_col, rng.max_col + 1):
+                    if (r, c) != anchor and (r, c) not in occupied:
+                        occupied[(r, c)] = MergedInto(anchor, occupied[anchor])
     grids, standalone = detect_grids(ws.title, occupied)
+    tables = sorted(str(t) for t in getattr(ws, "tables", {}).keys()) if hasattr(getattr(ws, "tables", None), "keys") else []
 
     row_groups = hidden_rows = max_row_level = 0
     for dim in ws.row_dimensions.values():
@@ -482,6 +491,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
         "tab_color": tab_color,
         "protected": sheet_protected,
         "merged_cells": merged,
+        "tables": tables,
         "locked_cell_count": locked_cells,
         "comments": comments,
         "hyperlinks": hyperlinks,
