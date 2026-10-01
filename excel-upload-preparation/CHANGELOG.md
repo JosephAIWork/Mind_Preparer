@@ -80,7 +80,12 @@ blocking problem was still there after each round, with no sign of why.
   Mind reads `First:Last` as one sheet name ("Sheet ... not found in workbook
   on compiling formula"). The sheets the reference spans are listed in tab
   order and the explicit per-sheet formula is proposed for the assistant or
-  the user to apply.
+  the user to apply -- without the sheets that hold no grid: Mind creates no
+  spreadsheet for a divider tab ('Spreadsheet not found error' on the same
+  model, 2026-10-01), and an empty sheet adds nothing to the sum. Any formula
+  reading such a sheet is flagged too.
+- **Excel executor**: a change Excel refuses with RPC_E_CALL_REJECTED (busy for
+  an instant) is repeated up to five times before it counts as refused.
 - **Front-end.** Prep and the Fix panel show that outcome after every Apply
   ("What the last Apply did"); a blocking repair that resolved its problem
   stays in the Blocking block as *Resolved* instead of vanishing; a repair

@@ -584,3 +584,19 @@ def test_grid_naming_reports_an_unavailable_gateway_without_raising():
 
     out = suggest_names([{"id": "S!A1", "size": "1 rows x 1 cols", "flags": [], "above": [], "left": [], "sample": ["x"]}], completion=unavailable)
     assert out["available"] is False and out["names"] == {} and "secret.key" in out["message"]
+
+
+def test_transient_com_errors_are_recognised():
+    """1.7.3: Excel answers RPC_E_CALL_REJECTED while busy for an instant; the
+    executor repeats the call instead of reporting the change as refused
+    (one real Apply of 10,404 formulas lost exactly one to it)."""
+    from app.prep import TRANSIENT_RETRIES, _is_transient
+
+    class ComError(Exception):
+        def __init__(self, hresult):
+            super().__init__(hresult, "Call was rejected by callee.", None, None)
+            self.hresult = hresult
+
+    assert _is_transient(ComError(-2147418111)) and _is_transient(ComError(-2147417846))
+    assert not _is_transient(ComError(-2147352567)) and not _is_transient(ValueError("x"))
+    assert TRANSIENT_RETRIES >= 3

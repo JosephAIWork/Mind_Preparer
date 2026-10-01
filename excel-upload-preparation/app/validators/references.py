@@ -10,7 +10,11 @@ from a real refusal:
     tabs. Mind reads 'First:Last' as one sheet name and fails with "Sheet
     '...' not found in workbook ... on compiling formula" (model PVFP,
     2026-09-30). The sheets the reference spans are listed in tab order and
-    the equivalent explicit formula is proposed.
+    the equivalent explicit formula is proposed -- without the sheets that
+    hold no grid: Mind creates no spreadsheet for those (the divider tabs
+    '>> Reporting', '>>>' of the same model: "Spreadsheet not found error",
+    2026-10-01), and an empty sheet adds nothing to SUM/AVERAGE/COUNT/MIN/
+    MAX. The same rule flags any other formula that reads a grid-less sheet.
 
 Neither has an automatic repair: a cycle is broken by a modelling decision
 (the Mind documentation's mechanism for a value feeding the next round is
@@ -429,15 +433,24 @@ def _split_3d(text: str) -> tuple[str, str] | None:
     return first.replace("''", "'"), last.replace("''", "'")
 
 
-def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FRM-006: 'First:Last'!ref references spanning several sheets."""
+def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
+    """FRM-006: 'First:Last'!ref references spanning several sheets, and
+    references to sheets Mind does not import. `limit` caps the sites kept
+    in the finding (None: every site, for a caller that applies the proposals)."""
     wb0 = analysis["workbooks"][0]
     order = [s["name"] for s in wb0.get("sheets", [])] + [s["name"] for s in wb0.get("ignored_sheets", [])]
     known = set(order)
+    # sheets Mind creates no spreadsheet for: nothing on them makes a grid
+    gridless = {s["name"] for s in wb0.get("sheets", []) if not s.get("grids")}
     sites = []
+    gridless_sites = []
     for f in wb0.get("formulas", []):
         formula = f.get("formula") or ""
         masked = mask_strings(formula, mask_sheet_quotes=False)
+        if gridless:
+            targets = sorted({r["sheet"] for r in cell_refs_in_formula(formula) if r.get("sheet") in gridless})
+            if targets:
+                gridless_sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:200], "sheets": targets})
         found: list[tuple[int, int, str, str]] = []  # start, end, first, last
         for m in QUOTED_3D_RE.finditer(masked):
             pair = _split_3d(formula[m.start(1) : m.end(1)])
@@ -457,14 +470,17 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any]) -
                 sheets = order[i : j + 1]
             else:
                 sheets = []
-            spans.append({"reference": formula[start:end], "first": first, "last": last, "sheets": sheets})
-            if sheets:
+            kept = [x for x in sheets if x not in gridless]
+            spans.append({"reference": formula[start:end], "first": first, "last": last, "sheets": sheets, "omitted_empty": [x for x in sheets if x in gridless]})
+            if sheets and kept:
                 # the reference token is followed by the cell/range it applies to: repeat it per sheet
                 m = re.match(r"(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7})", suggested[end:])
                 if m:
                     cell = m.group(1)
-                    replacement = ",".join(f"{_quote_sheet(s)}!{cell}" for s in sheets)
+                    replacement = ",".join(f"{_quote_sheet(s)}!{cell}" for s in kept)
                     suggested = suggested[:start] + replacement + suggested[end + len(cell) :]
+            elif sheets:
+                sheets = []  # every sheet of the span is empty for Mind: nothing to propose
         spans.reverse()
         unresolved = [s for s in spans if not s["sheets"]]
         sites.append({
@@ -472,22 +488,41 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any]) -
             "cell": f["cell"],
             "formula": formula[:200],
             "references": spans,
-            "suggested_formula": None if unresolved else suggested[:600],
-            "issue": (f"sheet(s) not in the workbook: {', '.join(x for s in unresolved for x in (s['first'], s['last']) if x not in known)}" if unresolved else None),
+            "suggested_formula": None if unresolved else suggested,  # whole, never cut: it is meant to be applied
+            "issue": (
+                f"sheet(s) not in the workbook: {', '.join(x for s in unresolved for x in (s['first'], s['last']) if x not in known)}" if any(x not in known for s in unresolved for x in (s["first"], s["last"]))
+                else "every sheet of the span holds no grid: Mind imports none of them, so the reference has nothing to read" if unresolved
+                else None
+            ),
         })
-    if sites:
-        first = sites[0]
-        ref0 = first["references"][0]
-        n_sheets = len(ref0["sheets"])
+    cap = slice(None) if limit is None else slice(0, limit)
+    observed = {"sites": sites[cap], "sites_count": len(sites), "gridless_sheets": sorted(gridless), "formulas_reading_gridless_sheets": gridless_sites[cap], "formulas_reading_gridless_sheets_count": len(gridless_sites)}
+    if sites or gridless_sites:
+        parts = []
+        if sites:
+            first = sites[0]
+            ref0 = first["references"][0]
+            n_sheets = len(ref0["sheets"])
+            parts.append(
+                f"{len(sites)} formula(s) use a 3-D reference ('First:Last'!cell, every sheet between two tabs): Mind reads 'First:Last' as one sheet name and refuses the model "
+                f"(\"Sheet '{ref0['first']}:{ref0['last']}' not found in workbook ... on compiling formula\"). First: {first['sheet']}!{first['cell']} = {first['formula'][:80]}"
+                + (f" spans {n_sheets} sheet(s) in tab order: {', '.join(ref0['sheets'][:8])}{' ...' if n_sheets > 8 else ''}" if n_sheets else f" ({first['issue']})")
+                + (f"; {', '.join(ref0['omitted_empty'][:6])} hold no grid and are left out of the proposal (Mind imports no empty sheet)" if ref0.get("omitted_empty") else "")
+                + ". Fix by hand or with the assistant: list every sheet explicitly, as in the proposed formula"
+                + (f" {first['suggested_formula'][:160]}" if first["suggested_formula"] else "")
+                + "."
+            )
+        if gridless_sites:
+            g0 = gridless_sites[0]
+            parts.append(
+                f"{len(gridless_sites)} formula(s) read a sheet Mind does not import because nothing on it makes a grid ({', '.join(sorted({x for g in gridless_sites for x in g['sheets']})[:6])}): "
+                f"Mind stops with 'Spreadsheet not found'. First: {g0['sheet']}!{g0['cell']} = {g0['formula'][:80]}. Point the formula at a sheet with a grid, or give that sheet a grid, by hand."
+            )
+        first_site = sites[0] if sites else gridless_sites[0]
         return finding(
             "ERROR",
-            f"{len(sites)} formula(s) use a 3-D reference ('First:Last'!cell, every sheet between two tabs): Mind reads 'First:Last' as one sheet name and refuses the model "
-            f"(\"Sheet '{ref0['first']}:{ref0['last']}' not found in workbook ... on compiling formula\"). First: {first['sheet']}!{first['cell']} = {first['formula'][:80]}"
-            + (f" spans {n_sheets} sheet(s) in tab order: {', '.join(ref0['sheets'][:8])}{' ...' if n_sheets > 8 else ''}." if n_sheets else f" ({first['issue']}).")
-            + " Fix by hand or with the assistant: list every sheet explicitly, as in the proposed formula"
-            + (f" {first['suggested_formula'][:160]}" if first["suggested_formula"] else "")
-            + ". No automatic repair.",
-            {"sites": sites[:80]},
-            location={"sheet": first["sheet"], "cell": first["cell"]},
+            " ".join(parts) + " No automatic repair.",
+            observed,
+            location={"sheet": first_site["sheet"], "cell": first_site["cell"]},
         )
-    return finding("PASS", "No 3-D reference ('First:Last'!cell) in the workbook's formulas.", {"sites": []})
+    return finding("PASS", "No 3-D reference ('First:Last'!cell) and no reference to a sheet without a grid in the workbook's formulas.", observed)

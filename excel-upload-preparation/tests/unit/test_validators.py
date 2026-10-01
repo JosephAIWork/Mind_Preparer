@@ -457,16 +457,18 @@ def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_p
 
     wb = openpyxl.Workbook()
     first = wb.active
-    first.title = ">> Reporting"
+    first.title = ">> Reporting"  # a divider tab: empty, so Mind creates no spreadsheet for it
     for name in ("LoB A", "LoB B", ">>>"):
         wb.create_sheet(name)
     total = wb.create_sheet("Reporting_LoB Total")
-    for ws in wb.worksheets[:4]:
+    for ws in wb.worksheets[1:3]:
         ws["E5"] = 1
+    wb[">>>"]["D13"] = "end of section"  # one text cell alone: no grid either
     total["E5"] = "=SUM('>> Reporting:>>>'!E5)"
     total["E19"] = "=AVERAGE('>> Reporting:>>>'!E5:E7)/2"
     total["G37"] = "=SUM('>> Reporting:Nope'!G37)"  # an endpoint that does not exist
     total["H1"] = "=SUM('LoB A'!E5)"  # an ordinary sheet reference: not 3-D
+    total["H2"] = "='>> Reporting'!A1+1"  # reads a sheet Mind does not import
     p = tmp_path / "3d.xlsx"
     wb.save(p)
     wb.close()
@@ -475,7 +477,11 @@ def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_p
     sites = {s["cell"]: s for s in f["observed"]["sites"]}
     assert set(sites) == {"E5", "E19", "G37"}
     assert sites["E5"]["references"][0]["sheets"] == [">> Reporting", "LoB A", "LoB B", ">>>"]
-    assert sites["E5"]["suggested_formula"] == "=SUM('>> Reporting'!E5,'LoB A'!E5,'LoB B'!E5,'>>>'!E5)"
-    assert sites["E19"]["suggested_formula"] == "=AVERAGE('>> Reporting'!E5:E7,'LoB A'!E5:E7,'LoB B'!E5:E7,'>>>'!E5:E7)/2"
+    assert sites["E5"]["references"][0]["omitted_empty"] == [">> Reporting", ">>>"]
+    # the proposal leaves the grid-less divider tabs out: Mind imports none of them, and they add nothing
+    assert sites["E5"]["suggested_formula"] == "=SUM('LoB A'!E5,'LoB B'!E5)"
+    assert sites["E19"]["suggested_formula"] == "=AVERAGE('LoB A'!E5:E7,'LoB B'!E5:E7)/2"
     assert sites["G37"]["suggested_formula"] is None and "Nope" in sites["G37"]["issue"]
-    assert "not found in workbook" in f["message"] and "No automatic repair" in f["message"]
+    assert f["observed"]["gridless_sheets"] == [">> Reporting", ">>>"]
+    assert [(g["cell"], g["sheets"]) for g in f["observed"]["formulas_reading_gridless_sheets"]] == [("H2", [">> Reporting"])]
+    assert "not found in workbook" in f["message"] and "Spreadsheet not found" in f["message"] and "No automatic repair" in f["message"]

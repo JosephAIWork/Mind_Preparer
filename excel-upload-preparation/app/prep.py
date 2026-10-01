@@ -30,6 +30,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1100,6 +1101,17 @@ def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]]) ->
     return {**op, "cell": ref_text(ref["c1"], at + shift)}
 
 
+# Excel answers these while it is busy for an instant (a background recalculation, a
+# redraw): the call did nothing and succeeds a moment later. One real Apply of 10,404
+# formulas lost exactly one of them to RPC_E_CALL_REJECTED.
+TRANSIENT_COM_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
+TRANSIENT_RETRIES = 5
+
+
+def _is_transient(exc: BaseException) -> bool:
+    return getattr(exc, "hresult", None) in TRANSIENT_COM_HRESULTS or (exc.args[:1] and exc.args[0] in TRANSIENT_COM_HRESULTS)
+
+
 def _com_message(exc: BaseException) -> str:
     """Excel's own message out of a pywin32 com_error, else str(exc)."""
     info = getattr(exc, "excepinfo", None)
@@ -1282,40 +1294,17 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                     progress("apply_write", f"Change {i} of {total}: {_op_target(o)}", (i - 1) / total, done=i - 1, total=total, sheet=o["sheet"])
                 ws = None
                 try:
-                    ws = wb.Worksheets(o["sheet"])
-                    record = o
-                    if o["op"] in ("set_formula", "set_value", "clear_cell"):
-                        record = _write_cell(ws, o)
-                    elif o["op"] == "set_array_formula":
-                        record = _write_array(ws, o)
-                    elif o["op"] == "unprotect_sheet":
-                        ws.Unprotect()
-                    elif o["op"] == "set_sheet_visibility":
-                        ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
-                    elif o["op"] == "explicit_colors":
-                        n_cells = len(o["cells"])
-                        for k, cell in enumerate(o["cells"]):
-                            # one operation, thousands of cells: say how far it is inside it
-                            if progress is not None and k % 25 == 0:
-                                progress("apply_write", f"Change {i} of {total}: {o['sheet']}, colours of cell {k + 1} of {n_cells}", (i - 1 + k / n_cells) / total, done=i - 1, total=total, sheet=o["sheet"], inner_done=k, inner_total=n_cells)
-                            c = ws.Range(cell)
-                            try:
-                                c.Font.Color = c.Font.Color
-                            except Exception:
-                                pass
-                            try:
-                                if c.Interior.ColorIndex != -4142:  # xlNone
-                                    c.Interior.Color = c.Interior.Color
-                            except Exception:
-                                pass
-                    elif o["op"] == "insert_row":
-                        ws.Rows(int(o["row"])).Insert()
-                    elif o["op"] == "insert_column":
-                        ws.Columns(col_to_num(str(o["column"]))).Insert()
-                    elif o["op"] == "rename_sheet":
-                        ws.Name = o["after"]
-                    else:
-                        raise ValueError(f"unknown op {o['op']}")
+                    for attempt in range(TRANSIENT_RETRIES + 1):
+                        try:
+                            ws = wb.Worksheets(o["sheet"])
+                            record = _write_one(wb, ws, o, i, total)
+                            break
+                        except Exception as exc:
+                            ws = None
+                            if attempt < TRANSIENT_RETRIES and _is_transient(exc):
+                                time.sleep(0.5 * (attempt + 1))  # Excel was busy for an instant: the same call again
+                                continue
+                            raise
                     applied.append(record)
                 except Exception as exc:
                     failed.append({**o, "error": _com_message(exc)[:300]})
@@ -1326,6 +1315,43 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             save_in_place(wb, copy_path)
         finally:
             close_quietly(wb)
+
+    def _write_one(wb: Any, ws: Any, o: dict[str, Any], i: int, total: int) -> dict[str, Any]:
+        """One operation on its sheet; returns the record to log as applied."""
+        record = o
+        if o["op"] in ("set_formula", "set_value", "clear_cell"):
+            record = _write_cell(ws, o)
+        elif o["op"] == "set_array_formula":
+            record = _write_array(ws, o)
+        elif o["op"] == "unprotect_sheet":
+            ws.Unprotect()
+        elif o["op"] == "set_sheet_visibility":
+            ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
+        elif o["op"] == "explicit_colors":
+            n_cells = len(o["cells"])
+            for k, cell in enumerate(o["cells"]):
+                # one operation, thousands of cells: say how far it is inside it
+                if progress is not None and k % 25 == 0:
+                    progress("apply_write", f"Change {i} of {total}: {o['sheet']}, colours of cell {k + 1} of {n_cells}", (i - 1 + k / n_cells) / total, done=i - 1, total=total, sheet=o["sheet"], inner_done=k, inner_total=n_cells)
+                c = ws.Range(cell)
+                try:
+                    c.Font.Color = c.Font.Color
+                except Exception:
+                    pass
+                try:
+                    if c.Interior.ColorIndex != -4142:  # xlNone
+                        c.Interior.Color = c.Interior.Color
+                except Exception:
+                    pass
+        elif o["op"] == "insert_row":
+            ws.Rows(int(o["row"])).Insert()
+        elif o["op"] == "insert_column":
+            ws.Columns(col_to_num(str(o["column"]))).Insert()
+        elif o["op"] == "rename_sheet":
+            ws.Name = o["after"]
+        else:
+            raise ValueError(f"unknown op {o['op']}")
+        return record
 
     with excel_session() as excel:
         _run(excel)
