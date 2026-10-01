@@ -1289,6 +1289,16 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             if progress is not None:
                 progress("apply_write", "Opening the copy in Excel", 0.0, done=0, total=total)
             wb = open_for_write(excel, copy_path)
+            # Manual calculation while writing: in automatic mode Excel recalculates every
+            # dependent after each write, and 12,678 writes into a 70k-formula model ran for
+            # hours. The mode is restored before the save, so the file keeps its own setting
+            # and is recalculated once.
+            calc_mode = None
+            try:
+                calc_mode = excel.Calculation
+                excel.Calculation = -4135  # xlCalculationManual
+            except Exception:
+                calc_mode = None
             for i, o in enumerate(ordered, start=1):
                 if progress is not None:
                     progress("apply_write", f"Change {i} of {total}: {_op_target(o)}", (i - 1) / total, done=i - 1, total=total, sheet=o["sheet"])
@@ -1311,7 +1321,12 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                 finally:
                     ws = None
             if progress is not None:
-                progress("apply_save", "Excel is saving the copy", None, done=total, total=total)
+                progress("apply_save", "Excel is recalculating and saving the copy", None, done=total, total=total)
+            if calc_mode is not None:
+                try:
+                    excel.Calculation = calc_mode
+                except Exception:
+                    pass
             save_in_place(wb, copy_path)
         finally:
             close_quietly(wb)

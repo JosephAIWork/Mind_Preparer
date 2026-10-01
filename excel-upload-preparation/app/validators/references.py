@@ -27,7 +27,7 @@ import re
 from bisect import bisect_left, bisect_right
 from typing import Any, Iterator
 
-from ..formula_utils import called_functions, cell_refs_in_formula, mask_strings, name_tokens, ref_text
+from ..formula_utils import REF_RE, called_functions, cell_refs_in_formula, mask_strings, name_tokens, parse_ref, ref_text
 from ._common import finding
 
 DYNAMIC_REFERENCE_FUNCTIONS = {"INDIRECT", "OFFSET"}
@@ -526,3 +526,363 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
             location={"sheet": first_site["sheet"], "cell": first_site["cell"]},
         )
     return finding("PASS", "No 3-D reference ('First:Last'!cell) and no reference to a sheet without a grid in the workbook's formulas.", observed)
+
+
+# --- FRM-007 -----------------------------------------------------------------------------
+# INDIRECT's result used as a value -- compared, multiplied, divided, negated, concatenated:
+# Mind returns a reference object for INDIRECT and cannot turn it into a number ("Run error:
+# Unable to cast object of type 'AM.Models.AMReference' to type 'System.IConvertible'", model
+# PVFP, 2026-10-01). Where the text INDIRECT builds can be worked out from constants (string
+# literals, cells holding text, ROW()/COLUMN(), simple arithmetic and text functions), the
+# equivalent direct reference is proposed; a target that does not exist in the workbook is an
+# error in Excel already (#REF!) and that call becomes NA() in its place -- never the whole
+# formula: the call may sit in an IF branch that is never taken.
+VALUE_OPERATORS = set("=<>+-*/^&")
+# functions whose argument is a value, never a range: NOT(INDIRECT(...)) converts the result too
+VALUE_ONLY_FUNCTIONS = {"NOT", "AND", "OR", "ABS", "ROUND", "ROUNDUP", "ROUNDDOWN", "INT", "SQRT", "EXP", "LN", "LOG", "LOG10", "POWER", "MOD", "LEN", "LEFT", "RIGHT", "MID", "UPPER", "LOWER", "TRIM", "TEXT", "VALUE", "YEAR", "MONTH", "DAY", "ISNUMBER", "ISTEXT", "ISLOGICAL"}
+INDIRECT_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?INDIRECT\s*\(", re.IGNORECASE)
+
+
+class Unresolvable(Exception):
+    pass
+
+
+class _Expr:
+    """A small evaluator for the text argument of INDIRECT, from the workbook's
+    own constants: enough for "'"&$G710&"'!$Z$16", "LoB"&COLUMN()-6&"_Boolean",
+    RIGHT(E2,IF(LEN(E2)=5,1,2)). Anything else raises Unresolvable."""
+
+    TOKEN = re.compile(r"\s*(?:(\"(?:[^\"]|\"\")*\")|(\d+(?:\.\d+)?)|('[^']+'![$A-Za-z0-9:]+|[A-Za-z_][A-Za-z0-9_.]*![$A-Za-z0-9:]+|\$?[A-Z]{1,3}\$?\d{1,7})|([A-Za-z_][A-Za-z0-9_.]*)|(<>|<=|>=|[=<>&+\-*/()^,;]))")
+    FUNCS = {"ROW", "COLUMN", "LEN", "LEFT", "RIGHT", "MID", "IF", "UPPER", "LOWER", "TRIM", "VALUE", "INT", "TRUE", "FALSE", "N", "T"}
+
+    def __init__(self, text: str, lookup, sheet: str, row: int, col: int, names: dict[str, str]):
+        self.toks = []
+        pos = 0
+        text = text.strip()
+        while pos < len(text):
+            m = self.TOKEN.match(text, pos)
+            if not m or m.end() == pos:
+                raise Unresolvable(f"cannot read {text[pos:pos + 12]!r}")
+            pos = m.end()
+            if m.group(1) is not None:
+                self.toks.append(("str", m.group(1)[1:-1].replace('""', '"')))
+            elif m.group(2) is not None:
+                self.toks.append(("num", float(m.group(2))))
+            elif m.group(3) is not None:
+                self.toks.append(("ref", m.group(3)))
+            elif m.group(4) is not None:
+                self.toks.append(("name", m.group(4)))
+            else:
+                self.toks.append(("op", m.group(5)))
+        self.i = 0
+        self.lookup, self.sheet, self.row, self.col, self.names = lookup, sheet, row, col, names
+
+    def peek(self):
+        return self.toks[self.i] if self.i < len(self.toks) else (None, None)
+
+    def take(self, kind=None, value=None):
+        tok = self.peek()
+        if tok[0] is None or (kind and tok[0] != kind) or (value is not None and tok[1] != value):
+            raise Unresolvable(f"unexpected {tok}")
+        self.i += 1
+        return tok
+
+    def eval(self):
+        v = self.cmp()
+        if self.peek()[0] is not None:
+            raise Unresolvable("trailing text")
+        return v
+
+    def cmp(self):
+        left = self.concat()
+        tok = self.peek()
+        if tok == ("op", "=") or tok == ("op", "<>") or tok == ("op", "<") or tok == ("op", ">") or tok == ("op", "<=") or tok == ("op", ">="):
+            self.take()
+            right = self.concat()
+            op = tok[1]
+            a, b = _num_or_text(left), _num_or_text(right)
+            return {"=": a == b, "<>": a != b, "<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[op]
+        return left
+
+    def concat(self):
+        v = self.add()
+        while self.peek() == ("op", "&"):
+            self.take()
+            v = _text(v) + _text(self.add())
+        return v
+
+    def add(self):
+        v = self.mul()
+        while self.peek() in (("op", "+"), ("op", "-")):
+            op = self.take()[1]
+            w = self.mul()
+            v = _num(v) + _num(w) if op == "+" else _num(v) - _num(w)
+        return v
+
+    def mul(self):
+        v = self.unary()
+        while self.peek() in (("op", "*"), ("op", "/")):
+            op = self.take()[1]
+            w = self.unary()
+            v = _num(v) * _num(w) if op == "*" else _num(v) / _num(w)
+        return v
+
+    def unary(self):
+        if self.peek() == ("op", "-"):
+            self.take()
+            return -_num(self.unary())
+        return self.atom()
+
+    def atom(self):
+        kind, val = self.peek()
+        if kind == "str" or kind == "num":
+            self.take()
+            return val
+        if kind == "op" and val == "(":
+            self.take()
+            v = self.cmp()
+            self.take("op", ")")
+            return v
+        if kind == "ref":
+            self.take()
+            return self.cell(val)
+        if kind == "name":
+            self.take()
+            up = val.upper()
+            if self.peek() == ("op", "("):
+                self.take()
+                args = []
+                if self.peek() != ("op", ")"):
+                    args.append(self.cmp())
+                    while self.peek() in (("op", ","), ("op", ";")):
+                        self.take()
+                        args.append(self.cmp())
+                self.take("op", ")")
+                return self.call(up, args)
+            if up == "TRUE":
+                return True
+            if up == "FALSE":
+                return False
+            ref = self.names.get(up)
+            if ref is None:
+                raise Unresolvable(f"name {val}")
+            return self.cell(ref)
+        raise Unresolvable(f"unexpected {kind} {val}")
+
+    def call(self, fn, args):
+        if fn == "ROW" and not args:
+            return float(self.row)
+        if fn == "COLUMN" and not args:
+            return float(self.col)
+        if fn == "LEN" and len(args) == 1:
+            return float(len(_text(args[0])))
+        if fn == "LEFT" and 1 <= len(args) <= 2:
+            return _text(args[0])[: int(_num(args[1])) if len(args) == 2 else 1]
+        if fn == "RIGHT" and 1 <= len(args) <= 2:
+            n = int(_num(args[1])) if len(args) == 2 else 1
+            return _text(args[0])[-n:] if n else ""
+        if fn == "MID" and len(args) == 3:
+            s = int(_num(args[1])) - 1
+            return _text(args[0])[s : s + int(_num(args[2]))]
+        if fn == "IF" and 2 <= len(args) <= 3:
+            return args[1] if _truth(args[0]) else (args[2] if len(args) == 3 else False)
+        if fn == "UPPER" and len(args) == 1:
+            return _text(args[0]).upper()
+        if fn == "LOWER" and len(args) == 1:
+            return _text(args[0]).lower()
+        if fn == "TRIM" and len(args) == 1:
+            return " ".join(_text(args[0]).split())
+        if fn in ("VALUE", "N") and len(args) == 1:
+            return _num(args[0])
+        if fn == "INT" and len(args) == 1:
+            return float(int(_num(args[0])))
+        if fn == "T" and len(args) == 1:
+            return _text(args[0]) if isinstance(args[0], str) else ""
+        raise Unresolvable(f"function {fn}")
+
+    def cell(self, ref_text_: str):
+        refs = cell_refs_in_formula("=" + ref_text_)
+        if len(refs) != 1 or refs[0]["r1"] != refs[0]["r2"] or refs[0]["c1"] != refs[0]["c2"]:
+            raise Unresolvable(f"reference {ref_text_}")
+        r = refs[0]
+        v = self.lookup(r.get("sheet") or self.sheet, r["r1"], r["c1"])
+        if v is None or (isinstance(v, str) and v.startswith("=")):
+            raise Unresolvable(f"{ref_text_} has no stored value")
+        return v
+
+
+def _text(v) -> str:
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, float):
+        return str(int(v)) if v == int(v) else str(v)
+    return str(v)
+
+
+def _num(v) -> float:
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except ValueError as exc:
+        raise Unresolvable(f"not a number: {v!r}") from exc
+
+
+def _num_or_text(v):
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except ValueError:
+        return str(v).lower()
+
+
+def _truth(v) -> bool:
+    if isinstance(v, str):
+        return v.upper() == "TRUE"
+    return bool(v)
+
+
+def _indirect_calls(formula: str) -> list[dict[str, Any]]:
+    """Every INDIRECT call: its span, its argument text (first argument only)
+    and whether its result is used as a value (an operator right before the
+    call or right after it)."""
+    masked = mask_strings(formula)
+    out = []
+    for m in INDIRECT_RE.finditer(masked):
+        i = m.end()
+        depth = 1
+        arg_end = None
+        while i < len(masked) and depth:
+            ch = masked[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch in ",;" and depth == 1 and arg_end is None:
+                arg_end = i
+            i += 1
+        if depth:
+            continue
+        end = i
+        before = masked[1 : m.start()].rstrip()[-1:]  # the formula's leading '=' is not an operator: =INDIRECT(...) alone is a reference
+        after = masked[end:].lstrip()[:1]
+        as_value = before in VALUE_OPERATORS or after in VALUE_OPERATORS
+        if not as_value and before in "(,;":
+            as_value = _enclosing_function(masked, m.start()) in VALUE_ONLY_FUNCTIONS or (before == "(" and _enclosing_function(masked, m.start()) == "IF")
+        out.append({
+            "start": m.start(), "end": end,
+            "argument": formula[m.end() : arg_end if arg_end is not None else end - 1],
+            "as_value": as_value,
+        })
+    return out
+
+
+def _enclosing_function(masked: str, pos: int) -> str | None:
+    """The function whose argument list the text at `pos` sits in, if any."""
+    depth = 0
+    i = pos - 1
+    while i >= 0:
+        ch = masked[i]
+        if ch == ")":
+            depth += 1
+        elif ch == "(":
+            if depth == 0:
+                m = re.search(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$", masked[:i])
+                return m.group(1).upper() if m else None
+            depth -= 1
+        i -= 1
+    return None
+
+
+def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
+    """FRM-007: INDIRECT used as a value, with the direct reference proposed
+    where the text it builds can be worked out from the workbook's constants."""
+    from ..inventory import cell_value, values_cell
+
+    wb0 = analysis["workbooks"][0]
+    sheets = {s["name"]: s for s in wb0.get("sheets", [])}
+    names = {}
+    for d in wb0.get("defined_names", []):
+        if d.get("name") and d.get("value") and "#REF!" not in str(d["value"]):
+            names[str(d["name"]).upper()] = str(d["value"])
+    canonical = {str(d["name"]).upper(): str(d["name"]) for d in wb0.get("defined_names", []) if d.get("name")}
+
+    def lookup(sheet: str, row: int, col: int):
+        v = cell_value(analysis, sheet, row, col)
+        if isinstance(v, str) and v.startswith("="):
+            v = values_cell(analysis, sheet, row, col)  # a formula cell: the value Excel last stored
+        return v
+
+    sites = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        if "INDIRECT" not in formula.upper():
+            continue
+        calls = _indirect_calls(formula)
+        if not any(c["as_value"] for c in calls):
+            continue
+        origin = parse_ref(f["cell"])
+        resolved = []
+        suggested = formula
+        missing = False
+        unresolved = None
+        for call in reversed(calls):
+            try:
+                text = _text(_Expr(call["argument"], lookup, f["sheet"], origin["r1"], origin["c1"], names).eval())
+            except (Unresolvable, ZeroDivisionError, ValueError) as exc:
+                unresolved = f"{call['argument'][:60]}: {exc}"
+                resolved.append({"argument": call["argument"][:120], "resolved": None, "as_value": call["as_value"]})
+                continue
+            target = None
+            exists = False
+            refs = cell_refs_in_formula("=" + text)
+            if len(refs) == 1 and REF_RE.fullmatch(text.strip()):
+                r = refs[0]
+                sheet = r.get("sheet") or f["sheet"]
+                exists = sheet in sheets and bool(sheets[sheet].get("grids"))
+                target = (f"{_quote_sheet(sheet)}!" if r.get("sheet") else "") + text.strip().rsplit("!", 1)[-1]
+            elif text.upper() in canonical:
+                target = canonical[text.upper()]
+                exists = True
+            resolved.append({"argument": call["argument"][:120], "resolved": text[:120], "target": target, "exists": exists, "as_value": call["as_value"]})
+            if target and exists:
+                suggested = suggested[: call["start"]] + target + suggested[call["end"] :]
+            else:
+                missing = True
+                suggested = suggested[: call["start"]] + "NA()" + suggested[call["end"] :]
+        resolved.reverse()
+        if unresolved:
+            proposal, issue = None, f"the text INDIRECT builds cannot be worked out from the workbook's constants ({unresolved})"
+        elif missing:
+            gone = sorted({c["resolved"] for c in resolved if not c.get("exists")})
+            proposal, issue = suggested, f"target(s) not in the workbook (or without a grid, so Mind does not import them): {', '.join(gone[:4])} -- that call is an error in Excel already and becomes NA() in its place"
+        else:
+            proposal, issue = suggested, None
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": resolved, "suggested_formula": proposal, "issue": issue})
+    cap = slice(None) if limit is None else slice(0, limit)
+    observed = {
+        "sites": sites[cap], "sites_count": len(sites),
+        "with_proposal": sum(1 for s in sites if s["suggested_formula"] and not s["issue"]),
+        "with_missing_targets": sum(1 for s in sites if s["suggested_formula"] and s["issue"]),
+        "without_proposal": sum(1 for s in sites if s["suggested_formula"] is None),
+    }
+    if sites:
+        first = next((s for s in sites if s["suggested_formula"] and not s["issue"]), sites[0])
+        return finding(
+            "ERROR",
+            f"{len(sites)} formula(s) use the result of INDIRECT as a value (compared, multiplied, divided, negated or concatenated): Mind returns a reference for INDIRECT and "
+            "cannot turn it into a value ('Run error: Unable to cast object of type AM.Models.AMReference to type System.IConvertible'). "
+            f"First: {first['sheet']}!{first['cell']} = {first['formula'][:90]}"
+            + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
+            + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates; {observed['with_missing_targets']} also point at a sheet or name that does not exist "
+            "(an error in Excel already: that call becomes NA() in its place); "
+            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). Fix by hand or with the assistant from the proposals. No automatic repair.",
+            observed,
+            location={"sheet": first["sheet"], "cell": first["cell"]},
+        )
+    return finding("PASS", "No formula uses the result of INDIRECT as a value.", observed)

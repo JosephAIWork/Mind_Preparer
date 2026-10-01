@@ -132,3 +132,24 @@ rules:
   fail_if:
   - A formula references a sheet range.
   severity_source: BLOCKER
+- id: FRM-007
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'INDIRECT used as a value -- Mind returns a reference for INDIRECT and cannot turn it into a value ("Unable to cast AM.Models.AMReference to System.IConvertible").'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-01, model PVFP)
+    article: FRM-007
+  validation:
+    deterministic: true
+    implementation: validators.formula.indirect_as_value
+  correction:
+    automatic: false
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula compares, multiplies, divides, negates or concatenates the result of INDIRECT.
+  fail_if:
+  - The result of INDIRECT is used as a value.
+  severity_source: BLOCKER

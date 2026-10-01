@@ -86,6 +86,20 @@ blocking problem was still there after each round, with no sign of why.
   reading such a sheet is flagged too.
 - **Excel executor**: a change Excel refuses with RPC_E_CALL_REJECTED (busy for
   an instant) is repeated up to five times before it counts as refused.
+- **FRM-007 INDIRECT used as a value** -- compared, multiplied, divided,
+  negated, concatenated or passed to a value-only function: Mind returns a
+  reference for INDIRECT and cannot turn it into a value ("Run error: Unable
+  to cast object of type 'AM.Models.AMReference' to type
+  'System.IConvertible'", model PVFP, 2026-10-01). Where the text INDIRECT
+  builds can be worked out from the workbook's constants (string literals,
+  cells holding text, ROW()/COLUMN(), simple arithmetic, LEFT/RIGHT/LEN/IF),
+  the direct reference is proposed; a target that does not exist becomes
+  NA() in its place (never the whole formula: the call may sit in a branch
+  never taken). Verified on PVFP: 4,410 formulas rewritten through the app.
+- **Excel executor**: calculation is set to manual while the changes are
+  written and restored before the save -- in automatic mode Excel
+  recalculated every dependent after each write, and 12,678 writes into a
+  70k-formula model ran for hours; they take 23 minutes now.
 - **Front-end.** Prep and the Fix panel show that outcome after every Apply
   ("What the last Apply did"); a blocking repair that resolved its problem
   stays in the Blocking block as *Resolved* instead of vanishing; a repair

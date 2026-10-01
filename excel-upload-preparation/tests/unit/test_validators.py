@@ -485,3 +485,45 @@ def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_p
     assert f["observed"]["gridless_sheets"] == [">> Reporting", ">>>"]
     assert [(g["cell"], g["sheets"]) for g in f["observed"]["formulas_reading_gridless_sheets"]] == [("H2", [">> Reporting"])]
     assert "not found in workbook" in f["message"] and "Spreadsheet not found" in f["message"] and "No automatic repair" in f["message"]
+
+
+def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(tmp_path, engine, config):
+    """Mind: "Unable to cast object of type 'AM.Models.AMReference' to type
+    'System.IConvertible'" on IF(INDIRECT("'"&$G710&"'!$Z$16")=0, ...). The text
+    INDIRECT builds is worked out from the workbook's constants and the direct
+    reference proposed; a target that does not exist is an error already (=NA());
+    text that depends on values the tool cannot know is left by hand."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    inp = wb.active
+    inp.title = "Inputs"
+    lob = wb.create_sheet("LoB 1")
+    lob["Z12"], lob["Z16"] = 10, 4
+    inp["G710"], inp["G711"] = "LoB 1", "LoB 2"  # LoB 2 is not a sheet
+    inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
+    inp["AA711"] = "=IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G711&\"'!$Z$12\")/INDIRECT(\"'\"&$G711&\"'!$Z$16\"))"
+    inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # a reference context: Mind handles it, not flagged
+    inp["B7"] = "=INDIRECT(\"'\"&$G710&\"'!$Z$12\")"  # alone in the cell: a reference, not a value -- not flagged
+    inp["B2"] = "=NOT(INDIRECT(\"LoB\"&COLUMN()-1&\"_Boolean\"))*2"  # a defined name built from COLUMN()
+    inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"  # B4 is a formula with no stored value: by hand
+    inp["B4"] = "=G710"
+    inp["B5"] = True
+    inp["B6"] = "=IF(LEFT(RIGHT($G710,2),1)=\" \",INDIRECT(\"LoB\"&RIGHT($G710,1)&\"_Boolean\")=TRUE,INDIRECT(\"LoB\"&RIGHT($G710,2)&\"_Boolean\")=TRUE)"  # one branch dead
+    wb.defined_names["LoB1_Boolean"] = DefinedName("LoB1_Boolean", attr_text="Inputs!$B$5")
+    p = tmp_path / "indirect.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "i"), "FRM-007")
+    assert f["status"] == "ERROR"
+    sites = {s["cell"]: s for s in f["observed"]["sites"]}
+    assert set(sites) == {"AA710", "AA711", "B2", "B3", "B6"}
+    assert sites["B6"]["suggested_formula"] == "=IF(LEFT(RIGHT($G710,2),1)=\" \",LoB1_Boolean=TRUE,NA()=TRUE)"
+    assert sites["AA710"]["suggested_formula"] == "=IF('LoB 1'!$Z$16=0,0,66%*'LoB 1'!$Z$12/'LoB 1'!$Z$16)"
+    # the missing target becomes NA() where it stands, never the whole formula (it may sit in a branch never taken)
+    assert sites["AA711"]["suggested_formula"] == "=IF(NA()=0,0,66%*NA()/NA())" and "LoB 2" in sites["AA711"]["issue"]
+    assert sites["B2"]["suggested_formula"] == "=NOT(LoB1_Boolean)*2"
+    assert sites["B3"]["suggested_formula"] is None and "cannot be worked out" in sites["B3"]["issue"]
+    assert f["observed"]["with_proposal"] == 2 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
+    assert "AMReference" in f["message"] and "No automatic repair" in f["message"]
