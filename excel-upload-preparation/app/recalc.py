@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .excel_com import close_quietly, com_available, excel_session, open_workbook
+from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place
 from .formula_utils import called_functions, mask_strings
 
 # Excel COM's Range.Value returns error cells as these negative integer xlErr*
@@ -77,9 +77,9 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
     mmforexcel_loaded = _mmforexcel_loaded(excel)
     wb = None
     try:
-        wb = open_workbook(excel, copy_path, read_only=False)
+        wb = open_for_write(excel, copy_path)
         excel.CalculateFullRebuild()
-        wb.Save()
+        save_in_place(wb, copy_path)
 
         formula_errors: list[dict[str, Any]] = []
         addin_gap_errors: list[dict[str, Any]] = []
@@ -156,6 +156,92 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
 # --- root-cause grouping (1.6.3) -------------------------------------------------
 _REF_TOKEN_RE = re.compile(r"(?:(?:'[^']+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?")
 _NUMBER_RE = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")
+
+
+def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str, Any]], original_formulas_with_ref: set[tuple[str, str]] | None = None) -> dict[str, Any]:
+    """1.7.2: split recalculation errors of a prepared version against the errors
+    of the ORIGINAL after the same full recalculation (the honest baseline --
+    cached values can be stale, e.g. a number saved before the column a
+    formula pointed to was deleted). An error is pre-existing when the
+    original errs at the same sheet+address, or has an erroring formula with
+    the same text on the same sheet (row inserts shift addresses), or when the
+    original's formula at that address already contained #REF! (broken
+    whatever its cached value said)."""
+    by_addr = {(e.get("sheet", ""), str(e.get("cell", "")).replace("$", "")) for e in original_errors}
+    by_formula = {(e.get("sheet", ""), str(e.get("formula", ""))) for e in original_errors if str(e.get("formula", "")).startswith("=")}
+    with_ref = original_formulas_with_ref or set()
+    out, pre = [], 0
+    for e in errors:
+        key_a = (e.get("sheet", ""), str(e.get("cell", "")).replace("$", ""))
+        key_f = (e.get("sheet", ""), str(e.get("formula", "")))
+        preexisting = key_a in by_addr or key_a in with_ref or (key_f[1].startswith("=") and key_f in by_formula)
+        pre += preexisting
+        out.append({**e, "preexisting": preexisting})
+    return {"compared": True, "message": None, "preexisting": pre, "new": len(errors) - pre, "errors": out}
+
+
+def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
+    """(sheet, address) of every formula in the original that contains #REF!."""
+    from openpyxl import load_workbook
+
+    out: set[tuple[str, str]] = set()
+    try:
+        wb = load_workbook(original_path, data_only=False, read_only=True, keep_links=False)
+        try:
+            for ws in wb.worksheets:
+                for row in ws.iter_rows():
+                    for c in row:
+                        v = c.value
+                        if isinstance(v, str) and v.startswith("=") and "#REF!" in v:
+                            out.add((ws.title, c.coordinate))
+        finally:
+            wb.close()
+    except Exception:
+        return out
+    return out
+
+
+def classify_against_original(original_path: Path, errors: list[dict[str, Any]]) -> dict[str, Any]:
+    """1.7.2: which recalculation errors were already errors in the ORIGINAL
+    upload (the model's own #DIV/0! / #N/A, which Mind takes as they are) and
+    which are new (introduced by the preparation, or revealed by it).
+
+    An error cell counts as pre-existing when the original had an error at the
+    same sheet+address, or -- because row inserts shift addresses -- an error
+    with the same formula text on the same sheet. Reads the original's cached
+    values (what Excel last saved), never recalculates it."""
+    from openpyxl import load_workbook
+
+    by_addr: set[tuple[str, str]] = set()
+    by_formula: set[tuple[str, str]] = set()
+    try:
+        wb_v = load_workbook(original_path, data_only=True, read_only=True, keep_links=False)
+        wb_f = load_workbook(original_path, data_only=False, read_only=True, keep_links=False)
+        try:
+            for ws_v in wb_v.worksheets:
+                ws_f = wb_f[ws_v.title]
+                for row_v, row_f in zip(ws_v.iter_rows(), ws_f.iter_rows()):
+                    for cv, cf in zip(row_v, row_f):
+                        v = cv.value
+                        if isinstance(v, str) and v.startswith("#") and (v.endswith("!") or v.endswith("?") or v in ("#N/A", "#NULL!")):
+                            by_addr.add((ws_v.title, cv.coordinate))
+                            f = cf.value
+                            if isinstance(f, str) and f.startswith("="):
+                                by_formula.add((ws_v.title, f))
+        finally:
+            wb_v.close()
+            wb_f.close()
+    except Exception as exc:  # the classification is advisory: an unreadable original marks every error as new
+        return {"compared": False, "message": f"could not read the original for comparison: {str(exc)[:120]}", "preexisting": 0, "new": len(errors), "errors": errors}
+    out = []
+    pre = 0
+    for e in errors:
+        key_a = (e.get("sheet", ""), str(e.get("cell", "")).replace("$", ""))
+        key_f = (e.get("sheet", ""), str(e.get("formula", "")))
+        preexisting = key_a in by_addr or (key_f[1].startswith("=") and key_f in by_formula)
+        pre += preexisting
+        out.append({**e, "preexisting": preexisting})
+    return {"compared": True, "message": None, "preexisting": pre, "new": len(errors) - pre, "errors": out}
 
 
 def formula_signature(formula: str) -> str:

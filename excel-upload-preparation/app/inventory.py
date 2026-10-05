@@ -36,12 +36,16 @@ from openpyxl.reader.excel import ExcelReader
 from openpyxl.styles.numbers import is_date_format
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
-from .formula_utils import called_functions, find_calls, range_length, storage_prefixes
-from .grids import detect_grids, is_occupied, json_safe
+from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, range_length, storage_prefixes
+from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25
-MAX_STYLE_CELL_REFS = 5000  # coordinates kept per sheet for app/prep.py actions
+# Coordinates kept per sheet for app/prep.py actions. 1.7.2: raised from 5000 --
+# that cap made the theme-colour and empty-style actions run in 5000-cell
+# batches, so a large sheet needed several Prep rounds for one action. 250k
+# short strings cost a few MB at most; the public API still truncates lists.
+MAX_STYLE_CELL_REFS = 250_000
 
 _WORKBOOK_CACHE: dict[str, Any] = {}
 
@@ -265,10 +269,10 @@ def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, 
             formula = None
             array_ref = None
             if isinstance(raw, str) and raw.startswith("="):
-                formula = raw
+                formula = STORAGE_PREFIX_RE.sub("", raw)  # `_xlfn.` etc. are storage artefacts, not what Excel shows
             elif isinstance(raw, ArrayFormula):
                 text = raw.text if str(raw.text).startswith("=") else "=" + str(raw.text)
-                formula, array_ref = "{" + text + "}", str(raw.ref)
+                formula, array_ref = "{" + STORAGE_PREFIX_RE.sub("", text) + "}", str(raw.ref)
             elif isinstance(raw, DataTableFormula):
                 formula = "=TABLE()"
             if formula is None:
@@ -430,7 +434,16 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
             if cell.hyperlink is not None:
                 hyperlinks.append({"cell": cell.coordinate, "target": cell.hyperlink.target})
 
+    # a merged range whose first cell is occupied occupies every cell it covers (see grids.MergedInto)
+    for rng in ws.merged_cells.ranges:
+        anchor = (rng.min_row, rng.min_col)
+        if anchor in occupied:
+            for r in range(rng.min_row, rng.max_row + 1):
+                for c in range(rng.min_col, rng.max_col + 1):
+                    if (r, c) != anchor and (r, c) not in occupied:
+                        occupied[(r, c)] = MergedInto(anchor, occupied[anchor])
     grids, standalone = detect_grids(ws.title, occupied)
+    tables = sorted(str(t) for t in getattr(ws, "tables", {}).keys()) if hasattr(getattr(ws, "tables", None), "keys") else []
 
     row_groups = hidden_rows = max_row_level = 0
     for dim in ws.row_dimensions.values():
@@ -478,6 +491,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
         "tab_color": tab_color,
         "protected": sheet_protected,
         "merged_cells": merged,
+        "tables": tables,
         "locked_cell_count": locked_cells,
         "comments": comments,
         "hyperlinks": hyperlinks,
@@ -582,6 +596,8 @@ def build_analysis(
 
     features = {
         "sheet_count": len(sheets),
+        # Excel's "enable iterative calculation" -- the setting that lets circular references compute (FRM-005)
+        "iterative_calculation": bool(getattr(getattr(wb, "calculation", None), "iterate", False)),
         "ignored_sheet_count": len(ignored_sheets),
         "total_sheet_count": len(all_sheets),
         "hidden_sheet_count": hidden_sheet_count,

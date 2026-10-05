@@ -71,6 +71,26 @@ def test_apply_value_and_formula_operations_without_excel_improves_findings(tmp_
     assert run_rule(engine.get("PAR-002"), after, cfg)["status"] == "PASS"
 
 
+def test_apply_reports_every_stage_and_every_operation(tmp_path, flagged_model_broken_xlsx):
+    """1.7.2: the Apply indicator is fed by the executor itself -- the stages in
+    order, and one call per operation while writing (done / total)."""
+    from app.progress import APPLY_STAGES
+
+    result, _ = _run(tmp_path, flagged_model_broken_xlsx)
+    plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))
+    ops = plan["flag_spelling"]["operations"] + plan["loop_name_case"]["operations"] + plan["special_headers"]["operations"]
+    calls = []
+    out = apply_operations(flagged_model_broken_xlsx, tmp_path / "prep", ops, prefer_excel=False, progress=lambda stage, message, fraction=None, **facts: calls.append((stage, message, fraction, facts)))
+    assert out["status"] == "APPLIED"
+    stages = list(dict.fromkeys(c[0] for c in calls))
+    assert stages == APPLY_STAGES
+    writes = [c for c in calls if c[0] == "apply_write" and c[1].startswith("Change ")]
+    assert [c[3]["done"] for c in writes] == list(range(len(ops))) and all(c[3]["total"] == len(ops) for c in writes)
+    assert all(0.0 <= c[2] < 1.0 for c in writes) and writes[0][1].startswith(f"Change 1 of {len(ops)}: {ops[0]['sheet']}!")
+    # without a callback nothing changes
+    assert apply_operations(flagged_model_broken_xlsx, tmp_path / "prep2", ops, prefer_excel=False)["status"] == "APPLIED"
+
+
 def test_structural_operations_are_refused_without_excel(tmp_path, messy_workbook_xlsx):
     result, _ = _run(tmp_path, messy_workbook_xlsx)
     plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))
@@ -147,6 +167,7 @@ def test_chat_completion_payload_shape(monkeypatch):
             return {"content": [{"type": "text", "text": "ok"}]}
 
     def fake_post(url, headers=None, json=None, timeout=None):
+        calls["url"] = url
         calls["payload"] = json
         return FakeResp()
 
@@ -158,8 +179,10 @@ def test_chat_completion_payload_shape(monkeypatch):
     assert out["text"] == "ok"
     payload = calls["payload"]
     # the Anthropic Messages passthrough: system is top-level, never a message
+    assert calls["url"].endswith("/anthropic/v1/messages")
     assert payload["system"] == "SYS" and "stream" not in payload
     assert [m["role"] for m in payload["messages"]] == ["user", "assistant", "user"]
+    assert all(m["role"] != "system" for m in payload["messages"])
     assert payload["messages"][0]["content"] == [{"type": "text", "text": "q1"}]
     # Sonnet 5 rejects temperature (400 "deprecated") and thinks by default: low
     # effort + headroom so thinking never eats the answer; the 4.x models keep temperature
@@ -692,3 +715,19 @@ def test_grid_naming_reports_an_unavailable_gateway_without_raising():
 
     out = suggest_names([{"id": "S!A1", "size": "1 rows x 1 cols", "flags": [], "above": [], "left": [], "sample": ["x"]}], completion=unavailable)
     assert out["available"] is False and out["names"] == {} and "secret.key" in out["message"]
+
+
+def test_transient_com_errors_are_recognised():
+    """1.7.3: Excel answers RPC_E_CALL_REJECTED while busy for an instant; the
+    executor repeats the call instead of reporting the change as refused
+    (one real Apply of 10,404 formulas lost exactly one to it)."""
+    from app.prep import TRANSIENT_RETRIES, _is_transient
+
+    class ComError(Exception):
+        def __init__(self, hresult):
+            super().__init__(hresult, "Call was rejected by callee.", None, None)
+            self.hresult = hresult
+
+    assert _is_transient(ComError(-2147418111)) and _is_transient(ComError(-2147417846))
+    assert not _is_transient(ComError(-2147352567)) and not _is_transient(ValueError("x"))
+    assert TRANSIENT_RETRIES >= 3

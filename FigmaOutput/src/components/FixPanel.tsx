@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import * as api from "../services/api";
-import type { CellWindow, ChatDraft, ChatMessage, Finding, FixTarget, Operation, Proposal } from "../types";
+import type { ApplyReport, CellWindow, ChatDraft, ChatMessage, Finding, FixTarget, Operation, Proposal } from "../types";
 import StatusPill from "./StatusPill";
 import OperationsTable from "./OperationsTable";
 import ChatMarkdown from "./ChatMarkdown";
 import StreamingDraft, { nextDraft } from "./StreamingDraft";
+import RepairGauge from "./RepairGauge";
+import ApplyProgress from "./ApplyProgress";
+import ApplyReportCard from "./ApplyReportCard";
+import { useScanStatus } from "./ScanProgress";
 
 interface Site { sheet: string; cell: string; detail: string }
 
@@ -164,6 +168,8 @@ export default function FixPanel() {
   const [draft, setDraft] = useState<ChatDraft | null>(null); // 1.7.2: the reply being streamed
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
+  // 1.7.3: what the last Apply of this panel did, repair by repair
+  const [applyReport, setApplyReport] = useState<{ report: ApplyReport; verified: boolean | null } | null>(null);
   const [recalcNote, setRecalcNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -172,6 +178,9 @@ export default function FixPanel() {
   const [win, setWin] = useState<CellWindow | null>(null);
   const [winLoading, setWinLoading] = useState(false);
   const [showFormulas, setShowFormulas] = useState(false);
+  // a running Apply: the operations sent, when, and the backend's own account of it
+  const [applyRun, setApplyRun] = useState<{ total: number; startedAt: number } | null>(null);
+  const applyStatus = useScanStatus(sessionId, busy === "apply", 500);
 
   const isRecalc = target?.kind === "recalc";
   const isGroup = target?.kind === "recalc-group";
@@ -183,6 +192,7 @@ export default function FixPanel() {
     setInput("");
     setProposal(null);
     setOutcome(null);
+    setApplyReport(null);
     setRecalcNote(null);
     setError(null);
     setView(null);
@@ -258,11 +268,13 @@ export default function FixPanel() {
   async function applyOps(ops: Operation[], label: string) {
     if (!sessionId || ops.length === 0) return;
     setBusy("apply");
+    setApplyRun({ total: ops.length, startedAt: Date.now() });
     setError(null);
     try {
       const out = await api.applyOperations(sessionId, ops, { reanalyze: true });
       addVersion(out.version);
-      applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta });
+      applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta, readiness: out.readiness, prep_progress: out.prep_progress });
+      setApplyReport(out.outcome ? { report: out.outcome, verified: out.result.verified_opens_in_excel } : null);
       const verified = out.result.verified_opens_in_excel ? "verified" : "not verified";
       const vlabel = out.version.label.split(" — ")[0];
       const failed = out.result.failed ?? [];
@@ -297,6 +309,7 @@ export default function FixPanel() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
+      setApplyRun(null);
     }
   }
 
@@ -401,6 +414,8 @@ export default function FixPanel() {
           {loc && !isGroup && <code className="text-[12px] font-mono text-[#374151] bg-[#F3F4F6] px-1.5 py-0.5 rounded mt-1 inline-block">{loc}</code>}
           {isGroup && target.cause && <div className="text-[12px] text-[#374151] mt-1">{target.cause}</div>}
           {target.grid && <div className="text-[11px] text-[#9CA3AF] font-mono mt-1">grid {target.grid}</div>}
+          {/* 1.7.2: the repair gauge -- how the run of fixes is going, version by version */}
+          <div className="mt-2"><RepairGauge compact /></div>
         </div>
         <button onClick={closeFix} className="text-[#9CA3AF] hover:text-[#374151] text-lg leading-none" aria-label="Close">×</button>
       </div>
@@ -541,9 +556,15 @@ export default function FixPanel() {
             {recalcNote && <span>{recalcNote}</span>}
           </div>
         )}
+        {applyReport && <ApplyReportCard report={applyReport.report} verified={applyReport.verified} compact />}
         {error && (
           <div className="text-[12px] text-[#9F1D1D] bg-[#FDE2E2] border border-[#9F1D1D]/20 rounded-lg px-3 py-2" role="alert">
             {error}
+          </div>
+        )}
+        {busy === "apply" && applyRun && (
+          <div className="border border-[#1F3A5F]/30 rounded-lg bg-white px-3 py-2">
+            <ApplyProgress status={applyStatus} total={applyRun.total} startedAt={applyRun.startedAt} compact />
           </div>
         )}
 
@@ -616,6 +637,17 @@ export default function FixPanel() {
             {proposal && (
               <div className="border border-[#1F3A5F]/30 rounded-xl bg-[#EEF2FF] p-3">
                 {proposal.summary && <p className="text-[12px] font-semibold text-[#1F3A5F] mb-2">{proposal.summary}</p>}
+                {/* 1.7.2: a proposal that covers fewer cells than the finding counts is said so, before Apply -- not discovered after the rescan */}
+                {(() => {
+                  const expected = isGroup ? targetCells.length : sites.length;
+                  const covered = new Set(proposal.operations.map((o) => `${o.sheet}!${String(o.cell ?? o.range ?? "").split(":")[0]}`)).size;
+                  const rangeOps = proposal.operations.some((o) => String(o.cell ?? o.range ?? "").includes(":"));
+                  return expected > 1 && covered < expected && !rangeOps ? (
+                    <div className="mb-2 text-[11px] text-[#8A5A00] bg-[#FFF1CC] border border-[#8A5A00]/20 rounded px-2 py-1">
+                      ⚠ Covers {covered} of {expected} cells. Apply it, then ask again for the rest (or ask for one range operation covering all of them).
+                    </div>
+                  ) : null;
+                })()}
                 {proposal.operations.length > 0 && <OperationsTable operations={proposal.operations} compact />}
                 {proposal.errors.map((e, i) => (
                   <div key={i} className="mt-1 text-[11px] text-[#8A5A00] bg-[#FFF1CC] rounded px-2 py-1">⚠ {e}</div>

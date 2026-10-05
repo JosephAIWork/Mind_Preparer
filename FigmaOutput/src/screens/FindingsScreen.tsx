@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useStore } from "../store";
-import type { Finding, Grid, Status } from "../types";
+import { findingLevel, type Finding, type Grid, type PrepAction, type Status } from "../types";
 import StatusPill from "../components/StatusPill";
+import LevelBadge from "../components/LevelBadge";
 import KpiTiles from "../components/KpiTile";
 import EvidenceTag from "../components/EvidenceTag";
 import GridCard, { worstStatus } from "../components/GridCard";
+import RepairGauge from "../components/RepairGauge";
 
 const severityOrder: Record<string, number> = { BLOCKER: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
 const statusFilterOrder: Status[] = ["ERROR", "REQUIRES_USER_INPUT", "NOT_SUPPORTED", "WARNING", "PASS"];
@@ -30,7 +33,21 @@ export function findingsForGrid(grid: Grid, findings: Finding[]): Finding[] {
   });
 }
 
-function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBadge: boolean; onFix: () => void }) {
+/** 1.7.2: how a finding gets fixed -- the same routing as the readiness banner.
+ *  prep: a Prep action holds operations for the rule; prep_skipped: Prep looked
+ *  and left every site for review (by hand or the assistant); assistant: no
+ *  automatic repair exists for the rule. */
+export type FixRoute = { kind: "prep" | "prep_skipped" | "assistant"; action?: PrepAction };
+
+export function fixRouteFor(ruleId: string, plan: PrepAction[]): FixRoute {
+  const withOps = plan.find((a) => a.rule_ids.includes(ruleId) && a.count > 0);
+  if (withOps) return { kind: "prep", action: withOps };
+  const skipped = plan.find((a) => a.rule_ids.includes(ruleId) && a.skipped.length > 0);
+  if (skipped) return { kind: "prep_skipped", action: skipped };
+  return { kind: "assistant" };
+}
+
+function FindingRow({ finding, fixedBadge, route, onFix }: { finding: Finding; fixedBadge: boolean; route: FixRoute; onFix: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const loc = [finding.location.sheet, finding.location.cell].filter(Boolean).join("!");
   const actionable = finding.status !== "PASS";
@@ -45,6 +62,10 @@ function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBad
           {fixedBadge && (
             <span className="ml-2 text-[10px] font-semibold text-[#0F766E] bg-[#F0FDFA] border border-[#0F766E]/20 rounded px-1.5 py-0.5">FIXED</span>
           )}
+        </td>
+        <td className="px-4 py-2.5 whitespace-nowrap">
+          {/* 1.7.2: blocking (Mind needs it) vs optional (Mind reads the file as it is) -- from the rule's priority */}
+          <LevelBadge level={findingLevel(finding)} />
         </td>
         <td className="px-4 py-2.5">
           <span className="text-[12px] font-mono text-[#6B7280]">{finding.severity ?? "—"}</span>
@@ -72,25 +93,50 @@ function FindingRow({ finding, fixedBadge, onFix }: { finding: Finding; fixedBad
           <EvidenceTag evidence={finding.evidence} />
         </td>
         <td className="px-4 py-2.5 whitespace-nowrap">
-          {actionable ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); onFix(); }}
-              className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
-                finding.correction_available
-                  ? "bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
-                  : "border border-[#1F3A5F] text-[#1F3A5F] hover:bg-[#EEF2FF]"
-              }`}
-            >
-              {finding.correction_available ? "Fix" : "Ask"}
-            </button>
-          ) : (
+          {!actionable ? (
             <span className="text-[12px] text-[#9CA3AF]">—</span>
+          ) : route.kind === "prep" && route.action ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Link
+                to="/prep"
+                onClick={(e) => e.stopPropagation()}
+                title={`Prep "${route.action.title}" holds ${route.action.count} change(s) for this rule`}
+                className="inline-block px-2.5 py-1 rounded-md text-[12px] font-medium bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
+              >
+                Repair in Prep ({route.action.count})
+              </Link>
+              {/* the automatic repair is a proposal, never the only way */}
+              <button
+                onClick={(e) => { e.stopPropagation(); onFix(); }}
+                title="Open the Fix panel: every cell, the formula behind it, and a fix you write or ask the assistant for"
+                className="px-2.5 py-1 rounded-md text-[12px] font-medium border border-[#1F3A5F] text-[#1F3A5F] hover:bg-[#EEF2FF]"
+              >
+                By hand
+              </button>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              {route.kind === "prep_skipped" && (
+                <span title="Prep looked at it and left every cell for review" className="text-[10px] font-semibold text-[#92400E] bg-[#FEF3C7] border border-[#F59E0B]/30 rounded px-1.5 py-0.5">BY HAND</span>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); onFix(); }}
+                title={route.kind === "prep_skipped" ? "Ask the assistant for a cell-by-cell fix" : "No automatic repair for this rule: ask the assistant"}
+                className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
+                  finding.correction_available
+                    ? "bg-[#1F3A5F] text-white hover:bg-[#162d4a]"
+                    : "border border-[#1F3A5F] text-[#1F3A5F] hover:bg-[#EEF2FF]"
+                }`}
+              >
+                {finding.correction_available ? "Fix with assistant" : "Ask assistant"}
+              </button>
+            </span>
           )}
         </td>
       </tr>
       {expanded && (
         <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
-          <td colSpan={7} className="px-6 py-4">
+          <td colSpan={8} className="px-6 py-4">
             <div className="flex flex-col gap-3 text-[13px]">
               <p className="text-[#374151]">{finding.message}</p>
               {finding.source.document && (
@@ -130,6 +176,7 @@ export default function FindingsScreen() {
   const summary = useStore((s) => s.summary);
   const lastDelta = useStore((s) => s.lastDelta);
   const openFix = useStore((s) => s.openFix);
+  const plan = useStore((s) => s.plan);
   const currentVersion = useStore((s) => s.currentVersion);
   const [activeStatuses, setActiveStatuses] = useState<Set<Status>>(
     new Set(["ERROR", "REQUIRES_USER_INPUT", "WARNING"] as Status[])
@@ -138,6 +185,8 @@ export default function FindingsScreen() {
   const [tab, setTab] = useState<"table" | "map">("table");
   const [kpiFilter, setKpiFilter] = useState<Status | null>(null);
   const [showFixed, setShowFixed] = useState(true);
+  // 1.7.2: the shortest path -- only what Mind needs fixed
+  const [blockingOnly, setBlockingOnly] = useState(false);
 
   const fixedIds = useMemo(() => new Set((lastDelta?.fixed ?? []).map((d) => d.rule_id)), [lastDelta]);
 
@@ -171,6 +220,7 @@ export default function FindingsScreen() {
   const filtered = report.findings
     .filter((f) => {
       const isFixedRow = showFixed && fixedIds.has(f.rule_id) && f.status === "PASS";
+      if (blockingOnly && findingLevel(f) !== "blocking" && !isFixedRow) return false;
       if (kpiFilter) return f.status === kpiFilter || isFixedRow;
       if (!activeStatuses.has(f.status) && !isFixedRow) return false;
       if (search) {
@@ -184,7 +234,11 @@ export default function FindingsScreen() {
       }
       return true;
     })
-    .sort((a, b) => (severityOrder[a.severity ?? "INFO"] ?? 4) - (severityOrder[b.severity ?? "INFO"] ?? 4));
+    .sort((a, b) => {
+      // blocking first, then verify, then optional; severity inside each band
+      const band = (f: Finding) => ({ blocking: 0, verify: 1, optional: 2, pass: 3 }[findingLevel(f)]);
+      return band(a) - band(b) || (severityOrder[a.severity ?? "INFO"] ?? 4) - (severityOrder[b.severity ?? "INFO"] ?? 4);
+    });
 
   const deltaHasChanges = lastDelta && (lastDelta.fixed.length + lastDelta.improved.length + lastDelta.regressed.length > 0);
 
@@ -203,9 +257,11 @@ export default function FindingsScreen() {
           </div>
         </div>
         <KpiTiles counts={counts} onFilter={handleKpiClick} activeFilter={kpiFilter} />
+        {/* 1.7.2: the repair gauge -- blocking problems and open findings per version */}
+        <div className="mt-3 border border-[#E5E7EB] rounded-lg bg-white px-4 py-2"><RepairGauge /></div>
         {report.status !== "PASS" && (
           <p className="text-[12px] text-[#6B7280] mt-2">
-            PASS requires a clean recalculation. Click a status or "Fix" to open the fix panel; grids in the Workbook Map are clickable too.
+            PASS requires a clean recalculation. "Repair in Prep" means Prep already holds the change; "By hand" opens the Fix panel on the same cells, to write the fix yourself or ask the assistant. Grids in the Workbook Map are clickable too.
           </p>
         )}
         {lastDelta && (
@@ -253,6 +309,16 @@ export default function FindingsScreen() {
       {tab === "table" ? (
         <>
           <div className="px-6 py-3 border-b border-[#E5E7EB] bg-white flex items-center gap-3 flex-shrink-0">
+            <button
+              onClick={() => setBlockingOnly((v) => !v)}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+                blockingOnly ? "border-[#9F1D1D] bg-[#9F1D1D] text-white" : "border-[#9F1D1D]/40 text-[#9F1D1D] hover:bg-[#FDE2E2]"
+              }`}
+              title="Only what Mind needs fixed (REQUIRED rules in error)"
+            >
+              ● Blocking only
+            </button>
+            <div className="w-px h-5 bg-[#E5E7EB]" />
             <div className="flex gap-1.5 flex-wrap">
               {statusFilterOrder.map((s) => {
                 const on = activeStatuses.has(s);
@@ -286,7 +352,7 @@ export default function FindingsScreen() {
               <table className="w-full border-collapse text-[13px]">
                 <thead className="bg-[#F9FAFB] border-b border-[#E5E7EB] sticky top-0 z-10">
                   <tr>
-                    {["Rule", "Severity", "Status", "Location", "Finding", "Evidence", "Fix"].map((h) => (
+                    {["Rule", "Level", "Severity", "Status", "Location", "Finding", "Evidence", "Fix"].map((h) => (
                       <th key={h} className="px-4 py-2.5 text-left text-[11px] font-semibold text-[#6B7280] tracking-wide whitespace-nowrap">
                         {h.toUpperCase()}
                       </th>
@@ -299,6 +365,7 @@ export default function FindingsScreen() {
                       key={`${f.rule_id}-${i}`}
                       finding={f}
                       fixedBadge={fixedIds.has(f.rule_id) && f.status === "PASS"}
+                      route={fixRouteFor(f.rule_id, plan)}
                       onFix={() => fixFinding(f)}
                     />
                   ))}

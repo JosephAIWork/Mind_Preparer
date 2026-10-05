@@ -7,7 +7,7 @@ import VersionChip from "../components/VersionChip";
 import ScanProgress, { useScanStatus } from "../components/ScanProgress";
 
 const modes: { value: Mode; label: string; desc: string }[] = [
-  { value: "plan", label: "Plan", desc: "Analyze everything — full 94-rule scan" },
+  { value: "plan", label: "Plan", desc: "Analyze everything — every active readiness rule" },
   { value: "prep_loops", label: "Prep Mind Loops", desc: "Focus on MM_LOOP and dimension rules" },
   { value: "fix_formulas", label: "Fix Incompatible Formulas", desc: "Target FRM-* rules only" },
   { value: "structure_fix", label: "Structure Fix", desc: "STR-* and FMT-* rules only" },
@@ -16,7 +16,7 @@ const modes: { value: Mode; label: string; desc: string }[] = [
 const trustStatements = [
   "Original never modified",
   "Outputs written by Excel and verified",
-  "93 rules from the Mind knowledge base",
+  "Rules mined from the Mind knowledge base",
 ];
 
 const MB = 1024 * 1024;
@@ -32,6 +32,7 @@ export default function WorkbookScreen() {
   const versions = useStore((s) => s.versions);
   const setMode = useStore((s) => s.setMode);
   const setSession = useStore((s) => s.setSession);
+  const applyAnalysis = useStore((s) => s.applyAnalysis);
   const setVersions = useStore((s) => s.setVersions);
   const setChatHistory = useStore((s) => s.setChatHistory);
   const resetSession = useStore((s) => s.resetSession);
@@ -62,6 +63,7 @@ export default function WorkbookScreen() {
 
   function finish(res: api.SessionStart) {
     setSession(res.sessionId, res.summary, res.report, res.plan, res.version);
+    applyAnalysis({ readiness: res.readiness ?? null, prep_progress: res.prep_progress ?? null });
     if (res.versions && res.versions.length) setVersions(res.versions);
     setChatHistory([]);
     navigate("/findings");
@@ -226,7 +228,7 @@ export default function WorkbookScreen() {
     <div className="p-8 max-w-2xl">
       <h1 className="text-lg font-semibold text-[#111827] mb-1">Upload workbook</h1>
       <p className="text-sm text-[#6B7280] mb-6">
-        Drop an Excel file to analyze it against 94 Mind readiness rules.
+        Drop an Excel file to analyze it against every Mind readiness rule.
       </p>
 
       {phase === "uploading" ? (

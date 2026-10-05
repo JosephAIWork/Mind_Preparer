@@ -1,10 +1,23 @@
 export type Status = "PASS" | "WARNING" | "ERROR" | "REQUIRES_USER_INPUT" | "NOT_SUPPORTED";
 export type Evidence = "DOCUMENTED_RULE" | "DETERMINISTIC_FINDING" | "USER_PROVIDED" | "INFERENCE" | "RECOMMENDATION";
 export type Mode = "plan" | "prep_loops" | "fix_formulas" | "structure_fix";
+/** The rule's own priority (rules/*.yaml). REQUIRED = Mind needs it; the rest is quality. */
+export type Priority = "REQUIRED" | "RECOMMENDED" | "INFORMATIONAL";
+/** blocking: Mind refuses the file (or computes it wrong) without the change; optional: Mind reads the file as it is. */
+export type ActionLevel = "blocking" | "optional";
+
+/** Is a finding one Mind needs fixed? (Same rule as the backend's readiness.level_of.) */
+export function findingLevel(f: Finding): ActionLevel | "pass" | "verify" {
+  if (f.rule_id === "READY-001") return "verify";
+  if (f.status === "PASS") return "pass";
+  if ((f.status === "ERROR" || f.status === "REQUIRES_USER_INPUT") && f.priority === "REQUIRED") return "blocking";
+  return "optional";
+}
 
 export interface Finding {
   rule_id: string;
   status: Status;
+  priority?: Priority;
   severity?: "HIGH" | "MEDIUM" | "LOW" | "BLOCKER" | "INFO";
   confidence: "HIGH" | "MEDIUM" | "LOW";
   evidence: Evidence;
@@ -118,6 +131,31 @@ export interface ScanStatus {
   version_id?: string;
   needs_convert?: boolean;
   ignore_sheets?: string[];
+  /** epoch seconds the scan started (to tell a re-analysis that follows an Apply from the scan before it) */
+  started_at?: number | null;
+  /** 1.7.2: the current (or last) Apply of the session; null before the first one */
+  apply?: ApplyStatus | null;
+}
+
+/** Live Apply status (GET /api/sessions/{id}/status, field "apply"): the stage, and while writing, how many operations are done. */
+export interface ApplyStatus {
+  state: "running" | "done" | "error";
+  stage: "apply_copy" | "apply_write" | "apply_save" | "apply_verify" | "apply_log" | "done" | null;
+  title: string | null;
+  message: string | null;
+  /** progress within the writing stage, 0..1; null for the stages that cannot say */
+  fraction: number | null;
+  done: number;
+  total: number;
+  /** a re-analysis follows this Apply */
+  reanalyze: boolean;
+  started_at: number | null;
+  finished_at: number | null;
+  elapsed_s: number;
+  stages: { stage: string; seconds: number }[];
+  applied: number | null;
+  failed: number | null;
+  error: string | null;
 }
 
 export interface WorkbookSummary {
@@ -178,9 +216,79 @@ export interface PrepAction {
   title: string;
   rule_ids: string[];
   default_on: boolean;
+  /** 1.7.2: blocking (Mind needs it) or optional (Mind reads the file as it is) */
+  level: ActionLevel;
+  /** why an optional action still matters (e.g. untitled grids show as "Untitled" in Mind) */
+  level_note?: string | null;
+  /** why a blocking action deserves a look before Apply (e.g. it rewrites formulas) */
+  caution?: string | null;
   operations: Operation[];
   count: number;
   skipped: string[];
+}
+
+/** One thing that stands between the workbook and Mind (readiness.blocking[]). */
+export interface BlockingItem {
+  rule_id: string;
+  status: Status;
+  message: string;
+  location: { sheet?: string; cell?: string; [k: string]: unknown };
+  /** prep: a Prep action holds operations for it; prep_skipped: the action exists but left every site for review; assistant: no automatic fix */
+  fix: "prep" | "prep_skipped" | "assistant";
+  action_id: string | null;
+  sites: number | null;
+}
+
+/** The one verdict (1.7.2): is this version acceptable by Mind, and if not, what stands in the way. */
+export interface Readiness {
+  state: "blocked" | "unverified" | "ready";
+  headline: string;
+  version_id: string;
+  blocking: BlockingItem[];
+  blocking_count: number;
+  manual_blocking_count: number;
+  optional_count: number;
+  prep: { blocking_ops: number; optional_ops: number };
+  /** new_errors: error cells that were NOT errors in the original upload (the preparation's doing); preexisting_errors: the model's own */
+  recalc: { ran: boolean; clean: boolean; version_id: string | null; formula_errors: number; new_errors: number; preexisting_errors: number; addin_gap_errors: number; message: string | null };
+  next_step: { screen: "prep" | "findings" | "recalculate" | "reports"; label: string; detail: string | null; rule_id?: string };
+}
+
+/** The Prep gauge: how much prep work each analysed version still needed. */
+export interface PrepProgressEntry {
+  version_id: string;
+  blocking_ops: number;
+  optional_ops: number;
+  total_ops: number;
+  blocking_findings: number;
+  /** findings still open (not PASS) after that analysis -- the repair gauge */
+  open_findings?: number;
+  status_counts?: Partial<Record<Status, number>>;
+  by_action: Record<string, number>;
+}
+/** One Apply of the session: the changes it really wrote into the file, by level. */
+export interface ApplyRecord {
+  version_id: string;
+  previous_version_id: string | null;
+  sent: number;
+  applied: number;
+  failed: number;
+  blocking_applied: number;
+  blocking_failed: number;
+  optional_applied: number;
+  optional_failed: number;
+  verdicts: Partial<Record<ApplyVerdict, number>>;
+  resolved_blocking: string[];
+}
+export interface PrepProgress {
+  entries: PrepProgressEntry[];
+  /** 1.7.3: the applied-changes gauge -- every Apply, and the totals written in this session */
+  applies?: ApplyRecord[];
+  written?: { sent: number; applied: number; failed: number; blocking_applied: number; blocking_failed: number; optional_applied: number; optional_failed: number };
+  /** three analyses in a row with work planned and no net decrease: Prep cannot resolve what is left */
+  stalled: boolean;
+  repeating_actions: string[];
+  message: string | null;
 }
 
 export interface ApplyResult {
@@ -193,6 +301,60 @@ export interface ApplyResult {
   verified_opens_in_excel: boolean | null;
   warnings: string[];
   message: string;
+}
+
+/** What an Apply did to one rule: its status and its cell count, before and after. */
+export interface ApplyRuleMove {
+  rule_id: string;
+  from: Status | null;
+  /** null when the new file was not re-analyzed */
+  to: Status | null;
+  sites_from: number | null;
+  sites_to: number | null;
+  blocking_before: boolean;
+  blocking_after: boolean;
+}
+
+/** resolved: the rules pass and nothing more is planned; partial: something moved; unchanged: written, same analysis as before; failed: nothing written; written: not re-analyzed. */
+export type ApplyVerdict = "resolved" | "partial" | "unchanged" | "failed" | "written";
+
+/** One repair of an Apply (a Prep action, or an assistant/manual fix for one rule). */
+export interface ApplyActionOutcome {
+  id: string;
+  title: string;
+  level: ActionLevel;
+  sent: number;
+  applied: number;
+  failed: number;
+  /** repairs the analysis planned for this action before / after (null for a fix that is not a Prep action) */
+  planned_before: number | null;
+  planned_after: number | null;
+  skipped_after: number | null;
+  rules: ApplyRuleMove[];
+  errors: string[];
+  verdict: ApplyVerdict;
+  /** the whole sentence; `next` is its conclusion alone (what is left, who acts) */
+  summary: string;
+  next?: string;
+}
+
+/** 1.7.3: what the last Apply did, repair by repair (POST /apply, field "outcome"). */
+export interface ApplyReport {
+  version_id: string;
+  previous_version_id: string | null;
+  reanalyzed: boolean;
+  sent: number;
+  applied: number;
+  failed: number;
+  headline: string;
+  actions: ApplyActionOutcome[];
+  /** repairs the new analysis plans that the previous one did not (or planned fewer of) */
+  appeared: { id: string; title: string; level: ActionLevel; rule_ids: string[]; planned_before: number; planned_after: number }[];
+  regressed: DeltaEntry[];
+  blocking_before: number;
+  blocking_after: number | null;
+  resolved_blocking: string[];
+  remaining_blocking: { rule_id: string; fix: BlockingItem["fix"]; action_id: string | null; sites: number | null; touched: boolean; new: boolean }[];
 }
 
 export interface ChatMessage {
@@ -225,7 +387,7 @@ export interface ChatDraft {
 
 export type ChatStreamEvent = { type: "phase"; phase: ChatPhase; n: number } | { type: "delta"; text: string };
 
-export interface RecalcCell { sheet: string; cell: string; formula: string; error: string; array?: string }
+export interface RecalcCell { sheet: string; cell: string; formula: string; error: string; array?: string; /** 1.7.2: this cell was already an error in the original upload */ preexisting?: boolean }
 
 /** Recalculation errors that share one root cause (same unknown function, same formula shape, same missing add-in function). */
 export interface RecalcGroup {
@@ -248,6 +410,12 @@ export interface RecalcResult {
   formula_errors: RecalcCell[];
   addin_gap_errors: { sheet: string; cell: string; formula: string }[];
   groups?: RecalcGroup[];
+  /** 1.7.2: errors split against the original upload -- the model's own vs the preparation's */
+  preexisting_errors?: number;
+  new_errors?: number;
+  compared_with_original?: boolean;
+  /** 1.7.2: the verdict after this recalculation (a clean one turns it green) */
+  readiness?: Readiness | null;
 }
 
 export interface ReportBuild {

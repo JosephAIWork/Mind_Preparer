@@ -25,7 +25,7 @@ import json
 import re
 from typing import Any, Callable
 
-from .formula_utils import parse_ref, ref_text
+from .formula_utils import STORAGE_PREFIX_RE, parse_ref, ref_text
 from .grids import all_grids
 from .inventory import cell_value
 from .llm import chat_completion
@@ -36,18 +36,36 @@ MAX_RETRIEVAL_CHARS = 6000
 MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
 MAX_PROPOSAL_RETRIES = 2  # a rejected ```changes block is sent back (twice at most) with the validation errors
+PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block (1.7.2)
 CELL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:(?P<sheet>'[^']+'|[A-Za-z0-9_]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![A-Za-z0-9_(])")
 RULE_ID_RE = re.compile(r"\b([A-Z]{2,7})-(\d{3})\b")
 MM_FN_RE = re.compile(r"\bMM_[A-Za-z0-9_]+\b", re.IGNORECASE)
+# Replacements the tool vouches for (every function on the right is on the Mind list); when the user
+# asks to replace a function, the assistant proposes these rather than inventing one, and keeps the
+# original's behaviour on blanks/errors.
+KNOWN_EQUIVALENTS: dict[str, str] = {
+    "NUMBERVALUE": 'IF(x="",0,VALUE(x)) -- NUMBERVALUE("") is 0 while VALUE("") is #VALUE!',
+    "IFNA": "IF(ISNA(x),alt,x) -- IFERROR would also swallow #REF!/#DIV/0!, which changes behaviour",
+    "XLOOKUP": "INDEX(return_range, MATCH(key, lookup_range, 0)) wrapped in IF(ISNA(...),if_not_found,...) when a default was given",
+    "CONCAT": "CONCATENATE(...) or the & operator",
+    "TEXTJOIN": "CONCATENATE with the delimiter written between the parts",
+    "SWITCH": "nested IF(...)",
+    "ANCHORARRAY": "the fixed range the spill covers today (Prep action 'freeze_spill_refs' does it for every A1# reference); MM_RANGE if the range must grow",
+}
+FN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])(?:_xl(?:fn|ws|udf|pm|l)\.)?([A-Za-z][A-Za-z0-9_.]{1,30})", re.IGNORECASE)
 BLOCK_RE = {kind: re.compile(rf"```{kind}\s*\n(.*?)```", re.DOTALL | re.IGNORECASE) for kind in ("changes", "lookup")}
 
 SYSTEM_PROMPT = """You are the assistant inside "Excel Upload Preparation", a tool that checks Excel workbooks before upload to Milliman Mind (an actuarial modelling platform that imports Excel models; grids are blocks of cells titled with a '#Name /Flag' cell; MM_-prefixed functions come from the MMForExcel add-in).
 
-You are given the tool's analysis of ONE workbook: its sheets, grids and flags, formula statistics, and the findings of 94 readiness rules (PASS / WARNING / ERROR / REQUIRES_USER_INPUT / NOT_SUPPORTED). Answer the user's questions about this workbook from that material, and make the changes the user asks for.
+You are given the tool's analysis of ONE workbook: its sheets, grids and flags, formula statistics, and the findings of 99 readiness rules (PASS / WARNING / ERROR / REQUIRES_USER_INPUT / NOT_SUPPORTED). Answer the user's questions about this workbook from that material, and make the changes the user asks for.
 
 Rules for you:
+- Anything you state about Mind -- what it accepts, refuses, requires, computes or displays -- must come from the Mind documentation the tool holds: the rule findings, the "## Function support" block, the KB extracts and the rule texts in the context. Your general knowledge of Excel or of "actuarial platforms" is NOT evidence about Mind: never conclude "Mind will accept this" or "this is a non-issue" from it. If the tool's material says nothing about a point, say exactly that ("the Mind documentation held by the tool does not cover X") and stop there.
 - Ground every answer in the context; quote rule ids, sheet!cell locations and grid names. If the context doesn't contain what is needed, look it up (below) or say what is missing instead of guessing.
 - Explain findings in plain language and say concretely what to change in Excel to fix them.
+- Whether Mind accepts an Excel function is decided by the tool's own lists (the Mind supported-function list, the functions accepted on other evidence, and the MM_ registry, applied by rule FRM-002), never by general knowledge. When the context has a "## Function support" block, state its verdict as the answer ("IFERROR is on the Mind supported list" / "the Mind documentation does not list NUMBERVALUE: it neither confirms nor refuses it"); never hedge with "most platforms" or "should be fine". A function the Mind documentation does not list is NOT unsupported and NOT a blocker: say the documentation is silent, and do not propose to replace it unless the user asks for a replacement.
+- `_xlfn.`, `_xlws.`, `_xludf.` and `_xll.` in front of a function name are Excel's internal storage prefixes (Excel writes them for functions newer than Excel 2007 and for add-in calls). They are not a compatibility-mode artefact, not a defect and not something to fix; the rules strip them before checking the function name. If a user asks about one, say exactly that in one sentence.
+- When you replace a function with another, keep the formula's behaviour on blank cells, text and errors: e.g. NUMBERVALUE("") returns 0 but VALUE("") returns #VALUE!, so wrap the replacement (IF(x="",0,VALUE(x))) when the original tolerated blanks; the app recalculates the file in Excel afterwards and every new error is counted against the fix.
 - The app has these sections: "Findings" (rule results), "Prep workbook" (applies the listed prep actions and user-edited formula replacements), "Ask the assistant" (you), "Recalculate" (real Excel recalculation -- the only way READY-001 clears), "Reports" (downloads).
 - PASS for upload is only ever granted after a real recalculation; never tell the user the workbook is ready.
 - If a <recalculation> block is present it is the result of a real Excel recalculation of the current file: a genuine formula error (#NAME?, #REF!, #VALUE!, #DIV/0!, #N/A ...) at a cell must be explained from that cell's formula and, when the user asks, fixed with a changes block; a #NAME? on an MM_ function listed as an add-in gap is NOT a workbook defect (the MMForExcel add-in is missing on this machine) and must not be "fixed" by rewriting the formula.
@@ -161,6 +179,44 @@ def _sheet_block(s: dict[str, Any]) -> str:
     )
 
 
+def function_support(names: list[str], analysis: dict[str, Any]) -> str:
+    """The tool's verdict on Excel / MM_ function names (the same lists FRM-002
+    applies), with the workbook's usage, so the assistant answers "is X
+    supported by Mind?" from fact rather than from general knowledge."""
+    from .formula_utils import called_functions
+    from .validators.excel_functions import EXCEL_FUNCTIONS
+    from .validators.formula import DYNAMIC_ARRAY_ARTIFACTS, _known_mm_functions, _supported_native_functions, confirmed_functions, evidence_text, kb_page_note
+
+    supported, known_mm, confirmed = _supported_native_functions(), _known_mm_functions(), confirmed_functions()
+    wb = analysis["workbooks"][0]
+    lines = []
+    for raw in names:
+        fn = STORAGE_PREFIX_RE.sub("", raw).upper()
+        is_mm = fn.startswith("MM_")
+        if not is_mm and fn not in EXCEL_FUNCTIONS:
+            continue
+        sites = [x for x in wb["formulas"] if fn in {c.upper() for c in called_functions(x["formula"])}]
+        usage = f"used in {len(sites)} formula(s)" + (f", first at {sites[0]['sheet']}!{sites[0]['cell']}" if sites else "")
+        if is_mm:
+            entry = known_mm.get(fn)
+            verdict = ("registered MM_ function" + (" (deprecated)" if entry.get("deprecated") else "")) if entry else "MM_ name not in either MM_ registry: FRM-002 flags it (do not invent syntax)"
+        elif fn in DYNAMIC_ARRAY_ARTIFACTS:
+            verdict = "Excel dynamic-array storage token, reviewed by FRM-003 (Mind resizes arrays with MM_RANGE, not Office 365 spills)"
+        elif fn in confirmed:
+            verdict = f"accepted by Mind ({evidence_text(confirmed[fn])}: {confirmed[fn].get('detail')}) although {kb_page_note()} omits it: FRM-002 passes it, leave it as it is"
+        elif fn in supported:
+            verdict = "on the Mind supported-function list: accepted by Mind as is (FRM-002 passes it)"
+        else:
+            verdict = (
+                f"not listed on {kb_page_note()}, which says nothing about the functions it omits: the Mind documentation neither confirms nor refuses it. "
+                "FRM-002 reports it as a warning, not a blocker; a conversion in Mind is the proof. Do not call it unsupported"
+            )
+        prefix_note = " The `_xlfn.`/`_xl*.` prefix seen in stored formulas is Excel's storage prefix, not a defect." if STORAGE_PREFIX_RE.search(raw) else ""
+        equivalent = f" If the user asks for a replacement: {KNOWN_EQUIVALENTS[fn]}." if fn in KNOWN_EQUIVALENTS and fn not in supported else ""
+        lines.append(f"- {fn}: {verdict}; {usage}.{prefix_note}{equivalent}")
+    return "## Function support (tool verdict, rule FRM-002)" + chr(10) + chr(10).join(lines) if lines else ""
+
+
 def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[str, Any], max_chars: int = MAX_RETRIEVAL_CHARS) -> str:
     """Detail for the things the question names."""
     wb = analysis["workbooks"][0]
@@ -194,10 +250,20 @@ def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[st
     for name in mentioned_sheets[:2]:
         out.append(_sheet_block(sheet_names[name]))
 
+    # any Excel / MM_ function the question names: the tool's support verdict first
+    named: list[str] = []
+    for m in FN_WORD_RE.finditer(question):
+        tok = m.group(0)
+        if tok.upper() not in {n.upper() for n in named}:
+            named.append(tok)
+    block = function_support(named, analysis)
+    if block:
+        out.append(block)
+
     for m in {t.upper() for t in MM_FN_RE.findall(question)}:
         sites = [x for x in wb["formulas"] if m in x["formula"].upper()][:15]
         if sites:
-            out.append(f"## {m} call sites\n" + "\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(x['formula'], 160)}" for x in sites))
+            out.append(f"## {m} call sites\n" + "\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(STORAGE_PREFIX_RE.sub('', x['formula']), 160)}" for x in sites))
 
     if "flag" in q_low and not out:
         flagged = [g for g in grids if g["flags"]]
@@ -235,7 +301,7 @@ def retrieve_structured(spec: Any, analysis: dict[str, Any], max_chars: int = MA
     for fn in spec.get("functions", []) or []:
         fn_u = str(fn).upper()
         sites = [x for x in wb["formulas"] if fn_u in x["formula"].upper()][:20]
-        out.append(f"## {fn_u} call sites\n" + ("\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(x['formula'], 160)}" for x in sites) if sites else "(none)"))
+        out.append(f"## {fn_u} call sites\n" + ("\n".join(f"- {x['sheet']}!{x['cell']}: {_trim(STORAGE_PREFIX_RE.sub('', x['formula']), 160)}" for x in sites) if sites else "(none)"))
     return _trim("\n\n".join(out) or "(nothing requested)", max_chars)
 
 
@@ -305,7 +371,12 @@ def answer_question(
         system += "\n\n<recalculation>\n" + _trim(extra_context, 6000) + "\n</recalculation>"
     turn = question if not detail else f"{question}\n\n<retrieved_detail>\n{detail}\n</retrieved_detail>"
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]] + [{"role": "user", "content": turn}]
-    kwargs: dict[str, Any] = {"model_id": model_id} if model_id else {}
+    # 1.7.2: a ```changes block costs ~30 tokens per cell; the old 1200-token
+    # default silently truncated proposals at ~35 operations (the rest of the
+    # finding's cells never made it into the proposal and nothing said so).
+    kwargs: dict[str, Any] = {"max_tokens": PROPOSAL_MAX_TOKENS}
+    if model_id:
+        kwargs["model_id"] = model_id
     if on_event is not None:
         kwargs["on_delta"] = lambda text: on_event({"type": "delta", "text": text})
 

@@ -1,0 +1,5 @@
+{
+  // http://localhost and http://127.0.0.1 links open in VS Code's integrated
+  // browser instead of the system browser (Mind Ready runs on port 8600).
+  "workbench.browser.openLocalhostLinks": true
+}

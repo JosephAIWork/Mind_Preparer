@@ -26,7 +26,7 @@ def _upload(client, path: Path, mode: str = "plan") -> dict:
 
 def test_health_reports_engine_facts(client):
     body = client.get("/api/health").json()
-    assert body["rules"] == 96 and isinstance(body["excel"], bool) and isinstance(body["assistant"], bool)
+    assert body["rules"] == 99 and isinstance(body["excel"], bool) and isinstance(body["assistant"], bool)
 
 
 def test_upload_returns_the_front_end_contracts(client, flagged_model_broken_xlsx):
@@ -38,7 +38,7 @@ def test_upload_returns_the_front_end_contracts(client, flagged_model_broken_xls
     grid = next(g for s in summary["sheets"] for g in s["grids"] if g["anchor"] == "A4")
     assert grid["title"] == "#Assumptions /Reorder /Inpt" and sorted(grid["flag_names"]) == ["inpt", "reorder"]
     assert set(grid) >= {"display_name", "ref", "header_values", "inner_title_cells", "formula_count"}
-    assert report["status"] == "NOT_SUPPORTED" and report["summary"]["finding_count"] == 96
+    assert report["status"] == "NOT_SUPPORTED" and report["summary"]["finding_count"] == 99
     assert all({"rule_id", "status", "confidence", "evidence", "location", "message", "readiness_impact", "correction_available", "source"} <= set(f) for f in report["findings"])
     assert {a["id"] for a in plan} >= {"flag_spelling", "loop_name_case", "create_grid_titles"}
     assert version["id"] == "ver-001" and version["source"] == "upload" and version["label"].startswith("v1")
@@ -78,6 +78,25 @@ def test_apply_creates_a_verified_version_and_reanalyzes(client, flagged_model_b
     res2 = client.post(f"/api/sessions/{sid}/apply", json={"operations": plan["loop_name_case"]["operations"], "reanalyze": False}).json()
     assert res2["version"]["id"] == "ver-003" and res2["result"]["output_name"] != out["result"]["output_name"]
     assert client.post(f"/api/sessions/{sid}/apply", json={"operations": [{"op": "explode", "sheet": "Model"}]}).status_code == 422
+
+
+def test_status_carries_the_apply_progress(client, flagged_model_broken_xlsx):
+    """1.7.2: GET /status says what the Apply did stage by stage, so the
+    front-end shows the real step and the changes written, not a timer."""
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    assert client.get(f"/api/sessions/{sid}/status").json()["apply"] is None  # no Apply yet
+    ops = {a["id"]: a for a in body["plan"]}["flag_spelling"]["operations"]
+    out = client.post(f"/api/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True})
+    assert out.status_code == 200, out.text
+    status = client.get(f"/api/sessions/{sid}/status").json()
+    ap = status["apply"]
+    assert ap["state"] == "done" and ap["stage"] == "done" and ap["error"] is None and ap["reanalyze"] is True
+    assert ap["total"] == len(ops) and ap["done"] == len(ops) and ap["applied"] == len(ops) and ap["failed"] == 0
+    assert [s["stage"] for s in ap["stages"]] == ["apply_copy", "apply_write", "apply_save", "apply_verify", "apply_log"]
+    assert ap["elapsed_s"] >= 0 and ap["finished_at"] >= ap["started_at"]
+    # the re-analysis that followed is the scan of the same status, started after the Apply
+    assert status["state"] == "ready" and status["version_id"] == "ver-002" and status["started_at"] >= ap["started_at"]
 
 
 def test_chat_returns_reply_and_validated_proposal(client, flagged_model_broken_xlsx, monkeypatch):
@@ -188,7 +207,8 @@ def test_chat_focus_pulls_the_finding_into_the_turn(client, flagged_model_broken
     monkeypatch.setattr(chat_context, "chat_completion", fake_chat)
     res = client.post(f"/api/sessions/{sid}/chat", json={"history": [], "question": "Explain this finding", "focus": {"rule_id": "RES-002", "sheet": "Model", "cell": "J6"}})
     assert res.status_code == 200 and res.json()["text"] == "explained"
-    assert seen["turn"].startswith("[About finding RES-002 at Model!J6]")
+    assert seen["turn"].startswith("[About finding RES-002 at Model!J6.")
+    assert "behave like the original on blank cells" in seen["turn"]  # 1.7.2: a replacement is judged by the recalculation
     assert "## Finding RES-002" in seen["turn"] and "J6 = =MM_RESULT(J5,\"scenario\",1)" in seen["turn"]
 # --- 1.6.2: recalculation errors in the Fix panel -------------------------------------------
 
@@ -374,7 +394,7 @@ def test_deferred_upload_reports_size_and_sheets_then_scans_without_the_skipped_
     assert (summary["sheet_count"], summary["ignored_sheet_count"], summary["total_sheet_count"]) == (2, 1, 3)
     assert summary["size"]["above_threshold"] is True
     assert not any(f["location"].get("sheet") == "Outputs" for f in out["report"]["findings"])
-    assert out["report"]["summary"]["finding_count"] == 96  # every rule still runs
+    assert out["report"]["summary"]["finding_count"] == 99  # every rule still runs
     scan = client.get(f"/api/sessions/{sid}/status").json()
     assert scan["state"] == "ready" and scan["overall"] == 1.0 and scan["error"] is None and scan["elapsed_s"] >= 0
     assert {s["stage"] for s in scan["stages"]} >= {"copy", "load", "inventory", "names", "rules", "report", "plan"}
@@ -403,3 +423,81 @@ def test_one_shot_upload_carries_size_facts_and_honours_ignore_sheets(client, fl
     assert client.get(f"/api/sessions/{out['sessionId']}/status").json()["ignore_sheets"] == ["Settings"]
     with flagged_model_broken_xlsx.open("rb") as f:
         assert client.post("/api/sessions", files={"file": ("x.xlsx", f, "application/octet-stream")}, data={"mode": "plan", "ignore_sheets": '["Nope"]'}).status_code == 422
+
+
+# --- 1.7.2: the readiness verdict and the Prep gauge travel with every analysis ------------
+def test_analysis_carries_the_verdict_levels_and_gauge(client, flagged_model_broken_xlsx):
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    rd, pp = body["readiness"], body["prep_progress"]
+    assert rd["state"] in ("blocked", "unverified", "ready") and rd["version_id"] == "ver-001"
+    assert set(rd) >= {"headline", "blocking", "blocking_count", "manual_blocking_count", "optional_count", "prep", "recalc", "next_step"}
+    assert rd["recalc"]["ran"] is False and rd["state"] != "ready"
+    for b in rd["blocking"]:
+        assert b["fix"] in ("prep", "prep_skipped", "assistant")
+    assert all(f.get("priority") in ("REQUIRED", "RECOMMENDED", "INFORMATIONAL") for f in body["report"]["findings"])
+    assert all(a["level"] in ("blocking", "optional") for a in body["plan"])
+    assert pp["entries"][-1]["version_id"] == "ver-001" and pp["stalled"] is False
+    last = pp["entries"][-1]
+    assert last["open_findings"] == sum(1 for f in body["report"]["findings"] if f["status"] != "PASS")
+    assert sum(last["status_counts"].values()) == len(body["report"]["findings"])
+    # the same verdict on demand
+    got = client.get(f"/api/sessions/{sid}/readiness").json()
+    assert got["readiness"]["state"] == rd["state"] and got["prep_progress"]["entries"] == pp["entries"]
+    assert client.get("/api/sessions/nope/readiness").status_code == 404
+
+
+def test_apply_says_what_it_did_repair_by_repair(client, flagged_model_broken_xlsx):
+    """1.7.3: the Apply answer carries its outcome -- per repair, the changes
+    written, the rule before and after, and what is left -- so the front-end
+    never has to guess whether a blocking problem was resolved."""
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    plan = {a["id"]: a for a in body["plan"]}
+    ops = plan["special_headers"]["operations"] + plan["flag_spelling"]["operations"]
+    out = client.post(f"/api/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True}).json()
+    oc = out["outcome"]
+    assert oc["reanalyzed"] is True and oc["version_id"] == "ver-002" and oc["previous_version_id"] == "ver-001"
+    assert oc["sent"] == len(ops) and oc["applied"] == len(ops) and oc["failed"] == 0
+    by_id = {a["id"]: a for a in oc["actions"]}
+    assert set(by_id) == {"special_headers", "flag_spelling"}
+    assert by_id["flag_spelling"]["verdict"] == "resolved" and by_id["flag_spelling"]["level"] == "optional"
+    # two of the three rules it serves pass; the third still fails on fewer cells: said as it is
+    headers = by_id["special_headers"]
+    assert headers["verdict"] == "partial" and headers["level"] == "blocking" and headers["planned_after"] == 0
+    assert "EXP-003 still ERROR" in headers["summary"] and "by hand" in headers["summary"]
+    assert headers["applied"] == plan["special_headers"]["count"] == headers["planned_before"]
+    moves = {r["rule_id"]: (r["from"], r["to"]) for r in headers["rules"]}
+    assert moves["PAR-002"] == ("ERROR", "PASS") and "PAR-002 ERROR -> PASS" in headers["summary"]
+    assert {"PAR-002", "PRJ-002"} <= set(oc["resolved_blocking"])
+    assert oc["blocking_after"] == out["readiness"]["blocking_count"]
+    assert oc["blocking_after"] == oc["blocking_before"] - len(oc["resolved_blocking"]) + sum(1 for r in oc["remaining_blocking"] if r["new"])
+    assert {r["rule_id"] for r in oc["remaining_blocking"]} == {b["rule_id"] for b in out["readiness"]["blocking"]}
+    assert oc["headline"].startswith(f"{len(ops)} of {len(ops)} changes written")
+    # without a re-analysis only the writes are known, and the outcome says so
+    raw = client.post(f"/api/sessions/{sid}/apply", json={"operations": plan["loop_name_case"]["operations"], "reanalyze": False}).json()
+    assert raw["outcome"]["reanalyzed"] is False and raw["outcome"]["blocking_after"] is None
+    assert [a["verdict"] for a in raw["outcome"]["actions"]] == ["written"]
+
+
+def test_the_gauge_counts_the_changes_every_apply_wrote(client, flagged_model_broken_xlsx):
+    """1.7.3: prep_progress carries one entry per Apply with the changes really
+    written into the file, by level, and the totals of the session."""
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    assert body["prep_progress"]["applies"] == [] and body["prep_progress"]["written"]["applied"] == 0
+    plan = {a["id"]: a for a in body["plan"]}
+    first = plan["special_headers"]["operations"]
+    out = client.post(f"/api/sessions/{sid}/apply", json={"operations": first, "reanalyze": True}).json()
+    (a1,) = out["prep_progress"]["applies"]
+    assert a1["version_id"] == "ver-002" and a1["previous_version_id"] == "ver-001"
+    assert (a1["applied"], a1["failed"], a1["blocking_applied"], a1["optional_applied"]) == (len(first), 0, len(first), 0)
+    assert {"PAR-002", "PRJ-002"} <= set(a1["resolved_blocking"])
+    second = plan["flag_spelling"]["operations"]
+    out2 = client.post(f"/api/sessions/{sid}/apply", json={"operations": second, "reanalyze": True}).json()
+    progress = out2["prep_progress"]
+    assert [a["version_id"] for a in progress["applies"]] == ["ver-002", "ver-003"]
+    assert progress["written"]["applied"] == len(first) + len(second)
+    assert progress["written"]["blocking_applied"] == len(first) and progress["written"]["optional_applied"] == len(second)
+    # the same figures on demand
+    assert client.get(f"/api/sessions/{sid}/readiness").json()["prep_progress"]["written"] == progress["written"]

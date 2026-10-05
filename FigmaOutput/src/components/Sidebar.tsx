@@ -3,16 +3,28 @@ import { NavLink } from "react-router-dom";
 import { useStore } from "../store";
 import { downloadUrl, health, type AppHealth } from "../services/api";
 
-const navItems = [
-  { to: "/", label: "Workbook", icon: "📄" },
-  { to: "/findings", label: "Findings", icon: "🔍" },
-  { to: "/prep", label: "Prep", icon: "⚙️" },
-  { to: "/grid-namer", label: "Grid Namer", icon: "🏷️" },
-  { to: "/assistant", label: "Assistant", icon: "💬" },
-  { to: "/recalculate", label: "Recalculate", icon: "▶" },
-  { to: "/reports", label: "Reports", icon: "📋" },
-  { to: "/history", label: "History", icon: "🕐" },
-  { to: "/mind", label: "Mind", icon: "🧠" },
+// 1.7.2: two groups. "Workflow" is the path in order -- upload, read the
+// findings, fix, verify, deliver. "Tools" are aids you reach for when needed.
+const navGroups: { title: string; items: { to: string; label: string; icon: string; step?: number }[] }[] = [
+  {
+    title: "WORKFLOW",
+    items: [
+      { to: "/", label: "Workbook", icon: "📄", step: 1 },
+      { to: "/findings", label: "Findings", icon: "🔍", step: 2 },
+      { to: "/prep", label: "Prep", icon: "⚙️", step: 3 },
+      { to: "/recalculate", label: "Recalculate", icon: "▶", step: 4 },
+      { to: "/reports", label: "Deliver", icon: "📋", step: 5 },
+    ],
+  },
+  {
+    title: "TOOLS",
+    items: [
+      { to: "/assistant", label: "Assistant", icon: "💬" },
+      { to: "/grid-namer", label: "Grid Namer", icon: "🏷️" },
+      { to: "/history", label: "History", icon: "🕐" },
+      { to: "/mind", label: "Mind", icon: "🧠" },
+    ],
+  },
 ];
 
 interface Props {
@@ -54,22 +66,33 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
         </button>
       </div>
       <nav className="flex flex-col gap-0.5 p-2 flex-1 min-h-0 overflow-y-auto">
-        {navItems.map(({ to, label, icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
-                isActive
-                  ? "bg-white/15 text-white font-medium"
-                  : "text-white/60 hover:bg-white/10 hover:text-white"
-              }`
-            }
-          >
-            <span className="text-base flex-shrink-0">{icon}</span>
-            {!collapsed && <span className="truncate">{label}</span>}
-          </NavLink>
+        {navGroups.map((group) => (
+          <div key={group.title} className="flex flex-col gap-0.5 mb-2">
+            {!collapsed && <div className="px-3 pt-2 pb-1 text-[10px] font-semibold tracking-wider text-white/40">{group.title}</div>}
+            {collapsed && <div className="border-t border-white/10 my-1" />}
+            {group.items.map(({ to, label, icon, step }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === "/"}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                    isActive
+                      ? "bg-white/15 text-white font-medium"
+                      : "text-white/60 hover:bg-white/10 hover:text-white"
+                  }`
+                }
+                title={step ? `Step ${step}: ${label}` : label}
+              >
+                {step ? (
+                  <span className="w-5 h-5 rounded-full border border-white/40 text-[10px] font-mono flex items-center justify-center flex-shrink-0">{step}</span>
+                ) : (
+                  <span className="text-base flex-shrink-0">{icon}</span>
+                )}
+                {!collapsed && <span className="truncate">{label}</span>}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
       {latest && (

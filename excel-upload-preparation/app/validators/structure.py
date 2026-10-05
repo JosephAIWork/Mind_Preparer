@@ -230,17 +230,25 @@ def str_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def broken_defined_name_refs(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """REF-001: defined names that resolve to #REF! are broken. A formula that
-    references one cannot convert in Milliman Mind (the converter reports
-    'No function found ... not a function'). Flag every referencing cell (a hard
+    """REF-001: defined names that resolve to #REF! are broken, and a name no
+    definition exists for (a misspelt name, a name deleted from the workbook)
+    is broken too -- Excel shows #NAME?. A formula that references either
+    cannot convert in Milliman Mind (the converter reports 'No function found
+    ... (not a function : <name>)'). Flag every referencing cell (a hard
     conversion blocker); if broken names exist but nothing references them, warn."""
-    from ..formula_utils import mask_strings
+    import difflib
+
+    from ..formula_utils import mask_strings, undefined_names
 
     wb0 = analysis["workbooks"][0]
+    defined = [str(d["name"]) for d in wb0.get("defined_names", [])]
+    tables = [str(t) for s in wb0.get("sheets", []) for t in s.get("tables", [])]
+    known = {n.upper() for n in defined} | {t.upper() for t in tables}
     broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
     name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
     lit_re = re.compile(r"#REF!")
     sites = []
+    missing: dict[str, int] = {}
     for f in wb0.get("formulas", []):
         formula = f.get("formula") or ""
         masked = mask_strings(formula)
@@ -249,17 +257,33 @@ def broken_defined_name_refs(rule, analysis: dict[str, Any], config: dict[str, A
             kinds.append("broken-name")
         if lit_re.search(masked):
             kinds.append("literal-#REF!")
+        unknown = undefined_names(formula, known)
+        if unknown:
+            kinds.append("undefined-name")
+            for n in unknown:
+                missing[n] = missing.get(n, 0) + 1
         if kinds:
-            sites.append({"sheet": f["sheet"], "cell": f["cell"], "kinds": kinds, "formula": formula[:140]})
+            site = {"sheet": f["sheet"], "cell": f["cell"], "kinds": kinds, "formula": formula[:140]}
+            if unknown:
+                site["undefined_names"] = unknown
+            sites.append(site)
+    # the closest existing name, for a misspelt one
+    closest = {n: (difflib.get_close_matches(n, defined + tables, n=1, cutoff=0.75) or [None])[0] for n in missing}
     if sites:
+        parts = []
+        if any("undefined-name" in s["kinds"] for s in sites):
+            named = ", ".join(f"{n} ({c} cell(s)" + (f", closest existing name: {closest[n]}" if closest[n] else "") + ")" for n, c in sorted(missing.items(), key=lambda kv: -kv[1])[:8])
+            parts.append(f"name(s) that do not exist in the workbook (Excel shows #NAME?): {named}")
+        if any(k in s["kinds"] for s in sites for k in ("broken-name", "literal-#REF!")):
+            parts.append("#REF! literals or references to #REF! defined names")
         return finding(
             "ERROR",
-            f"{len(sites)} cell(s) contain broken references (#REF! literals or references to #REF! defined names) -- "
-            f"Mind's converter cannot compile them. First: {sites[0]['sheet']}!{sites[0]['cell']}. "
-            "Fix: replace the broken reference with NA() (an error stays an error) or delete the cell if it has no impact. "
+            f"{len(sites)} cell(s) contain broken references -- {'; '.join(parts)}. Mind's converter cannot compile them "
+            f"('No function found ... not a function'). First: {sites[0]['sheet']}!{sites[0]['cell']}. "
+            "Fix: a misspelt name is corrected to the existing one; a broken reference is replaced with NA() (an error stays an error) or the cell is deleted if it has no impact. "
             "Where a function needs a cell range (SUMIF(S)/COUNTIF(S)/AVERAGEIF(S)/MAXIFS/MINIFS/OFFSET/ROW/COLUMN/SUBTOTAL), "
             "Excel refuses NA() -- replace that whole call with NA() instead (e.g. =SUMIFS('Data'!#REF!,J:J,\"x\") -> =NA()).",
-            {"broken_names": broken, "sites": sites[:80]},
+            {"broken_names": broken, "undefined_names": {n: {"cells": c, "closest": closest[n]} for n, c in missing.items()}, "sites": sites[:80]},
             location={"sheet": sites[0]["sheet"], "cell": sites[0]["cell"]},
         )
     if broken:

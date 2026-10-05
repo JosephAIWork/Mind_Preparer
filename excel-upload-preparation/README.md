@@ -22,11 +22,21 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.7.2)
+## Current status (1.7.4)
 
-All 12 phases have a real implementation, and **every active rule (94 of
-94) has a real validator** -- nothing falls through to `NOT_SUPPORTED` any
-more except the two honest cases below.
+All 12 phases have a real implementation, and **every active rule has a
+real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
+the two honest cases below.
+
+- **One verdict** (1.7.2): every analysis, apply and recalculation answers
+  *is this version acceptable by Mind?* -- `blocked` (a REQUIRED rule fails),
+  `unverified` (nothing blocks, no clean Excel recalculation of this version
+  yet) or `ready` -- with what stands in the way and the next step
+  (`app/readiness.py`, `GET /api/sessions/{id}/readiness`). Findings carry
+  their rule's priority and Prep actions a `level`: **blocking** (Mind
+  refuses the file without it) or **optional** (Mind reads the file as it
+  is). A Prep gauge tracks the planned repairs per version and flags a
+  stalled run. See CHANGELOG 1.7.2 for the two endless-round causes fixed.
 
 - **Assistant speed** (1.7.2): the assistant runs on `claude-sonnet-5`
   (env `MIND_READY_MODEL` overrides) at `effort: low` (env

@@ -1,6 +1,19 @@
 # Changelog
 
-## 1.7.2
+## 1.7.4
+
+Merge of `main` with Yoav's branch `readiness-verdict-and-prep-fixes`
+(his 1.7.2 and 1.7.3 below). The changes in this entry were made on `main`
+in parallel, under the number 1.7.2; they are listed here unchanged.
+
+**Merge decision (REF-001).** Both branches fixed `SUMIFS('Sheet'!#REF!,...)`:
+`main` by collapsing the call to `NA()` inside the piecewise `fix_broken_refs`,
+the branch by a separate `fix_broken_refs_whole` action (own checkbox, caution
+note) that replaces the whole formula with `=NA()`. Kept: the separate action,
+now filled with the collapsed formula -- only the call that needed the range
+becomes `NA()`, so `=IFERROR(SUMIF(#REF!,1),0)` -> `=IFERROR(NA(),0)` keeps its
+0 instead of turning into an error. `_com_message` keeps the plain-English
+0x800A03EC text and the branch's transient-COM retry.
 
 ### Formulas Excel refuses are caught before Apply (17 failed fixes on a real workbook)
 
@@ -91,6 +104,244 @@ to five model calls in a row (the answer, up to 2 ```lookup round-trips, up to
   scenarios, and `/chat/stream` (same `done` payload as `/chat`, in-band
   error). `test_chat_completion_payload_shape` updated for the top-level
   `system` param of the 2026-09-16 route switch.
+
+## 1.7.3
+
+### An Apply that says what it did -- and that really writes
+
+On a workbook saved with "read-only recommended", Apply ran through every
+stage, reported "38 changes applied, verified" and changed nothing: the
+blocking problem was still there after each round, with no sign of why.
+
+- **The save went to the wrong place.** With alerts off, Excel answers the
+  "open as read-only?" prompt of such a workbook with yes, whatever
+  `ReadOnly=False` says; `Save()` on a read-only workbook then writes a copy
+  into the user's default folder (their Documents) and returns normally. The
+  working copy stayed byte-identical to its source, the re-analysis read the
+  same file, and a stray copy of the model appeared in Documents.
+  `open_workbook` now passes `IgnoreReadOnlyRecommended`; every in-place
+  write (Prep apply, formula edits, recalculation, report workbook) goes
+  through `open_for_write` -- which refuses a workbook Excel opened read-only
+  all the same (locked by another program, password to modify) -- and
+  `save_in_place`, which wants the file itself written.
+- **Nothing is "applied" that is not in the file.** `apply_operations`
+  compares the output with its source: identical means nothing was written,
+  every operation is reported as refused with that reason, status `ERROR`.
+- **Apply outcome** (`app/readiness.apply_outcome`, field `outcome` of
+  `POST .../apply` and `.../grid-namer`). Repair by repair: changes sent,
+  written, refused; each rule's status and cell count before and after; what
+  the new analysis still plans and what it leaves by hand; a verdict
+  (`resolved` / `partial` / `unchanged` / `failed` / `written`) and one
+  sentence. Also the repairs the new analysis plans that the previous one
+  did not (`appeared`), the rules that got worse (`regressed`), and the
+  blocking problems before and after with who acts next on each.
+- **Applied-changes gauge** (`prep_progress.applies` / `.written`, kept per
+  session in `Session.apply_history`). One entry per Apply with the changes
+  really written into the file, by level, the refusals and the blocking
+  problems it resolved; the Prep gauge shows *written / still planned* for
+  blocking and optional changes and the figure of every Apply, the repair
+  gauge (Fix panel, Findings) the total written.
+- **FRM-002 says what the Mind documentation says, no more.** The KB page
+  "Supported Excel formulas" (last updated 2021-11-17, read again on
+  2026-09-28) names the functions Mind supports and says nothing about the
+  others -- and FILTER, which it omits, converts in Mind. A native function
+  missing from the page was reported as an ERROR and a blocker, and the
+  assistant and the report told the user to replace it. It is now a WARNING
+  ("neither documented as supported nor as refused; a conversion in Mind is
+  the proof"); only an MM_ name missing from the MM_ registry stays an
+  ERROR. Functions Mind accepts beyond the page live in
+  `references/mind-confirmed-functions.yaml`, each with its evidence
+  (`MIND_CONVERSION` or `USER_PROVIDED`): FILTER, and IFNA / INDIRECT /
+  XLOOKUP as stated by the tool's owner. The assistant no longer proposes a
+  replacement for an unlisted function unless the user asks for one.
+- **Two refusals Mind reported that the app had let through** (a real model,
+  2026-09-29). *"The array formula on sheet Temp, cell F5 exceeds the grid
+  size. Ensure that the column headers cover the entire array formula"*: the
+  header was one cell merged over B4:E4 and the arrays ran to DZ; the app read
+  the merge as one cell, split the block into two grids, and RSK-002 saw
+  nothing. Grid detection now lets a merged cell occupy every cell it covers
+  (`grids.MergedInto`), so the header row is as wide as Mind reads it and
+  RSK-002 names the first cell outside the grid, in Mind's words. *"No
+  function found ... (not a function : Semi_dynamic_increase_rates_array)"*:
+  the formula referred to a name the workbook does not define (a misspelling
+  of `Semi_dynamic_increase_rates`; Excel shows #NAME?). REF-001 now also
+  flags names with no definition -- table names, names of any alphabet,
+  names with '?', sheet-qualified references and LET variables excluded --
+  and proposes the closest existing name.
+- **Two more refusals, from Mind's runner and compiler** (real models,
+  2026-09-30), detected before upload, with no automatic repair by design:
+  **FRM-005 circular references** -- "Run error: Circular reference found".
+  The dependency graph of every formula cell (references, ranges, defined
+  names; INDIRECT/OFFSET targets cannot be followed and are counted;
+  ROW/COLUMN arguments and OFFSET's base are coordinates, not dependencies;
+  a cell reading its own address on a run-time sheet -- INDIRECT with
+  ADDRESS(ROW(),COLUMN()) -- is the pattern Mind stopped on and is an error) is searched for
+  cycles and each one is reported as its chain of cells; Excel's iterative
+  calculation setting is reported too. Ranges are shared nodes, so a model of
+  57k formulas is searched in under 30 s; a work budget makes the rule say
+  NOT_SUPPORTED rather than run forever. Fix by hand: the Mind mechanism for
+  a value feeding the next round is MM_ITERATIONS with /iterationinput and
+  /iterationoutput. **FRM-006 3-D references** -- `'First:Last'!cell`:
+  Mind reads `First:Last` as one sheet name ("Sheet ... not found in workbook
+  on compiling formula"). The sheets the reference spans are listed in tab
+  order and the explicit per-sheet formula is proposed for the assistant or
+  the user to apply -- without the sheets that hold no grid: Mind creates no
+  spreadsheet for a divider tab ('Spreadsheet not found error' on the same
+  model, 2026-10-01), and an empty sheet adds nothing to the sum. Any formula
+  reading such a sheet is flagged too.
+- **Excel executor**: a change Excel refuses with RPC_E_CALL_REJECTED (busy for
+  an instant) is repeated up to five times before it counts as refused.
+- **FRM-007 INDIRECT used as a value** -- compared, multiplied, divided,
+  negated, concatenated or passed to a value-only function: Mind returns a
+  reference for INDIRECT and cannot turn it into a value ("Run error: Unable
+  to cast object of type 'AM.Models.AMReference' to type
+  'System.IConvertible'", model PVFP, 2026-10-01). Where the text INDIRECT
+  builds can be worked out from the workbook's constants (string literals,
+  cells holding text, ROW()/COLUMN(), simple arithmetic, LEFT/RIGHT/LEN/IF),
+  the direct reference is proposed; a target that does not exist becomes
+  NA() in its place (never the whole formula: the call may sit in a branch
+  never taken). Verified on PVFP: 4,410 formulas rewritten through the app.
+- **Excel executor**: calculation is set to manual while the changes are
+  written and restored before the save -- in automatic mode Excel
+  recalculated every dependent after each write, and 12,678 writes into a
+  70k-formula model ran for hours; they take 23 minutes now.
+- **Front-end.** Prep and the Fix panel show that outcome after every Apply
+  ("What the last Apply did"); a blocking repair that resolved its problem
+  stays in the Blocking block as *Resolved* instead of vanishing; a repair
+  that is back says so ("new since the last Apply", "back after the last
+  Apply -- it had no effect").
+
+## 1.7.2
+
+### One verdict, one vocabulary, and no more endless Prep rounds
+
+A real model prepared with 1.7.1 went through seven Prep rounds (v8 to v14)
+without anything blocking being fixed, while the two problems Mind actually
+refused the file for had no automatic repair and were never singled out.
+This release answers the only question that matters on every screen, tells
+a change Mind *needs* from one it merely benefits from, and removes the two
+causes of the endless rounds.
+
+- **Readiness verdict** (`app/readiness.py`, `GET /api/sessions/{id}/readiness`,
+  and the `readiness` field on every analysis, apply and recalculation
+  response). Three states: `blocked` (a REQUIRED rule is in ERROR or waits for
+  user input -- Mind's converter refuses the file or computes it wrong),
+  `unverified` (nothing blocks, but this version was not recalculated in
+  Excel, or the recalculation found genuine formula errors), `ready` (nothing
+  blocks and a clean recalculation of *this* version). Each blocking finding
+  says how it can be fixed (`prep` / `prep_skipped` / `assistant`), and
+  `next_step` names the single next screen. The front-end shows it as a
+  banner under the top bar, with the five workflow steps.
+- **Levels everywhere.** Findings carry the rule's `priority` (models.Finding,
+  `run_rule`); every Prep action carries `level` (`blocking` when its rule is
+  REQUIRED, `optional` otherwise), an optional `level_note` and a `caution`.
+  Blocking actions are on by default -- `fix_broken_refs` was off before,
+  which left the one blocking repair unticked while cosmetic ones were ticked.
+  Findings gained a Level column, a "Blocking only" filter and blocking-first
+  ordering; Prep is split into *Blocking / By hand / Optional*.
+- **Prep gauge** (`prep_progress`, kept per session in `Session.plan_history`):
+  blocking problems, blocking and optional operations planned, the planned
+  operations of every analysed version, and a `stalled` flag when three
+  analyses in a row leave work planned without a net decrease.
+- **Endless round 1 fixed.** `plan_separate_merged_grids` inserted an empty
+  row above a '#Title' that sat on its grid's *first* row (next to a label or
+  a header); the block moved down and the next scan proposed the same insert.
+  Such a title is now left for review with the reason ("shares the grid's
+  first row with other content -- move it by hand").
+- **Endless round 2 fixed.** A title written into a non-first cell of a merged
+  range is silently ignored by Excel; Prep reported "applied, verified" and
+  re-proposed it forever. `plan_actions` now drops such targets into the skip
+  list (`merged_ranges` / `merged_conflict`, from the inventory's
+  `merged_cells`), and the Excel executor refuses them (`_merged_guard`) and
+  reads every cell back after writing (`_read_back_guard`): a silent no-op is
+  a failure, never an applied change.
+- **Broken ranges.** `fix_broken_refs` only patched a #REF! that stood for a
+  value; a #REF! standing for a range (a deleted column inside SUMIFS) was
+  left for review with no way forward. New action `fix_broken_refs_whole`
+  replaces the whole formula with `=NA()` (the cell already returned an
+  error), with its own checkbox and caution.
+- **Recalculation errors the original already had are the model's own.**
+  The first recalculation of a session also recalculates a copy of the
+  ORIGINAL upload once (`Session.original_baseline`); every error cell of a
+  prepared version that the recalculated original also has (same
+  sheet+address, or same formula text on the same sheet when rows were
+  inserted, or a formula that already contained #REF!) is marked
+  `preexisting` (`recalc.classify_errors`). Cached values are never the
+  baseline -- they can be stale (a number saved before the column a formula
+  pointed to was deleted). The verdict only counts *new* errors, so a model
+  with legitimate #DIV/0! cells can still turn green, and a wrong assistant
+  fix (VALUE("") where NUMBERVALUE("") returned 0) shows up as new errors
+  before anyone ships the file. The recalculate response carries
+  `preexisting_errors`, `new_errors` and `compared_with_original`; the
+  assistant is told to keep a replacement's behaviour on blanks.
+- **Merged first cell.** Excel refuses `ClearContents` / a value on the single
+  first cell of a merged range ("We can't do that to a merged cell"); the
+  executor now writes to the merge area instead, so a caption in a merged
+  band can still become a title.
+- **Style actions no longer run in 5000-cell batches**
+  (`inventory.MAX_STYLE_CELL_REFS` 5000 -> 250 000).
+- **Assistant proposals** get 4000 output tokens (`chat_context.PROPOSAL_MAX_TOKENS`)
+  instead of the 1200 default that truncated a ```changes block at ~35
+  operations with nothing said; the Fix panel warns when a proposal covers
+  fewer cells than the finding counts.
+- **History: "Restore as current"** re-analyses an earlier version and makes
+  it current (later versions stay). Prep shows what the last Apply did and
+  what is left; the upload screen no longer hard-codes a rule count.
+
+Follow-ups from the first test sessions on real models:
+
+- **Spilled-range references are blocking and repaired.** Mind's own
+  validation refuses every `INDEX(A1#, ...)` with "Unsupported formula:
+  ANCHORARRAY()" (the token Excel stores for `A1#`). FRM-003 now fails with
+  ERROR on such references (a bare `@` stays a WARNING), and the new blocking
+  Prep action `freeze_spill_refs` replaces each `A1#` / `ANCHORARRAY(A1)` by
+  the fixed range the spill covers today, taken from the anchor's array
+  extent in the file, on the same sheet or across sheets; a consumer that
+  spills itself becomes a fixed-size array formula over its current range.
+  References whose anchor is not an array formula are left for review.
+  Verified through Excel on real dynamic arrays: values unchanged, FRM-003
+  passes afterwards.
+- **The assistant answers "is X supported?" from the tool's list, not from
+  memory.** Any Excel or MM_ function named in a question gets a
+  "## Function support" block in the retrieval: on the Mind list / not on it
+  (FRM-002 flags it) / registered MM_ function, with the workbook's usage and
+  a supported equivalent the tool vouches for (`NUMBERVALUE`, `IFNA`,
+  `XLOOKUP`, `CONCAT`, `TEXTJOIN`, `SWITCH`, `ANCHORARRAY`). The system prompt
+  forbids hedging ("most platforms...") and explains that `_xlfn.` is Excel's
+  storage prefix, not a defect. Motivating case: the assistant called 54
+  `IFNA` calls "a non-issue" while FRM-002 flags IFNA (IFERROR is on the
+  list, IFNA is not).
+- **Formulas are shown the way Excel shows them**: the cell window, the
+  FRM-002 call sites and the sites quoted to the assistant drop `_xlfn.`,
+  `_xll.` and the other storage prefixes.
+- **Findings routes each row like the banner**: "Repair in Prep (N)" when a
+  Prep action holds the change, BY HAND when Prep left every site for
+  review, "Fix with assistant" otherwise.
+- **A repair gauge in the Fix panel and on Findings**: blocking problems and
+  open findings per version, with the trend and the verdict, so a run of
+  assistant fixes reads as a curve going down like Prep does. Each analysis
+  records `open_findings` and `status_counts` in the gauge history.
+- **Launcher** uses the project's `.venv` interpreter when it exists.
+- **Apply says what it is doing.** The Prep bar used to walk through four
+  phase names on a timer and then sit on "Change log" for as long as Excel
+  worked. `apply_operations(progress=...)` now reports its stages
+  (`progress.APPLY_STAGES`: copy, write, save, verify, change log) and, while
+  writing, every operation (`done` / `total`) -- and the cells done inside a
+  colour operation, which is one operation over thousands of cells. The
+  server keeps it per session and returns it in `GET /status` (field
+  `apply`); Prep and the Fix panel show the step ("Step 2 of 6"), the changes
+  written, the elapsed time, then the re-analysis stages.
+- **Prep gauge redrawn**: the four steps to Mind with "you are here", one bar
+  per kind of work (blocking problems, blocking repairs, optional repairs:
+  done / left, measured against the most the session ever planned), and the
+  figures of every analysed version in words instead of 4-pixel columns.
+- **An automatic repair is never the only way.** A finding Prep holds a
+  repair for only offered "Repair in Prep"; it now also offers "By hand"
+  (Findings, the banner) and "Fix by hand" (the Prep action), which open the
+  Fix panel on the same cells.
+- **Launcher** opens the browser once the server answers; the check goes to
+  127.0.0.1 (through `localhost` the first request of a process can spend 2 s
+  on IPv6, longer than the check's timeout).
 
 ## 1.7.1
 

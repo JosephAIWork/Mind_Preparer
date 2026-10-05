@@ -7,7 +7,12 @@ FRM-002 checks every function call against two mined lists:
     function syntax; if a function is not listed, do not auto-generate or
     auto-correct it";
   * native Excel functions: references/supported-excel-functions.yaml, the
-    KB page "Supported Excel formulas" (1.3.0 -- previously unavailable).
+    KB page "Supported Excel formulas" (1.3.0 -- previously unavailable),
+    UNION references/mind-confirmed-functions.yaml (accepted by Mind on
+    evidence other than that page, each entry with its source).
+1.7.3: the KB page names what Mind supports and says nothing about the rest,
+so a native function missing from it is *not documented*, not refused: it is
+reported as a WARNING. Only what the Mind documentation refuses is an ERROR.
 A name that is on neither list and is not an Excel function at all is a
 probable VBA UDF / custom formula and is reported by FORMULA-002 instead.
 """
@@ -21,7 +26,7 @@ from typing import Any
 
 import yaml
 
-from ..formula_utils import called_functions, mask_strings
+from ..formula_utils import STORAGE_PREFIX_RE, called_functions, mask_strings
 from ._common import finding, fmt_sites
 from .excel_functions import EXCEL_FUNCTIONS
 
@@ -29,14 +34,39 @@ REFERENCES = Path(__file__).resolve().parents[2] / "references"
 REGISTRY_PATH = REFERENCES / "mm-function-registry.yaml"
 KB_REGISTRY_PATH = REFERENCES / "mm-function-registry-kb.yaml"
 SUPPORTED_PATH = REFERENCES / "supported-excel-functions.yaml"
+CONFIRMED_PATH = REFERENCES / "mind-confirmed-functions.yaml"
 
 # Storage-only tokens Excel writes for dynamic-array features; reviewed by FRM-003, not FRM-002.
 DYNAMIC_ARRAY_ARTIFACTS = {"SINGLE", "ANCHORARRAY"}
 
-# Native functions the KB "Supported Excel formulas" scrape omits but real Milliman Mind
-# conversion actually accepts (confirmed by uploading models to Mind). The KB page (163)
-# predates the dynamic-array functions.
-MIND_CONFIRMED_SUPPORTED = {"FILTER"}  # Shlomo_IFRS model converted cleanly using FILTER (Cashflows!M4), 2026-08-30
+
+
+@lru_cache(maxsize=1)
+def _confirmed() -> dict[str, Any]:
+    if not CONFIRMED_PATH.exists():
+        return {}
+    return yaml.safe_load(CONFIRMED_PATH.read_text(encoding="utf-8")) or {}
+
+
+def confirmed_functions() -> dict[str, dict[str, Any]]:
+    """Native functions the KB page omits and Mind accepts, each with its
+    evidence (a conversion in Mind, or the statement of a Mind user)."""
+    return {str(f["function"]).upper(): f for f in _confirmed().get("functions", []) if f.get("function")}
+
+
+def kb_page_note() -> str:
+    """'the KB page "Supported Excel formulas" (last updated 2021-11-17)'."""
+    page = _confirmed().get("kb_page") or {}
+    updated = f" (last updated {page['last_updated']})" if page.get("last_updated") else ""
+    return f"the KB page 'Supported Excel formulas'{updated}"
+
+
+def evidence_text(entry: dict[str, Any]) -> str:
+    source = {"MIND_CONVERSION": "a conversion in Mind", "USER_PROVIDED": "stated by a Mind user"}.get(str(entry.get("evidence")), str(entry.get("evidence")))
+    return f"{source}{', ' + str(entry['date']) if entry.get('date') else ''}"
+
+
+MIND_CONFIRMED_SUPPORTED = frozenset(confirmed_functions())
 IMPLICIT_INTERSECTION_RE = re.compile(r"@(?=[A-Za-z$'(])")
 SPILL_REF_RE = re.compile(r"\$?[A-Z]{1,3}\$?\d{1,7}#")
 
@@ -76,7 +106,7 @@ def _first_sites(analysis: dict[str, Any], names: set[str], limit_per_name: int 
         for f in wb["formulas"]:
             hits = remaining & set(called_functions(f["formula"]))
             for h in hits:
-                sites[h].append({"sheet": f["sheet"], "cell": f["cell"], "formula": f["formula"][:200]})
+                sites[h].append({"sheet": f["sheet"], "cell": f["cell"], "formula": STORAGE_PREFIX_RE.sub("", f["formula"])[:200]})
                 if len(sites[h]) >= limit_per_name:
                     remaining.discard(h)
             if not remaining:
@@ -91,12 +121,15 @@ def unsupported_functions(rule, analysis: dict[str, Any], config: dict[str, Any]
 
     unknown_mm = sorted(fn for fn in usage if fn.startswith("MM_") and fn not in known_mm)
     deprecated_mm = sorted(fn for fn in usage if fn.startswith("MM_") and known_mm.get(fn, {}).get("deprecated"))
-    unsupported_native = sorted(
+    # not on the KB page and no other evidence: the Mind documentation is silent about them
+    undocumented_native = sorted(
         fn for fn in usage if not fn.startswith("MM_") and fn in EXCEL_FUNCTIONS and fn not in supported_native and fn not in DYNAMIC_ARRAY_ARTIFACTS
     )
+    confirmed = confirmed_functions()
+    beyond_kb = {fn: evidence_text(confirmed[fn]) for fn in sorted(usage) if fn in confirmed}
     not_excel = sorted(fn for fn in usage if not fn.startswith("MM_") and fn not in EXCEL_FUNCTIONS and fn not in DYNAMIC_ARRAY_ARTIFACTS)
 
-    flagged = set(unknown_mm) | set(unsupported_native)
+    flagged = set(unknown_mm) | set(undocumented_native)
     sites = _first_sites(analysis, flagged, limit_per_name=25) if flagged else {}
     call_sites = [
         {"functions": [fn], **site}
@@ -106,7 +139,8 @@ def unsupported_functions(rule, analysis: dict[str, Any], config: dict[str, Any]
     observed = {
         "unregistered_mm_functions": unknown_mm,
         "deprecated_mm_functions": deprecated_mm,
-        "unsupported_native_functions": unsupported_native,
+        "undocumented_native_functions": undocumented_native,
+        "accepted_beyond_kb_list": beyond_kb,
         "not_excel_functions_see_FORMULA_002": not_excel,
         "usage_counts": {fn: usage[fn] for fn in sorted(flagged)},
         "call_sites": call_sites,
@@ -117,17 +151,23 @@ def unsupported_functions(rule, analysis: dict[str, Any], config: dict[str, Any]
         parts = []
         if unknown_mm:
             parts.append(f"MM_ function(s) not in either mined registry (do not invent syntax): {unknown_mm}")
-        if unsupported_native:
-            parts.append(f"native Excel function(s) not on the KB 'Supported Excel formulas' list: {unsupported_native}")
+        if undocumented_native:
+            parts.append(
+                f"native Excel function(s) the Mind documentation does not list: {undocumented_native} -- {kb_page_note()} names the functions "
+                "Mind supports and says nothing about the others, so these are neither documented as supported nor as refused; "
+                "a conversion in Mind is the proof"
+            )
         if deprecated_mm:
             parts.append(f"deprecated MM_ function(s): {deprecated_mm}")
         return finding(
-            "ERROR",
+            "ERROR" if unknown_mm else "WARNING",
             "; ".join(parts) + f". First call sites: {fmt_sites(call_sites)}",
             observed,
             location={"sheet": call_sites[0]["sheet"], "cell": call_sites[0]["cell"]} if call_sites else None,
         )
-    msg = f"All {len(usage)} distinct function(s) are either registered MM_ functions or on the KB supported-native list."
+    msg = f"All {len(usage)} distinct function(s) are either registered MM_ functions or native functions Mind supports."
+    if beyond_kb:
+        msg += " Accepted on evidence other than the KB page: " + ", ".join(f"{fn} ({why})" for fn, why in beyond_kb.items()) + "."
     if deprecated_mm:
         msg += f" Deprecated MM_ function(s) in use: {deprecated_mm}."
     if not_excel:
@@ -165,12 +205,25 @@ def frm_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
                 spill_sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:160]})
     observed = {"implicit_intersection_sites": at_sites[:50], "array_formula_sites": array_sites[:50], "spill_reference_sites": spill_sites[:50],
                 "counts": {"implicit_intersection": len(at_sites), "array_formulas": len(array_sites), "spill_references": len(spill_sites)}}
-    if at_sites or spill_sites:
-        first = (at_sites or spill_sites)[0]
+    if spill_sites:
+        # Mind's own validation rejects every one of these as "Unsupported formula: ANCHORARRAY()"
+        # (the token Excel stores for a spilled-range reference such as INDEX(A1#, ...)).
+        first = spill_sites[0]
+        return finding(
+            "ERROR",
+            f"{len(spill_sites)} formula(s) reference spilled ranges ('A1#', stored as ANCHORARRAY) -- Mind rejects each of them with "
+            f"'Unsupported formula: ANCHORARRAY()'; Prep replaces the reference by the fixed range the spill covers today (Mind has no Office 365 dynamic arrays)"
+            + (f"; {len(at_sites)} formula(s) also use the implicit-intersection '@' operator" if at_sites else "")
+            + f". Sites: {fmt_sites(spill_sites + at_sites)}",
+            observed,
+            location={"sheet": first["sheet"], "cell": first["cell"]},
+        )
+    if at_sites:
+        first = at_sites[0]
         return finding(
             "WARNING",
-            f"{len(at_sites)} formula(s) use the implicit-intersection '@' operator and {len(spill_sites)} reference spilled ranges ('A1#'); "
-            f"Mind resizes arrays with MM_RANGE / MM_GETRANGE, not Office 365 dynamic arrays. Review: {fmt_sites(at_sites + spill_sites)}",
+            f"{len(at_sites)} formula(s) use the implicit-intersection '@' operator; "
+            f"Mind resizes arrays with MM_RANGE / MM_GETRANGE, not Office 365 dynamic arrays. Review: {fmt_sites(at_sites)}",
             observed,
             location={"sheet": first["sheet"], "cell": first["cell"]},
         )
@@ -248,3 +301,9 @@ def vba_presence(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict
         else "No VBA project detected.",
         {"has_vba": has_vba, "vba_project_bytes": analysis["features"].get("vba_project_bytes", 0)},
     )
+
+
+# FRM-005 / FRM-006 live in validators/references.py; exposed here so the rule's
+# category ("formula") and its implementation path agree.
+from .references import circular_references, three_d_references  # noqa: E402,F401
+from .references import indirect_as_value  # noqa: E402,F401  (FRM-007)

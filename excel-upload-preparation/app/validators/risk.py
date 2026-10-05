@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..formula_utils import called_functions, parse_ref
+from ..formula_utils import ref_text, called_functions, parse_ref
 from ..grids import all_grids, grid_containing
 from ..inventory import mm_calls
 from ._common import finding, fmt_grids, fmt_sites, grid_location
@@ -88,11 +88,18 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
             sheet_grids = [g for g in all_grids(analysis) if g["sheet"] == f["sheet"]]
             g = grid_containing(sheet_grids, origin["r1"], origin["c1"])
             if g and (target["r2"] > g["last_row"] or target["c2"] > g["last_col"]):
-                oversized.append({"sheet": f["sheet"], "cell": f["cell"], "array_ref": f["array_ref"], "grid_ref": g["ref"], "grid": g["display_name"]})
+                # the first cell Mind names: just past the grid's last column (or its last row)
+                beyond = ref_text(g["last_col"] + 1, target["r1"]) if target["c2"] > g["last_col"] else ref_text(target["c1"], g["last_row"] + 1)
+                oversized.append({"sheet": f["sheet"], "cell": f["cell"], "array_ref": f["array_ref"], "grid_ref": g["ref"], "grid": g["display_name"], "first_cell_outside": beyond, "headers": g["ref"].split(":")[0] + ":" + ref_text(g["last_col"], g["first_row"])})
     if oversized:
+        first = oversized[0]
         return finding(
             "ERROR",
-            f"{len(oversized)} array formula(s) spill past their grid boundary: {fmt_sites(oversized)} (MM_RANGE placement is checked by RNG-001).",
+            f"{len(oversized)} array formula(s) exceed their grid: Mind's converter refuses the model ('the array formula ... exceeds the grid size. "
+            f"Ensure that the column headers cover the entire array formula'). First: {first['sheet']}!{first['cell']} spans {first['array_ref']} but its grid "
+            f"{first['grid']} stops at {first['grid_ref'].split(':')[-1]} (first cell outside: {first['first_cell_outside']}). "
+            "Fix: extend the header row over every column the array covers (a merged header counts for all the columns it spans), or shorten the array. "
+            f"All: {fmt_sites(oversized)} (MM_RANGE placement is checked by RNG-001).",
             {"oversized_array_formulas": oversized[:50]},
             location={"sheet": oversized[0]["sheet"], "cell": oversized[0]["cell"]},
             evidence="INFERENCE",

@@ -67,9 +67,11 @@ def test_looplabels_is_registered_via_the_kb_registry(tmp_path, engine, config, 
 def test_native_function_off_the_kb_list_and_vba_udf_are_flagged(tmp_path, engine, config, array_formula_xlsx):
     analysis = build_analysis(array_formula_xlsx, tmp_path / "work", "t4c")
     frm = _finding(engine, config, analysis, "FRM-002")
-    assert frm["status"] == "ERROR"
-    assert "XLOOKUP" in frm["observed"]["unsupported_native_functions"]
-    assert "MYMACROFUNCTION" not in frm["observed"]["unsupported_native_functions"]
+    # XLOOKUP is not on the KB page; it is accepted on the evidence recorded for it, and said so
+    assert "XLOOKUP" in frm["observed"]["accepted_beyond_kb_list"]
+    assert "XLOOKUP" not in frm["observed"]["undocumented_native_functions"]
+    assert "MYMACROFUNCTION" not in frm["observed"]["undocumented_native_functions"]
+    assert frm["status"] != "ERROR"
     udf = _finding(engine, config, analysis, "FORMULA-002")
     assert udf["status"] == "WARNING"  # no VBA project in this fixture -> unknown function, not a confirmed UDF
     assert "MYMACROFUNCTION" in udf["observed"]["udf_candidates"]
@@ -230,6 +232,45 @@ def test_ref_001_flags_broken_defined_name_references(tmp_path, engine, config):
     assert any(s["cell"] == "A3" for s in f["observed"]["sites"])
 
 
+def test_a_native_function_the_mind_documentation_does_not_list_is_a_warning_not_a_blocker(tmp_path, engine, config):
+    """The KB page names what Mind supports and says nothing about the rest:
+    a function missing from it is undocumented, not refused. Only an MM_
+    name missing from the MM_ registry stays an error."""
+    import openpyxl
+
+    from app.readiness import level_of
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"] = "12"
+    ws["B1"] = "=_xlfn.NUMBERVALUE(A1)"
+    ws["B2"] = "=_xlfn.IFNA(A1,0)+INDIRECT(\"A1\")"
+    p = tmp_path / "undocumented.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "u"), "FRM-002")
+    assert f["status"] == "WARNING" and level_of(f) == "optional"
+    assert f["observed"]["undocumented_native_functions"] == ["NUMBERVALUE"]
+    assert set(f["observed"]["accepted_beyond_kb_list"]) == {"IFNA", "INDIRECT"}
+    assert "neither documented as supported nor as refused" in f["message"] and "last updated 2021-11-17" in f["message"]
+    ws_mm = openpyxl.Workbook()
+    ws_mm.active["A1"] = "=MM_TOTALLYMADEUP(1)+_xlfn.NUMBERVALUE(\"1\")"
+    p2 = tmp_path / "mm.xlsx"
+    ws_mm.save(p2)
+    ws_mm.close()
+    assert _finding(engine, config, build_analysis(p2, tmp_path / "w2", "m"), "FRM-002")["status"] == "ERROR"
+
+
+def test_every_function_accepted_beyond_the_kb_page_names_its_evidence():
+    from app.validators.formula import _confirmed, confirmed_functions
+
+    entries = confirmed_functions()
+    assert {"FILTER", "IFNA", "INDIRECT", "XLOOKUP"} <= set(entries)
+    assert all(e["evidence"] in ("MIND_CONVERSION", "USER_PROVIDED") and e.get("detail") and e.get("date") for e in entries.values())
+    assert _confirmed()["kb_page"]["says_about_unlisted_functions"] == "nothing"
+
+
 def test_filter_is_treated_as_mind_supported():
     """FILTER is a native function the KB scrape omits but real Mind conversion accepts
     (proven by uploading the Shlomo model); FRM-002 must not flag it as unsupported."""
@@ -252,3 +293,237 @@ def test_rep_001_parse_total_recognises_pure_totals():
     assert _parse_total("=SUM(Sheet2!A1:A10)") is None
     assert _parse_total("=A1*2") is None
     assert _parse_total("=A1") is None
+
+
+# --- 1.7.3: two refusals Mind reported on a real model that the app had let through ------------
+def test_a_name_that_does_not_exist_is_a_broken_reference(tmp_path, engine, config):
+    """Mind: "No function found ... (not a function : Semi_dynamic_increase_rates_array)"
+    -- the formula referred to a name the workbook does not define (a misspelling
+    of an existing one). Names of any alphabet, '?' in a name, table names,
+    sheet-qualified references and LET variables are not names to flag."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.table import Table
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"], ws["A2"], ws["A3"] = "h", 1, 2
+    for name, ref in (("Semi_dynamic_increase_rates", "Calc!$A$2:$A$3"), ("Rate_λG", "Calc!$A$2"), ("Full_Run?", "Calc!$A$3")):
+        wb.defined_names[name] = DefinedName(name, attr_text=ref)
+    ws["C1"], ws["D1"], ws["C2"], ws["D2"] = "K", "V", 1, 2
+    ws.add_table(Table(displayName="Rates", ref="C1:D2"))
+    ws["F1"] = "=HLOOKUP(1,Semi_dynamic_increase_rates_array,1,FALSE)"  # misspelt
+    ws["F2"] = "=Rate_λG+Full_Run?+SUM(Rates[V])+ROWS(Rates)+Calc!A2+TRUE"  # all fine
+    ws["F3"] = "=LET(x,A2,x*Nope)"  # LET variables: not workbook names (RSK-004)
+    p = tmp_path / "names.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "n"), "REF-001")
+    assert f["status"] == "ERROR"
+    assert f["observed"]["undefined_names"] == {"Semi_dynamic_increase_rates_array": {"cells": 1, "closest": "Semi_dynamic_increase_rates"}}
+    assert [s["cell"] for s in f["observed"]["sites"]] == ["F1"]
+    assert "closest existing name: Semi_dynamic_increase_rates" in f["message"] and "#NAME?" in f["message"]
+
+
+def test_a_merged_header_spans_its_columns_and_an_array_past_it_exceeds_the_grid(tmp_path, engine, config):
+    """Mind: "The array formula on sheet Temp, cell F5 exceeds the grid size. Ensure
+    that the column headers cover the entire array formula." The header was one
+    cell merged over B4:E4; the arrays ran to DZ. Read as one cell, the merge
+    hid the grid boundary the converter applies."""
+    import openpyxl
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    def model(merge_to: str):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Temp"
+        ws["B4"] = "Per Policy Projection"
+        ws.merge_cells(f"B4:{merge_to}4")
+        for r, label in ((5, "ME charge"), (6, "Admin cost")):
+            ws[f"B{r}"] = label
+            ws[f"C{r}"] = ArrayFormula(f"C{r}:H{r}", "=TRANSPOSE($A$10:$A$15)")
+        for r in range(10, 16):
+            ws[f"A{r}"] = r
+        p = tmp_path / f"merged_{merge_to}.xlsx"
+        wb.save(p)
+        wb.close()
+        return build_analysis(p, tmp_path / f"w_{merge_to}", "m")
+
+    short = model("E")
+    grids = [(g["display_name"], g["ref"]) for g in short["workbooks"][0]["sheets"][0]["grids"]]
+    assert ("untitled B4", "B4:E6") in grids  # the merge counts for B..E
+    f = _finding(engine, config, short, "RSK-002")
+    assert f["status"] == "ERROR"
+    first = f["observed"]["oversized_array_formulas"][0]
+    assert (first["cell"], first["array_ref"], first["first_cell_outside"]) == ("C5", "C5:H5", "F5")
+    assert "column headers cover the entire array formula" in f["message"]
+    wide = model("H")  # headers cover every column of the arrays: nothing exceeds
+    assert _finding(engine, config, wide, "RSK-002")["status"] == "PASS"
+
+
+# --- 1.7.3: two refusals from Mind's runner / compiler, detected before upload -----------------
+def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, config):
+    """Mind: "Run error: Circular reference found" (WGM input!I11). A cycle through
+    cells, a range and a defined name is found; an acyclic model passes."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "WGM input"
+    ws["A1"] = "h"
+    ws["I11"] = "=J11*2"  # I11 -> J11 -> K11 -> (range) I11 : a 3-cell cycle
+    ws["J11"] = "=K11+1"
+    ws["K11"] = "=SUM(I10:I12)"
+    ws["B2"] = "=Total+1"  # B2 -> name Total -> C2 -> B2 : a cycle through a defined name
+    ws["C2"] = "=B2*3"
+    wb.defined_names["Total"] = DefinedName("Total", attr_text="'WGM input'!$C$2")
+    ws["D2"] = "=D2"  # a cell reading itself
+    ws["E2"] = "=SUM(A1:A5)+INDIRECT(\"F2\")"  # no static cycle; the dynamic target is not followed
+    other = wb.create_sheet("Calc")
+    other["A1"] = "='WGM input'!I11"  # reads a cycle but is not part of it
+    # ROW($A10) uses A10 as a coordinate, not its value: A10 <-> B10 is not a cycle (a real model's pattern)
+    ws["A10"] = "=IF(B10=1,1,0)"
+    ws["B10"] = '=INDIRECT("Cluster"&(ROW($A10)-ROW($A$7)))'
+    # CI14 <-> CJ14 through IF branches that never evaluate together (a real model's pattern): a conditional cycle
+    ws["F1"] = "=IF($G$9=1,H1*2,IFERROR(H1/G1,0))"
+    ws["G1"] = "=IF(H1=0,0,IF($G$9=1,H1/F1,H1))"
+    ws["H1"] = 3
+    # OFFSET($G452,,n) in G452 starts from G452 without reading it (a real model's pattern): not a cycle
+    ws["G5"] = "=OFFSET($G5,,$H$1+1)"
+    wb.calculation.iterate = True
+    p = tmp_path / "circular.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "c"), "FRM-005")
+    assert f["status"] == "ERROR"
+    obs = f["observed"]
+    assert obs["cycle_count"] == 4 and obs["cells_in_cycles"] == 8 and obs["iterative_calculation"] is True
+    assert obs["unconditional_cycles"] == 3 and obs["conditional_cycles"] == 1
+    assert [c["unconditional"] for c in obs["cycles"]] == [True, True, True, False]
+    assert obs["cycles"][-1]["chain"] == ["WGM input!F1", "WGM input!G1", "WGM input!F1"]
+    assert "1 more cycle(s) close only through an IF/IFERROR/CHOOSE branch" in f["message"]
+    chains = {tuple(c["chain"]) for c in obs["cycles"]}
+    assert ("WGM input!I11", "WGM input!J11", "WGM input!K11", "WGM input!I11") in chains
+    assert ("WGM input!B2", "WGM input!C2", "WGM input!B2") in chains
+    assert ("WGM input!D2", "WGM input!D2") in chains
+    assert "WGM input!A10" not in str(chains) and "WGM input!G5" not in str(chains)
+    assert obs["dynamic_reference_formulas_not_followed"] == 3
+    assert "Circular reference found" in f["message"] and "MM_ITERATIONS" in f["message"]
+    assert "Calc!A1" not in str(chains)
+
+    clean = openpyxl.Workbook()
+    ws = clean.active
+    ws.title = "S"
+    ws["A1"], ws["A2"], ws["A3"] = 1, "=A1*2", "=SUM(A1:A2)"
+    p2 = tmp_path / "acyclic.xlsx"
+    clean.save(p2)
+    clean.close()
+    assert _finding(engine, config, build_analysis(p2, tmp_path / "w2", "a"), "FRM-005")["status"] == "PASS"
+
+    # a cell reading its own address on a run-time sheet (INDIRECT + ADDRESS(ROW(),COLUMN())): Mind stopped there
+    own = openpyxl.Workbook()
+    ws = own.active
+    ws.title = "WGM input"
+    ws["A1"] = "Run A"
+    ws["I11"] = '=INDIRECT("'"&$A$1&"'!"&ADDRESS(ROW(),COLUMN()),TRUE)'
+    ws["I12"] = '=INDIRECT("'"&$A$1&"'!"&ADDRESS(ROW(),COLUMN()),TRUE)'
+    own.create_sheet("Run A")["I11"] = 5
+    p4 = tmp_path / "self_address.xlsx"
+    own.save(p4)
+    own.close()
+    e = _finding(engine, config, build_analysis(p4, tmp_path / "w4", "o"), "FRM-005")
+    assert e["status"] == "ERROR" and e["observed"]["self_addressing_indirect"] == {"count": 2, "by_sheet": {"WGM input": 2}, "first": e["observed"]["self_addressing_indirect"]["first"]}
+    assert e["location"] == {"sheet": "WGM input", "cell": "I11"} and "read their own address" in e["message"]
+
+    # only a conditional cycle: a warning, not a blocker -- Excel computes it, Mind's answer is not documented
+    soft = openpyxl.Workbook()
+    ws = soft.active
+    ws.title = "S"
+    ws["A1"], ws["B1"], ws["C1"] = "=IF($C$1=1,B1*2,0)", "=IF($C$1=1,0,A1+1)", 1
+    p3 = tmp_path / "conditional.xlsx"
+    soft.save(p3)
+    soft.close()
+    w = _finding(engine, config, build_analysis(p3, tmp_path / "w3", "s"), "FRM-005")
+    assert w["status"] == "WARNING" and w["observed"]["conditional_cycles"] == 1 and "not documented" in w["message"]
+
+
+def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_path, engine, config):
+    """Mind: "Sheet '>> Reporting:>>>' not found in workbook ... on compiling formula:
+    SUM('>> Reporting:>>>'!RC)". The sheets between the two tabs are listed and the
+    per-sheet formula is proposed; nothing is written."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    first = wb.active
+    first.title = ">> Reporting"  # a divider tab: empty, so Mind creates no spreadsheet for it
+    for name in ("LoB A", "LoB B", ">>>"):
+        wb.create_sheet(name)
+    total = wb.create_sheet("Reporting_LoB Total")
+    for ws in wb.worksheets[1:3]:
+        ws["E5"] = 1
+    wb[">>>"]["D13"] = "end of section"  # one text cell alone: no grid either
+    total["E5"] = "=SUM('>> Reporting:>>>'!E5)"
+    total["E19"] = "=AVERAGE('>> Reporting:>>>'!E5:E7)/2"
+    total["G37"] = "=SUM('>> Reporting:Nope'!G37)"  # an endpoint that does not exist
+    total["H1"] = "=SUM('LoB A'!E5)"  # an ordinary sheet reference: not 3-D
+    total["H2"] = "='>> Reporting'!A1+1"  # reads a sheet Mind does not import
+    p = tmp_path / "3d.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "d"), "FRM-006")
+    assert f["status"] == "ERROR"
+    sites = {s["cell"]: s for s in f["observed"]["sites"]}
+    assert set(sites) == {"E5", "E19", "G37"}
+    assert sites["E5"]["references"][0]["sheets"] == [">> Reporting", "LoB A", "LoB B", ">>>"]
+    assert sites["E5"]["references"][0]["omitted_empty"] == [">> Reporting", ">>>"]
+    # the proposal leaves the grid-less divider tabs out: Mind imports none of them, and they add nothing
+    assert sites["E5"]["suggested_formula"] == "=SUM('LoB A'!E5,'LoB B'!E5)"
+    assert sites["E19"]["suggested_formula"] == "=AVERAGE('LoB A'!E5:E7,'LoB B'!E5:E7)/2"
+    assert sites["G37"]["suggested_formula"] is None and "Nope" in sites["G37"]["issue"]
+    assert f["observed"]["gridless_sheets"] == [">> Reporting", ">>>"]
+    assert [(g["cell"], g["sheets"]) for g in f["observed"]["formulas_reading_gridless_sheets"]] == [("H2", [">> Reporting"])]
+    assert "not found in workbook" in f["message"] and "Spreadsheet not found" in f["message"] and "No automatic repair" in f["message"]
+
+
+def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(tmp_path, engine, config):
+    """Mind: "Unable to cast object of type 'AM.Models.AMReference' to type
+    'System.IConvertible'" on IF(INDIRECT("'"&$G710&"'!$Z$16")=0, ...). The text
+    INDIRECT builds is worked out from the workbook's constants and the direct
+    reference proposed; a target that does not exist is an error already (=NA());
+    text that depends on values the tool cannot know is left by hand."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    inp = wb.active
+    inp.title = "Inputs"
+    lob = wb.create_sheet("LoB 1")
+    lob["Z12"], lob["Z16"] = 10, 4
+    inp["G710"], inp["G711"] = "LoB 1", "LoB 2"  # LoB 2 is not a sheet
+    inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
+    inp["AA711"] = "=IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G711&\"'!$Z$12\")/INDIRECT(\"'\"&$G711&\"'!$Z$16\"))"
+    inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # a reference context: Mind handles it, not flagged
+    inp["B7"] = "=INDIRECT(\"'\"&$G710&\"'!$Z$12\")"  # alone in the cell: a reference, not a value -- not flagged
+    inp["B2"] = "=NOT(INDIRECT(\"LoB\"&COLUMN()-1&\"_Boolean\"))*2"  # a defined name built from COLUMN()
+    inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"  # B4 is a formula with no stored value: by hand
+    inp["B4"] = "=G710"
+    inp["B5"] = True
+    inp["B6"] = "=IF(LEFT(RIGHT($G710,2),1)=\" \",INDIRECT(\"LoB\"&RIGHT($G710,1)&\"_Boolean\")=TRUE,INDIRECT(\"LoB\"&RIGHT($G710,2)&\"_Boolean\")=TRUE)"  # one branch dead
+    wb.defined_names["LoB1_Boolean"] = DefinedName("LoB1_Boolean", attr_text="Inputs!$B$5")
+    p = tmp_path / "indirect.xlsx"
+    wb.save(p)
+    wb.close()
+    f = _finding(engine, config, build_analysis(p, tmp_path / "w", "i"), "FRM-007")
+    assert f["status"] == "ERROR"
+    sites = {s["cell"]: s for s in f["observed"]["sites"]}
+    assert set(sites) == {"AA710", "AA711", "B2", "B3", "B6"}
+    assert sites["B6"]["suggested_formula"] == "=IF(LEFT(RIGHT($G710,2),1)=\" \",LoB1_Boolean=TRUE,NA()=TRUE)"
+    assert sites["AA710"]["suggested_formula"] == "=IF('LoB 1'!$Z$16=0,0,66%*'LoB 1'!$Z$12/'LoB 1'!$Z$16)"
+    # the missing target becomes NA() where it stands, never the whole formula (it may sit in a branch never taken)
+    assert sites["AA711"]["suggested_formula"] == "=IF(NA()=0,0,66%*NA()/NA())" and "LoB 2" in sites["AA711"]["issue"]
+    assert sites["B2"]["suggested_formula"] == "=NOT(LoB1_Boolean)*2"
+    assert sites["B3"]["suggested_formula"] is None and "cannot be worked out" in sites["B3"]["issue"]
+    assert f["observed"]["with_proposal"] == 2 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
+    assert "AMReference" in f["message"] and "No automatic repair" in f["message"]

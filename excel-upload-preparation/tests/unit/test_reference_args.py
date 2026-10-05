@@ -9,7 +9,7 @@ from app.config import load_config
 from app.excel_com import com_available
 from app.formula_utils import collapse_na_reference_calls, reference_arg_problems
 from app.modes import plan_mode
-from app.prep import _com_message, apply_operations, plan_fix_broken_refs, validate_proposal
+from app.prep import _com_message, apply_operations, plan_fix_broken_refs, plan_fix_broken_refs_whole, validate_proposal
 from app.rules_engine import RulesEngine
 
 needs_excel = pytest.mark.skipif(not com_available(), reason="requires pywin32 + an installed Excel")
@@ -67,8 +67,12 @@ def test_broken_ref_fix_handles_sheet_qualified_refs_and_range_arguments():
         ("OUTPUT", "S3", "=#REF!-Q3", "=NA()-Q3"),
     ]
     analysis = {"workbooks": [{"defined_names": [], "formulas": [{"sheet": s, "cell": c, "formula": f} for s, c, f, _ in formulas]}]}
-    ops, skipped = plan_fix_broken_refs(analysis, {})
-    assert skipped == []
+    # 1.7.4: a call that needed the range goes to the separate "whole formula"
+    # action (its own checkbox); the plain NA() swaps stay in the piecewise one
+    piecewise, skipped = plan_fix_broken_refs(analysis, {})
+    whole, _ = plan_fix_broken_refs_whole(analysis, {})
+    assert {o["cell"] for o in piecewise} == {"B8", "S3"} and len(skipped) == 4
+    ops = piecewise + whole
     assert {(o["sheet"], o["cell"]): o["after"] for o in ops} == {(s, c): want for s, c, _, want in formulas}
     assert all(not reference_arg_problems(o["after"]) for o in ops)
     # a range endpoint still cannot be rewritten: left for review, as before

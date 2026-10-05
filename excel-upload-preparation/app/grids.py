@@ -14,6 +14,12 @@ This is a faithful re-implementation of the documented algorithm, not a
 guess -- but it is still this app's reading of the doc, so findings built on
 it are labeled INFERENCE where they depend on grid *boundaries* and
 DETERMINISTIC_FINDING where they only depend on a title cell's own text.
+
+1.7.3: a merged cell occupies every cell of its range. Mind reads a header
+merged over B4:E4 as a header row four columns wide (a conversion of a real
+model failed with "the array formula ... exceeds the grid size. Ensure that
+the column headers cover the entire array formula" at the first column past
+the merge); reading the merge as one cell hid that.
 """
 from __future__ import annotations
 
@@ -38,6 +44,19 @@ ERROR_LITERALS = frozenset(
 FLAG_RE = re.compile(r"/([A-Za-z][A-Za-z0-9_]*)((?:\.(?:\([^)]*\)|[^\s./]+))*)")
 
 
+class MergedInto:
+    """A cell of a merged range other than its first cell: it takes its place
+    in a grid like any occupied cell and shows the first cell's value."""
+
+    __slots__ = ("anchor", "value")
+
+    def __init__(self, anchor: tuple[int, int], value: Any) -> None:
+        self.anchor, self.value = anchor, value
+
+    def __repr__(self) -> str:
+        return f"MergedInto({ref_text(self.anchor[1], self.anchor[0])})"
+
+
 def looks_like_title(value: Any) -> bool:
     """A '#...' text cell that is a grid title -- not an Excel error value."""
     if not isinstance(value, str):
@@ -52,6 +71,8 @@ MAX_STORED_CELLS = 20000
 
 def json_safe(value: Any) -> Any:
     """openpyxl cell values -> something json.dumps can serialize (formulas as text)."""
+    if isinstance(value, MergedInto):
+        value = value.value
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
@@ -135,6 +156,11 @@ def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple
         if (r, c) in assigned:
             continue
         value = occupied[(r, c)]
+        if isinstance(value, MergedInto):
+            # its first cell came earlier in reading order: a title cell, or a block this
+            # cell was not reached from (merged downwards past the block) -- never a new grid
+            assigned.add((r, c))
+            continue
         title_cell: tuple[int, int] | None = None
         ar, ac = r, c
         if looks_like_title(value) and (r + 1, c) in occupied and (r + 1, c) not in assigned:
