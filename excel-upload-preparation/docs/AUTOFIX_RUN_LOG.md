@@ -102,6 +102,20 @@ Stops when no error is left, or nothing more can be fixed safely.
 - 19:15 **final run (`full_3`)** started on commit 5f1dafa: `scripts/run_usecases.py --ports 8602,8603`
   (cnhi, palermo, pvfp, horizon) -> `%LOCALAPPDATA%\\MindReady\\autofix\\runs\\full_3`.
 
+- 19:15-20:24 `full_3`, Palermo: 3 Prep rounds (345 changes), numbers check "the preparation changed no computed
+  value (56,647 formula cells compared)", 511 errors -> **0** in 1 pass, confirmation recalculation PASS (v5).
+- 20:45 **`full_3` cannot finish, and why.** The Prep action "Replace theme colours with explicit RGB" (FMT-002,
+  ticked by default) never converges: Excel keeps the default text colour as a theme colour when the same colour
+  is assigned back, so every round plans the same cells again (Palermo `Policy summary`: 11,807 -> 11,719 -> 11,720
+  cells; 25 sheets in each of the 3 rounds), cell by cell where colours are mixed (~36 cells/s here). PVFP: 46 min
+  for round 1, `LoB 1` (76,391 cells) again in round 2. CNHI: one sheet (`RAC Baseline`, 123,686 cells) took an
+  hour, 60 more colour operations behind it, three rounds to go -- past the 12 hours.
+  Decision: convert the colours where they live, in the workbook's style table (`xl/styles.xml`: a few hundred
+  fonts and fills instead of hundreds of thousands of cells), then **run all four again** (`full_4`).
+  I tried to stop the superseded runs (`full_3`, `full_3_allow`); the permission system refused ("interfere with
+  workloads") and nobody is here to allow it, so they are left running and `full_4` uses other ports (8606, 8607).
+  Their results are NOT the final ones (except as a second opinion on commit 5f1dafa).
+
 ## Results so far (engine alone, on the original files, the owner's two rules)
 
 | Use case | Errors | After | Passes | Time | Left for a person |
@@ -114,9 +128,8 @@ Stops when no error is left, or nothing more can be fixed safely.
 
 ## Next step
 
-1. Wait for the final run (`runs/full_3/run.log`, `summary.json`), then
-   `python scripts/usecase_report.py <run dir> --out docs/AUTOFIX_USE_CASES.md` and complete that file by hand
-   (what Prep did to the numbers, PVFP with rule 2 lifted).
-2. If the run shows a defect: fix, re-run ALL four (`full_4`), not only the one that failed.
+1. Finish the colour conversion in the style table (`prep.explicit_theme_colors_in_package`), tests, commit.
+2. `python -X utf8 scripts/run_usecases.py --ports 8606,8607 --out <runs>/full_4` (all four), then
+   `python scripts/usecase_report.py <run dir>` -> `docs/AUTOFIX_USE_CASES.md`, completed by hand.
 3. Copy the final workbooks + reports to `excel-upload-preparation/runs/autofix_2026-10-05/`, restart port 8600
    on the final version, final commit + push (origin only), update the memory file.

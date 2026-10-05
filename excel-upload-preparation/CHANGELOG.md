@@ -159,7 +159,7 @@ Three changes:
   its late release left the thread's COM apartment unusable: the next
   recalculation in the same process failed with "The interface is unknown"
   (8 tests of the full suite, each passing when run alone).
-- Tests: `tests/unit/test_autofix.py` (26: R1C1 reading, range index, the
+- Tests: `tests/unit/test_autofix.py` (23: R1C1 reading, range index, the
   ladder, and the engine in a real Excel -- roots, rollback, layers, arrays,
   swallowed errors, pinned channels, INDIRECT / OFFSET, the assistant's
   fallbacks and repairs), `tests/unit/test_numbers_check.py` (4), three more
