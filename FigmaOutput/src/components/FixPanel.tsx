@@ -159,6 +159,7 @@ export default function FixPanel() {
   const currentVersion = useStore((s) => s.currentVersion);
   const setRecalcResult = useStore((s) => s.setRecalcResult);
   const addVersion = useStore((s) => s.addVersion);
+  const setReport = useStore((s) => s.setReport);
   const applyAnalysis = useStore((s) => s.applyAnalysis);
   const appendChatMessage = useStore((s) => s.appendChatMessage);
 
@@ -335,6 +336,7 @@ export default function FixPanel() {
     try {
       const res = await api.recalculate(sessionId);
       if (res.version) addVersion(res.version);
+      if (res.report) setReport(res.report, res.plan ?? useStore.getState().plan);
       setRecalcResult(res);
       if (res.ran === false) {
         setRecalcNote(`Recalculation could not run (${res.message}) — nothing can be concluded; try again.`);

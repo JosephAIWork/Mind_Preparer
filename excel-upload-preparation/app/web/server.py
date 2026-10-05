@@ -48,7 +48,8 @@ from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, str
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
-from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress  # noqa: E402
+from app.models import Status, aggregate_status  # noqa: E402
+from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
 from app.prep import ASSISTANT_OPS, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
 from app.recalc import classify_against_original, classify_errors, formulas_with_broken_refs, group_errors, recalculate  # noqa: E402
@@ -424,6 +425,33 @@ def _status_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+def _sync_recalc_finding(s: Session) -> None:
+    """1.7.4: READY-001 ("successful recalculation") is NOT_SUPPORTED in every
+    analysis pass -- the pass never runs Excel -- and, worst status winning,
+    it kept the whole report at NOT_SUPPORTED even after a clean Recalculate.
+    When the current version has a real recalculation, the finding says what
+    it found (PASS when no new error, ERROR otherwise) and the report's status
+    and summary are recomputed."""
+    if not s.result:
+        return
+    rc = recalc_state(s.recalc, s.current_version_id)
+    if not rc["ran"]:
+        return
+    report = s.result["validation_report"]
+    finding = next((f for f in report["findings"] if f.get("rule_id") == "READY-001"), None)
+    if finding is None:
+        return
+    short = next((v["label"].split(" — ")[0] for v in s.versions if v["id"] == s.current_version_id), s.current_version_id)
+    finding["status"] = "PASS" if rc["clean"] else "ERROR"
+    finding["message"] = f"Recalculated {short} in Excel: {rc['message']}."
+    statuses = [Status(f["status"]) for f in report["findings"]]
+    report["status"] = aggregate_status(statuses).value
+    summary = report.setdefault("summary", {})
+    summary["status_counts"] = _status_counts(report["findings"])
+    summary["not_supported_rule_ids"] = [f["rule_id"] for f in report["findings"] if f["status"] == "NOT_SUPPORTED"]
+    summary["blocking_rule_ids"] = [f["rule_id"] for f in report["findings"] if f["status"] in ("ERROR", "REQUIRES_USER_INPUT", "NOT_SUPPORTED")]
+
+
 def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     label, module = MODE_MAP[s.mode]
     work = s.work_dir / "analysis" / s.current_version_id
@@ -439,6 +467,7 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         f["correction_available"] = f["rule_id"] in fixable
     report["_version_id"] = s.current_version_id
     s.result = result
+    _sync_recalc_finding(s)  # a re-analysis of a version already recalculated keeps that result
     delta = _delta(previous, report, s.current_version_id)
     summary = _summary(result["workbook_analysis"])
     summary["size"] = s.size
@@ -1022,6 +1051,10 @@ def recalc(session_id: str) -> dict[str, Any]:
         out["version_id"] = version["id"]
     s.recalc = out
     s.recalc_version_id = s.current_version_id
+    _sync_recalc_finding(s)
+    if s.result:
+        out["report"] = {k: v for k, v in s.result["validation_report"].items() if k != "_version_id"}
+        out["plan"] = s.plan
     s.recalc_path = copy_path
     out["readiness"] = s.readiness()  # 1.7.2: a clean recalculation is what turns the verdict green
     return out

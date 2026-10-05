@@ -409,6 +409,9 @@ export interface RecalcResult {
   version_id?: string;
   /** 1.7.4: a recalculation after Recalculate-step fixes (v2.1, v2.2) makes the next major version (v3). */
   version?: Version;
+  /** 1.7.4: the report with READY-001 set from this recalculation (PASS when clean), and the plan */
+  report?: ValidationReport;
+  plan?: PrepAction[];
   /** false when Excel could not run at all (COM failure / not available) -- then the error lists mean nothing. */
   ran?: boolean;
   formula_errors: RecalcCell[];

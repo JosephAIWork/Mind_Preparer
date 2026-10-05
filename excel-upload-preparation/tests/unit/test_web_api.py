@@ -522,3 +522,43 @@ def test_recalculate_step_fixes_are_minor_versions_and_a_recalculation_closes_th
     assert rec["version"]["id"] == "ver-003" and rec["version"]["label"] == "v3 — recalculated v2.2" and rec["version_id"] == "ver-003"
     assert "version" not in client.post(f"/api/sessions/{sid}/recalculate").json()  # nothing to close: v3 stays v3
     assert apply("d", "minor")["label"].startswith("v3.1 — ")
+
+
+def test_a_clean_recalculation_turns_ready_001_into_a_pass(client, plain_grid_xlsx):
+    """1.7.4: READY-001 is NOT_SUPPORTED in every analysis pass (no Excel run there),
+    which kept the whole report NOT_SUPPORTED after a clean Recalculate."""
+    body = _upload(client, plain_grid_xlsx)
+    sid = body["sessionId"]
+    ready = lambda report: next(f for f in report["findings"] if f["rule_id"] == "READY-001")  # noqa: E731
+    assert ready(body["report"])["status"] == "NOT_SUPPORTED"
+    if not com_available():
+        pytest.skip("recalculation needs Excel")
+    rec = client.post(f"/api/sessions/{sid}/recalculate").json()
+    assert rec["ran"]
+    expected = "PASS" if rec["readiness"]["recalc"]["clean"] else "ERROR"
+    assert ready(rec["report"])["status"] == expected and "READY-001" not in rec["report"]["summary"]["not_supported_rule_ids"]
+    # a re-analysis of the same version keeps what the recalculation found
+    again = client.post(f"/api/sessions/{sid}/reanalyze", json={}).json()
+    assert ready(again["report"])["status"] == expected
+
+
+def test_a_clean_recalculation_turns_ready_001_to_pass_and_lifts_the_report(client, plain_grid_xlsx):
+    """1.7.4: READY-001 is NOT_SUPPORTED in every analysis pass (it never runs
+    Excel) and used to hold the whole report at NOT_SUPPORTED after a clean Recalculate."""
+    body = _upload(client, plain_grid_xlsx)
+    ready = next(f for f in body["report"]["findings"] if f["rule_id"] == "READY-001")
+    assert ready["status"] == "NOT_SUPPORTED"
+    if not com_available():
+        pytest.skip("recalculation needs Excel")
+    sid = body["sessionId"]
+    rec = client.post(f"/api/sessions/{sid}/recalculate").json()
+    if rec["formula_errors"]:
+        pytest.skip("fixture recalculates with errors")
+    report = rec["report"]
+    ready = next(f for f in report["findings"] if f["rule_id"] == "READY-001")
+    assert ready["status"] == "PASS" and "Recalculated v1" in ready["message"]
+    assert "READY-001" not in report["summary"]["not_supported_rule_ids"]
+    assert report["status"] != "NOT_SUPPORTED" or report["summary"]["not_supported_rule_ids"]
+    # a re-analysis of the same version keeps the recalculation's verdict
+    again = client.post(f"/api/sessions/{sid}/reanalyze", json={}).json()
+    assert next(f for f in again["report"]["findings"] if f["rule_id"] == "READY-001")["status"] == "PASS"

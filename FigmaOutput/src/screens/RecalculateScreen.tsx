@@ -10,6 +10,7 @@ export default function RecalculateScreen() {
   const result = useStore((s) => s.recalcResult);
   const setRecalcResult = useStore((s) => s.setRecalcResult);
   const addVersion = useStore((s) => s.addVersion);
+  const setReport = useStore((s) => s.setReport);
   const openFix = useStore((s) => s.openFix);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +35,7 @@ export default function RecalculateScreen() {
     try {
       const res = await api.recalculate(sessionId!);
       if (res.version) addVersion(res.version);
+      if (res.report) setReport(res.report, res.plan ?? useStore.getState().plan);
       setRecalcResult(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
