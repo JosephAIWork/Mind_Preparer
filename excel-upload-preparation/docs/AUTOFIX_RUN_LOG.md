@@ -88,8 +88,19 @@ Stops when no error is left, or nothing more can be fixed safely.
   dead formulas become `=IFERROR(NA(),0)` instead of a bare value (SKILL.md rule 6); version 1.8.0,
   CHANGELOG, README. Full unit suite under heavy load: 267 passed, 7 Excel-recalculation tests failed
   and passed when re-run alone (Excel COM under load) -- to be run again when the machine is quiet.
-- 18:29 **full run 2** started on commit 128f9c3: `scripts/run_usecases.py --ports 8602,8603`
-  (cnhi, palermo, pvfp, horizon) -> `%LOCALAPPDATA%\MindReadyutofixunsull_2`.
+- 18:30-18:45 the assistant may propose the repair itself (`=IF(BF36=0,0,BE36/BF36)`, `=C4+N(B5)`): written to the
+  whole block, kept only if the error cells are cured, every working cell of the block returns exactly the same value
+  and the numbers gate passes. Live on Horizon: 2 repairs kept (46 cells), 721 -> 0.
+  Two full runs were started and stopped on purpose (18:29, 18:43): each time an edit that mattered came up while
+  they were in their first minutes, and "tested on the latest version" has to be true for all four.
+- 18:45-19:15 `repair_refused()`: what an assistant-written formula may contain (only what the original reads and
+  calls, plus a short list of guards; no DDE, no other workbook).
+  **A COM bug of mine**: 8 tests of the full suite failed (each passed alone) with "The interface is unknown" on the
+  first recalculation after an auto-fix in the same thread. Cause: `run_autofix` still held the Excel proxy of its
+  session while the next session (`verify_opens_in_excel`) ran. The session now lives in `_fix_in_excel()`.
+  **Full unit suite: 281 passed** (247 before this run).
+- 19:15 **final run (`full_3`)** started on commit 5f1dafa: `scripts/run_usecases.py --ports 8602,8603`
+  (cnhi, palermo, pvfp, horizon) -> `%LOCALAPPDATA%\\MindReady\\autofix\\runs\\full_3`.
 
 ## Results so far (engine alone, on the original files, the owner's two rules)
 
@@ -103,7 +114,9 @@ Stops when no error is left, or nothing more can be fixed safely.
 
 ## Next step
 
-1. Wait for full run 2 (`runs/full_2/run.log`, `summary.json`); `python scripts/usecase_report.py <run dir>`
-   -> `docs/AUTOFIX_USE_CASES.md`.
-2. Re-run the full unit suite with nothing else running.
-3. Copy the final workbooks + reports to `excel-upload-preparation/runs/`, restart port 8600, final commit.
+1. Wait for the final run (`runs/full_3/run.log`, `summary.json`), then
+   `python scripts/usecase_report.py <run dir> --out docs/AUTOFIX_USE_CASES.md` and complete that file by hand
+   (what Prep did to the numbers, PVFP with rule 2 lifted).
+2. If the run shows a defect: fix, re-run ALL four (`full_4`), not only the one that failed.
+3. Copy the final workbooks + reports to `excel-upload-preparation/runs/autofix_2026-10-05/`, restart port 8600
+   on the final version, final commit + push (origin only), update the memory file.
