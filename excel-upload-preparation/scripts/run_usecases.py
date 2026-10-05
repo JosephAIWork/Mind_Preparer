@@ -71,7 +71,7 @@ def _recalc_facts(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bool, autofix_options: dict[str, Any], skip_share: float = 0.5, skip_above_mb: float = 100.0) -> dict[str, Any]:
+def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bool, autofix_options: dict[str, Any], skip_share: float = 0.5, skip_above_mb: float = 100.0, one_comparison: bool = False) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     result: dict[str, Any] = {"workbook": str(workbook), "size_mb": round(workbook.stat().st_size / 1e6, 1), "base": base, "steps": [], "started": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -115,16 +115,26 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                  version=out["version"]["label"], verified=res.get("verified_opens_in_excel"),
                  readiness=(out.get("readiness") or {}).get("state"), blocking=(out.get("readiness") or {}).get("blocking_count"))
 
-        t = time.time()
-        numbers = _post(base, f"/api/sessions/{sid}/numbers-check")
-        result["prep_changed_values"] = None if not numbers.get("ran") else not numbers.get("clean")
-        step("numbers check (original vs prepared)", t, ran=numbers.get("ran"), clean=numbers.get("clean"), verdict=numbers.get("verdict"), counts=numbers.get("counts"),
-             moves=numbers.get("moves"), by_sheet=numbers.get("by_sheet"), examples={k: v[:4] for k, v in (numbers.get("samples") or {}).items() if v})
+        def numbers_step(numbers: dict[str, Any], started: float, by: str) -> None:
+            result["prep_changed_values"] = None if not numbers.get("ran") else not numbers.get("clean")
+            step(f"numbers check ({by})", started, ran=numbers.get("ran"), clean=numbers.get("clean"), verdict=numbers.get("verdict"), counts=numbers.get("counts"),
+                 moves=numbers.get("moves"), by_sheet=numbers.get("by_sheet"), examples={k: v[:4] for k, v in (numbers.get("samples") or {}).items() if v})
+
+        # The fixer compares a prepared version with the original itself (an error that was a value
+        # in the original is Prep's doing). `one_comparison` uses that one instead of asking twice:
+        # on a 37 MB model each comparison is two full recalculations.
+        if not one_comparison:
+            t = time.time()
+            numbers_step(_post(base, f"/api/sessions/{sid}/numbers-check"), t, "original vs prepared")
 
         t = time.time()
         rec = _post(base, f"/api/sessions/{sid}/recalculate")
         step("recalculate", t, **_recalc_facts(rec))
         result["errors_before_autofix"] = len(rec.get("formula_errors", []))
+
+        if one_comparison and not (autofix and rec.get("formula_errors")):
+            t = time.time()
+            numbers_step(_post(base, f"/api/sessions/{sid}/numbers-check"), t, "original vs prepared")
 
         if autofix and rec.get("formula_errors"):
             t = time.time()
@@ -144,6 +154,8 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                 st = {k: v for k, v in _get(base, f"/api/sessions/{sid}/auto-fix?full=1").items() if k not in ("recalc", "analysis")}
             fix = st.get("result") or {}
             (out_dir / "autofix_result.json").write_text(json.dumps(st, indent=1, ensure_ascii=False), encoding="utf-8")
+            if one_comparison and fix.get("numbers_check"):
+                numbers_step(fix["numbers_check"], time.time(), "by the fixer: original vs prepared")
             step("auto-fix", t, state=st.get("state"), error=st.get("error"), status=fix.get("status"), passes=fix.get("passes"),
                  errors_before=fix.get("errors_before"), errors_after=fix.get("errors_after"), cells_fixed=fix.get("cells_fixed"),
                  cells_rewritten=fix.get("cells_rewritten"), left_for_a_person=fix.get("left_count"), rolled_back=fix.get("rolled_back"),
@@ -206,6 +218,7 @@ def main() -> int:
     ap.add_argument("--no-autofix", action="store_true", help="stop after the first recalculation (a baseline of what Prep leaves)")
     ap.add_argument("--no-assistant", action="store_true", help="auto-fix without asking the assistant (the built-in strategies only)")
     ap.add_argument("--allow-handled", action="store_true", help="auto-fix with keep_good_values off: also fix errors a formula hides, listing every value that changes")
+    ap.add_argument("--one-comparison", action="store_true", help="compare with the original once: by the fixer when there are errors to fix, by the numbers check otherwise")
     args = ap.parse_args()
     options = {"use_assistant": not args.no_assistant, "keep_good_values": not args.allow_handled, "time_budget_min": 240}
     args.out.mkdir(parents=True, exist_ok=True)
@@ -220,7 +233,7 @@ def main() -> int:
         (args.out / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False), encoding="utf-8")
 
     def one(base: str, wb: Path) -> None:
-        res = flow(base, wb, args.out / wb.stem, args.prep_rounds, not args.no_autofix, options, args.skip_share, args.skip_above_mb)
+        res = flow(base, wb, args.out / wb.stem, args.prep_rounds, not args.no_autofix, options, args.skip_share, args.skip_above_mb, args.one_comparison)
         with lock:
             results[str(wb)] = res
             save()

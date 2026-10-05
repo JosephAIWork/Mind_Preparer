@@ -148,11 +148,28 @@ Three changes:
   workbook (`--ports 8602,8603` runs them side by side: one server process
   held 7.7 GB after two analyses). `scripts/ui_autofix_check.py` clicks
   through the real screens with Playwright.
-- `explicit_colors` (FMT-002) re-colours **blocks** of one colour in one go
-  instead of cell by cell (~10 COM calls a cell: 37 minutes for the 77,000
-  cells of PVFP, more on CNHI's 124,000). A mixed block is split into rows, a
-  mixed row into cells; the result is the same cell for cell
-  (`tests/unit/test_explicit_colors.py` compares both ways).
+- **Theme colours are replaced in the workbook's style table**
+  (`app/theme_colors.py`; FMT-002 "Replace theme colours with explicit RGB",
+  ticked by default). The action went through the cells in Excel: read the
+  colour, assign it back. Two faults on real models. It never finished its
+  job: Excel keeps the default text colour as a theme colour when a cell is
+  assigned the colour it already shows, so every Prep round planned the same
+  cells again (one sheet of Palermo: 11,807 -> 11,719 -> 11,720 cells; 25
+  sheets in each of three rounds). And it was slow, ~10 COM calls a cell
+  where colours are mixed: 46 minutes for one round on PVFP, an hour for
+  *one* sheet of CNHI (123,686 cells) with 60 more colour operations behind
+  it -- that run could not finish. A cell does not carry a colour, it points
+  at a font and a fill; now the fonts and fills of `xl/styles.xml` are
+  converted on the fresh copy before Excel opens it. Every sheet at once:
+  0.3 s (Horizon) to 9 s (CNHI), and nothing is left to plan at the next
+  scan. The RGB written is the one Excel shows. Its tint arithmetic is not
+  the textbook one (whole-number HLS on Windows' 0..240 scale; the
+  floating-point formula is 1 or 2 off on more than half the shades): found
+  by reading 276 colour / tint pairs back from Excel, all exact now.
+  Going through the cells stays as the fallback for a package whose style
+  table cannot be read -- by **blocks** of one colour since this version
+  instead of cell by cell (`tests/unit/test_explicit_colors.py` compares
+  both ways).
 - A COM lesson: the fixer's Excel session lives in a function of its own
   (`_fix_in_excel`). While the Excel proxy of that session was still held by
   `run_autofix`'s frame during the next session (`verify_opens_in_excel`),
@@ -164,7 +181,9 @@ Three changes:
   swallowed errors, pinned channels, INDIRECT / OFFSET, the assistant's
   fallbacks and repairs), `tests/unit/test_numbers_check.py` (4), three more
   in `test_prep_reference_safety.py`, two in `test_web_api.py`,
-  `test_explicit_colors.py` (2). Full suite: 281 passed.
+  `test_explicit_colors.py` (2), `test_theme_colors.py` (6: the tint against
+  what Excel showed, the style table, the package, and an Apply through
+  Excel that leaves no theme colour and the same look). Full suite: SUITE_COUNT.
 
 ## 1.7.4
 
