@@ -116,6 +116,25 @@ Stops when no error is left, or nothing more can be fixed safely.
   workloads") and nobody is here to allow it, so they are left running and `full_4` uses other ports (8606, 8607).
   Their results are NOT the final ones (except as a second opinion on commit 5f1dafa).
 
+- 20:50-21:13 **the colour action, done in the style table** (`app/theme_colors.py`, commit eecb47e): fonts and
+  fills of `xl/styles.xml` converted on the fresh copy before Excel opens it. 0.3 s (Horizon) ... 8.6 s (CNHI).
+  Excel's tint arithmetic is not the textbook one (float HLS is 1-2 off on more than half the shades): read 276
+  colour/tint pairs back from Excel, tried variants, found it (whole-number HLS on Windows' 0..240 scale, the
+  lightened luminance built from two parts cut separately) -- 276 of 276 exact. Tests: `test_theme_colors.py` (6).
+- 21:13 `full_4` (all four, 3 Prep rounds, ports 8606/8607) started on eecb47e. **Horizon finished at 21:37**:
+  169 + 6 + 1 Prep changes (no colour operation after round 1: it converged), "the preparation changed no computed
+  value (22,120 formula cells compared)", 721 errors -> **0** in 2 passes, confirmation PASS, verdict
+  **"Acceptable by Mind"**. Result: `runs/full_4/horizon`.
+- 21:20 the machine is out of memory and CPU: the superseded runs I may not stop hold ~19 GB and three busy Excel /
+  Python pairs (4 cores). Every step runs ~4x slower (Palermo analysis: 914 s instead of 241 s). With three Prep
+  rounds CNHI and PVFP would end after the 12 hours. So, for the three left:
+  **one Prep round** (with the colour fix the first round does nearly everything: Horizon's rounds 2 and 3 were 6
+  and 1 changes) and **one comparison with the original** instead of two (`run_usecases.py --one-comparison`: the
+  fixer compares a prepared version with the original itself). `full_4` stopped after Horizon (my own task).
+- 21:37 `full_5`: three harness processes, one per workbook -- CNHI (8611), PVFP (8612), Palermo (8613):
+  `scripts/run_usecases.py <wb> --ports <p> --prep-rounds 1 --one-comparison --out runs/full_5`
+  (logs `run_cnhi.log`, `run_pvfp.log`, `run_palermo.log`). App code = eecb47e (`git diff eecb47e HEAD -- app` empty).
+
 ## Results so far (engine alone, on the original files, the owner's two rules)
 
 | Use case | Errors | After | Passes | Time | Left for a person |
@@ -128,8 +147,11 @@ Stops when no error is left, or nothing more can be fixed safely.
 
 ## Next step
 
-1. Finish the colour conversion in the style table (`prep.explicit_theme_colors_in_package`), tests, commit.
-2. `python -X utf8 scripts/run_usecases.py --ports 8606,8607 --out <runs>/full_4` (all four), then
-   `python scripts/usecase_report.py <run dir>` -> `docs/AUTOFIX_USE_CASES.md`, completed by hand.
-3. Copy the final workbooks + reports to `excel-upload-preparation/runs/autofix_2026-10-05/`, restart port 8600
+1. Wait for `runs/full_5` (CNHI, PVFP, Palermo; Horizon is in `runs/full_4/horizon`). A workbook that failed for
+   lack of memory is simply run again alone with the same command.
+2. PVFP with rule 2 lifted: `python -m app.autofix <prepared pvfp> <dir> --assistant --allow-handled` on the
+   prepared version the PVFP session leaves in `%TEMP%/mind_ready_*/analysis/ver-002/`.
+3. Full unit suite (`python -m pytest tests -q`) once the machine is quiet; put the count in CHANGELOG (SUITE_COUNT).
+4. `python scripts/usecase_report.py <run dir>` -> `docs/AUTOFIX_USE_CASES.md`, completed by hand.
+5. Copy the final workbooks + reports to `excel-upload-preparation/runs/autofix_2026-10-05/`, restart port 8600
    on the final version, final commit + push (origin only), update the memory file.
