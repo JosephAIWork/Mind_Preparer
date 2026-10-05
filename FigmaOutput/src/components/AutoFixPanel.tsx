@@ -23,7 +23,14 @@ function show(v: unknown): string {
 
 const N = (n: number | null | undefined) => (n ?? 0).toLocaleString();
 
-export default function AutoFixPanel() {
+interface Props {
+  /** something else is working on the workbook (a recalculation): the fixer waits */
+  blocked?: boolean;
+  /** told whenever the fixer starts or stops running, so the screen can hold its own buttons */
+  onRunningChange?: (running: boolean) => void;
+}
+
+export default function AutoFixPanel({ blocked = false, onRunningChange }: Props) {
   const sessionId = useStore((s) => s.sessionId);
   const currentVersion = useStore((s) => s.currentVersion);
   const recalcResult = useStore((s) => s.recalcResult);
@@ -100,6 +107,12 @@ export default function AutoFixPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, status?.state]);
 
+  const isRunning = status?.state === "running";
+  useEffect(() => {
+    onRunningChange?.(isRunning);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRunning]);
+
   if (!sessionId) return null;
 
   async function start(keepGoodValues: boolean) {
@@ -159,7 +172,9 @@ export default function AutoFixPanel() {
           <div className="mt-3 flex items-center gap-4 flex-wrap">
             <button
               onClick={() => start(true)}
-              className="px-5 py-2.5 bg-[#0F766E] text-white rounded-lg font-semibold text-sm hover:bg-[#0B5E58] transition-colors"
+              disabled={blocked}
+              title={blocked ? "Wait for the recalculation to finish" : undefined}
+              className="px-5 py-2.5 bg-[#0F766E] text-white rounded-lg font-semibold text-sm hover:bg-[#0B5E58] transition-colors disabled:opacity-50"
             >
               {resultIsCurrent && !clean && !nothingToDo ? "Try again" : errorsNow ? `Fix all ${N(errorsNow)} errors automatically` : "Fix all automatically"}
             </button>
@@ -221,6 +236,22 @@ export default function AutoFixPanel() {
               {result.rolled_back ? ` · ${N(result.rolled_back)} fix${result.rolled_back !== 1 ? "es" : ""} undone` : ""}
               {status?.elapsed_s ? ` · ${clock(status.elapsed_s)}` : ""}
               {status?.version ? ` · saved as ${status.version.label.split(" — ")[0]}` : ""}
+            </div>
+          )}
+
+          {result.numbers_check?.ran && result.numbers_check.clean === false && (
+            <div className="mt-3 text-[12px] text-[#9F1D1D] bg-[#FDE2E2] border border-[#9F1D1D]/20 rounded-lg px-3 py-2" role="alert">
+              <div className="font-semibold">Before the fixer started: {result.numbers_check.verdict}</div>
+              <div className="mt-1">
+                That happened in an earlier step (Prep), not here.
+                {result.regression_cells ? ` The ${N(result.regression_cells)} cell${result.regression_cells !== 1 ? "s" : ""} that became errors are left as they are: a value put over them would hide it.` : ""}
+                {" "}Go back to the version before that step in History, or untick the Prep action that inserts rows.
+              </div>
+              {(result.numbers_check.samples?.good_to_error ?? result.numbers_check.samples?.good_to_other ?? []).slice(0, 3).map((x, i) => (
+                <div key={i} className="mt-1 font-mono text-[11px]">
+                  {x.now}: {x.was} → {x.is}
+                </div>
+              ))}
             </div>
           )}
 

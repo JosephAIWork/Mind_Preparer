@@ -13,11 +13,11 @@ With --ports the script starts a fresh server of its own for every workbook
 stops it afterwards: a session keeps its analysis in memory, and four large
 workbooks in one server process do not fit.
 
-A workbook above the app's size limit is uploaded the way the upload screen
-offers: the sheets that hold most of the file (--skip-share, default one sheet
->= 50 % of the unpacked size -- a data dump) are left out of the *scan*. The
-workbook itself stays whole: Prep, the recalculation and the automatic fixer
-work on all of it.
+A very large workbook is uploaded the way the upload screen offers: when it
+unpacks to --skip-above-mb or more (default 100 MB), a sheet that alone holds
+--skip-share of it (default 50 % -- a data dump or an output table) is left out
+of the *scan*. The workbook itself stays whole: Prep, the recalculation and the
+automatic fixer work on all of it.
 
 Writes <out>/<stem>/result.json (every step, timings, error counts), the final
 workbook, and <out>/summary.json. Nothing is uploaded anywhere but the local app.
@@ -71,7 +71,7 @@ def _recalc_facts(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bool, autofix_options: dict[str, Any], skip_share: float = 0.5) -> dict[str, Any]:
+def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bool, autofix_options: dict[str, Any], skip_share: float = 0.5, skip_above_mb: float = 100.0) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     result: dict[str, Any] = {"workbook": str(workbook), "size_mb": round(workbook.stat().st_size / 1e6, 1), "base": base, "steps": [], "started": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -90,7 +90,7 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
         sid = body["sessionId"]
         result["session"] = sid
         size = body.get("size") or {}
-        skipped = [sh["name"] for sh in size.get("sheets", []) if size.get("above_threshold") and (sh.get("share") or 0) >= skip_share]
+        skipped = [sh["name"] for sh in size.get("sheets", []) if (size.get("decompressed_mb") or 0) >= skip_above_mb and (sh.get("share") or 0) >= skip_share]
         body = _post(base, f"/api/sessions/{sid}/analyze", json={"ignore_sheets": skipped})
         plan = body["plan"]
         step("upload+analyze", t, unpacked_mb=size.get("decompressed_mb"), above_size_limit=size.get("above_threshold"), sheets_left_out_of_the_scan=skipped,
@@ -116,6 +116,12 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                  readiness=(out.get("readiness") or {}).get("state"), blocking=(out.get("readiness") or {}).get("blocking_count"))
 
         t = time.time()
+        numbers = _post(base, f"/api/sessions/{sid}/numbers-check")
+        result["prep_changed_values"] = None if not numbers.get("ran") else not numbers.get("clean")
+        step("numbers check (original vs prepared)", t, ran=numbers.get("ran"), clean=numbers.get("clean"), verdict=numbers.get("verdict"), counts=numbers.get("counts"),
+             moves=numbers.get("moves"), by_sheet=numbers.get("by_sheet"), examples={k: v[:4] for k, v in (numbers.get("samples") or {}).items() if v})
+
+        t = time.time()
         rec = _post(base, f"/api/sessions/{sid}/recalculate")
         step("recalculate", t, **_recalc_facts(rec))
         result["errors_before_autofix"] = len(rec.get("formula_errors", []))
@@ -138,6 +144,7 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
             step("auto-fix", t, state=st.get("state"), error=st.get("error"), status=fix.get("status"), passes=fix.get("passes"),
                  errors_before=fix.get("errors_before"), errors_after=fix.get("errors_after"), cells_fixed=fix.get("cells_fixed"),
                  cells_rewritten=fix.get("cells_rewritten"), left_for_a_person=fix.get("left_count"), rolled_back=fix.get("rolled_back"),
+                 broken_by_prep=fix.get("regression_cells"), good_values_changed=fix.get("good_values_changed"),
                  by_strategy=fix.get("by_strategy"), version=(st.get("version") or {}).get("label"), summary=fix.get("summary"))
 
             t = time.time()
@@ -191,7 +198,8 @@ def main() -> int:
     ap.add_argument("--ports", default="", help="instead of --base: start a fresh server per workbook on these ports, e.g. 8601,8602")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--prep-rounds", type=int, default=3)
-    ap.add_argument("--skip-share", type=float, default=0.5, help="above the size limit, leave a sheet out of the scan when it holds at least this share of the file")
+    ap.add_argument("--skip-share", type=float, default=0.5, help="in a very large workbook, leave a sheet out of the scan when it holds at least this share of the file")
+    ap.add_argument("--skip-above-mb", type=float, default=100.0, help="'very large': the workbook unpacks to at least this many MB")
     ap.add_argument("--no-autofix", action="store_true", help="stop after the first recalculation (a baseline of what Prep leaves)")
     ap.add_argument("--no-assistant", action="store_true", help="auto-fix without asking the assistant (the built-in strategies only)")
     ap.add_argument("--allow-handled", action="store_true", help="auto-fix with keep_good_values off: also fix errors a formula hides, listing every value that changes")
@@ -203,13 +211,13 @@ def main() -> int:
 
     def save() -> None:
         summary = [
-            {k: results[str(wb)].get(k) for k in ("workbook", "ok", "clean", "errors_before_autofix", "errors_after", "total_seconds", "failure", "versions", "readiness")}
+            {k: results[str(wb)].get(k) for k in ("workbook", "ok", "clean", "prep_changed_values", "errors_before_autofix", "errors_after", "total_seconds", "failure", "versions", "readiness")}
             for wb in args.workbooks if str(wb) in results
         ]
         (args.out / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False), encoding="utf-8")
 
     def one(base: str, wb: Path) -> None:
-        res = flow(base, wb, args.out / wb.stem, args.prep_rounds, not args.no_autofix, options, args.skip_share)
+        res = flow(base, wb, args.out / wb.stem, args.prep_rounds, not args.no_autofix, options, args.skip_share, args.skip_above_mb)
         with lock:
             results[str(wb)] = res
             save()

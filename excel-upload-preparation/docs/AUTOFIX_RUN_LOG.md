@@ -51,8 +51,27 @@ Stops when no error is left, or nothing more can be fixed safely.
 
 ## Log
 
-- 15:46 branch + local copies. 15:50–16:10 baselines (Horizon, PVFP, Palermo). Engine being written.
+- 15:46 branch + local copies. 15:50-16:10 baselines of the four originals (table above; CNHI: 577,707 formulas, 0 errors).
+- 16:10-16:25 `app/autofix.py` first version + tests; Horizon original: 721 -> 0 errors in 2 passes, 37 s.
+- 16:25-17:20 PVFP original (65,883 errors). Found and built, one by one:
+  recurrences that fail row after row are taken as a block; a dead range (`SUMIFS(#REF!, ...)`) is replaced by a
+  value; **errors that a formula swallows on purpose** (`IFERROR(<error>, 0)`, "No GEP") cannot be fixed without
+  changing that formula's value, so they stay, with the error cells between them and that formula pinned at once
+  (was: one level per pass, hours); the walk back from a moved value gives an exact verdict to a fix that moved it
+  alone; INDIRECT / OFFSET targets are asked from Excel through probe formulas in an empty column
+  (Worksheet.Evaluate fails for INDIRECT inside a function; a scratch *sheet* breaks GET.WORKBOOK-style names).
+  **PVFP original, strict rule: 65,883 -> 887 errors in 3 min 18 s, 21 passes, no good value changed.**
+  The 887 left all feed 8 formulas that hide errors (LoB 1!C211, LoB 1!K139 "No GEP", Reporting_LoB 1!BU17, ...).
+- 17:00 web API (`POST/GET /api/sessions/{id}/auto-fix`, `/stop`), `AutoFixPanel` on the Recalculate screen,
+  `app/autofix_advisor.py` (the assistant orders the fallbacks and words the reason). Tests: 19 engine + 1 API.
+- 17:18 Prep baseline through the app (old code, port 8601): Horizon 3 Prep rounds, 719 errors after;
+  PVFP: analysis 14 min, Prep round 1 37 min (77k colour cells), 64,127 errors after Prep (65,883 before).
+  The app's own analysis is the slow part, and one server process held 7.7 GB after two workbooks:
+  the harness now starts a server per workbook and leaves a sheet that is >= 50 % of an oversized file out of the
+  *scan* (Palermo `Data`, CNHI `Output`), as the upload screen offers.
 
 ## Next step
 
-Write `app/autofix.py` (deterministic engine + numbers gate), test on Horizon, then PVFP, Palermo, CNHI.
+1. Engine on Palermo original and on the Prep outputs (`runs/prep_baseline/*`), then the UI click-through.
+2. Full runs of the 4 use cases with `scripts/run_usecases.py --ports 8602,8603` on the latest code.
+3. CHANGELOG / README / VERSION 1.8.0, final runs, restart port 8600.

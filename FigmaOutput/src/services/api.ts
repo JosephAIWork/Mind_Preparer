@@ -377,10 +377,32 @@ export interface AutoFixResult {
   /** only with keep_good_values false: good values that moved, listed */
   good_values_changed: number;
   keep_good_values: boolean;
+  /** error cells that computed a value in the original workbook: the preparation broke them, the fixer leaves them */
+  regression_cells?: number;
+  /** on a prepared version: the comparison with the original the fixer ran before it started */
+  numbers_check?: NumbersCheck | null;
   /** present on the full result only */
   fixes?: AutoFixGroup[];
   left?: AutoFixLeft[];
   good_values_changed_list?: { sheet: string; cell: string; before: unknown; after: unknown; formula: string }[];
+}
+
+/** 1.8.0: did the preparation change what the model computes? (POST /numbers-check) */
+export interface NumbersCheck {
+  ran: boolean;
+  clean: boolean | null;
+  verdict: string;
+  version_id?: string;
+  counts: Record<string, number>;
+  by_sheet?: Record<string, Record<string, number>>;
+  samples?: Record<string, { original: string; now: string; was: string; is?: string }[]>;
+  moves?: { row_inserts: number; column_inserts: number; sheet_renames: number };
+  regressions?: number;
+}
+
+export async function numbersCheck(sessionId: string): Promise<NumbersCheck> {
+  if (USE_MOCKS) return { ran: false, clean: true, verdict: "This is the original workbook: nothing to compare.", counts: {} };
+  return post<NumbersCheck>(`/sessions/${encodeURIComponent(sessionId)}/numbers-check`);
 }
 
 export interface AutoFixStatus {

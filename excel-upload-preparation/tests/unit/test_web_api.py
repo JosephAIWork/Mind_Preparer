@@ -590,6 +590,9 @@ def test_auto_fix_runs_in_the_background_and_leaves_a_clean_recalculated_version
     started = client.post(f"/api/sessions/{sid}/auto-fix", json={"use_assistant": False}).json()
     assert started["state"] == "running" and started["use_assistant"] is False and started["keep_good_values"] is True
     assert client.post(f"/api/sessions/{sid}/auto-fix", json={}).status_code == 409  # one at a time
+    # ... and nothing else moves the workbook meanwhile: its version, recalculation and analysis come at the end
+    assert client.post(f"/api/sessions/{sid}/recalculate").status_code == 409
+    assert client.post(f"/api/sessions/{sid}/apply", json={"operations": [{"op": "set_value", "sheet": "Data", "cell": "Z9", "after": 1}]}).status_code == 409
     deadline = time.time() + 300
     while True:
         st = client.get(f"/api/sessions/{sid}/auto-fix").json()
@@ -619,3 +622,50 @@ def test_auto_fix_runs_in_the_background_and_leaves_a_clean_recalculated_version
     again = client.get(f"/api/sessions/{sid}/auto-fix?full=1").json()
     assert again["result"]["status"] == "unchanged" and again["version"] is None
     assert client.get("/api/health").json()["autofix"] is True
+
+
+def test_numbers_check_says_what_the_preparation_changed_and_the_fixer_does_not_hide_it(client, tmp_path):
+    """1.8.0: POST /numbers-check compares the current version with the original, cell by cell
+    through the rows Prep inserted; an error that was a value in the original is not given a fallback."""
+    import time
+
+    import openpyxl
+
+    if not com_available():
+        pytest.skip("needs Excel")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws["A1"] = "#Rates"
+    ws["A2"], ws["B2"], ws["C2"] = "Premium", "Policies", "Average"
+    for r, (a, b) in enumerate([(100, 4), (50, 0), (30, 3)], start=3):
+        ws[f"A{r}"], ws[f"B{r}"], ws[f"C{r}"] = a, b, f"=A{r}/B{r}"   # C4 is an error of the model's own
+    path = tmp_path / "rates.xlsx"
+    wb.save(path)
+    wb.close()
+
+    sid = _upload(client, path)["sessionId"]
+    first = client.post(f"/api/sessions/{sid}/numbers-check").json()
+    assert first["ran"] is False and "original" in first["verdict"]
+    # a row inserted above the table: every value is where it was, one row lower
+    ok = client.post(f"/api/sessions/{sid}/apply", json={"operations": [{"op": "insert_row", "sheet": "Data", "row": 2}], "reanalyze": False}).json()
+    assert ok["version"]["parent"] == "ver-001"
+    numbers = client.post(f"/api/sessions/{sid}/numbers-check").json()
+    assert numbers["ran"] and numbers["clean"] is True and numbers["moves"]["row_inserts"] == 1 and numbers["counts"]["error_to_error"] == 1
+    # then a change that breaks a formula that worked: B6 (was B5 = 3) emptied -> C6 = 30/0
+    client.post(f"/api/sessions/{sid}/apply", json={"operations": [{"op": "set_value", "sheet": "Data", "cell": "B6", "after": 0}], "reanalyze": False})
+    numbers = client.post(f"/api/sessions/{sid}/numbers-check").json()
+    assert numbers["clean"] is False and numbers["counts"]["good_to_error"] == 1 and numbers["regressions"] == 1
+    assert numbers["samples"]["good_to_error"][0] == {"original": "Data!C5", "now": "Data!C6", "was": "10", "is": "#DIV/0!"}
+    # the fixer: the model's own error (C5, was C4) is fixed; the one the changes made (C6) stays, with what it was
+    client.post(f"/api/sessions/{sid}/auto-fix", json={"use_assistant": False})
+    deadline = time.time() + 300
+    while client.get(f"/api/sessions/{sid}/auto-fix").json()["state"] == "running":
+        assert time.time() < deadline
+        time.sleep(0.5)
+    full = client.get(f"/api/sessions/{sid}/auto-fix?full=1").json()
+    result = full["result"]
+    assert full["state"] == "done" and result["status"] == "partial" and result["regression_cells"] == 1
+    assert [g["cell"] for g in result["fixes"]] == ["C5"] and [g["cell"] for g in result["left"]] == ["C6"]
+    assert "it was 10 in the original workbook" in result["left"][0]["why"]
+    assert result["numbers_check"]["clean"] is False and result["numbers_check"]["counts"]["good_to_error"] == 1

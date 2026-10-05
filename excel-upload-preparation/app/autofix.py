@@ -465,6 +465,11 @@ class AutoFixConfig:
     # only exist because a formula was swallowing the error being fixed (=IFERROR(<the error>, 0)
     # shows 0 today and computes once the error is gone). Every such change is then listed.
     keep_good_values: bool = True
+    # Cells that hold an error now but computed a value in the ORIGINAL workbook --
+    # [(sheet, row, col, original value)], from app.numbers_check when the fixer runs on a
+    # prepared version. The preparation broke them: a fallback value would hide that, so
+    # they are never given one; they stay, listed, with what they were.
+    regressions: list[tuple[str, int, int, Any]] | None = None
     # advisor(groups) -> {group key: {"fallback": '0'|'""'|'FALSE', "reason": str}} -- the assistant's say on
     # what an error group should return (app/autofix_advisor.py); None = the built-in order only
     advisor: Callable[[list[dict[str, Any]]], dict[str, dict[str, Any]]] | None = None
@@ -566,6 +571,7 @@ class _Engine:
         self.formula_cells = 0
         self.passes = 0
         self.errors_before = 0
+        self.regression_cells = 0
         self.confirm_moved = 0
         self.last_resort_used = False
         self.log: list[str] = []
@@ -1703,6 +1709,13 @@ class _Engine:
         if changed:
             self.note(f"{len(changed)} formula cell(s) change by themselves between two recalculations (volatile / iterative): left out of the gate")
         self.errors_before = len(self.genuine_errors()) + len(self.const_err)
+        for sheet, row, col, was in self.cfg.regressions or ():
+            si = self.sheet_index.get(str(sheet).upper())
+            if si is not None and (si, row, col) in self.err:
+                self.protected[(si, row, col)] = f"it was {_show(was)} in the original workbook: this error appeared during the preparation, and a value put in its place would hide that"
+                self.regression_cells += 1
+        if self.regression_cells:
+            self.note(f"{self.regression_cells} error cell(s) computed a value in the original workbook: left as they are (the preparation broke them)")
         if not self.err and not self.const_err:
             return "unchanged"
         stalled = 0
@@ -1878,6 +1891,7 @@ class _Engine:
             "left_cells": left,
             "addin_gap_cells": [{"sheet": self.sheets[k[0]].name, "cell": a1(k[1], k[2]), "formula": r1c1_to_a1(self.formula_at(k) or "", k[1], k[2])} for k in sorted(addin_gap)[:2000]],
             "unstable_cells": len(self.unstable),
+            "regression_cells": self.regression_cells,
             "good_values_changed": len(moved_good), "good_values_changed_list": moved_good[:2000],
             "keep_good_values": self.cfg.keep_good_values,
             "formula_cells": self.formula_cells,
@@ -1928,8 +1942,15 @@ def summary_sentence(res: dict[str, Any]) -> str:
         return f"Clean: every formula recalculates without an error. {fixed}. {moved} value(s) that an error handler was hiding have changed (listed)."
     if res.get("status") == "clean":
         return f"Clean: every formula recalculates without an error. {fixed}. No value that was good before has changed."
+    if res.get("status") == "partial" and res.get("regression_cells"):
+        return (
+            f"{fixed}. {after} error(s) are left for a person -- {res['regression_cells']} of them computed a value in the original workbook: "
+            "the preparation broke them, and the fixer does not hide that."
+        )
     if res.get("status") == "partial":
         return f"{fixed}. {after} error(s) are left for a person: fixing them automatically would change a good value, or no safe fix is known."
+    if res.get("regression_cells"):
+        return f"Nothing was fixed: {after} error(s) are left for a person -- {res['regression_cells']} of them computed a value in the original workbook (the preparation broke them)."
     return f"Nothing could be fixed safely: {after} error(s) are left for a person."
 
 

@@ -6,6 +6,7 @@ import * as api from "../services/api";
 import OperationsTable from "../components/OperationsTable";
 import LevelBadge from "../components/LevelBadge";
 import PrepGauge from "../components/PrepGauge";
+import NumbersCheckCard from "../components/NumbersCheckCard";
 import ApplyProgress from "../components/ApplyProgress";
 import ApplyReportCard, { RuleMove, shortVersion } from "../components/ApplyReportCard";
 import { useScanStatus } from "../components/ScanProgress";
@@ -385,6 +386,8 @@ export default function PrepScreen() {
       <div className="flex-1 overflow-auto p-6 pb-28">
         <div className="max-w-4xl">
           <PrepGauge readiness={readiness} progress={prepProgress} />
+          {/* 1.8.0: after any change, the question that matters most -- did a computed value move? */}
+          {!applying && <NumbersCheckCard />}
 
           {error && <div className="mb-3 text-[12px] text-[#9F1D1D] bg-[#FDE2E2] border border-[#9F1D1D]/20 rounded px-3 py-2" role="alert">{error}</div>}
 

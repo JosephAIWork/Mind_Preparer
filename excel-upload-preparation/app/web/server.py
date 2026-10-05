@@ -39,6 +39,7 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 
 from app.autofix import AutoFixConfig, run_autofix  # noqa: E402
 from app.autofix_advisor import make_advisor  # noqa: E402
+from app.numbers_check import Moves, compare_workbooks  # noqa: E402
 from app.change_apply import convert_output_format  # noqa: E402
 from app.chat_context import answer_question, recalculation_context  # noqa: E402
 from app.config import load_config  # noqa: E402
@@ -174,6 +175,7 @@ def _add_version(
     download_name = _register_file(s, path)
     version = {
         "id": vid,
+        "parent": s.current_version_id or None,  # 1.8.0: the version this one was made from
         "major": major,
         "minor": n_minor,
         "label": f"v{number} — {label_body}",
@@ -684,6 +686,7 @@ def scan_status(session_id: str) -> dict[str, Any]:
 @app.post("/api/sessions/{session_id}/reanalyze")
 def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     s = _session(session_id)
+    _refuse_while_fixing(session_id)
     vid = payload.get("versionId") or s.current_version_id
     if vid not in s.paths:
         raise HTTPException(status_code=404, detail=f"unknown version {vid}")
@@ -694,6 +697,7 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
 @app.post("/api/sessions/{session_id}/apply")
 def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     s = _session(session_id)
+    _refuse_while_fixing(session_id)
     ops = _validate_ops(payload.get("operations"))
     before = _before_apply(s)
     res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
@@ -1012,9 +1016,16 @@ def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
 @app.post("/api/sessions/{session_id}/recalculate")
 def recalc(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
-    copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
-    res = recalculate(copy_path)
-    return _recalc_out(s, res, copy_path)
+    _refuse_while_fixing(session_id)
+    if session_id in RECALCULATING:
+        raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
+    RECALCULATING.add(session_id)
+    try:
+        copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
+        res = recalculate(copy_path)
+        return _recalc_out(s, res, copy_path)
+    finally:
+        RECALCULATING.discard(session_id)
 
 
 def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True) -> dict[str, Any]:
@@ -1072,11 +1083,66 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     return out
 
 
+# --- 1.8.0: did the preparation change what the model computes? ---------------------------------
+def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
+    """The versions that lead to `version_id`, oldest first (a version restored
+    from History branches: the list order alone is not the path)."""
+    by_id = {v["id"]: v for v in s.versions}
+    path: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    vid: str | None = version_id
+    while vid and vid in by_id and vid not in seen:
+        seen.add(vid)
+        path.append(by_id[vid])
+        vid = by_id[vid].get("parent")
+    return path[::-1]
+
+
+def _original_and_moves(s: Session) -> tuple[Path, Moves] | None:
+    """The first Excel-readable version in the current version's lineage, and
+    how its cells moved since (rows / columns inserted, sheets renamed) --
+    None when the current version *is* that original."""
+    path = _lineage(s, s.current_version_id)
+    start = next((i for i, v in enumerate(path) if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
+    if start is None or start == len(path) - 1:
+        return None
+    return s.paths[path[start]["id"]], Moves(v.get("change_log") or [] for v in path[start + 1:])
+
+
+def _numbers_public(res: dict[str, Any], version_id: str) -> dict[str, Any]:
+    return {**{k: v for k, v in res.items() if k != "regressions"}, "regressions": len(res.get("regressions") or []), "version_id": version_id}
+
+
+@app.post("/api/sessions/{session_id}/numbers-check")
+def numbers_check(session_id: str) -> dict[str, Any]:
+    """Recalculate the original and the current version in Excel and compare every
+    formula cell (app/numbers_check.py): did Prep change a computed value?"""
+    s = _session(session_id)
+    _refuse_while_fixing(session_id)
+    found = _original_and_moves(s)
+    if found is None:
+        return {"ran": False, "clean": True, "version_id": s.current_version_id, "verdict": "This is the original workbook: nothing to compare.", "counts": {}}
+    original, moves = found
+    return _numbers_public(compare_workbooks(original, s.current_path, moves), s.current_version_id)
+
+
 # --- 1.8.0: fix all automatically ----------------------------------------------------------------
 AUTOFIX: dict[str, dict[str, Any]] = {}  # session id -> live state of the current / last run
+RECALCULATING: set[str] = set()          # sessions with a manual recalculation in progress
+
+
+def _refuse_while_fixing(session_id: str) -> None:
+    """The fixer ends by adding a version, a recalculation and an analysis to the
+    session: a Recalculate or an Apply landing in the middle of that would be
+    attached to the wrong version (seen in the first click-through: the verdict
+    said "not verified" on a version that had just recalculated clean)."""
+    state = AUTOFIX.get(session_id)
+    if state and state.get("state") == "running":
+        raise HTTPException(status_code=409, detail="the automatic fixer is running on this workbook: wait for it to finish, or stop it")
+
 _AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values")
 _AUTOFIX_TITLES = {
-    "start": "Starting", "read": "Reading the workbook", "find": "Finding where the errors start", "advise": "Asking the assistant",
+    "start": "Starting", "compare": "Comparing with the original", "read": "Reading the workbook", "find": "Finding where the errors start", "advise": "Asking the assistant",
     "fix": "Fixing", "pass": "Fixing", "confirm": "Confirming", "save": "Saving", "verify": "Checking the file opens", "reanalyze": "Re-analyzing the fixed version", "done": "Done",
 }
 
@@ -1104,6 +1170,10 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
     running = AUTOFIX.get(session_id)
     if running and running.get("state") == "running":
         raise HTTPException(status_code=409, detail="the automatic fixer is already running for this session")
+    if session_id in RECALCULATING:
+        raise HTTPException(status_code=409, detail="a recalculation is running for this workbook: wait for it to finish")
+    if s.lock.locked():
+        raise HTTPException(status_code=409, detail="the workbook is being analysed: wait for it to finish")
     use_assistant = bool(payload.get("use_assistant", True))
     keep = bool(payload.get("keep_good_values", True))
     budget = max(1.0, float(payload.get("time_budget_min", 120))) * 60
@@ -1112,7 +1182,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
         "state": "running", "stage": "start", "title": "Starting", "message": "Opening the workbook in Excel", "fraction": None,
         "pass_no": 0, "errors": None, "errors_before": None, "kept": 0, "started": time.time(), "updated": time.time(), "finished": None,
         "error": None, "stop": False, "version_id": s.current_version_id, "use_assistant": advisor is not None, "keep_good_values": keep,
-        "result": None, "version": None, "recalc": None, "analysis": None,
+        "result": None, "version": None, "recalc": None, "analysis": None, "numbers": None,
     }
     AUTOFIX[session_id] = state
     source = s.current_path
@@ -1130,8 +1200,20 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
 
     def worker() -> None:
         try:
-            cfg = AutoFixConfig(time_budget_s=budget, keep_good_values=keep, advisor=advisor, progress=progress, should_stop=lambda: bool(state["stop"]))
+            # On a prepared version: what did the preparation itself change? An error that was a
+            # value in the original is Prep's doing -- the fixer must not put a 0 over it.
+            regressions = None
+            numbers = None
+            found = _original_and_moves(s)
+            if found is not None:
+                progress("compare", "Comparing this version with the original workbook", None)
+                compared = compare_workbooks(found[0], source, found[1], progress)
+                numbers = _numbers_public(compared, state["version_id"])
+                regressions = compared.get("regressions") or None
+            state["numbers"] = numbers
+            cfg = AutoFixConfig(time_budget_s=budget, keep_good_values=keep, advisor=advisor, progress=progress, should_stop=lambda: bool(state["stop"]), regressions=regressions)
             res = run_autofix(source, s.work_dir / "autofix", cfg)
+            res["numbers_check"] = numbers
             if res.get("status") == "error":
                 raise RuntimeError(res.get("message") or "the automatic fixer failed")
             if res.get("output_path"):

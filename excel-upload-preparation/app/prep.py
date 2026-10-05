@@ -50,7 +50,7 @@ from .formula_utils import (
     reference_arg_problems,
 )
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
-from .inventory import cell_value, make_immutable_copy, sha256_of
+from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
 
@@ -200,11 +200,92 @@ def _row_insert_is_safe(grids: list[dict[str, Any]], sheet: str, row: int, own: 
 # into a title. So every write site asks this index first.
 _REF_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 
+# 1.8.0 -- two ways a formula reads a sheet that Excel does not move along when a row
+# is inserted there. Both changed computed values on a real model (PVFP: 2,462 cells,
+# 1,781 of them into errors) after an ordinary Prep:
+#   * a 3-D reference, =SUM('LoB 1:>>'!K65): it reads the SAME cell on every sheet of the
+#     range, by position. A row inserted on one of them shifts that sheet alone.
+#   * an address built as text, =INDIRECT("'"&$E$2&"'!H"&n): text is not a reference.
+_STRING_LITERAL_RE = re.compile(r'"(?:[^"]|"")*"')
+_THREE_D_QUOTED_RE = re.compile(r"'((?:[^']|'')+)'!")
+_THREE_D_BARE_RE = re.compile(r"(?<![A-Za-z0-9_.'])([A-Za-z0-9_.]+):([A-Za-z0-9_.]+)!")
+_INDIRECT_RE = re.compile(r"(?<![A-Za-z0-9_.])INDIRECT\s*\(", re.IGNORECASE)
+
+
+def _sheet_order(wb: dict[str, Any]) -> list[str]:
+    """Sheet names in tab order, the sheets left out of the scan included."""
+    names = [s["name"] for s in wb.get("sheets", [])]
+    for ig in sorted(wb.get("ignored_sheets", []), key=lambda s: s.get("index", 0)):
+        names.insert(min(int(ig.get("index", len(names))), len(names)), ig["name"])
+    return names
+
+
+def _three_d_sheets(formula: str, order: list[str]) -> list[tuple[str, list[str]]]:
+    """[("First:Last", [every sheet from First to Last in tab order])] for each 3-D reference."""
+    text = _STRING_LITERAL_RE.sub('""', formula)
+    pairs = []
+    for m in _THREE_D_QUOTED_RE.finditer(text):
+        inner = m.group(1).replace("''", "'")
+        if ":" in inner and "[" not in inner:
+            pairs.append(tuple(inner.split(":", 1)))
+    pairs += [(m.group(1), m.group(2)) for m in _THREE_D_BARE_RE.finditer(text)]
+    lower = [n.lower() for n in order]
+    out = []
+    for a, b in pairs:
+        if a.lower() in lower and b.lower() in lower:
+            i, j = sorted((lower.index(a.lower()), lower.index(b.lower())))
+            out.append((f"{a}:{b}", order[i:j + 1]))
+    return out
+
+
+def _text_addressed_sheets(analysis: dict[str, Any], formula: str, home: str | None, order: list[str], seen_values: dict[tuple[str, int, int], Any]) -> list[str]:
+    """The sheets an INDIRECT in `formula` may build an address on: a sheet named
+    in one of its text pieces ("'CoC "&n&"'!F14" names every sheet starting with
+    'CoC '), or named by a cell the formula reads ($E$2 holds 'LoB 1'). A cell
+    that holds some other text names a sheet that does not exist: that INDIRECT
+    points nowhere and no sheet is at stake. When nothing can be read at all:
+    the formula's own sheet for an address without a sheet, every sheet
+    otherwise -- unknown is not safe."""
+    literals = [m.group(0)[1:-1].replace('""', '"') for m in _STRING_LITERAL_RE.finditer(formula)]
+    found: list[str] = []
+    for lit in literals:
+        low = lit.lower()
+        piece = low.lstrip("'").split("!")[0]
+        for name in order:
+            n = name.lower()
+            if n in low or (len(piece) >= 3 and "'" not in piece and n.startswith(piece) and low.lstrip().startswith("'")):
+                if name not in found:
+                    found.append(name)
+    names = {n.lower(): n for n in order}
+    names_nothing_here = False
+    for ref in cell_refs_in_formula(formula):
+        if ref.get("cells") != 1:
+            continue
+        sheet = ref.get("sheet") or home
+        if not sheet or ":" in sheet:
+            continue
+        key = (sheet, ref["r1"], ref["c1"])
+        if key not in seen_values:
+            seen_values[key] = values_cell(analysis, sheet, ref["r1"], ref["c1"])
+        v = seen_values[key]
+        if isinstance(v, str) and v.strip():
+            if v.strip().lower() not in names:
+                names_nothing_here = True
+            elif names[v.strip().lower()] not in found:
+                found.append(names[v.strip().lower()])
+    if found or names_nothing_here:
+        return found
+    if any("!" in lit for lit in literals):
+        return list(order)
+    return [home] if home else []
+
 
 def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
     """Every cell range the workbook's formulas and defined names read:
     {'rects': {sheet: [(r1, r2, c1, c2, owner)]}, 'whole_cols': {sheet: {col: owner}},
-     'whole_rows': {sheet: {row: owner}}} where owner names the reading formula."""
+     'whole_rows': {sheet: {row: owner}}} where owner names the reading formula,
+    plus (1.8.0) 'positional': {sheet: owner} for the sheets inside a 3-D reference and
+    'text_addressed': {sheet: owner} for the sheets an INDIRECT builds addresses on."""
     key = str(analysis.get("analysis_id") or id(analysis)) + ":" + str(analysis["workbooks"][0].get("copy_path"))
     cached = _REF_INDEX_CACHE.get(key)
     if cached is not None:
@@ -212,28 +293,43 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
     rects: dict[str, list[tuple[int, int, int, int, str]]] = {}
     whole_cols: dict[str, dict[int, str]] = {}
     whole_rows: dict[str, dict[int, str]] = {}
+    positional: dict[str, str] = {}
+    text_addressed: dict[str, str] = {}
     wb = analysis["workbooks"][0]
+    order = _sheet_order(wb)
+    seen_values: dict[tuple[str, int, int], Any] = {}
     sources: list[tuple[str, str | None, str]] = [(f["formula"], f["sheet"], f"{f['sheet']}!{f['cell']}") for f in wb.get("formulas", []) if isinstance(f.get("formula"), str)]
     for d in wb.get("defined_names", []):
         val = str(d.get("value") or "")
         if val and "#REF!" not in val:
             sources.append((val if val.startswith("=") else "=" + val, None, f"name {d.get('name')}"))
     for formula, home, owner in sources:
+        spans: dict[str, list[str]] = {}
+        if ":" in formula and "!" in formula:
+            for label, sheets in _three_d_sheets(formula, order):
+                spans[label.lower()] = sheets
+                for name in sheets:
+                    positional.setdefault(name, f"{owner} ('{label}')")
+        if "INDIRECT" in formula.upper() and _INDIRECT_RE.search(_STRING_LITERAL_RE.sub('""', formula)):
+            for name in _text_addressed_sheets(analysis, formula, home, order, seen_values):
+                text_addressed.setdefault(name, owner)
         for ref in cell_refs_in_formula(formula):
             sheet = ref.get("sheet") or home
             if not sheet:
                 continue
-            if ref.get("whole_column"):
-                cols = whole_cols.setdefault(sheet, {})
-                for c in range(ref["c1"], ref["c2"] + 1):
-                    cols.setdefault(c, owner)
-            elif ref.get("whole_row"):
-                rows = whole_rows.setdefault(sheet, {})
-                for r in range(ref["r1"], ref["r2"] + 1):
-                    rows.setdefault(r, owner)
-            else:
-                rects.setdefault(sheet, []).append((ref["r1"], ref["r2"], ref["c1"], ref["c2"], owner))
-    index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows}
+            # a 3-D reference reads the same cells on every sheet of its range
+            for sheet in spans.get(sheet.lower(), [sheet]):
+                if ref.get("whole_column"):
+                    cols = whole_cols.setdefault(sheet, {})
+                    for c in range(ref["c1"], ref["c2"] + 1):
+                        cols.setdefault(c, owner)
+                elif ref.get("whole_row"):
+                    rows = whole_rows.setdefault(sheet, {})
+                    for r in range(ref["r1"], ref["r2"] + 1):
+                        rows.setdefault(r, owner)
+                else:
+                    rects.setdefault(sheet, []).append((ref["r1"], ref["r2"], ref["c1"], ref["c2"], owner))
+    index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows, "positional": positional, "text_addressed": text_addressed}
     _REF_INDEX_CACHE.clear()  # one workbook at a time is plenty
     _REF_INDEX_CACHE[key] = index
     return index
@@ -256,6 +352,21 @@ def whole_reference_to(index: dict[str, Any], sheet: str) -> str | None:
     cols = index["whole_cols"].get(sheet) or {}
     rows = index["whole_rows"].get(sheet) or {}
     return next(iter(cols.values()), None) or next(iter(rows.values()), None)
+
+
+def insert_blocker(index: dict[str, Any], sheet: str) -> str | None:
+    """Why a row must not be inserted on `sheet`, in words -- or None when
+    nothing reads it in a way an insert would shift."""
+    whole = whole_reference_to(index, sheet)
+    if whole:
+        return f"inserting a row would shift what {whole} counts or indexes over whole columns of this sheet"
+    three_d = index.get("positional", {}).get(sheet)
+    if three_d:
+        return f"inserting a row would shift what the 3-D reference in {three_d} reads here: it finds its cells by position, on every sheet of its range"
+    text = index.get("text_addressed", {}).get(sheet)
+    if text:
+        return f"inserting a row would shift what {text} reads here through an address built as text (INDIRECT)"
+    return None
 
 
 def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]:
@@ -282,9 +393,9 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
             if others:
                 skipped.append(f"{g['sheet']}!{cell}: inserting a row would also split {', '.join(o['display_name'] for o in others[:3])} -- separate manually")
                 continue
-            reader = whole_reference_to(index, g["sheet"])
-            if reader:
-                skipped.append(f"{g['sheet']}!{cell}: inserting a row would shift what {reader} counts or indexes over whole columns of this sheet -- separate manually")
+            blocker = insert_blocker(index, g["sheet"])
+            if blocker:
+                skipped.append(f"{g['sheet']}!{cell}: {blocker} -- separate manually")
                 continue
             ops.append(_op("insert_row", "separate_merged_grids", "STR-001", g["sheet"], row=row, before=f"'{cell_value(analysis, g['sheet'], row, ref['c1'])}' directly below grid {g['display_name']}", after=f"empty row {row} inserted; title moves to row {row + 1}", note="Excel shifts every reference automatically"))
     return ops, skipped
@@ -536,9 +647,9 @@ def plan_create_grid_titles(
                 if cutting:
                     skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
                     continue
-                whole = whole_reference_to(index, g["sheet"])
-                if whole:
-                    skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and inserting a row would shift what {whole} counts or indexes over whole columns of this sheet")
+                blocker = insert_blocker(index, g["sheet"])
+                if blocker:
+                    skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and {blocker}")
                     continue
             reader = referenced_by(index, g["sheet"], r0, c0)
             if reader:
@@ -757,9 +868,9 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
                 if cutting:
                     skipped.append(f"{gkey}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
                     continue
-                whole = whole_reference_to(index, g["sheet"])
-                if whole:
-                    skipped.append(f"{gkey}: {reason} and inserting a row would shift what {whole} counts or indexes over whole columns of this sheet")
+                blocker = insert_blocker(index, g["sheet"])
+                if blocker:
+                    skipped.append(f"{gkey}: {reason} and {blocker}")
                     continue
             reader = referenced_by(index, g["sheet"], r0, c0)
             if reader:

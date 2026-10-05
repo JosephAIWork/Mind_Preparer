@@ -17,6 +17,7 @@ export default function RecalculateScreen() {
   const setReport = useStore((s) => s.setReport);
   const openFix = useStore((s) => s.openFix);
   const [running, setRunning] = useState(false);
+  const [fixing, setFixing] = useState(false); // the automatic fixer is at work: no recalculation meanwhile
   const [error, setError] = useState<string | null>(null);
 
   const groups: RecalcGroup[] = result?.groups ?? [];
@@ -71,7 +72,7 @@ export default function RecalculateScreen() {
 
       <button
         onClick={recalc}
-        disabled={running}
+        disabled={running || fixing}
         className="px-6 py-3 bg-[#1F3A5F] text-white rounded-lg font-semibold text-sm hover:bg-[#162d4a] transition-colors disabled:opacity-50 flex items-center gap-2"
         aria-label="Recalculate now"
       >
@@ -92,7 +93,7 @@ export default function RecalculateScreen() {
         </div>
       )}
 
-      <AutoFixPanel />
+      <AutoFixPanel blocked={running} onRunningChange={setFixing} />
 
       {result && (
         <div className="mt-6 border border-[#E5E7EB] rounded-xl bg-white overflow-hidden" aria-live="polite">
