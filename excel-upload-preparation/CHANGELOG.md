@@ -39,8 +39,16 @@ How it works (`app/autofix.py`), in ONE Excel session:
   `=IFERROR(<formula>, 0)` -- `""` where the same formula returns text
   elsewhere, `FALSE` for a test. A formula that can never compute again (only
   `NA()` / `#REF!` is left of it, or a `SUMIFS(#REF!, ...)` Excel will not
-  even store) is replaced by that value. An error value sitting in a data
-  cell is cleared. Nothing else is rewritten.
+  even store) becomes `=IFERROR(NA(), 0)`: still a formula (SKILL.md rule 6),
+  and one that says what it is. An error value sitting in a data cell is
+  cleared. Nothing else is rewritten.
+- **Or a real repair, when the assistant sees one**: `=+BE36/BF36` ->
+  `=IF(BF36=0,0,BE36/BF36)`, `=C4+B5` -> `=C4+N(B5)` where B holds a dash typed
+  as text (the balance is then carried forward instead of reset to 0). Such a
+  rewrite is written to the **whole block** -- every cell sharing the formula
+  -- and kept only if the error cells are cured, **every cell of the block
+  that works today still returns exactly the same value**, and the numbers
+  gate passes. Otherwise it is undone and the wrap is used.
 - **The numbers gate**: recalculate, re-read every formula cell, and compare
   with the workbook as it was opened. A formula cell that had a valid value
   must still have exactly that value. The walk back from a moved value names
@@ -68,10 +76,11 @@ What it meets in real models, and what it does:
   comes out clean in 29 s, and the 421 values that moved are listed.
 - *The assistant* (`app/autofix_advisor.py`) says, per kind of error, which
   value fits -- 0, empty text or FALSE -- from the cell's labels, its formula
-  and what it reads, and words the reason shown to the user ("Dividing two
-  blank cells gives an error, and a missing ratio should count as zero so it
-  does not distort totals."). It only orders the ladder: the numbers gate
-  has the last word, and no answer means the built-in order, never an error.
+  and what it reads, may propose the repair itself (above), and words the
+  reason shown to the user ("Dividing two blank cells can't produce a rate,
+  so treat it as zero."). It only proposes: the block check and the numbers
+  gate have the last word, and no answer means the built-in order, never an
+  error.
 
 Web API: `POST /api/sessions/{id}/auto-fix` (`use_assistant`,
 `keep_good_values`, `time_budget_min`) runs in a background thread;
@@ -134,11 +143,17 @@ Three changes:
   workbook (`--ports 8602,8603` runs them side by side: one server process
   held 7.7 GB after two analyses). `scripts/ui_autofix_check.py` clicks
   through the real screens with Playwright.
-- Tests: `tests/unit/test_autofix.py` (22: R1C1 reading, range index, the
+- `explicit_colors` (FMT-002) re-colours **blocks** of one colour in one go
+  instead of cell by cell (~10 COM calls a cell: 37 minutes for the 77,000
+  cells of PVFP, more on CNHI's 124,000). A mixed block is split into rows, a
+  mixed row into cells; the result is the same cell for cell
+  (`tests/unit/test_explicit_colors.py` compares both ways).
+- Tests: `tests/unit/test_autofix.py` (25: R1C1 reading, range index, the
   ladder, and the engine in a real Excel -- roots, rollback, layers, arrays,
-  swallowed errors, pinned channels, INDIRECT / OFFSET, the assistant),
-  `tests/unit/test_numbers_check.py` (3), three more in
-  `test_prep_reference_safety.py`, two in `test_web_api.py`.
+  swallowed errors, pinned channels, INDIRECT / OFFSET, the assistant's
+  fallbacks and repairs), `tests/unit/test_numbers_check.py` (4), three more
+  in `test_prep_reference_safety.py`, two in `test_web_api.py`,
+  `test_explicit_colors.py` (2).
 
 ## 1.7.4
 

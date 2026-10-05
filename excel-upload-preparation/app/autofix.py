@@ -33,6 +33,12 @@ package's rule 6: a formula is never turned into a value). A constant that is
 an error value is cleared. Nothing else is rewritten, so a cell that works
 today computes exactly as before.
 
+The assistant may go further and propose the repair itself -- N() around a
+reference that may hold text, a guard on a divisor. Such a rewrite is written
+to the WHOLE block (every cell sharing the formula) and kept only if each cell
+that works today still returns exactly the same value, the error cells are
+cured, and the numbers gate passes. Otherwise it is undone and the wrap is used.
+
 Formulas are handled in R1C1 notation: cells filled down or across share one
 R1C1 text, so a block of thousands of cells is one group, one decision and one
 write.
@@ -564,6 +570,9 @@ class _Engine:
         self._scratch_ok = True
         self._last_test: tuple | None = None     # (violations, changed, written) of the last all-or-nothing round that failed
         self.moved_good: dict[Key, tuple[Any, Any]] = {}      # keep_good_values=False: good cell -> (value at start, value now)
+        self.repairs: dict[tuple[int, str], dict[str, Any]] = {}  # (sheet, old R1C1 text) -> the assistant's rewrite that was kept
+        self.repair_tried: set[tuple[int, str]] = set()
+        self.block_cells: dict[tuple[int, str], list[tuple[int, int]]] = {}  # ... and the working cells of the block rewritten with it
         self._by_code: dict[int, CellIndex] = {}
         self.advice: dict[str, dict[str, Any]] = {}
         self.group_sample: dict[str, dict[str, Any]] = {}
@@ -1175,9 +1184,12 @@ class _Engine:
     def _ladder(self, si: int, code: int, text: str, parsed: Parsed, key: Key | None = None) -> list[dict[str, Any]]:
         advice = self.advice.get(self.group_key(si, code, text)) or {}
         preferred = advice.get("fallback")
+        repaired = self.repairs.get((si, text))
         fixes = candidate_fixes(text, parsed, self._kind_of_value(si, text, parsed), preferred)
         if advice.get("reason"):
             fixes = [{**f, "why": advice["reason"]} if n == 0 else f for n, f in enumerate(fixes)]
+        if repaired is not None:
+            fixes = [dict(repaired)] + fixes  # the rest of its block already has it
         return fixes
 
     def _plain_unit(self, key: Key, text: str, parsed: Parsed, code: int) -> Unit:
@@ -1636,6 +1648,160 @@ class _Engine:
                 code = ERROR_CODE_OF.get(u.error, 0)
                 u.fixes = self._ladder(si, code, u.old, parse_r1c1(u.old), u.key)
 
+    def try_repairs(self, todo: list[Unit]) -> list[Unit]:
+        """The assistant's own rewrites, before the wraps. Each is written to the
+        whole block -- the root error cells and every cell with the same formula
+        that works today -- and kept only if (a) the error cells are cured,
+        (b) not one working cell of the block returns another value, (c) the
+        numbers gate passes. All blocks in one round; when that fails, one block
+        per round. -> the units still to fix the ordinary way."""
+        by_block: dict[tuple[int, str], list[Unit]] = defaultdict(list)
+        for u in todo:
+            advice = self.advice.get(u.group) or {}
+            block = (u.key[0], u.old)
+            if advice.get("formula") and u.kind == "cell" and u.tries == 0 and block not in self.repair_tried and block not in self.repairs:
+                by_block[block].append(u)
+        if not by_block:
+            return todo
+        trials: list[dict[str, Any]] = []
+        for block, units in list(by_block.items())[:40]:
+            self.repair_tried.add(block)
+            advice = self.advice[units[0].group]
+            formula = str(advice["formula"])
+            old = parse_r1c1(block[1])
+            new = parse_r1c1(formula)
+            if formula == block[1] or new.broken or (old.refs and not new.refs and not new.names):
+                continue  # not a repair: the same formula, or one that reads nothing any more
+            trials.append({"block": block, "units": units, "formula": formula, "reason": advice.get("reason") or ""})
+        if not trials:
+            return todo
+        working, failing = self._block_cells({t["block"] for t in trials})
+        for t in trials:
+            roots = {(u.key[1], u.key[2]) for u in t["units"]}
+            t["working"] = [c for c in working.get(t["block"], []) if c not in roots]
+            # the block's other error cells only repeat an error today: same formula, same repair
+            t["others"] = [c for c in failing.get(t["block"], []) if c not in roots]
+        self.tell("fix", f"Pass {self.passes}: trying {len(trials)} repair(s) proposed by the assistant", None, pass_no=self.passes)
+        kept = self._repair_round(trials)
+        if kept is None and len(trials) > 1:
+            kept = []
+            for t in trials:
+                self.check_budget()
+                kept += self._repair_round([t]) or []
+        done = {id(u) for t in (kept or []) for u in t["units"]}
+        if kept:
+            self.note(f"pass {self.passes}: {len(kept)} of {len(trials)} repair(s) proposed by the assistant kept ({sum(len(t['units']) for t in kept)} root error cell(s); {sum(len(t['working']) + len(t['others']) for t in kept)} more cell(s) of the same blocks rewritten alike)")
+        return [u for u in todo if id(u) not in done]
+
+    def _block_cells(self, blocks: set[tuple[int, str]]) -> tuple[dict, dict]:
+        """Every cell that holds one of these formulas: ({block: the ones that
+        work now}, {block: the ones in error now}). Cells already settled one
+        way or the other (kept as they are, part of an array) are left out."""
+        texts: dict[int, set[str]] = defaultdict(set)
+        for si, text in blocks:
+            texts[si].add(text)
+        working: dict[tuple[int, str], list[tuple[int, int]]] = defaultdict(list)
+        failing: dict[tuple[int, str], list[tuple[int, int]]] = defaultdict(list)
+        blocked = self.blocked_cells()
+        for si, wanted in texts.items():
+            sh = self.sheets[si]
+            for start, rows in sh.fml.items():
+                for i, frow in enumerate(rows):
+                    if frow is None:
+                        continue
+                    for j, f in enumerate(frow):
+                        if f is not None and f in wanted:
+                            key = (si, sh.r0 + start + i, sh.c0 + j)
+                            if key in blocked or key in self.cell_unit:
+                                continue
+                            (failing if key in self.err else working)[(si, f)].append((key[1], key[2]))
+        return working, failing
+
+    def _repair_round(self, trials: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        """Write the rewrites of `trials`, recalculate, judge. -> the trials kept;
+        None when the round failed as a whole and each must be tried alone."""
+        applied: list[dict[str, Any]] = []
+        for t in trials:
+            si = t["block"][0]
+            cells = [(u.key[1], u.key[2]) for u in t["units"]] + t["working"] + t["others"]
+            refused = self._write_plain(si, cells, t["formula"], True)
+            if refused:
+                self._write_plain(si, cells, t["block"][1], True)
+                for u in t["units"]:
+                    u.notes.append(f"the assistant's rewrite: Excel refused it ({refused[0][2]})")
+            else:
+                applied.append(t)
+        if not applied:
+            self.calculate()
+            return []
+        self.calculate()
+        fresh, changed = self.read_changes()
+        new_value = {k: v for k, _, v in changed}
+        written: set[Key] = set()
+        failed: dict[int, str] = {}
+        for t in applied:
+            si = t["block"][0]
+            roots = [u.key for u in t["units"]]
+            working = [(si, r, c) for r, c in t["working"]]
+            written.update(roots)
+            written.update(working)
+            written.update((si, r, c) for r, c in t["others"])
+            still = [k for k in roots if _is_error(new_value[k] if k in new_value else self.value_at(k))]
+            moved = [k for k in working if k in new_value]
+            if still:
+                failed[id(t)] = f"the assistant's rewrite left {len(still)} of {len(roots)} cell(s) in error"
+            elif moved:
+                k = moved[0]
+                failed[id(t)] = (
+                    f"the assistant's rewrite changed {len(moved)} cell(s) of the block that work today, e.g. "
+                    f"{self.sheets[k[0]].name}!{a1(k[1], k[2])} {_show(self.value_at(k))} → {_show(new_value[k])}"
+                )
+        violations = self.judge(changed, written)
+        if not failed and not violations:
+            self.commit(fresh, changed)
+            for t in applied:
+                si, old = t["block"]
+                fix = {
+                    "kind": "formula", "content": t["formula"], "strategy": "repaired formula",
+                    "what": "the formula is rewritten so that the error cannot occur, in every cell of its block"
+                    + (f"; the {len(t['working'])} cell(s) of the block that already worked each still return(s) exactly what it did" if t["working"] else ""),
+                    "why": t["reason"],
+                }
+                self.repairs[(si, old)] = fix
+                self.block_cells[(si, old)] = list(t["working"]) + list(t["others"])
+                for u in t["units"]:
+                    u.fixes = [fix] + u.fixes
+                    u.tries = 0
+                    u.accepted = fix
+                    self.fixed_groups.add((si, ERROR_CODE_OF.get(u.error, 0), u.old))
+                    self._set_formula(u.key, t["formula"])
+                for r, c in t["working"] + t["others"]:
+                    self._set_formula((si, r, c), t["formula"])
+                self.counts["accepted"] += len(t["units"])
+                self.counts["repairs"] += 1
+            return applied
+        # undo everything of this round
+        for t in applied:
+            si = t["block"][0]
+            self._write_plain(si, [(u.key[1], u.key[2]) for u in t["units"]] + t["working"] + t["others"], t["block"][1], True)
+        self.counts["rolled_back"] += sum(len(t["units"]) for t in applied)
+        self.calculate()
+        fresh, changed = self.read_changes()
+        for key, _, _ in self.judge(changed, set()):
+            self.unstable.add(key)
+        self.commit(fresh, changed)
+        if len(applied) > 1:
+            return None
+        t = applied[0]
+        why = failed.get(id(t)) or (
+            f"the assistant's rewrite changed {len(violations)} good value(s), e.g. "
+            + "; ".join(f"{self.sheets[k[0]].name}!{a1(k[1], k[2])} {_show(o)} → {_show(v)}" for k, o, v in violations[:2])
+        )
+        for u in t["units"]:
+            u.notes.append(why)
+        self.note(f"repair not kept for {self.sheets[t['block'][0]].name}!{a1(t['units'][0].key[1], t['units'][0].key[2])}: {why}")
+        return []
+
     def _context(self, unit: Unit) -> dict[str, Any]:
         """What the assistant may look at: the labels left of and above the cell,
         and the values of the cells the formula reads (first few)."""
@@ -1759,6 +1925,7 @@ class _Engine:
                 break
             self.note(f"pass {self.passes}: {len(remaining)} errors, {len(roots)} roots, {len(uncertain)} uncertain, {len(propagated)} propagated -> {len(todo)} unit(s) to fix ({tier})")
             self.ask_advisor(todo)
+            todo = self.try_repairs(todo)
             todo.sort(key=lambda u: (u.group, u.key))
             before = len(remaining) + len(self.const_err)
             verdicts = sum(u.tries for u in todo)
@@ -1819,10 +1986,16 @@ class _Engine:
             by_strategy[strategy] += n_cells
             before = r1c1_to_a1(first.old, first.key[1], first.key[2]) if first.kind != "const" else first.old
             after = r1c1_to_a1(fix["content"], first.key[1], first.key[2]) if fix["kind"] == "formula" else fix["content"]
+            alike = self.block_cells.get((si, first.old), []) if strategy == "repaired formula" else []
             if first.kind == "cell":
-                rects = rectangles((u.key[1], u.key[2]) for u in units)
+                rects = rectangles([(u.key[1], u.key[2]) for u in units] + alike)
             else:
                 rects = [(u.key[1], u.key[2], u.r2, u.c2) for u in units]
+            if alike:
+                self.block_cells.pop((si, first.old), None)  # counted once, with the first error kind of the block
+                n_cells += len(alike)
+                cells_rewritten += len(alike)
+                by_strategy[strategy] += len(alike)
             reason = f"{ERROR_MEANING.get(first.error, first.error)}: {fix['what']}" + (f" ({fix['why']})" if fix.get("why") else "")
             groups[(group, strategy)] = {
                 "sheet": sh.name, "error": first.error, "cells": n_cells, "ranges": [rect_a1(*r) for r in rects[:12]], "more_ranges": max(0, len(rects) - 12),
@@ -2057,7 +2230,7 @@ def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = N
     return out
 
 
-if __name__ == "__main__":  # python -m app.autofix <workbook> <work dir>
+if __name__ == "__main__":  # python -m app.autofix <workbook> <work dir> [--assistant] [--allow-handled]
     import json
 
     def _print(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
@@ -2065,7 +2238,12 @@ if __name__ == "__main__":  # python -m app.autofix <workbook> <work dir>
             print(f"  [{stage}] {message}", flush=True)
 
     stop_file = Path(sys.argv[2]) / "STOP"  # create it to end the run cleanly (what is accepted is kept)
-    result = run_autofix(Path(sys.argv[1]), Path(sys.argv[2]), AutoFixConfig(progress=_print, keep_good_values="--allow-handled" not in sys.argv, should_stop=stop_file.exists))
+    advisor = None
+    if "--assistant" in sys.argv:
+        from .autofix_advisor import make_advisor
+
+        advisor = make_advisor()
+    result = run_autofix(Path(sys.argv[1]), Path(sys.argv[2]), AutoFixConfig(progress=_print, keep_good_values="--allow-handled" not in sys.argv, should_stop=stop_file.exists, advisor=advisor))
     Path(sys.argv[2], "autofix_result.json").write_text(json.dumps(result, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
     brief = {k: v for k, v in result.items() if k not in ("applied", "fixes", "left", "recalc", "change_log_entry", "log", "good_values_changed_list")}
     print(json.dumps(brief, indent=1, ensure_ascii=False, default=str))

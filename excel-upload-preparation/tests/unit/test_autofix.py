@@ -358,3 +358,66 @@ def test_the_assistants_choice_is_tried_first_and_its_reason_is_reported_but_the
     assert by_cell["C1"]["after"] == '=IFERROR(A1/B1,"")' and "Nothing to show here." in by_cell["C1"]["reason"]
     assert [g["cell"] for g in res["left"]] == ["C2"] and "E3" in res["left"][0]["why"]  # no fallback is safe for C2: it stays
     assert _values(Path(res["output_path"]))["Calc!E3"] == "none"
+
+
+# --- the assistant's own repair ---------------------------------------------------------------
+def _carry_forward(wb, ws):
+    """A running balance: =C(r-1) + movement(r). Two movements are a dash typed as
+    text, so two balances fail -- and everything below them."""
+    ws["A1"], ws["B1"], ws["C1"] = "Year", "Movement", "Balance"
+    ws["C2"] = 100
+    for r, move in enumerate([10, 20, "-", 5, "-", 7], start=3):
+        ws[f"A{r}"], ws[f"B{r}"] = 2020 + r, move
+        ws[f"C{r}"] = f"=C{r - 1}+B{r}"
+    ws["E2"] = "=SUM(C3:C4)"                     # a good number built on the block's working cells
+
+
+@needs_excel
+def test_a_repair_proposed_by_the_assistant_is_written_to_the_whole_block_and_checked_on_its_working_cells(tmp_path):
+    src = _book(tmp_path, _carry_forward)
+    asked = {}
+
+    def advisor(groups):
+        asked["groups"] = groups
+        return {g["key"]: {"fallback": "0", "formula": "=R[-1]C+N(RC[-1])", "reason": "A dash is text; it should count as no movement."} for g in groups}
+
+    res = run_autofix(src, tmp_path / "work", AutoFixConfig(advisor=advisor))
+    assert asked["groups"][0]["formula_r1c1"] == "=R[-1]C+RC[-1]" and asked["groups"][0]["formula"] == "=C4+B5"
+    assert res["status"] == "clean" and res["errors_before"] == 4 and res["passes"] == 1
+    fix = res["fixes"][0]
+    # one root (C5); the whole block C3:C8 now carries the repair: the 2 cells that worked, and the 3 below that only repeated the error
+    assert fix["strategy"] == "repaired formula" and fix["after"] == "=C4+N(B5)" and fix["cells"] == 6 and fix["ranges"] == ["C3:C8"]
+    assert "should count as no movement" in fix["reason"] and "still return(s) exactly what it did" in fix["reason"]
+    after = _values(Path(res["output_path"]))
+    # the balance is carried forward over the empty movements -- IFERROR(..., 0) would have reset it to 0
+    assert [after[f"Calc!C{r}"] for r in range(3, 9)] == [110, 130, 130, 135, 135, 142] and after["Calc!E2"] == 240
+    assert res["by_strategy"] == {"repaired formula": 6}
+
+
+@needs_excel
+def test_a_repair_that_changes_a_working_cell_of_the_block_is_undone_and_the_wrap_is_used(tmp_path):
+    src = _book(tmp_path, _carry_forward)
+
+    def advisor(groups):  # drops the movement altogether: cures the errors, but C3 would be 100 instead of 110
+        return {g["key"]: {"fallback": "0", "formula": "=R[-1]C", "reason": "wrong on purpose"} for g in groups}
+
+    res = run_autofix(src, tmp_path / "work", AutoFixConfig(advisor=advisor))
+    assert res["status"] == "clean"
+    assert {g["strategy"] for g in res["fixes"]} == {"IFERROR(…, 0)"}  # the built-in wrap, on the error cells only
+    assert any("changed" in line and "work today" in line and "Calc!C3 110 → 100" in line for line in res["log"]), res["log"]
+    after = _values(Path(res["output_path"]))
+    assert after["Calc!C3"] == 110 and after["Calc!C4"] == 130 and after["Calc!E2"] == 240  # nothing that worked has moved
+
+
+def test_the_assistants_repair_is_taken_only_when_it_is_a_formula_without_a_dead_reference():
+    from app.autofix_advisor import parse_answer
+
+    text = (
+        '[{"id": 1, "fallback": "0", "formula": "=R[-1]C+N(RC[-1])", "reason": "r1"},'
+        ' {"id": 2, "fallback": "0", "formula": "R[-1]C", "reason": "no equals sign"},'
+        ' {"id": 3, "fallback": "0", "formula": "=SUM(#REF!)", "reason": "dead"},'
+        ' {"id": 4, "fallback": "0", "reason": "no formula"}]'
+    )
+    got = parse_answer(text)
+    assert got[1] == {"fallback": "0", "reason": "r1", "formula": "=R[-1]C+N(RC[-1])"}
+    assert "formula" not in got[2] and "formula" not in got[3] and "formula" not in got[4]

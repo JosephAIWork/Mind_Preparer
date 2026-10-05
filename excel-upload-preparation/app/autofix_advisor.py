@@ -32,11 +32,13 @@ For each error group below, the tool keeps the formula and wraps it: =IFERROR(<t
 - ""     -- (empty text) the cell is a label or a piece of text, or it is a figure where a 0 would be wrong to show or would be counted / averaged as a real observation.
 - FALSE  -- the cell is a logical test (TRUE/FALSE).
 
-You see, per group: the sheet and cell, the labels left of / above it, the formula, the error, the values of the cells it reads, how many cells share the formula, and what the same formula returns where it works ("number", "text" or "bool").
+You see, per group: the sheet and cell, the labels left of / above it, the formula (A1 and R1C1 notation), the error, the values of the cells it reads, how many cells share the formula, and what the same formula returns where it works ("number", "text" or "bool").
+
+Optionally, when you can see the root cause and a SMALL rewrite removes it without changing what the formula returns wherever it works today, also give "formula": the complete replacement in R1C1 notation, written like the `R1C1:` line you were shown (RC[-1] is the cell to the left, R[-1]C the cell above, R5C3 is $C$5). Typical repairs: N(<reference>) around a reference that may hold text or an empty string; IFNA(<lookup>, <value>) around a lookup that may not find its key; IF(<divisor>=0, 0, <a>/<divisor>) for a divisor that may be zero. The tool writes it to every cell sharing the formula and keeps it only if every cell that works today still returns exactly the same value; otherwise it falls back to the wrap. Leave "formula" out when the repair would only be IFERROR around the whole formula, when a reference was deleted (#REF!, NA()), or when you are not sure.
 
 Answer with JSON only, no prose around it:
-[{"id": 1, "fallback": "0", "reason": "..."}, ...]
-`reason` is ONE short plain sentence for a non-programmer: what goes wrong in this cell and why this value is the right thing to show instead. Do not mention IFERROR or JSON in it."""
+[{"id": 1, "fallback": "0", "reason": "..."}, {"id": 2, "fallback": "0", "formula": "=RC[-2]+N(RC[-1])", "reason": "..."}, ...]
+`reason` is ONE short plain sentence for a non-programmer: what goes wrong in this cell and why this value (or this rewrite) is the right thing. Do not mention IFERROR or JSON in it."""
 
 
 def _prompt(batch: list[tuple[int, dict[str, Any]]]) -> str:
@@ -48,6 +50,7 @@ def _prompt(batch: list[tuple[int, dict[str, Any]]]) -> str:
             f"cell: {g['sheet']}!{g['cell']}  ({g['count']} cell(s) share this formula)\n"
             f"error: {g['error']}\n"
             f"formula: {str(g['formula'])[:600]}\n"
+            f"R1C1: {str(g.get('formula_r1c1') or '')[:600]}\n"
             f"labels left of the cell: {ctx.get('left_of_cell') or '-'}\n"
             f"labels above the cell: {ctx.get('above_cell') or '-'}\n"
             f"it reads: {'; '.join(ctx.get('reads') or []) or '-'}\n"
@@ -83,6 +86,9 @@ def parse_answer(text: str | None) -> dict[int, dict[str, str]]:
             continue
         reason = re.sub(r"\s+", " ", str(item.get("reason") or "")).strip()[:300]
         out[n] = {"fallback": fallback, "reason": reason}
+        formula = item.get("formula")
+        if isinstance(formula, str) and formula.strip().startswith("=") and 2 < len(formula.strip()) <= 3000 and "#REF!" not in formula.upper():
+            out[n]["formula"] = formula.strip()
     return out
 
 
@@ -101,7 +107,7 @@ def make_advisor(model_id: str | None = None, complete: Callable[..., dict[str, 
 
         def ask(batch: list[tuple[int, dict[str, Any]]]) -> dict[int, dict[str, str]]:
             try:
-                res = complete([{"role": "user", "content": _prompt(batch)}], SYSTEM_PROMPT, model_id=model, max_tokens=1600, temperature=0.0, timeout=90)
+                res = complete([{"role": "user", "content": _prompt(batch)}], SYSTEM_PROMPT, model_id=model, max_tokens=2400, temperature=0.0, timeout=120)
             except Exception:
                 return {}
             return parse_answer(res.get("text") if isinstance(res, dict) else None)
