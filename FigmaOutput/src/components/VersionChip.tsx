@@ -11,6 +11,7 @@ const sourceLabel: Record<string, string> = {
   formula: "formula fix, verified",
   convert: "converted",
   recalculate: "recalculated",
+  autofix: "fixed automatically, recalculated",
 };
 
 export default function VersionChip({ version }: Props) {

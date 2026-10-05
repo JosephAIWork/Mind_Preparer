@@ -37,6 +37,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
+from app.autofix import AutoFixConfig, run_autofix  # noqa: E402
+from app.autofix_advisor import make_advisor  # noqa: E402
 from app.change_apply import convert_output_format  # noqa: E402
 from app.chat_context import answer_question, recalculation_context  # noqa: E402
 from app.config import load_config  # noqa: E402
@@ -620,6 +622,8 @@ def health() -> dict[str, Any]:
         # 1.7.2: the assistant's model and POST /chat/stream
         "model": DEFAULT_MODEL_ID,
         "streaming": True,
+        # 1.8.0: POST /auto-fix ("Fix all automatically" on the Recalculate step)
+        "autofix": True,
     }
 
 
@@ -1010,6 +1014,14 @@ def recalc(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
     res = recalculate(copy_path)
+    return _recalc_out(s, res, copy_path)
+
+
+def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True) -> dict[str, Any]:
+    """What a recalculation of the current version means for the session: the
+    errors against the original's, the root-cause groups, READY-001, the verdict.
+    `res` has the shape of app.recalc.recalculate -- the automatic fixer (1.8.0)
+    ends with a full recalculation of its own and hands it in the same way."""
     out = {
         "status": res["status"],
         "message": res["message"],
@@ -1044,7 +1056,7 @@ def recalc(session_id: str) -> dict[str, Any]:
     # 1.7.4: a recalculation after fixes (v2.1, v2.2, ...) closes the round: the
     # same file becomes the next major version (v3), and the recalculation is its own
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
-    if out["ran"] and current is not None and current.get("minor"):
+    if close_round and out["ran"] and current is not None and current.get("minor"):
         short = current["label"].split(" — ")[0]
         version = _add_version(s, s.current_path, "recalculate", f"recalculated {short}", [], current.get("verified_opens_in_excel"), current["sha256"])
         out["version"] = version
@@ -1058,6 +1070,137 @@ def recalc(session_id: str) -> dict[str, Any]:
     s.recalc_path = copy_path
     out["readiness"] = s.readiness()  # 1.7.2: a clean recalculation is what turns the verdict green
     return out
+
+
+# --- 1.8.0: fix all automatically ----------------------------------------------------------------
+AUTOFIX: dict[str, dict[str, Any]] = {}  # session id -> live state of the current / last run
+_AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values")
+_AUTOFIX_TITLES = {
+    "start": "Starting", "read": "Reading the workbook", "find": "Finding where the errors start", "advise": "Asking the assistant",
+    "fix": "Fixing", "pass": "Fixing", "confirm": "Confirming", "save": "Saving", "verify": "Checking the file opens", "reanalyze": "Re-analyzing the fixed version", "done": "Done",
+}
+
+
+@app.post("/api/sessions/{session_id}/auto-fix")
+def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Fix every formula error of the current version that can be fixed without
+    changing a value that is good today (app/autofix.py), in a background
+    thread: one Excel session that finds the cells where errors start, fixes
+    them, recalculates and rolls back whatever moved a good value, pass after
+    pass. Poll GET for progress; the result is a new version, already
+    recalculated and re-analysed.
+
+    Body (all optional): use_assistant (default true: the assistant says which
+    value an error cell should fall back to, and why), keep_good_values (default
+    true -- the owner's rule; false also fixes the errors a formula is hiding,
+    and lists every value that moved), time_budget_min (default 120)."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    if s.current_path.suffix.lower() not in (".xlsx", ".xlsm"):
+        raise HTTPException(status_code=422, detail="the automatic fixer works on .xlsx / .xlsm")
+    if not com_available():
+        raise HTTPException(status_code=409, detail="the automatic fixer needs Excel on this machine")
+    running = AUTOFIX.get(session_id)
+    if running and running.get("state") == "running":
+        raise HTTPException(status_code=409, detail="the automatic fixer is already running for this session")
+    use_assistant = bool(payload.get("use_assistant", True))
+    keep = bool(payload.get("keep_good_values", True))
+    budget = max(1.0, float(payload.get("time_budget_min", 120))) * 60
+    advisor = make_advisor() if use_assistant else None
+    state: dict[str, Any] = {
+        "state": "running", "stage": "start", "title": "Starting", "message": "Opening the workbook in Excel", "fraction": None,
+        "pass_no": 0, "errors": None, "errors_before": None, "kept": 0, "started": time.time(), "updated": time.time(), "finished": None,
+        "error": None, "stop": False, "version_id": s.current_version_id, "use_assistant": advisor is not None, "keep_good_values": keep,
+        "result": None, "version": None, "recalc": None, "analysis": None,
+    }
+    AUTOFIX[session_id] = state
+    source = s.current_path
+
+    def progress(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        state.update(stage=stage, title=_AUTOFIX_TITLES.get(stage, stage), message=message, fraction=fraction, updated=time.time())
+        if facts.get("pass_no") is not None:
+            state["pass_no"] = facts["pass_no"]
+        if facts.get("errors") is not None:
+            state["errors"] = facts["errors"]
+            if state["errors_before"] is None:
+                state["errors_before"] = facts["errors"]
+        if stage == "pass" and facts.get("kept") is not None:
+            state["kept"] += int(facts["kept"])
+
+    def worker() -> None:
+        try:
+            cfg = AutoFixConfig(time_budget_s=budget, keep_good_values=keep, advisor=advisor, progress=progress, should_stop=lambda: bool(state["stop"]))
+            res = run_autofix(source, s.work_dir / "autofix", cfg)
+            if res.get("status") == "error":
+                raise RuntimeError(res.get("message") or "the automatic fixer failed")
+            if res.get("output_path"):
+                output = Path(res["output_path"])
+                left = int(res.get("errors_after") or 0)
+                verified = res.get("verified_opens_in_excel")
+                label = (
+                    f"Auto-fix: {res.get('cells_rewritten', 0)} cell(s) fixed · "
+                    + ("recalculated clean" if left == 0 else f"{left} error(s) left for a person")
+                    + ("" if verified else " · NOT VERIFIED")
+                )
+                state["version"] = _add_version(s, output, "autofix", label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"])
+                rec = _recalc_out(s, res["recalc"], output, close_round=False)
+                progress("reanalyze", "Checking the fixed version against the rules", None)
+                state["analysis"] = _run_scan(s, output)
+                rec["readiness"] = s.readiness()
+                rec.pop("report", None)
+                rec.pop("plan", None)
+                state["recalc"] = rec
+            state["result"] = {k: v for k, v in res.items() if k not in ("applied", "change_log_entry", "recalc", "log")}
+            state["result"]["log"] = res.get("log", [])[-200:]
+            state.update(state="done", stage="done", title="Done", message=res.get("summary") or "", finished=time.time(), updated=time.time())
+        except HTTPException as exc:  # the re-analysis refused (a scan already running)
+            state.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+        except Exception as exc:  # the thread must never die silently
+            state.update(state="error", error=f"{type(exc).__name__}: {exc}"[:400], finished=time.time(), updated=time.time())
+
+    threading.Thread(target=worker, name=f"autofix-{session_id}", daemon=True).start()
+    return _autofix_public(s, state, full=False)
+
+
+def _autofix_public(s: Session, state: dict[str, Any], full: bool) -> dict[str, Any]:
+    out = {k: state.get(k) for k in _AUTOFIX_PUBLIC}
+    out["elapsed_s"] = round((state.get("finished") or time.time()) - state["started"], 1)
+    if state.get("stage") == "reanalyze" and state.get("state") == "running":
+        scan = _scan_snapshot(s)
+        out["message"] = f"{scan.get('title') or 'Re-analyzing'}: {scan.get('message') or ''}".strip(": ")
+        out["fraction"] = scan.get("overall")
+    out["version"] = state.get("version")
+    result = state.get("result")
+    if result is not None:
+        out["result"] = result if full else {k: v for k, v in result.items() if k not in ("fixes", "left", "good_values_changed_list", "log")}
+    if full:
+        out["recalc"] = state.get("recalc")
+        out["analysis"] = state.get("analysis")
+    return out
+
+
+@app.get("/api/sessions/{session_id}/auto-fix")
+def autofix_status(session_id: str, full: int = 0) -> dict[str, Any]:
+    """Where the automatic fixer is (state running | done | error | idle, the pass,
+    the errors left). `full=1` once it is done adds the whole result (every fix
+    with its reason, what is left and why), the recalculation and the new analysis."""
+    s = _session(session_id)
+    state = AUTOFIX.get(session_id)
+    if not state:
+        return {"state": "idle"}
+    return _autofix_public(s, state, full=bool(full))
+
+
+@app.post("/api/sessions/{session_id}/auto-fix/stop")
+def stop_autofix(session_id: str) -> dict[str, Any]:
+    """Ask a running fixer to stop after the round it is in. What it has fixed so far is kept."""
+    s = _session(session_id)
+    state = AUTOFIX.get(session_id)
+    if not state or state.get("state") != "running":
+        return {"state": (state or {}).get("state", "idle")}
+    state["stop"] = True
+    return _autofix_public(s, state, full=False)
 
 
 @app.get("/api/sessions/{session_id}/readiness")

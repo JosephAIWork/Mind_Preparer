@@ -306,3 +306,49 @@ def test_what_indirect_and_offset_point_at_is_asked_from_excel(tmp_path):
     assert set(fixed) == {"B2", "C3"} and fixed["B2"]["sheet"] == "Data"  # C1 and C2 clear by themselves once Data!B2 is fixed
     after = _values(Path(res["output_path"]))
     assert after["Calc!C1"] == 0 and after["Calc!C2"] == 1 and after["Calc!C3"] == 0
+
+
+# --- the assistant's say ----------------------------------------------------------------------
+def test_the_assistant_only_orders_the_ladder_and_a_bad_answer_is_ignored():
+    from app.autofix_advisor import make_advisor, parse_answer
+
+    good = '```json\n[{"id": 1, "fallback": "", "reason": "A  label: nothing to show."}, {"id": 2, "fallback": 0, "reason": "An amount that is summed."}, {"id": 3, "fallback": "N/A", "reason": "x"}, {"id": "x", "fallback": "0"}]\n```'
+    assert parse_answer(good) == {1: {"fallback": '""', "reason": "A label: nothing to show."}, 2: {"fallback": "0", "reason": "An amount that is summed."}}
+    assert parse_answer("I think zero is fine.") == {} and parse_answer(None) == {} and parse_answer("[not json]") == {}
+
+    seen = {}
+
+    def complete(messages, system, **kw):
+        seen["prompt"], seen["system"] = messages[0]["content"], system
+        return {"available": True, "text": '[{"id": 1, "fallback": "FALSE", "reason": "A check."}, {"id": 2, "fallback": "\\"\\"", "reason": "A label."}]'}
+
+    advise = make_advisor(complete=complete)
+    groups = [
+        {"key": "Calc|#DIV/0!|=RC[-1]/RC[-2]", "sheet": "Calc", "error": "#DIV/0!", "cell": "C3", "formula": "=B3/A3", "count": 40, "kind_of_value": "number", "context": {"left_of_cell": ["Average premium"], "above_cell": ["2024"], "reads": ["Calc!B3 = 50", "Calc!A3 = 0"]}},
+        {"key": "Calc|#N/A|=VLOOKUP(RC1,C5:C6,2,0)", "sheet": "Calc", "error": "#N/A", "cell": "D9", "formula": "=VLOOKUP($A9,E:F,2,0)", "count": 1, "kind_of_value": "text", "context": {}},
+    ]
+    assert advise(groups) == {groups[0]["key"]: {"fallback": "FALSE", "reason": "A check."}, groups[1]["key"]: {"fallback": '""', "reason": "A label."}}
+    assert "Average premium" in seen["prompt"] and "Calc!A3 = 0" in seen["prompt"] and "40 cell(s)" in seen["prompt"] and "IFERROR" in seen["system"]
+    # the assistant failing is never an error: the built-in order is used
+    assert make_advisor(complete=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gateway down")))(groups) == {}
+
+
+@needs_excel
+def test_the_assistants_choice_is_tried_first_and_its_reason_is_reported_but_the_gate_decides(tmp_path):
+    def fill(wb, ws):
+        ws["A1"], ws["B1"] = 10, 0
+        ws["C1"] = "=A1/B1"                      # #DIV/0!; the assistant says "" ...
+        ws["A2"], ws["B2"] = 8, 0
+        ws["C2"] = "=A2/B2+1"                    # #DIV/0!; the assistant says "" here too ...
+        ws["E2"] = '=IF(C2="",1,2)'              # ... but a text in C2 turns an error into 1: a good value? no -- E2 is an error today
+        ws["E3"] = '=IFERROR(C2&"x","none")'     # "none" today; "" in C2 would make it "x", 0 would make it "0x": both change it
+
+    def advisor(groups):
+        return {g["key"]: {"fallback": '""', "reason": "Nothing to show here."} for g in groups}
+
+    src = _book(tmp_path, fill)
+    res = run_autofix(src, tmp_path / "work", AutoFixConfig(advisor=advisor))
+    by_cell = {g["cell"]: g for g in res["fixes"]}
+    assert by_cell["C1"]["after"] == '=IFERROR(A1/B1,"")' and "Nothing to show here." in by_cell["C1"]["reason"]
+    assert [g["cell"] for g in res["left"]] == ["C2"] and "E3" in res["left"][0]["why"]  # no fallback is safe for C2: it stays
+    assert _values(Path(res["output_path"]))["Calc!E3"] == "none"

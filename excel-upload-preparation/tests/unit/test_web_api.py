@@ -562,3 +562,60 @@ def test_a_clean_recalculation_turns_ready_001_to_pass_and_lifts_the_report(clie
     # a re-analysis of the same version keeps the recalculation's verdict
     again = client.post(f"/api/sessions/{sid}/reanalyze", json={}).json()
     assert next(f for f in again["report"]["findings"] if f["rule_id"] == "READY-001")["status"] == "PASS"
+
+
+def test_auto_fix_runs_in_the_background_and_leaves_a_clean_recalculated_version(client, tmp_path):
+    """1.8.0: POST /auto-fix -> poll GET -> a new major version whose recalculation is the fixer's own,
+    READY-001 PASS, and the manual way still there (the Fix panel's /apply is untouched)."""
+    import time
+
+    import openpyxl
+
+    if not com_available():
+        pytest.skip("the automatic fixer needs Excel")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws["A1"] = "#Rates"
+    ws["A2"], ws["B2"], ws["C2"] = "Premium", "Policies", "Average"
+    for r, (a, b) in enumerate([(100, 4), (50, 0), (30, 3)], start=3):
+        ws[f"A{r}"], ws[f"B{r}"], ws[f"C{r}"] = a, b, f"=A{r}/B{r}"
+    ws["C6"] = "=SUM(C3:C5)"
+    path = tmp_path / "rates.xlsx"
+    wb.save(path)
+    wb.close()
+
+    sid = _upload(client, path)["sessionId"]
+    assert client.get(f"/api/sessions/{sid}/auto-fix").json() == {"state": "idle"}
+    started = client.post(f"/api/sessions/{sid}/auto-fix", json={"use_assistant": False}).json()
+    assert started["state"] == "running" and started["use_assistant"] is False and started["keep_good_values"] is True
+    assert client.post(f"/api/sessions/{sid}/auto-fix", json={}).status_code == 409  # one at a time
+    deadline = time.time() + 300
+    while True:
+        st = client.get(f"/api/sessions/{sid}/auto-fix").json()
+        if st["state"] != "running":
+            break
+        assert time.time() < deadline, st
+        time.sleep(0.5)
+    assert st["state"] == "done", st
+    assert "fixes" not in st["result"] and st["result"]["status"] == "clean"  # the light answer while polling
+    full = client.get(f"/api/sessions/{sid}/auto-fix?full=1").json()
+    result = full["result"]
+    assert result["errors_before"] == 2 and result["errors_after"] == 0 and result["cells_rewritten"] == 1
+    assert result["fixes"][0]["after"] == "=IFERROR(A4/B4,0)" and result["left"] == []
+    version = full["version"]
+    assert version["source"] == "autofix" and version["label"].startswith("v2 — Auto-fix: 1 cell(s) fixed · recalculated clean")
+    assert version["change_log"][0]["action_id"] == "autofix"
+    # the run's own recalculation is the session's, for the new version; the analysis is the new version's
+    assert full["recalc"]["ran"] is True and full["recalc"]["formula_errors"] == [] and full["recalc"]["version_id"] == version["id"]
+    ready = next(f for f in full["analysis"]["report"]["findings"] if f["rule_id"] == "READY-001")
+    assert ready["status"] == "PASS"
+    assert client.get(f"/api/sessions/{sid}/readiness").json()["readiness"]["recalc"]["clean"] is True
+    assert [v["id"] for v in client.get(f"/api/sessions/{sid}/versions").json()][-1] == version["id"]
+    # nothing left to fix: a second run changes nothing and makes no version
+    client.post(f"/api/sessions/{sid}/auto-fix", json={"use_assistant": False})
+    while client.get(f"/api/sessions/{sid}/auto-fix").json()["state"] == "running":
+        time.sleep(0.5)
+    again = client.get(f"/api/sessions/{sid}/auto-fix?full=1").json()
+    assert again["result"]["status"] == "unchanged" and again["version"] is None
+    assert client.get("/api/health").json()["autofix"] is True

@@ -439,7 +439,7 @@ export interface Version {
   file_name: string;
   sha256: string;
   created_at: string;
-  source: "upload" | "prep" | "assistant" | "formula" | "convert" | "grid_namer" | "recalculate";
+  source: "upload" | "prep" | "assistant" | "formula" | "convert" | "grid_namer" | "recalculate" | "autofix";
   /** 1.7.4: v{major}.{minor}; minor 0 is shown as v{major} */
   major?: number;
   minor?: number;

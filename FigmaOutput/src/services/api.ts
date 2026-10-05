@@ -334,6 +334,108 @@ export async function recalculate(sessionId: string): Promise<RecalcResult> {
   return post<RecalcResult>(`/sessions/${encodeURIComponent(sessionId)}/recalculate`);
 }
 
+// --- 1.8.0: fix all automatically (the Recalculate step) -------------------------------------
+/** One kind of error the fixer fixed: the cells sharing a formula, what was written, and why. */
+export interface AutoFixGroup {
+  sheet: string;
+  error: string;
+  cells: number;
+  ranges: string[];
+  more_ranges: number;
+  cell: string;
+  before: string;
+  after: string | number | boolean;
+  strategy: string;
+  reason: string;
+  kind: string;
+}
+
+/** An error the fixer left: where, how many like it, and why it did not fix it. */
+export interface AutoFixLeft {
+  sheet: string;
+  cell: string;
+  error: string;
+  formula: string;
+  count: number;
+  why: string;
+  tried: boolean;
+}
+
+export interface AutoFixResult {
+  status: "clean" | "partial" | "stuck" | "unchanged" | "error";
+  summary: string;
+  errors_before: number;
+  errors_after: number;
+  cells_fixed: number;
+  cells_rewritten: number;
+  passes: number;
+  rolled_back: number;
+  by_strategy: Record<string, number>;
+  fix_groups: number;
+  left_groups: number;
+  left_count: number;
+  /** only with keep_good_values false: good values that moved, listed */
+  good_values_changed: number;
+  keep_good_values: boolean;
+  /** present on the full result only */
+  fixes?: AutoFixGroup[];
+  left?: AutoFixLeft[];
+  good_values_changed_list?: { sheet: string; cell: string; before: unknown; after: unknown; formula: string }[];
+}
+
+export interface AutoFixStatus {
+  state: "idle" | "running" | "done" | "error";
+  stage?: string;
+  title?: string;
+  message?: string;
+  fraction?: number | null;
+  pass_no?: number;
+  errors?: number | null;
+  errors_before?: number | null;
+  kept?: number;
+  elapsed_s?: number;
+  error?: string | null;
+  /** the version the run started from */
+  version_id?: string;
+  use_assistant?: boolean;
+  keep_good_values?: boolean;
+  /** the version the run produced (none when nothing was fixed) */
+  version?: Version | null;
+  result?: AutoFixResult;
+  /** full result only: the run's own recalculation and the analysis of the new version */
+  recalc?: RecalcResult | null;
+  analysis?: Partial<Reanalysis> | null;
+}
+
+export interface AutoFixOptions {
+  /** the assistant says which value each kind of error should fall back to (default true) */
+  use_assistant?: boolean;
+  /** the owner's rule: a good value never changes (default true) */
+  keep_good_values?: boolean;
+  time_budget_min?: number;
+}
+
+export async function startAutoFix(sessionId: string, options: AutoFixOptions = {}): Promise<AutoFixStatus> {
+  if (USE_MOCKS) {
+    await delay(300);
+    return { state: "running", stage: "read", title: "Reading the workbook", message: "Opening the workbook in Excel", pass_no: 0, elapsed_s: 0 };
+  }
+  return post<AutoFixStatus>(`/sessions/${encodeURIComponent(sessionId)}/auto-fix`, options);
+}
+
+export async function autoFixStatus(sessionId: string, full = false): Promise<AutoFixStatus> {
+  if (USE_MOCKS) {
+    await delay(200);
+    return { state: "idle" };
+  }
+  return unwrap<AutoFixStatus>(await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/auto-fix${full ? "?full=1" : ""}`));
+}
+
+export async function stopAutoFix(sessionId: string): Promise<AutoFixStatus> {
+  if (USE_MOCKS) return { state: "idle" };
+  return post<AutoFixStatus>(`/sessions/${encodeURIComponent(sessionId)}/auto-fix/stop`);
+}
+
 export async function generateReports(sessionId: string): Promise<ReportBuild> {
   if (USE_MOCKS) {
     await delay(4000);
