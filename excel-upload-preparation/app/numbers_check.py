@@ -122,6 +122,21 @@ def _is_error(v: Any) -> bool:
     return v.__class__ is int and v in XL_ERROR_CODES
 
 
+def _without_location(v: Any, path: Path) -> Any:
+    """A text value with the workbook's own folder and file name taken out:
+    =CELL("filename") and what is built on it differ between two copies of the
+    same workbook only because the copies sit in different folders."""
+    if not isinstance(v, str) or len(v) < 3:
+        return v
+    low = v.lower()
+    for piece, token in ((str(path.parent).lower(), "<folder>"), (path.name.lower(), "<file>"), (path.stem.lower(), "<file>")):
+        if piece and piece in low:
+            i = low.index(piece)
+            v = v[:i] + token + v[i + len(piece):]
+            low = v.lower()
+    return v
+
+
 def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Callable[..., None] | None = None) -> dict[str, Any]:
     """Recalculate both and compare every formula cell of the original with the
     cell it became.
@@ -193,7 +208,7 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
                 kind = "error_to_error" if _is_error(v1) else "error_to_good"
             elif _is_error(v1):
                 kind = "good_to_error"
-            elif _same(v0, v1, NUMERIC_TOL):
+            elif _same(v0, v1, NUMERIC_TOL) or (isinstance(v0, str) and isinstance(v1, str) and _without_location(v0, original) == _without_location(v1, prepared)):
                 kind = "same"
             else:
                 kind = "good_to_other"

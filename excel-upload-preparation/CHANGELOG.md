@@ -1,5 +1,145 @@
 # Changelog
 
+## 1.8.0
+
+Built and tested in one unattended run (2026-10-05/06) on four client models:
+Horizon, PVFP, Palermo, CNHI. The run's own log, with every dead end, is
+`docs/AUTOFIX_RUN_LOG.md`; the use-case results are in
+`docs/AUTOFIX_USE_CASES.md`.
+
+### Fix all automatically (the Recalculate step)
+
+Until now every formula error went through the Fix panel by hand: open the
+error, ask the assistant, read the proposal, Apply, recalculate. One model
+had 65,883 error cells. The Recalculate screen now has one button, **Fix all
+automatically**, and the app goes through the errors by itself. The manual
+way is unchanged and stays right below it.
+
+Two rules, set by the tool's owner:
+
+1. **Clean means zero error cells**, the ones the original workbook already
+   had included.
+2. **A good number never changes.** A fix that changes a value that was fine
+   is undone and another way is tried; when none works the error stays and is
+   listed for a person, with the reason.
+
+How it works (`app/autofix.py`), in ONE Excel session:
+
+- **Read**: full recalculation, then every formula cell in R1C1 notation --
+  cells filled down or across share one R1C1 text, so a block of thousands
+  of cells is one group, one decision and one write.
+- **Find where errors start.** An error whose own inputs are fine is a
+  *root*; everything downstream only repeats it and clears by itself. Only
+  roots are fixed. What INDIRECT and OFFSET point at is asked from Excel
+  (probe formulas down an empty column: one write, one recalculation, one
+  read -- `Worksheet.Evaluate` answers `#REF!` for INDIRECT inside another
+  function, and a scratch *sheet* makes Excel re-evaluate GET.WORKBOOK-style
+  names, which fails with macros off).
+- **Fix**: the formula is kept and given a value to return when it fails,
+  `=IFERROR(<formula>, 0)` -- `""` where the same formula returns text
+  elsewhere, `FALSE` for a test. A formula that can never compute again (only
+  `NA()` / `#REF!` is left of it, or a `SUMIFS(#REF!, ...)` Excel will not
+  even store) is replaced by that value. An error value sitting in a data
+  cell is cleared. Nothing else is rewritten.
+- **The numbers gate**: recalculate, re-read every formula cell, and compare
+  with the workbook as it was opened. A formula cell that had a valid value
+  must still have exactly that value. The walk back from a moved value names
+  the fix that moved it; a fix that moved a value *alone* has failed without
+  a round of its own, shared suspects are tried again by halves.
+- **Pass after pass** until no error is left or nothing more can be fixed
+  safely; then a full rebuild as confirmation, save, verify the file opens.
+
+What it meets in real models, and what it does:
+
+- *A recurrence that fails row after row* (`=C191+F192-F191`, 621 rows, each
+  failing on its own text input): fixing the first only makes the second the
+  next root -- one pass per row. Once a formula block has had a fix kept and
+  shows a root again, its cells that only wait on each other go together.
+- *An error a formula swallows on purpose*: `=IFERROR(K24/K12,"No GEP")`
+  shows "No GEP" because K24 is an error. Give K24 a 0 and that cell shows
+  0.5 -- a good value changed. Such a fix is undone; `""` is tried (text
+  breaks arithmetic downstream, so the handler still fires); when that fails
+  too the error stays, together with the error cells between it and that
+  formula (pinned at once, not found out one level per pass), and cleaning
+  goes on from the cells that read them. On PVFP: 65,883 errors -> 887 in
+  3 min 18 s, the 887 all feeding 8 formulas that hide errors.
+- *The option to lift rule 2*, explicit and off by default: "Fix them too,
+  and list every value that changes" (`keep_good_values: false`). PVFP then
+  comes out clean in 29 s, and the 421 values that moved are listed.
+- *The assistant* (`app/autofix_advisor.py`) says, per kind of error, which
+  value fits -- 0, empty text or FALSE -- from the cell's labels, its formula
+  and what it reads, and words the reason shown to the user ("Dividing two
+  blank cells gives an error, and a missing ratio should count as zero so it
+  does not distort totals."). It only orders the ladder: the numbers gate
+  has the last word, and no answer means the built-in order, never an error.
+
+Web API: `POST /api/sessions/{id}/auto-fix` (`use_assistant`,
+`keep_good_values`, `time_budget_min`) runs in a background thread;
+`GET .../auto-fix` reports the pass and the errors left, `?full=1` the whole
+result (every kind of fix with its cells, before/after and reason; what is
+left and why; the run's own recalculation; the analysis of the new version);
+`POST .../auto-fix/stop` stops after the current round and keeps what is
+fixed. The result is a new **major** version ("v3 -- Auto-fix: 702 cell(s)
+fixed · recalculated clean") whose recalculation is the fixer's own, so
+READY-001 is PASS and the verdict is green without another Recalculate. No
+Recalculate or Apply is accepted while the fixer runs, and the reverse.
+
+Front-end: `components/AutoFixPanel.tsx` on the Recalculate screen -- the
+button, a live line (pass, errors left of how many, elapsed, Stop), then what
+was fixed (cells, error, reason, before -> after), what is left for a person
+(with "Fix by hand" opening the Fix panel on that cell), and the values that
+changed when rule 2 was lifted. The error table is capped at 300 rows (65,883
+rows froze the page).
+
+### The numbers check: did the preparation change what the model computes?
+
+Found while testing the fixer on PVFP: after the app's standard Prep the
+model computed **2,462 different values -- 1,781 of them had become errors**
+(`LoB_Total!K8`: 2,280,000 -> 0; `Inputs_CoC!G20`: 0 -> #REF!). Nothing in
+the app said so, and a fixer that puts a 0 over an error would have hidden it.
+Cause: Prep inserted title rows on sheets that are read *by position*:
+
+- a 3-D reference, `=SUM('LoB 1:>>'!K65)`, reads K65 on every sheet from
+  'LoB 1' to '>>'. A row inserted on 'LoB 1' alone shifts that sheet only;
+- an address built as text, `=INDIRECT("'"&$E$2&"'!H"&n)`, is not a
+  reference at all: Excel moves nothing.
+
+Three changes:
+
+- **`app/numbers_check.py`** recalculates the original and the current
+  version in Excel and compares every formula cell, following each cell
+  through the rows / columns inserted and the sheets renamed since (the
+  change log of every Apply; versions now record their `parent`). Verdict in
+  one sentence, counts (good -> error, good -> another value, error -> good),
+  per sheet, with examples. `POST /api/sessions/{id}/numbers-check`;
+  **Check the numbers** on the Prep screen once a version other than the
+  original is current; `scripts/compare_versions.py` from the command line.
+- **Prep no longer inserts a row there.** `prep.reference_index` knows the
+  sheets inside a 3-D range (`positional`) and the sheets an INDIRECT names
+  (`text_addressed`: a sheet named in one of its text pieces, or by a cell it
+  reads; a cell holding some other text names a sheet that does not exist and
+  puts nothing at stake; nothing readable at all means every sheet).
+  `insert_blocker()` gives the reason in words; `create_grid_titles`,
+  `separate_merged_grids` and the Grid Namer skip the insert and say why.
+- **The fixer compares first** when it runs on a prepared version: an error
+  that was a value in the original is the preparation's doing. It is never
+  given a fallback; it stays, listed with what it was ("it was 1140000 in
+  the original workbook"), and the result says what Prep changed.
+
+### Also
+
+- `scripts/run_usecases.py` drives the web API through the whole flow for a
+  list of workbooks (upload -> standard Prep -> numbers check -> Recalculate
+  -> Fix all automatically -> Recalculate again), with a fresh server per
+  workbook (`--ports 8602,8603` runs them side by side: one server process
+  held 7.7 GB after two analyses). `scripts/ui_autofix_check.py` clicks
+  through the real screens with Playwright.
+- Tests: `tests/unit/test_autofix.py` (22: R1C1 reading, range index, the
+  ladder, and the engine in a real Excel -- roots, rollback, layers, arrays,
+  swallowed errors, pinned channels, INDIRECT / OFFSET, the assistant),
+  `tests/unit/test_numbers_check.py` (3), three more in
+  `test_prep_reference_safety.py`, two in `test_web_api.py`.
+
 ## 1.7.4
 
 Merge of `main` with Yoav's branch `readiness-verdict-and-prep-fixes`

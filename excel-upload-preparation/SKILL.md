@@ -4,7 +4,7 @@ description: Analyze, validate, and prepare Excel workbooks for Milliman Mind. U
 license: Proprietary
 compatibility: Provider-neutral instructions. Host application must supply workbook inventory, deterministic validators, transformation operations, and a trusted recalculation adapter.
 metadata:
-  package-version: "1.7.4"
+  package-version: "1.8.0"
   rule-set-version: "1.2.0"
 ---
 

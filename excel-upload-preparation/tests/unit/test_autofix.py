@@ -88,11 +88,11 @@ def test_a_live_formula_is_kept_and_only_given_a_value_to_fall_back_on():
 
 def test_a_dead_formula_is_replaced_and_a_broken_one_loses_its_ref_literal():
     dead = candidate_fixes("=+NA()", parse_r1c1("=+NA()"), "number")
-    assert [(f["kind"], f["content"]) for f in dead] == [("value", 0), ("value", "")]
+    assert [(f["kind"], f["content"]) for f in dead] == [("formula", "=IFERROR(NA(),0)"), ("formula", '=IFERROR(NA(),"")')]  # still a formula, never a bare value
     broken = candidate_fixes("=SUM('BASE Polices'!#REF!)+RC[1]", parse_r1c1("=SUM('BASE Polices'!#REF!)+RC[1]"), "number")
     assert broken[0]["content"] == "=IFERROR(SUM(NA())+RC[1],0)" and "#REF!" not in broken[0]["content"]
     endpoint = candidate_fixes("=SUM(R1C1:#REF!)", parse_r1c1("=SUM(R1C1:#REF!)"), "number")
-    assert [f["kind"] for f in endpoint] == ["value", "value"]  # the range can never be rebuilt: no IFERROR around a #REF!
+    assert [f["content"] for f in endpoint] == ["=IFERROR(NA(),0)", '=IFERROR(NA(),"")']  # the range can never be rebuilt: nothing of the #REF! is kept
 
 
 # --- the engine, in a real Excel -----------------------------------------------------------
@@ -233,7 +233,7 @@ def test_array_formulas_and_dead_formulas_and_error_constants(tmp_path):
     assert res["status"] == "clean", res.get("left")
     by_cell = {g["cell"]: g for g in res["fixes"]}
     assert by_cell["B1"]["kind"] == "array" and by_cell["B1"]["after"] == "=IFERROR(10/A1:A3,0)"
-    assert by_cell["D1"]["after"] == 0 and by_cell["F1"]["strategy"] == "error value cleared"
+    assert by_cell["D1"]["after"] == "=IFERROR(NA(),0)" and by_cell["F1"]["strategy"] == "error value cleared"
     after = _values(Path(res["output_path"]))
     assert after["Calc!B1"] == 2.5 and after["Calc!B2"] == 0 and after["Calc!B3"] == 5 and after["Calc!D2"] == 1 and after["Calc!F2"] == 0
 

@@ -12,6 +12,7 @@ checks the numbers.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -44,12 +45,14 @@ def main() -> int:
         page.screenshot(path=str(args.out / "0_findings.png"), full_page=False)
         page.get_by_role("link", name="Recalculate").click(timeout=5 * minutes)
         page.get_by_role("button", name="Recalculate now").click(timeout=30 * minutes)
-        page.get_by_text("FORMULA ERRORS").first.wait_for(timeout=30 * minutes)
+        page.get_by_text(re.compile(r"FORMULA ERRORS \(\d")).first.wait_for(timeout=30 * minutes)  # the result table, not the page's blurb
         page.screenshot(path=str(args.out / "1_before.png"), full_page=True)
-        button = page.get_by_role("button", name="Fix all").first
+        panel = page.locator("[aria-label='Fix all automatically']")
+        button = panel.get_by_role("button", name=re.compile("^Fix all")).first
         print("button:", button.inner_text())
         button.click()
-        page.get_by_text("left").first.wait_for(timeout=5 * minutes)  # the live progress line
+        panel.get_by_text(re.compile(r"errors? left")).first.wait_for(timeout=5 * minutes)  # the live progress line
+        print("recalculate button disabled while fixing:", page.get_by_role("button", name=re.compile("^Recalculate")).first.is_disabled())
         page.screenshot(path=str(args.out / "2_running.png"), full_page=True)
         page.locator("[aria-label='Fix all automatically'] >> text=/Clean:|left for a person|Nothing could be fixed|No formula error/").first.wait_for(timeout=120 * minutes)
         page.wait_for_timeout(1500)

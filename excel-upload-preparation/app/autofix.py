@@ -27,9 +27,11 @@ Two rules decided by the tool's owner (2026-10-05):
 What a fix is. An error cell keeps its formula and gets a value to return when
 the formula fails: =IFERROR(<the formula>, 0) -- or "" where the cells around
 it hold text. A formula that can never compute again (its reference was
-deleted: only NA() / #REF! is left of it) is replaced by that value. A constant
-that is an error value is cleared. Nothing else is rewritten, so a cell that
-works today computes exactly as before.
+deleted: only NA() / #REF! is left of it) becomes =IFERROR(NA(), 0): still a
+formula, and one that says what it is -- "not available, shown as 0" (the
+package's rule 6: a formula is never turned into a value). A constant that is
+an error value is cleared. Nothing else is rewritten, so a cell that works
+today computes exactly as before.
 
 Formulas are handled in R1C1 notation: cells filled down or across share one
 R1C1 text, so a block of thousands of cells is one group, one decision and one
@@ -441,10 +443,9 @@ def candidate_fixes(formula: str, parsed: Parsed, kind_of_value: str, preferred:
             })
     if dead:
         for fb in order:
-            value: Any = 0 if fb == "0" else (False if fb == "FALSE" else "")
             out.append({
-                "kind": "value", "content": value, "strategy": f"replaced by {FALLBACK_LABEL[fb]}",
-                "what": f"the formula could never compute again (its reference was deleted): replaced by {FALLBACK_LABEL[fb]}",
+                "kind": "formula", "content": f"=IFERROR(NA(),{fb})", "strategy": f"dead formula → {FALLBACK_LABEL[fb]}",
+                "what": f"the formula could never compute again (its reference was deleted): it now reads \"not available, shown as {FALLBACK_LABEL[fb]}\"",
             })
     return out
 

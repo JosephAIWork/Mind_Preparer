@@ -22,11 +22,32 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.7.4)
+## Current status (1.8.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Fix all automatically** (1.8.0): one button on the Recalculate screen and
+  the app goes through the formula errors by itself (`app/autofix.py`,
+  `POST /api/sessions/{id}/auto-fix`). In one Excel session it finds the
+  cells where errors *start*, gives each a value to fall back on
+  (`=IFERROR(<formula>, 0)` -- the assistant says which value fits and why),
+  recalculates, and **undoes any fix that changed a value that was good**;
+  what cannot be fixed that way stays, listed for a person with the reason.
+  The manual Fix panel is unchanged. On the four test models: three come out
+  clean with no good value changed; the fourth (65,883 errors from a dead
+  external link) goes down to the errors its own formulas hide on purpose --
+  see `docs/AUTOFIX_USE_CASES.md`.
+
+- **The numbers check** (1.8.0): *did the preparation change what the model
+  computes?* `app/numbers_check.py` recalculates the original and the current
+  version and compares every formula cell through the rows Prep inserted
+  (`POST /api/sessions/{id}/numbers-check`, "Check the numbers" on the Prep
+  screen, `scripts/compare_versions.py`). It exists because an ordinary Prep
+  changed 2,462 computed values on one test model: title rows inserted on
+  sheets that a 3-D reference (`=SUM('LoB 1:>>'!K65)`) or an INDIRECT address
+  reads by position. Prep now refuses those inserts and says why.
 
 - **One verdict** (1.7.2): every analysis, apply and recalculation answers
   *is this version acceptable by Mind?* -- `blocked` (a REQUIRED rule fails),

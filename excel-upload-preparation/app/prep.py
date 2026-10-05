@@ -1497,21 +1497,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
         elif o["op"] == "set_sheet_visibility":
             ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
         elif o["op"] == "explicit_colors":
-            n_cells = len(o["cells"])
-            for k, cell in enumerate(o["cells"]):
-                # one operation, thousands of cells: say how far it is inside it
-                if progress is not None and k % 25 == 0:
-                    progress("apply_write", f"Change {i} of {total}: {o['sheet']}, colours of cell {k + 1} of {n_cells}", (i - 1 + k / n_cells) / total, done=i - 1, total=total, sheet=o["sheet"], inner_done=k, inner_total=n_cells)
-                c = ws.Range(cell)
-                try:
-                    c.Font.Color = c.Font.Color
-                except Exception:
-                    pass
-                try:
-                    if c.Interior.ColorIndex != -4142:  # xlNone
-                        c.Interior.Color = c.Interior.Color
-                except Exception:
-                    pass
+            _explicit_colors(ws, o, i, total, progress)
         elif o["op"] == "insert_row":
             ws.Rows(int(o["row"])).Insert()
         elif o["op"] == "insert_column":
@@ -1525,6 +1511,115 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
     with excel_session() as excel:
         _run(excel)
     return applied, failed
+
+
+XL_COLOR_INDEX_NONE = -4142
+
+
+def _recolor(rng: Any, single: bool) -> bool:
+    """Give a range its own colours back as explicit RGB (font, then fill).
+    -> False when the range holds more than one font colour or more than one
+    fill: Excel answers Null for a mixed range, and it must be split.
+    A single cell is never mixed (a font colour Excel cannot name -- rich text
+    with several colours -- is left alone, as before)."""
+    try:
+        font = rng.Font.Color
+    except Exception:
+        font = False
+    try:
+        index = rng.Interior.ColorIndex
+    except Exception:
+        index = False
+    if not single and (font is None or index is None):
+        return False
+    fill: Any = False
+    if index not in (False, None, XL_COLOR_INDEX_NONE):
+        try:
+            fill = rng.Interior.Color
+        except Exception:
+            fill = False
+        if fill is None:
+            if not single:
+                return False  # one palette index, several real colours
+            fill = False
+    if font not in (False, None):
+        try:
+            rng.Font.Color = font
+        except Exception:
+            pass
+    if fill is not False:
+        try:
+            rng.Interior.Color = fill
+        except Exception:
+            pass
+    return True
+
+
+def _explicit_colors(ws: Any, o: dict[str, Any], i: int, total: int, progress: Any = None, blockwise: bool = True) -> None:
+    """FMT-002 at the cell level: theme colours become the same colours as
+    explicit RGB.
+
+    1.8.0: by blocks. The cells are covered with rectangles and a rectangle
+    that has one font colour and one fill is re-coloured in one go; a mixed
+    one is split into its rows, a mixed row into its cells -- the cell-by-cell
+    assignment this replaces, which took ~10 COM calls a cell (37 minutes for
+    the 77,000 cells of one model, 124,000 on another). The result is the same
+    cell for cell (`blockwise=False` is the old way, kept for the test that
+    says so)."""
+    from .autofix import rectangles
+
+    cells = [str(c) for c in o["cells"]]
+    n_cells = len(cells)
+    done = 0
+    last_told = -1
+
+    def tell() -> None:
+        nonlocal last_told
+        if progress is not None and (done - last_told >= 25 or last_told < 0):
+            last_told = done
+            progress("apply_write", f"Change {i} of {total}: {o['sheet']}, colours of cell {min(done + 1, n_cells)} of {n_cells}", (i - 1 + done / max(1, n_cells)) / total, done=i - 1, total=total, sheet=o["sheet"], inner_done=done, inner_total=n_cells)
+
+    coords: list[tuple[int, int]] = []
+    odd: list[str] = []
+    for c in cells:
+        ref = parse_ref(c.replace("$", ""))
+        if blockwise and ref and not ref["whole_column"] and not ref["whole_row"] and ref["r1"] == ref["r2"] and ref["c1"] == ref["c2"]:
+            coords.append((ref["r1"], ref["c1"]))
+        else:
+            odd.append(c)
+    for r1, c1, r2, c2 in rectangles(coords):
+        tell()
+        block = ws.Range(ws.Cells(r1, c1), ws.Cells(r2, c2))
+        try:
+            whole = _recolor(block, (r1, c1) == (r2, c2))
+        finally:
+            block = None
+        if not whole:
+            for r in range(r1, r2 + 1):
+                row = ws.Range(ws.Cells(r, c1), ws.Cells(r, c2))
+                try:
+                    row_done = _recolor(row, c1 == c2)
+                finally:
+                    row = None
+                if not row_done:
+                    for c in range(c1, c2 + 1):
+                        cell = ws.Cells(r, c)
+                        try:
+                            _recolor(cell, True)
+                        finally:
+                            cell = None
+                done += c2 - c1 + 1
+                tell()
+        else:
+            done += (r2 - r1 + 1) * (c2 - c1 + 1)
+    for c in odd:
+        tell()
+        cell = ws.Range(c)
+        try:
+            _recolor(cell, True)
+        finally:
+            cell = None
+        done += 1
 
 
 def _range_cells(ref_text_: str) -> list[str]:

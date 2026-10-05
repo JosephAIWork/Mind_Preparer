@@ -82,3 +82,16 @@ def test_an_error_the_preparation_made_is_not_given_a_fallback_by_the_fixer(tmp_
     assert "it was 0.6 in the original workbook" in res["left"][0]["why"] and "preparation broke" in res["summary"]
     # the same workbook taken as it is, with no original to compare with: the fixer has no reason to hold back
     assert run_autofix(out, tmp_path / "fix2")["status"] == "clean"
+
+
+def test_a_value_that_only_holds_the_workbooks_own_folder_is_not_a_change():
+    """=CELL("filename") and the paths built on it differ between the original and
+    its copy only because they sit in different folders (Palermo: 'Saved down'!C2)."""
+    from app.numbers_check import _without_location
+
+    original = Path(r"C:\Users\x\usecases\palermo.xlsm")
+    copy = Path(r"C:\Temp\mind_ready_b1\apply\v3\palermo.xlsm")
+    assert _without_location("C:\\Users\\x\\usecases\\", original) == _without_location("C:\\Temp\\mind_ready_b1\\apply\\v3\\", copy)
+    assert _without_location(r"C:\Users\x\usecases\[palermo.xlsm]Control", original) == _without_location(r"C:\Temp\mind_ready_b1\apply\v3\[palermo.xlsm]Control", copy)
+    assert _without_location("Premium", original) == "Premium" and _without_location(12.5, original) == 12.5
+    assert _without_location("Total 2024", original) != _without_location("Total 2025", copy)
