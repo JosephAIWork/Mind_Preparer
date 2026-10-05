@@ -51,6 +51,7 @@ from .formula_utils import (
 )
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
 from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
+from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
 
@@ -1497,7 +1498,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
         elif o["op"] == "set_sheet_visibility":
             ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
         elif o["op"] == "explicit_colors":
-            _explicit_colors(ws, o, i, total, progress)
+            if not o.get("in_style_table"):  # 1.8.0: already done for every sheet at once (app/theme_colors.py)
+                _explicit_colors(ws, o, i, total, progress)
         elif o["op"] == "insert_row":
             ws.Rows(int(o["row"])).Insert()
         elif o["op"] == "insert_column":
@@ -1565,7 +1567,12 @@ def _explicit_colors(ws: Any, o: dict[str, Any], i: int, total: int, progress: A
     assignment this replaces, which took ~10 COM calls a cell (37 minutes for
     the 77,000 cells of one model, 124,000 on another). The result is the same
     cell for cell (`blockwise=False` is the old way, kept for the test that
-    says so)."""
+    says so).
+
+    Since `_colors_in_the_style_table` this is the fallback only (a package
+    whose style table or theme cannot be read): Excel keeps the default text
+    colour as a theme colour when a cell is assigned the colour it already
+    shows, so this way FMT-002 comes back at the next scan."""
     from .autofix import rectangles
 
     cells = [str(c) for c in o["cells"]]
@@ -1655,6 +1662,28 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
     return applied, failed
 
 
+def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]], warnings: list[str], progress: Any = None) -> list[dict[str, Any]]:
+    """FMT-002 (1.8.0): theme colours become RGB in the copy's style table,
+    before Excel opens it -- a few hundred fonts and fills instead of hundreds
+    of thousands of cells, and the default text colour, which Excel keeps as a
+    theme colour when a cell is assigned the colour it already shows, is
+    converted too. -> the operations, the colour ones marked as done; unchanged
+    when the package cannot be converted (they then go cell by cell, as before)."""
+    if not any(o["op"] == "explicit_colors" for o in operations):
+        return operations
+    if progress is not None:
+        progress("apply_write", "Replacing theme colours in the workbook's style table", 0.0, done=0, total=len(operations))
+    try:
+        done = explicit_theme_colors_in_package(copy_path)
+    except Exception as exc:
+        warnings.append(f"The style table could not be converted ({str(exc)[:160]}); theme colours were replaced cell by cell.")
+        return operations
+    if not done or not (done["fonts"] or done["fills"]):
+        return operations
+    note = f"in the workbook's style table: {done['fonts']} font colour(s) and {done['fills']} fill colour(s), every sheet at once"
+    return [{**o, "in_style_table": True, "note": note} if o["op"] == "explicit_colors" else o for o in operations]
+
+
 def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None) -> dict[str, Any]:
     """Apply approved operations to a fresh copy of `source_path`.
 
@@ -1672,6 +1701,7 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     applied: list[dict] = []
     failed: list[dict] = []
     if prefer_excel and com_available():
+        operations = _colors_in_the_style_table(copy_path, operations, warnings, progress)
         try:
             applied, failed = _apply_with_excel(copy_path, operations, progress)
             method = "excel_com"
