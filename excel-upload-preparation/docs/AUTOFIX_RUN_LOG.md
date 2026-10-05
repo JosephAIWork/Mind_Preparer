@@ -153,6 +153,15 @@ Stops when no error is left, or nothing more can be fixed safely.
 - 23:30 `docs/AUTOFIX_USE_CASES.md` written from the final runs; deliverables copied to
   `excel-upload-preparation/runs/autofix_2026-10-05/`; port 8600 restarted on the final version.
 
+- 23:50 **one more edit, and so one more round.** The first Recalculate of PVFP takes ~25 minutes even on a calm
+  machine: `recalc._scan` asked Excel three things about every error cell (Cells, Address, HasArray) -- 65,883
+  cells, twice (the original is recalculated as the baseline). That wait sits right in front of the new button.
+  Now the addresses are computed from the values already read and array formulas are asked about per sheet, then
+  per row: **55 s** for the same 65,883 errors, same groups (commit 36929c3, `tests/unit/test_recalc_scan.py`).
+- 00:03 **`full_6`**: all four again on 36929c3, four harness processes (Horizon 8621 with the default three Prep
+  rounds; Palermo 8622, PVFP 8623, CNHI 8624 with `--prep-rounds 1 --one-comparison`). If it cannot finish before
+  the 12 hours are over, commit 36929c3 is reverted and the results below (eecb47e) stand.
+
 ## Results (through the app, final code eecb47e)
 
 | Use case | Prep changes | Did Prep change a computed value? | Error cells | After "Fix all automatically" | Good values changed | App's verdict |
