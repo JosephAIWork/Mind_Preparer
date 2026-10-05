@@ -35,10 +35,11 @@ the two honest cases below.
   (`=IFERROR(<formula>, 0)` -- the assistant says which value fits and why),
   recalculates, and **undoes any fix that changed a value that was good**;
   what cannot be fixed that way stays, listed for a person with the reason.
-  The manual Fix panel is unchanged. On the four test models: three come out
-  clean with no good value changed; the fourth (65,883 errors from a dead
-  external link) goes down to the errors its own formulas hide on purpose --
-  see `docs/AUTOFIX_USE_CASES.md`.
+  The manual Fix panel is unchanged. On the four test models: Horizon (721
+  errors) and Palermo (511) come out clean with no good value changed, CNHI
+  has no error to begin with; PVFP (65,883 errors from a dead external link)
+  goes down to the 887 its own formulas hide on purpose, and comes out clean
+  when the owner's rule is lifted for it -- see `docs/AUTOFIX_USE_CASES.md`.
 
 - **The numbers check** (1.8.0): *did the preparation change what the model
   computes?* `app/numbers_check.py` recalculates the original and the current
@@ -48,6 +49,12 @@ the two honest cases below.
   changed 2,462 computed values on one test model: title rows inserted on
   sheets that a 3-D reference (`=SUM('LoB 1:>>'!K65)`) or an INDIRECT address
   reads by position. Prep now refuses those inserts and says why.
+
+- **Theme colours in seconds** (1.8.0): "Replace theme colours with explicit
+  RGB" (FMT-002) is done in the workbook's style table (`app/theme_colors.py`)
+  instead of cell by cell in Excel. It used to take an hour for one sheet of a
+  large model and come back at every Prep round; it now takes under ten
+  seconds for the whole workbook, once, with the exact RGB Excel shows.
 
 - **One verdict** (1.7.2): every analysis, apply and recalculation answers
   *is this version acceptable by Mind?* -- `blocked` (a REQUIRED rule fails),

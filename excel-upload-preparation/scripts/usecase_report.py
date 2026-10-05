@@ -1,10 +1,14 @@
 """Turn the output of scripts/run_usecases.py into a readable report.
 
-    python scripts/usecase_report.py <run dir> [--title "..."] [--out docs/AUTOFIX_USE_CASES.md]
+    python scripts/usecase_report.py <run dir | use-case dir> [...] [--title "..."] [--out report.md]
 
-One section per workbook: what each step of the flow did and how long it took,
-what the numbers check said, what the automatic fixer fixed (the biggest kinds
-of error, with the reason and one before -> after) and what it left for a person.
+A run directory contributes every use case in it that finished; a use-case
+directory (the one holding result.json) contributes itself. First one table
+for all of them, then one section per workbook: what each step of the flow
+did and how long it took, what the comparison with the original said, what
+the automatic fixer wrote (the biggest kinds of error, with the reason and
+one before -> after), what it left for a person, and what still blocks the
+workbook in the app's own verdict.
 """
 from __future__ import annotations
 
@@ -24,9 +28,45 @@ def n(x: Any) -> str:
     return f"{x:,}" if isinstance(x, int) else str(x)
 
 
-def section(result: dict[str, Any], fix: dict[str, Any] | None) -> list[str]:
+def _steps(result: dict[str, Any], prefix: str) -> list[dict[str, Any]]:
+    return [s for s in result.get("steps", []) if s["step"].startswith(prefix)]
+
+
+def _first(result: dict[str, Any], prefix: str) -> dict[str, Any]:
+    found = _steps(result, prefix)
+    return found[0] if found else {}
+
+
+def table_row(result: dict[str, Any]) -> str:
     name = Path(result["workbook"]).stem
-    steps = {s["step"]: s for s in result.get("steps", [])}
+    numbers = _first(result, "numbers check")
+    counts = numbers.get("counts") or {}
+    fix = _first(result, "auto-fix")
+    recalc = _first(result, "recalculate")
+    confirm = _first(result, "recalculate (confirmation)")
+    prep = [s for s in _steps(result, "prep round") if "skipped" not in s["step"]]
+    if not result.get("ok"):
+        outcome = f"run failed: {str(result.get('failure'))[:80]}"
+    elif result.get("clean"):
+        outcome = "**clean**" + (" (confirmed by a separate recalculation)" if confirm else " (nothing to fix)")
+    else:
+        outcome = f"**{n(result.get('errors_after'))} left**, listed for a person"
+    changed = "-" if not numbers else ("**yes**" if numbers.get("clean") is False else "no")
+    return (
+        f"| {name} | {result.get('size_mb')} MB | {n(counts.get('compared', '-'))} | {n(sum(int(s.get('applied') or 0) for s in prep))} | {changed} | "
+        f"{n(recalc.get('formula_errors', '-'))} | {outcome} | {n(fix.get('good_values_changed', 0)) if fix else '-'} | "
+        f"{clock(fix.get('seconds')) if fix else '-'} | {(result.get('readiness') or {}).get('state', '-')} |"
+    )
+
+
+TABLE_HEAD = [
+    "| Workbook | Size | Formula cells compared | Prep changes | Did Prep change a computed value? | Error cells after Prep | After \"Fix all automatically\" | Good values changed | The fix took | App's verdict |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+]
+
+
+def section(result: dict[str, Any], fix: dict[str, Any] | None, snapshot: dict[str, Any] | None) -> list[str]:
+    name = Path(result["workbook"]).stem
     out = [f"### {name}", ""]
     verdict = "**clean** -- every formula recalculates without an error" if result.get("clean") else f"**{n(result.get('errors_after'))} error cell(s) left**"
     if not result.get("ok"):
@@ -47,7 +87,8 @@ def section(result: dict[str, Any], fix: dict[str, Any] | None) -> list[str]:
             what = str(s.get("reason"))
         elif step.startswith("numbers check"):
             c = s.get("counts") or {}
-            what = str(s.get("verdict")) + (f" ({n(c.get('error_to_error', 0))} cells are errors before and after)" if c else "")
+            moves = s.get("moves") or {}
+            what = str(s.get("verdict")) + (f" ({n(c.get('error_to_error', 0))} cells are errors before and after; followed through {n(moves.get('row_inserts', 0))} inserted row(s), {n(moves.get('sheet_renames', 0))} renamed sheet(s))" if c else "")
         elif step == "recalculate":
             what = f"{n(s.get('formula_errors'))} formula error cell(s)" + (f": {', '.join(f'{k} {n(v)}' for k, v in (s.get('by_error') or {}).items())}" if s.get("by_error") else "")
         elif step == "auto-fix":
@@ -55,11 +96,23 @@ def section(result: dict[str, Any], fix: dict[str, Any] | None) -> list[str]:
                 f"errors {n(s.get('errors_before'))} → {n(s.get('errors_after'))} in {s.get('passes')} pass(es); {n(s.get('cells_rewritten'))} cell(s) rewritten; "
                 f"{n(s.get('rolled_back'))} fix(es) undone by the numbers gate"
                 + (f"; {n(s.get('broken_by_prep'))} error(s) made by Prep left untouched" if s.get("broken_by_prep") else "")
+                + (f"; {n(s.get('good_values_changed'))} good value(s) changed (rule lifted)" if s.get("good_values_changed") else "")
+                + " (time includes the comparison with the original and the re-analysis of the fixed version)"
             )
         elif step.startswith("recalculate (confirmation)"):
             what = f"independent recalculation: {n(s.get('formula_errors'))} formula error cell(s) -- {s.get('status')}"
-        out.append(f"| {step} | {clock(s.get('seconds'))} | {what} |")
+        took = "inside the fix" if step.startswith("numbers check (by the fixer") else clock(s.get("seconds"))
+        out.append(f"| {step} | {took} | {what} |")
     out.append("")
+    ready = result.get("readiness") or {}
+    if ready:
+        out.append(f"**The app's verdict at the end:** {ready.get('headline')}" + (f" ({n(ready.get('optional_count'))} optional remark(s))" if ready.get("optional_count") else ""))
+        if snapshot and snapshot.get("blocking") and snapshot.get("blocking_count") == ready.get("blocking_count"):
+            out.append("")
+            for b in snapshot["blocking"]:
+                how = {"assistant": "by hand, with the assistant", "prep": "a Prep action that is not ticked by default", "recalculate": "Recalculate"}.get(str(b.get("fix")), str(b.get("fix")))
+                out.append(f"- `{b.get('rule_id')}` ({how}): {str(b.get('message'))[:420].replace('|', '/')}")
+        out.append("")
     if fix:
         res = fix.get("result") or {}
         fixes = res.get("fixes") or []
@@ -71,7 +124,7 @@ def section(result: dict[str, Any], fix: dict[str, Any] | None) -> list[str]:
             for g in fixes[:8]:
                 before = str(g.get("before"))[:70].replace("|", "\\|")
                 after = str(g.get("after"))[:80].replace("|", "\\|")
-                out.append(f"| {n(g['cells'])} | `{g['sheet']}!{g['ranges'][0]}` | {g['error']} | {str(g['reason'])[:230].replace('|', '/')} | `{before}` → `{after}` |")
+                out.append(f"| {n(g['cells'])} | `{g['sheet']}!{g['ranges'][0]}` | {g['error']} | {str(g['reason'])[:330].replace('|', '/')} | `{before}` → `{after}` |")
             out.append("")
         left = res.get("left") or []
         if left:
@@ -88,17 +141,27 @@ def section(result: dict[str, Any], fix: dict[str, Any] | None) -> list[str]:
     return out
 
 
+def _load(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("run_dir", type=Path)
+    ap.add_argument("paths", nargs="+", type=Path, help="run directories and / or use-case directories")
     ap.add_argument("--title", default="Use cases")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
-    lines = [f"## {args.title}", ""]
-    for d in sorted(p for p in args.run_dir.iterdir() if (p / "result.json").exists()):
-        result = json.loads((d / "result.json").read_text(encoding="utf-8"))
-        fix = json.loads((d / "autofix_result.json").read_text(encoding="utf-8")) if (d / "autofix_result.json").exists() else None
-        lines += section(result, fix)
+    cases: list[Path] = []
+    for p in args.paths:
+        if (p / "result.json").exists():
+            cases.append(p)
+        else:
+            cases += sorted(d for d in p.iterdir() if d.is_dir() and (d / "result.json").exists())
+    loaded = [(d, _load(d / "result.json")) for d in cases]
+    finished = [(d, r) for d, r in loaded if r and r.get("total_seconds")]  # a run stopped half-way has no total
+    lines = [f"## {args.title}", ""] + TABLE_HEAD + [table_row(r) for _, r in finished] + [""]
+    for d, r in finished:
+        lines += section(r, _load(d / "autofix_result.json"), _load(d / "readiness_snapshot.json"))
     text = "\n".join(lines) + "\n"
     if args.out:
         args.out.write_text(text, encoding="utf-8")

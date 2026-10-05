@@ -7,6 +7,13 @@ Horizon, PVFP, Palermo, CNHI. The run's own log, with every dead end, is
 `docs/AUTOFIX_RUN_LOG.md`; the use-case results are in
 `docs/AUTOFIX_USE_CASES.md`.
 
+Result through the app, on the final code: **Horizon 721 error cells -> 0,
+Palermo 511 -> 0, CNHI none to begin with** -- no value that was good before
+changed, and Prep changed no computed value (808,798 formula cells compared
+with the originals). **PVFP 65,883 -> 887**: the errors its own formulas hide
+on purpose, each listed with the value it would change; 0 with the owner's
+rule lifted for it, and the 421 values that moved listed.
+
 ### Fix all automatically (the Recalculate step)
 
 Until now every formula error went through the Fix panel by hand: open the
@@ -146,8 +153,13 @@ Three changes:
   list of workbooks (upload -> standard Prep -> numbers check -> Recalculate
   -> Fix all automatically -> Recalculate again), with a fresh server per
   workbook (`--ports 8602,8603` runs them side by side: one server process
-  held 7.7 GB after two analyses). `scripts/ui_autofix_check.py` clicks
-  through the real screens with Playwright.
+  held 7.7 GB after two analyses). `--prep-rounds N` (default 3: Prep is
+  applied again while it still plans something) and `--one-comparison` (the
+  fixer's own comparison with the original is used instead of asking twice:
+  on a 37 MB model each comparison is two full recalculations).
+  `scripts/usecase_report.py` turns one or several runs into the tables of
+  `docs/AUTOFIX_USE_CASES.md`. `scripts/ui_autofix_check.py` clicks through
+  the real screens with Playwright.
 - **Theme colours are replaced in the workbook's style table**
   (`app/theme_colors.py`; FMT-002 "Replace theme colours with explicit RGB",
   ticked by default). The action went through the cells in Excel: read the
@@ -183,7 +195,7 @@ Three changes:
   in `test_prep_reference_safety.py`, two in `test_web_api.py`,
   `test_explicit_colors.py` (2), `test_theme_colors.py` (6: the tint against
   what Excel showed, the style table, the package, and an Apply through
-  Excel that leaves no theme colour and the same look). Full suite: SUITE_COUNT.
+  Excel that leaves no theme colour and the same look). Full suite: 287 passed.
 
 ## 1.7.4
 
