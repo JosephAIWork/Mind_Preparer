@@ -162,7 +162,20 @@ Stops when no error is left, or nothing more can be fixed safely.
   rounds; Palermo 8622, PVFP 8623, CNHI 8624 with `--prep-rounds 1 --one-comparison`). If it cannot finish before
   the 12 hours are over, commit 36929c3 is reverted and the results below (eecb47e) stand.
 
-## Results (through the app, final code eecb47e)
+- 00:40-01:28 **`full_6` done, all four on the final code 36929c3**: Horizon 721 -> 0 ("Acceptable by Mind");
+  Palermo 511 -> 0, confirmation PASS; PVFP 65,883 -> 887, its first Recalculate in **3 min 55 s** (28 min in the
+  round before, on the same busy machine), confirmation 887; CNHI: 3,449 Prep changes written in 4 min 43 s
+  (1 h 48 min with the old colour step), no formula error, no computed value changed (577,707 formula cells),
+  "Acceptable by Mind". Same results as the round before.
+- 01:07-01:12 **the superseded runs ended by themselves** (`full_3`, commit 5f1dafa, three Prep rounds): PVFP
+  65,883 -> 887 (609 Prep changes), CNHI clean after 6,733 Prep changes (no computed value changed, "Acceptable by
+  Mind"; it took 5 h 57 min, nearly all of it the old colour step). Nothing of mine is left running.
+- 01:20 **full unit suite on the final code: 290 passed.** 01:24 the screens again on the final code
+  (`runs/ui_final3`): "Fix all 719 errors automatically" -> clean in 1 min 38 s, green banner.
+- 01:35 `docs/AUTOFIX_USE_CASES.md` rebuilt from `full_6`; deliverables in
+  `excel-upload-preparation/runs/autofix_2026-10-05/`; port 8600 restarted on the final version.
+
+## Results (through the app, final code 36929c3)
 
 | Use case | Prep changes | Did Prep change a computed value? | Error cells | After "Fix all automatically" | Good values changed | App's verdict |
 |---|---|---|---|---|---|---|
@@ -170,8 +183,9 @@ Stops when no error is left, or nothing more can be fixed safely.
 | Palermo | 241 | no (56,647) | 511 | **0** | 0 | blocked by 2 findings that are not formula errors |
 | CNHI | 3,449 | no (577,707) | 0 | 0 (nothing to fix) | - | Acceptable by Mind |
 | PVFP | 545 | no (152,324) | 65,883 | **887**, listed (they feed formulas that hide errors) | 0 | blocked: 3-D references, INDIRECT as a value, and the 887 |
-| PVFP, rule 2 lifted | 609 (3 rounds) | no | 65,883 | **0** | 421, listed | blocked: 3-D references, INDIRECT as a value |
+| PVFP, rule 2 lifted (commit 5f1dafa) | 609 (3 rounds) | no | 65,883 | **0** | 421, listed | blocked: 3-D references, INDIRECT as a value |
 
+The same results came out of the round before (eecb47e) and of the three-Prep-round runs on 5f1dafa.
 The fixer alone on the original files (no Prep): Horizon 721 -> 0 in 37 s; Palermo 511 -> 0 in about a minute;
 CNHI nothing to fix; PVFP 65,883 -> 887 in 3 min 18 s (rule lifted: 0 in 29 s, 421 values listed).
 Details: `docs/AUTOFIX_USE_CASES.md`.
@@ -181,18 +195,18 @@ Details: `docs/AUTOFIX_USE_CASES.md`.
 1. **PVFP: which way?** With the rule (default) 887 errors stay; with "Fix them too, and list every value that
    changes" the workbook is clean and 421 hidden values change. Both workbooks are in
    `runs/autofix_2026-10-05/` (`pvfp/`, `pvfp_rule_lifted/`).
-2. **What still blocks Mind**, by hand with the assistant: Palermo -- a name that does not exist
+2. **Read the reasons before trusting a fixed model.** Where an error became 0 the model computes with 0 there
+   (PVFP's dead external link: tens of thousands of inputs are now 0). And the assistant's choice can differ
+   from run to run: Horizon's running balance got `=IFERROR(...,0)` (the balance restarts at 0 on the failing
+   rows) in most runs and `=C191+N(F192)-N(F191)` (the balance carries on) in one. Both keep every good value;
+   which is right for the model is a person's call.
+3. **What still blocks Mind**, by hand with the assistant: Palermo -- a name that does not exist
    (`Semi_dynamic_increase_rates_array`, 100 cells) and 10 array formulas wider than their grid; PVFP -- 10,404
    formulas with a 3-D reference and 4,410 that use INDIRECT as a value.
-3. **Nothing was uploaded to Mind.** "Clean" is Excel's recalculation; the conversion in Mind is the next test.
-4. **A PVFP file prepared with an earlier version of the app** has 2,462 computed values that differ from the
+4. **Nothing was uploaded to Mind.** "Clean" is Excel's recalculation; the conversion in Mind is the next test.
+5. **A PVFP file prepared with an earlier version of the app** has 2,462 computed values that differ from the
    original: prepare it again from the original.
-5. **The branch** `auto-fix-loop` is on the personal GitHub only (`origin`). Nothing was pushed to the team repo.
-6. **Two superseded test runs were still going when this run ended** (`runs/full_3`: CNHI and PVFP with the old,
-   slow colour step). I was not allowed to stop them. They end by themselves (a few hours at most) and touch
-   nothing but their own copies; until then the machine is slow. To stop them at once: close the Python
-   processes started at 19:15 (`Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object
-   CommandLine -match 'full_3'`), or restart the computer.
+6. **The branch** `auto-fix-loop` is on the personal GitHub only (`origin`). Nothing was pushed to the team repo.
 7. Ideas noted on the way, not done: the analysis keeps every version's inventory in memory (7-8 GB for one
-   session of PVFP after three analyses); the first recalculation of PVFP through the app is slow when the
-   machine is busy (the error list has 65,883 entries).
+   session of PVFP or Palermo after two or three analyses -- three models side by side exhaust a 32 GB
+   machine); on CNHI Prep still proposes ~1,500 optional grid titles after each Apply.

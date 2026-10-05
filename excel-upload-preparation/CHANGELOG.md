@@ -182,6 +182,18 @@ Three changes:
   table cannot be read -- by **blocks** of one colour since this version
   instead of cell by cell (`tests/unit/test_explicit_colors.py` compares
   both ways).
+- **Recalculate no longer asks Excel about every error cell**
+  (`app/recalc.py`). The scan read values and formulas in bulk, then asked
+  three things about each error cell (Cells, Address, HasArray). On a model
+  with 65,883 error cells that is ten minutes a scan, and the first
+  Recalculate scans twice (the original is recalculated as the baseline):
+  about 25 minutes before the "Fix all automatically" button could even
+  appear. The addresses are now computed from what was already read, and
+  `Range.HasArray` is asked for the sheet's used range (False = no array
+  formula at all: one question), then per row, then per cell only on rows
+  that hold one. Same errors, same arrays, same groups; 55 s for that model
+  alone, 4 minutes for its first Recalculate in the app on a busy machine
+  (it was 28). `tests/unit/test_recalc_scan.py`.
 - A COM lesson: the fixer's Excel session lives in a function of its own
   (`_fix_in_excel`). While the Excel proxy of that session was still held by
   `run_autofix`'s frame during the next session (`verify_opens_in_excel`),
@@ -195,7 +207,7 @@ Three changes:
   in `test_prep_reference_safety.py`, two in `test_web_api.py`,
   `test_explicit_colors.py` (2), `test_theme_colors.py` (6: the tint against
   what Excel showed, the style table, the package, and an Apply through
-  Excel that leaves no theme colour and the same look). Full suite: 287 passed.
+  Excel that leaves no theme colour and the same look). `test_recalc_scan.py` (3). Full suite: 290 passed.
 
 ## 1.7.4
 

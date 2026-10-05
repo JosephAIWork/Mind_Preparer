@@ -1,6 +1,6 @@
 # Fix all automatically — the four use cases
 
-Run of 2026-10-05 (evening), app version 1.8.0, app code of commit `eecb47e`, branch `auto-fix-loop`.
+Run of 2026-10-05 (evening and night), app version 1.8.0, app code of commit `36929c3`, branch `auto-fix-loop`.
 The four workbooks are the client models in
 `Tel Aviv Office - 060 R&D\70 GenAI Exploration\60 Mind Excel Prep\2026 09 - Models for testing`
 (RAROK left out, as asked). The originals were never touched: every run works on copies.
@@ -8,12 +8,12 @@ Nothing was uploaded to Mind: "clean" here is Excel's own full recalculation.
 
 ## The result
 
-| Workbook | Size | Formula cells compared | Prep changes | Did Prep change a computed value? | Error cells after Prep | After "Fix all automatically" | Good values changed | The fix took | App's verdict |
+| Workbook | Size | Formula cells compared | Prep changes | Did Prep change a computed value? | Error cells after Prep | After "Fix all automatically" | Good values changed | The fix step took (busy machine) | App's verdict |
 |---|---|---|---|---|---|---|---|---|---|
-| **Horizon** | 1.6 MB | 22,120 | 176 | no | 719 | **clean** (confirmed by a separate recalculation) | 0 | 3 min 51 s | ready |
-| **Palermo** | 28.0 MB | 56,647 | 241 | no | 511 | **clean** (confirmed by a separate recalculation) | 0 | 33 min 05 s | blocked |
+| **Horizon** | 1.6 MB | 22,120 | 176 | no | 719 | **clean** (confirmed by a separate recalculation) | 0 | 13 min 54 s | ready |
+| **Palermo** | 28.0 MB | 56,647 | 241 | no | 511 | **clean** (confirmed by a separate recalculation) | 0 | 17 min 05 s | blocked |
 | **CNHI** | 37.5 MB | 577,707 | 3,449 | no | 0 | **clean** (nothing to fix) | - | - | ready |
-| **PVFP** | 3.8 MB | 152,324 | 545 | no | 65,883 | **887 left**, listed for a person | 0 | 27 min 07 s | blocked |
+| **PVFP** | 3.8 MB | 152,324 | 545 | no | 65,883 | **887 left**, listed for a person | 0 | 29 min 40 s | blocked |
 
 The fixer counts 721 on Horizon: the 719 formula errors and 2 cells where an error value had been typed in as data.
 
@@ -61,7 +61,7 @@ re-analysis of the fixed version.
   an error, on inputs that are zero until the real inputs are back.
 - **PVFP cannot be made clean under rule 2, and that is the right answer.** The model *hides* some
   errors on purpose: `=IFERROR(K24/K12,"No GEP")` shows "No GEP" because K24 is an error. Give K24 a 0
-  and that cell shows 0.5: a value that was fine has changed. The fixer undoes such a fix (20,369 fixes
+  and that cell shows 0.5: a value that was fine has changed. The fixer undoes such a fix (20,397 fixes
   were undone on this model), tries empty text, and when that fails too it leaves the error — with the
   chain of error cells that leads to the hiding formula — and cleans everything else.
 - **A real repair where one exists.** On Horizon `=+BE36/BF36` became `=IF(BF36=0,0,BE36/BF36)`; on PVFP
@@ -74,6 +74,9 @@ re-analysis of the fixed version.
   refuses those inserts and says why. In this run Prep changed no computed value on any of the four
   (808,798 formula cells compared in all). **A PVFP file prepared with an earlier version of the app should be
   prepared again from the original.**
+- **The first Recalculate no longer takes 25 minutes on PVFP.** The recalculation asked Excel about every
+  error cell, one at a time: 65,883 cells, twice (the original is recalculated as the baseline). It now
+  reads them in one go: 55 seconds for the same errors.
 - **Prep's colour step no longer takes hours.** "Replace theme colours with explicit RGB" went through
   the cells one by one in Excel and came back at every Prep round: 46 minutes a round on PVFP, more than
   an hour for one sheet of CNHI. It is now done in the workbook's style table, in under ten seconds, once.
@@ -96,18 +99,18 @@ Formula errors are one of the things the verdict looks at. What is left is by ha
 
 ### Horizon
 
-1.6 MB · result: **clean** -- every formula recalculates without an error · total time 22 min 51 s · versions: v1 → v2 → v3 → v4 → v5
+1.6 MB · result: **clean** -- every formula recalculates without an error · total time 30 min 33 s · versions: v1 → v2 → v3 → v4 → v5
 
 | Step | Time | What happened |
 |---|---|---|
-| upload+analyze | 3 min 54 s | unpacks to 10.0 MB; every sheet scanned; verdict *blocked*, 1 blocking |
-| prep round 1 | 5 min 07 s | 169 change(s) applied (fix_broken_refs 9, fix_broken_refs_whole 26, create_grid_titles 120, hide_marker 2, explicit_colors 12); verdict *unverified* |
-| prep round 2 | 4 min 02 s | 6 change(s) applied (separate_merged_grids 3, create_grid_titles 3); verdict *unverified* |
-| prep round 3 | 3 min 15 s | 1 change(s) applied (create_grid_titles 1); verdict *unverified* |
-| numbers check (original vs prepared) | 34 s | The preparation changed no computed value (22,120 formula cells compared with the original). (719 cells are errors before and after; followed through 9 inserted row(s), 2 renamed sheet(s)) |
-| recalculate | 1 min 38 s | 719 formula error cell(s): #N/A 54, #DIV/0! 44, #VALUE! 621 |
-| auto-fix | 3 min 51 s | errors 721 → 0 in 2 pass(es); 704 cell(s) rewritten; 0 fix(es) undone by the numbers gate (time includes the comparison with the original and the re-analysis of the fixed version) |
-| recalculate (confirmation) | 28 s | independent recalculation: 0 formula error cell(s) -- PASS |
+| upload+analyze | 2 min 34 s | unpacks to 10.0 MB; every sheet scanned; verdict *blocked*, 1 blocking |
+| prep round 1 | 4 min 00 s | 169 change(s) applied (fix_broken_refs 9, fix_broken_refs_whole 26, create_grid_titles 120, hide_marker 2, explicit_colors 12); verdict *unverified* |
+| prep round 2 | 3 min 28 s | 6 change(s) applied (separate_merged_grids 3, create_grid_titles 3); verdict *unverified* |
+| prep round 3 | 3 min 39 s | 1 change(s) applied (create_grid_titles 1); verdict *unverified* |
+| numbers check (original vs prepared) | 45 s | The preparation changed no computed value (22,120 formula cells compared with the original). (719 cells are errors before and after; followed through 9 inserted row(s), 2 renamed sheet(s)) |
+| recalculate | 1 min 37 s | 719 formula error cell(s): #N/A 54, #DIV/0! 44, #VALUE! 621 |
+| auto-fix | 13 min 54 s | errors 721 → 0 in 2 pass(es); 704 cell(s) rewritten; 0 fix(es) undone by the numbers gate (time includes the comparison with the original and the re-analysis of the fixed version) |
+| recalculate (confirmation) | 37 s | independent recalculation: 0 formula error cell(s) -- PASS |
 
 **The app's verdict at the end:** Acceptable by Mind: no blocking problem and a clean Excel recalculation (13 optional remark(s))
 
@@ -115,27 +118,27 @@ Formula errors are one of the things the verdict looks at. What is left is by ha
 
 | Cells | Where | Error | Reason | Before → after |
 |---|---|---|---|---|
-| 621 | `CALCUL!C192:C812` | #VALUE! | text where a number is expected: the formula is kept and returns 0 when it fails (This is a running numeric balance; a blank input should be treated as zero so the sum still works.) | `=C191+F192-F191` → `=IFERROR(C191+F192-F191,0)` |
-| 23 | `CALCUL!BI35:BI57` | #DIV/0! | a division by zero: the formula is rewritten so that the error cannot occur, in every cell of its block; the 1 cell(s) of the block that already worked each still return(s) exactly what it did (Dividing two empty amounts should just give zero instead of an error.) | `=+BE36/BF36` → `=IF(BF36=0,0,BE36/BF36)` |
-| 23 | `CALCUL!BJ35:BJ57` | #DIV/0! | a division by zero: the formula is rewritten so that the error cannot occur, in every cell of its block; the 1 cell(s) of the block that already worked each still return(s) exactly what it did (Dividing two empty amounts should just give zero instead of an error.) | `=+BG36/BH36` → `=IF(BH36=0,0,BG36/BH36)` |
-| 23 | `C20 &&Hide!B8:C8` | #N/A | a value that is not available (a lookup that finds nothing): the formula could never compute again (its reference was deleted): it now reads "not available, shown as 0" (This is a numeric placeholder meant to be zero when no data exists.) | `=+NA()` → `=IFERROR(NA(),0)` |
-| 4 | `C20 &&Hide!B9:C9` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a numeric placeholder meant to be zero when no data exists.) | `=+SUM(NA())` → `=IFERROR(+SUM(NA()),0)` |
-| 3 | `C20 &&Hide!I39` | #N/A | a value that is not available (a lookup that finds nothing): the formula could never compute again (its reference was deleted): it now reads "not available, shown as 0" (This counts garanties, so a missing count should be treated as zero.) | `=NA()` → `=IFERROR(NA(),0)` |
-| 2 | `OUTPUT!S3:T3` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a total amount, so a missing part should contribute zero.) | `=NA()-Q3` → `=IFERROR(NA()-Q3,0)` |
+| 621 | `CALCUL!C192:C812` | #VALUE! | text where a number is expected: the formula is kept and returns 0 when it fails (An empty cell used in subtraction causes a text error, and the missing amount should be treated as zero.) | `=C191+F192-F191` → `=IFERROR(C191+F192-F191,0)` |
+| 23 | `CALCUL!BI35:BI57` | #DIV/0! | a division by zero: the formula is rewritten so that the error cannot occur, in every cell of its block; the 1 cell(s) of the block that already worked each still return(s) exactly what it did (Dividing two empty cells gives an error, and a missing ratio should just count as zero.) | `=+BE36/BF36` → `=IF(BF36=0,0,BE36/BF36)` |
+| 23 | `CALCUL!BJ35:BJ57` | #DIV/0! | a division by zero: the formula is rewritten so that the error cannot occur, in every cell of its block; the 1 cell(s) of the block that already worked each still return(s) exactly what it did (Dividing two empty cells gives an error, and a missing ratio should just count as zero.) | `=+BG36/BH36` → `=IF(BH36=0,0,BG36/BH36)` |
+| 23 | `C20 &&Hide!B8:C8` | #N/A | a value that is not available (a lookup that finds nothing): the formula could never compute again (its reference was deleted): it now reads "not available, shown as 0" (This is a numeric placeholder meant to sum with others, so a missing value should count as zero.) | `=+NA()` → `=IFERROR(NA(),0)` |
+| 4 | `C20 &&Hide!B9:C9` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a numeric placeholder that other cells sum, so a missing value should weigh nothing.) | `=+SUM(NA())` → `=IFERROR(+SUM(NA()),0)` |
+| 3 | `C20 &&Hide!I39` | #N/A | a value that is not available (a lookup that finds nothing): the formula could never compute again (its reference was deleted): it now reads "not available, shown as 0" (This is a count of guarantees, so a missing value should be treated as zero.) | `=NA()` → `=IFERROR(NA(),0)` |
+| 2 | `OUTPUT!S3:T3` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a total amount calculation, so a missing value should contribute zero.) | `=NA()-Q3` → `=IFERROR(NA()-Q3,0)` |
 | 2 | `OUTPUT!I1` | #VALUE! | text where a number is expected: the cell held an error value typed or pasted as data: cleared | `#VALUE!` → `` |
 
 ### Palermo
 
-28.0 MB · result: **clean** -- every formula recalculates without an error · total time 85 min 47 s · versions: v1 → v2 → v3
+28.0 MB · result: **clean** -- every formula recalculates without an error · total time 59 min 00 s · versions: v1 → v2 → v3
 
 | Step | Time | What happened |
 |---|---|---|
-| upload+analyze | 15 min 48 s | unpacks to 188.7 MB; left out of the scan: Data; verdict *blocked*, 2 blocking |
-| prep round 1 | 18 min 01 s | 241 change(s) applied (create_grid_titles 214, hide_marker 1, explicit_colors 26); verdict *blocked* |
-| recalculate | 10 min 10 s | 511 formula error cell(s): #N/A 507, #VALUE! 4 |
+| upload+analyze | 11 min 26 s | unpacks to 188.7 MB; left out of the scan: Data; verdict *blocked*, 2 blocking |
+| prep round 1 | 15 min 58 s | 241 change(s) applied (create_grid_titles 214, hide_marker 1, explicit_colors 26); verdict *blocked* |
+| recalculate | 11 min 11 s | 511 formula error cell(s): #N/A 507, #VALUE! 4 |
 | numbers check (by the fixer: original vs prepared) | inside the fix | The preparation changed no computed value (56,647 formula cells compared with the original). (511 cells are errors before and after; followed through 2 inserted row(s), 1 renamed sheet(s)) |
-| auto-fix | 33 min 05 s | errors 511 → 0 in 1 pass(es); 507 cell(s) rewritten; 0 fix(es) undone by the numbers gate (time includes the comparison with the original and the re-analysis of the fixed version) |
-| recalculate (confirmation) | 8 min 41 s | independent recalculation: 0 formula error cell(s) -- PASS |
+| auto-fix | 17 min 05 s | errors 511 → 0 in 1 pass(es); 507 cell(s) rewritten; 0 fix(es) undone by the numbers gate (time includes the comparison with the original and the re-analysis of the fixed version) |
+| recalculate (confirmation) | 3 min 20 s | independent recalculation: 0 formula error cell(s) -- PASS |
 
 **The app's verdict at the end:** Not acceptable by Mind yet: 2 blocking problem(s) (14 optional remark(s))
 
@@ -146,36 +149,36 @@ Formula errors are one of the things the verdict looks at. What is left is by ha
 
 | Cells | Where | Error | Reason | Before → after |
 |---|---|---|---|---|
-| 502 | `Decrements!M1004:M1505` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a mortality/decrement rate lookup that fails when the age isn't found in the table, so treating the missing rate as zero avoids distorting the calculation.) | `=1-(1-VLOOKUP(L1004,Decrements!$B$7:$D$125,IF(Policyholder_sex="M", 2,` → `=IFERROR(1-(1-VLOOKUP(L1004,Decrements!$B$7:$D$125,IF(Policyholder_sex="M", 2, 3` |
-| 2 | `Non-economic assumptions!C58:D58` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This looks up a fund charge percentage and should be zero when the tariff isn't found, since a missing rate shouldn't be treated as a real charge.) | `=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(C55,Assumption_headings` → `=IFERROR(VLOOKUP(Policy_tariff,Assumptions_array,MATCH(C55,Assumption_headings,0` |
-| 2 | `Non-economic assumptions!F58:G58` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This looks up a duration figure in months and should be zero when the tariff isn't found, since a missing value shouldn't be counted as a real duration.) | `=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(F57,Assumption_headings` → `=IFERROR(VLOOKUP(Policy_tariff,Assumptions_array,MATCH(F57,Assumption_headings,0` |
-| 1 | `Saved down!C3` | #VALUE! | text where a number is expected: the formula is kept and returns empty text when it fails (This builds a text label from the file name, and when the expected underscore pattern isn't present it can't construct the text, so leaving it blank is correct since this is a label not a number.) | `=C2&"Run_version "&MID(C5,FIND("@",SUBSTITUTE(C5,"_","@",LEN(C5)-LEN(S` → `=IFERROR(C2&"Run_version "&MID(C5,FIND("@",SUBSTITUTE(C5,"_","@",LEN(C5)-LEN(SUB` |
+| 502 | `Decrements!M1004:M1505` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a mortality/decrement rate and if the age isn't found in the table there's nothing to deduct, so zero is correct.) | `=1-(1-VLOOKUP(L1004,Decrements!$B$7:$D$125,IF(Policyholder_sex="M", 2,` → `=IFERROR(1-(1-VLOOKUP(L1004,Decrements!$B$7:$D$125,IF(Policyholder_sex="M", 2, 3` |
+| 2 | `Non-economic assumptions!C58:D58` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a charge percentage looked up by tariff, and if no match is found there is no charge to apply, so zero is right.) | `=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(C55,Assumption_headings` → `=IFERROR(VLOOKUP(Policy_tariff,Assumptions_array,MATCH(C55,Assumption_headings,0` |
+| 2 | `Non-economic assumptions!F58:G58` | #N/A | a value that is not available (a lookup that finds nothing): the formula is kept and returns 0 when it fails (This is a number of months the charge applies, and with no matching tariff found zero months is the safe neutral value.) | `=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(F57,Assumption_headings` → `=IFERROR(VLOOKUP(Policy_tariff,Assumptions_array,MATCH(F57,Assumption_headings,0` |
+| 1 | `Saved down!C3` | #VALUE! | text where a number is expected: the formula is kept and returns empty text when it fails (This builds a text label from the filename, and since the filename has no underscore to split on, leaving it blank is correct rather than showing a number.) | `=C2&"Run_version "&MID(C5,FIND("@",SUBSTITUTE(C5,"_","@",LEN(C5)-LEN(S` → `=IFERROR(C2&"Run_version "&MID(C5,FIND("@",SUBSTITUTE(C5,"_","@",LEN(C5)-LEN(SUB` |
 
 ### CNHI
 
-37.5 MB · result: **clean** -- every formula recalculates without an error · total time 78 min 06 s · versions: v1 → v2
+37.5 MB · result: **clean** -- every formula recalculates without an error · total time 83 min 39 s · versions: v1 → v2
 
 | Step | Time | What happened |
 |---|---|---|
-| upload+analyze | 23 min 50 s | unpacks to 364.2 MB; left out of the scan: Output; verdict *blocked*, 1 blocking |
-| prep round 1 | 33 min 36 s | 3,449 change(s) applied (freeze_spill_refs 38, create_grid_titles 3376, explicit_colors 35); verdict *unverified* |
-| recalculate | 5 min 39 s | 0 formula error cell(s) |
-| numbers check (original vs prepared) | 14 min 52 s | The preparation changed no computed value (577,707 formula cells compared with the original). (0 cells are errors before and after; followed through 23 inserted row(s), 0 renamed sheet(s)) |
+| upload+analyze | 51 min 05 s | unpacks to 364.2 MB; left out of the scan: Output; verdict *blocked*, 1 blocking |
+| prep round 1 | 25 min 48 s | 3,449 change(s) applied (freeze_spill_refs 38, create_grid_titles 3376, explicit_colors 35); verdict *unverified* |
+| recalculate | 3 min 07 s | 0 formula error cell(s) |
+| numbers check (original vs prepared) | 3 min 38 s | The preparation changed no computed value (577,707 formula cells compared with the original). (0 cells are errors before and after; followed through 23 inserted row(s), 0 renamed sheet(s)) |
 
 **The app's verdict at the end:** Acceptable by Mind: no blocking problem and a clean Excel recalculation (14 optional remark(s))
 
 ### PVFP
 
-3.8 MB · result: **887 error cell(s) left** · total time 84 min 59 s · versions: v1 → v2 → v3
+3.8 MB · result: **887 error cell(s) left** · total time 62 min 37 s · versions: v1 → v2 → v3
 
 | Step | Time | What happened |
 |---|---|---|
-| upload+analyze | 12 min 40 s | unpacks to 33.2 MB; every sheet scanned; verdict *blocked*, 2 blocking |
-| prep round 1 | 11 min 23 s | 545 change(s) applied (create_grid_titles 533, hide_marker 1, explicit_colors 11); verdict *blocked* |
-| recalculate | 28 min 10 s | 65,883 formula error cell(s): #REF! 65,820, #N/A 58, #VALUE! 5 |
+| upload+analyze | 14 min 39 s | unpacks to 33.2 MB; every sheet scanned; verdict *blocked*, 2 blocking |
+| prep round 1 | 11 min 51 s | 545 change(s) applied (create_grid_titles 533, hide_marker 1, explicit_colors 11); verdict *blocked* |
+| recalculate | 3 min 56 s | 65,883 formula error cell(s): #REF! 65,820, #N/A 58, #VALUE! 5 |
 | numbers check (by the fixer: original vs prepared) | inside the fix | The preparation changed no computed value (152,324 formula cells compared with the original). (65,883 cells are errors before and after; followed through 8 inserted row(s), 1 renamed sheet(s)) |
-| auto-fix | 27 min 07 s | errors 65,883 → 887 in 21 pass(es); 32,098 cell(s) rewritten; 20,369 fix(es) undone by the numbers gate (time includes the comparison with the original and the re-analysis of the fixed version) |
-| recalculate (confirmation) | 5 min 38 s | independent recalculation: 887 formula error cell(s) -- ERROR |
+| auto-fix | 29 min 40 s | errors 65,883 → 887 in 21 pass(es); 31,911 cell(s) rewritten; 20,397 fix(es) undone by the numbers gate (time includes the comparison with the original and the re-analysis of the fixed version) |
+| recalculate (confirmation) | 2 min 32 s | independent recalculation: 887 formula error cell(s) -- ERROR |
 
 **The app's verdict at the end:** Not acceptable by Mind yet: 2 blocking problem(s) (15 optional remark(s))
 
@@ -186,14 +189,14 @@ Formula errors are one of the things the verdict looks at. What is left is by ha
 
 | Cells | Where | Error | Reason | Before → after |
 |---|---|---|---|---|
-| 3,522 | `Inputs_PVFP!DA711:DL711` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This looks up values in another LoB's sheet and should contribute nothing if the reference can't be resolved.) | `=IF(INDIRECT("'"&$G711&"'!$Z$16")=0,0,66%*$Z988*INDIRECT("'"&$G711&"'!` → `=IFERROR(IF(INDIRECT("'"&$G711&"'!$Z$16")=0,0,66%*$Z988*INDIRECT("'"&$G711&"'!$Z` |
-| 3,143 | `Inputs_PVFP!AB152:CJ154` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing number should count as zero in totals.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
-| 2,960 | `Inputs_PVFP!I549:CJ585` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (The external workbook link is broken; treating this missing rate as zero avoids skewing calculations.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
-| 2,000 | `Inputs_PVFP!I766:BF805` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (The source link to the external file is missing, so zero is the safe value for this amount.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
-| 2,000 | `Inputs_PVFP!I823:BF862` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (Broken external reference; zero keeps this quantity from distorting sums.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
-| 2,000 | `Inputs_PVFP!I878:BF917` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (The link to the external workbook is broken, so treat this as zero in calculations.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
-| 2,000 | `Inputs_PVFP!I1208:BF1247` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This figure comes from a missing external link; zero avoids affecting totals wrongly.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
-| 1,850 | `Inputs_PVFP!I936:BF972` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (The commission rate link is broken; zero is the neutral value for a rate that is multiplied elsewhere.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 3,522 | `Inputs_PVFP!DA711:DL711` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This computes an amount from another sheet's reference; if the lookup breaks, treat the contribution as zero.) | `=IF(INDIRECT("'"&$G711&"'!$Z$16")=0,0,66%*$Z988*INDIRECT("'"&$G711&"'!` → `=IFERROR(IF(INDIRECT("'"&$G711&"'!$Z$16")=0,0,66%*$Z988*INDIRECT("'"&$G711&"'!$Z` |
+| 3,143 | `Inputs_PVFP!AB152:CJ154` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing number should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 2,960 | `Inputs_PVFP!I549:CJ585` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing loss ratio should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 2,000 | `Inputs_PVFP!I766:BF805` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing amount should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 2,000 | `Inputs_PVFP!I823:BF862` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing amount should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 2,000 | `Inputs_PVFP!I878:BF917` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing amount should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 2,000 | `Inputs_PVFP!I1208:BF1247` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing amount should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
+| 1,850 | `Inputs_PVFP!I936:BF972` | #REF! | a reference that no longer exists: the formula is kept and returns 0 when it fails (This links to an external file reference that is broken, so a missing commission rate should count as zero.) | `='C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs` → `=IFERROR('C:\Users\<user>\Documents\03. Projets\Software\Mind\[PVFP Inputs_v` |
 
 **Left for a person** (887 cell(s) in 126 kinds; the largest):
 
@@ -213,15 +216,15 @@ Formula errors are one of the things the verdict looks at. What is left is by ha
 ## PVFP with the rule lifted
 
 The button "Fix them too, and list every value that changes" (`keep_good_values: false`), run through
-the app on PVFP after three Prep rounds (commit `5f1dafa`: the fixer's code is the same as in `eecb47e`,
-only Prep's colour step differs):
+the app on PVFP after three Prep rounds (commit `5f1dafa`, earlier the same evening: the fixer's code has
+not changed since):
 
 | | With the rule (the default) | Rule lifted |
 |---|---|---|
 | Error cells | 65,883 → 887 | 65,883 → **0** |
 | Passes | 21 | 2 |
-| Cells rewritten | 32,098 | 23,820 |
-| Fixes undone because a good value moved | 20,369 | - |
+| Cells rewritten | 31,911 | 23,820 |
+| Fixes undone because a good value moved | 20,397 | - |
 | Values that were good before and changed | **0** | 421 |
 | The app's Recalculate afterwards | 887 formula error cells | no formula error |
 
@@ -236,16 +239,34 @@ mostly a "No GEP" / 0 / FALSE that was only there because an input was an error.
 
 ## Other runs of the same evening
 
-- **Palermo, three Prep rounds** (commit `5f1dafa`, before the colour fix): 345 Prep changes, no computed
-  value changed (56,647 formula cells), 511 errors → 0 in one pass, confirmation PASS. Same result as
-  above with one round.
+Every one of them gave the same outcome as the table at the top.
+
+- **The round before** (commit `eecb47e`: the same code without the faster recalculation): Horizon 721 → 0,
+  Palermo 511 → 0, CNHI nothing to fix, PVFP 65,883 → 887.
+- **Three Prep rounds on the large models** (commit `5f1dafa`, before the colour fix — which is why they
+  took between one and six hours):
+  - Palermo: 345 Prep changes, no computed value changed (56,647 formula cells), 511 → 0, confirmation PASS.
+  - PVFP: 609 Prep changes, no computed value changed (152,324), 65,883 → 887, confirmation 887.
+  - CNHI: 6,733 Prep changes (3,449, then 1,742, then 1,542), no computed value changed (577,707), no
+    formula error, "Acceptable by Mind". Prep keeps proposing grid titles on this model round after
+    round; they are optional — the verdict is already "Acceptable by Mind" after the first round.
+- **Horizon a second time on the final code**: 721 → 0 again, but 1,637 cells rewritten instead of 704.
+  The assistant proposed a repair for the 621-row running balance this time (see the note below).
 - **The fixer alone on the original files** (no Prep; `python -m app.autofix`): Horizon 721 → 0 in 37 s,
   Palermo 511 → 0 in about a minute, PVFP 65,883 → 887 in 3 min 18 s (rule lifted: 0 in 29 s, 421
   values changed), CNHI nothing to fix.
-- **The screens**, on the final code: `scripts/ui_autofix_check.py` clicks through the real pages on
-  Horizon (upload, Findings, Recalculate, "Fix all 719 errors automatically", the result card): 721 → 0,
-  "No value that was good before has changed", saved as v2, and the green banner
+- **The screens**, on the final code: `scripts/ui_autofix_check.py` clicks through the real
+  pages on Horizon (upload, Findings, Recalculate, "Fix all 719 errors automatically", the result card):
+  721 → 0 in 1 min 38 s, "No value that was good before has changed", saved as v2, and the green banner
   "Acceptable by Mind — verified".
+
+**The assistant's choice can differ from one run to the next.** Horizon's running balance
+`=C191+F192-F191` fails on 621 rows because column F holds text there. In most runs it became
+`=IFERROR(C191+F192-F191,0)`: on those rows the balance restarts at 0. In one run the assistant proposed
+`=C191+N(F192)-N(F191)` instead, for the whole block of 777 cells: the balance carries on, and the 156
+cells that already worked return exactly what they did. Both pass the same checks — no good value
+changes — but they are not the same model. Which one is right is a person's call; the formula before and
+after and the reason are listed for every kind of fix so that this call takes a minute, not an afternoon.
 
 ## How to run it again
 

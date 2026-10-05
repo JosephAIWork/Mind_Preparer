@@ -56,6 +56,11 @@ the two honest cases below.
   large model and come back at every Prep round; it now takes under ten
   seconds for the whole workbook, once, with the exact RGB Excel shows.
 
+- **Recalculate on a model full of errors** (1.8.0): the recalculation no
+  longer asks Excel about each error cell (three calls a cell, twice). The
+  first Recalculate of a model with 65,883 error cells took about 25 minutes;
+  it takes a few minutes now.
+
 - **One verdict** (1.7.2): every analysis, apply and recalculation answers
   *is this version acceptable by Mind?* -- `blocked` (a REQUIRED rule fails),
   `unverified` (nothing blocks, no clean Excel recalculation of this version
