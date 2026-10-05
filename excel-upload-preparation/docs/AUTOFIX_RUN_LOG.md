@@ -70,8 +70,40 @@ Stops when no error is left, or nothing more can be fixed safely.
   the harness now starts a server per workbook and leaves a sheet that is >= 50 % of an oversized file out of the
   *scan* (Palermo `Data`, CNHI `Output`), as the upload screen offers.
 
+- 17:20-17:30 engine on the other originals: **Palermo 511 -> 0 in one pass (56 s)**; PVFP with the rule
+  lifted (`keep_good_values: false`): clean in 29 s, 421 hidden values changed and listed.
+  UI click-through with Playwright on Horizon (`scripts/ui_autofix_check.py`): 721 -> 0, verdict green.
+  It showed a race (Recalculate still running when the fixer was started -> verdict "not verified" on a
+  clean version): Recalculate / Apply are now refused while the fixer runs, and the reverse.
+- 17:30-18:00 **Prep changes numbers on PVFP.** `scripts/compare_versions.py` on the baseline's Prep output:
+  2,462 computed values changed (1,781 into errors). Cause: title rows inserted on sheets read by position
+  (3-D reference `'LoB 1:>>'!K65`; INDIRECT addresses built as text). Built: `app/numbers_check.py` +
+  `POST /numbers-check` + "Check the numbers" on the Prep screen; `prep.insert_blocker` (no row insert on a
+  sheet inside a 3-D range or named by an INDIRECT); the fixer compares with the original first and never
+  gives a fallback to an error that was a value in the original.
+  With the guards: PVFP after two Prep rounds (22 row inserts, 17 held back) -> **no computed value changed**.
+  Horizon and Palermo (old Prep): no computed value changed either (Palermo's one difference was the
+  workbook's own folder in a `CELL("filename")` cell -- now ignored).
+- 18:10-18:25 `explicit_colors` by blocks (was ~10 COM calls a cell: 37 min on PVFP, >35 min on CNHI);
+  dead formulas become `=IFERROR(NA(),0)` instead of a bare value (SKILL.md rule 6); version 1.8.0,
+  CHANGELOG, README. Full unit suite under heavy load: 267 passed, 7 Excel-recalculation tests failed
+  and passed when re-run alone (Excel COM under load) -- to be run again when the machine is quiet.
+- 18:29 **full run 2** started on commit 128f9c3: `scripts/run_usecases.py --ports 8602,8603`
+  (cnhi, palermo, pvfp, horizon) -> `%LOCALAPPDATA%\MindReadyutofixunsull_2`.
+
+## Results so far (engine alone, on the original files, the owner's two rules)
+
+| Use case | Errors | After | Passes | Time | Left for a person |
+|---|---|---|---|---|---|
+| Horizon | 721 | 0 | 2 | 37 s | - |
+| Palermo | 511 | 0 | 1 | 56 s | - |
+| CNHI | 0 | 0 | - | - | nothing to fix |
+| PVFP | 65,883 | 887 | 21 | 3 min 18 s | 887 cells that feed 8 formulas hiding errors on purpose (`=IFERROR(K24/K12,"No GEP")`...) |
+| PVFP, rule 2 lifted | 65,883 | 0 | 2 | 29 s | 421 hidden values changed, listed |
+
 ## Next step
 
-1. Engine on Palermo original and on the Prep outputs (`runs/prep_baseline/*`), then the UI click-through.
-2. Full runs of the 4 use cases with `scripts/run_usecases.py --ports 8602,8603` on the latest code.
-3. CHANGELOG / README / VERSION 1.8.0, final runs, restart port 8600.
+1. Wait for full run 2 (`runs/full_2/run.log`, `summary.json`); `python scripts/usecase_report.py <run dir>`
+   -> `docs/AUTOFIX_USE_CASES.md`.
+2. Re-run the full unit suite with nothing else running.
+3. Copy the final workbooks + reports to `excel-upload-preparation/runs/`, restart port 8600, final commit.
