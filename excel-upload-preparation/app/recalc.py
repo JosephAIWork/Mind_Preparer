@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place
-from .formula_utils import called_functions, mask_strings
+from .formula_utils import called_functions, mask_strings, ref_text
 
 # Excel COM's Range.Value returns error cells as these negative integer xlErr*
 # constants, never as the display string -- confirmed empirically (Range.Text
@@ -70,6 +70,47 @@ def _not_run(status: str, message: str) -> dict[str, Any]:
     return {"status": status, "message": message, "formula_errors": [], "addin_gap_errors": [], "ran": False, "mmforexcel_loaded": False}
 
 
+def _array_formulas(sheet: Any, used_range: Any, cells: list[tuple[int, int, str, str]]) -> dict[tuple[int, int], str]:
+    """(row, column) -> the address of the array formula that error cell is part of.
+
+    `Range.HasArray` answers for a whole range at once: False when no cell of
+    it belongs to an array formula, True when all do, Null when some do. So a
+    sheet without array formulas costs one question, and on a sheet that has
+    some only the rows that hold one are looked at cell by cell."""
+    try:
+        anywhere = used_range.HasArray
+    except Exception:
+        anywhere = None
+    if anywhere is False:
+        return {}
+    by_row: dict[int, list[int]] = {}
+    for row_no, col_no, _error, _formula in cells:
+        by_row.setdefault(row_no, []).append(col_no)
+    out: dict[tuple[int, int], str] = {}
+    for row_no, cols in by_row.items():
+        span = sheet.Range(sheet.Cells(row_no, min(cols)), sheet.Cells(row_no, max(cols)))
+        try:
+            in_row = span.HasArray
+        except Exception:
+            in_row = None
+        finally:
+            span = None
+        if in_row is False:
+            continue
+        for col_no in cols:
+            cell = sheet.Cells(row_no, col_no)
+            try:
+                if cell.HasArray:
+                    arr = cell.CurrentArray
+                    # Dynamic COM dispatch (no gencache) resolves .Address as a no-arg
+                    # property, not a callable -- strip the '$' ourselves.
+                    out[(row_no, col_no)] = str(arr.Address).replace("$", "")
+                    arr = None
+            finally:
+                cell = None
+    return out
+
+
 def _scan(excel, copy_path: Path) -> dict[str, Any]:
     """Open, fully rebuild, save, and scan every used range for error values.
     Every COM proxy lives inside this function so it is released before the
@@ -96,6 +137,11 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
             top_row = used_range.Row
             top_col = used_range.Column
             sheet_name = sheet.Name
+            # 1.8.0: the error cells come out of the two arrays just read, and their
+            # addresses are arithmetic. Asking Excel about each one (Cells, Address,
+            # HasArray: three round trips a cell) took ten minutes for a model with
+            # 65,883 error cells -- twice, since the original is recalculated too.
+            found: list[tuple[int, int, str, str]] = []
             for r_idx, row in enumerate(values):
                 for c_idx, val in enumerate(row):
                     error_text = XL_ERROR_CODES.get(val) if isinstance(val, int) else None
@@ -103,25 +149,18 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
                         continue
                     formula_text = formulas[r_idx][c_idx]
                     if isinstance(formula_text, str) and formula_text.startswith("="):
-                        cell = sheet.Cells(top_row + r_idx, top_col + c_idx)
-                        # Dynamic COM dispatch (no gencache) resolves .Address as a
-                        # no-arg property, not a callable -- strip the '$' ourselves
-                        # instead of calling Address(False, False).
-                        address = cell.Address.replace("$", "")
-                        array_addr = None
-                        if cell.HasArray:
-                            arr = cell.CurrentArray
-                            array_addr = str(arr.Address).replace("$", "")
-                            arr = None
-                        cell = None
-                        entry = {"sheet": sheet_name, "cell": address, "error": error_text, "formula": formula_text}
-                        if array_addr and ":" in array_addr:
-                            entry["array"] = array_addr  # multi-cell array formula: can only be changed as a whole
-                        is_mm_call = "MM_" in formula_text.upper()
-                        if error_text == "#NAME?" and is_mm_call and not mmforexcel_loaded:
-                            addin_gap_errors.append(entry)
-                        else:
-                            formula_errors.append(entry)
+                        found.append((top_row + r_idx, top_col + c_idx, error_text, formula_text))
+            arrays = _array_formulas(sheet, used_range, found) if found else {}
+            for row_no, col_no, error_text, formula_text in found:
+                entry = {"sheet": sheet_name, "cell": ref_text(col_no, row_no), "error": error_text, "formula": formula_text}
+                array_addr = arrays.get((row_no, col_no))
+                if array_addr and ":" in array_addr:
+                    entry["array"] = array_addr  # multi-cell array formula: can only be changed as a whole
+                is_mm_call = "MM_" in formula_text.upper()
+                if error_text == "#NAME?" and is_mm_call and not mmforexcel_loaded:
+                    addin_gap_errors.append(entry)
+                else:
+                    formula_errors.append(entry)
             used_range = None
             sheet = None
     finally:
