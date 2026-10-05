@@ -51,6 +51,9 @@ export default function ApplyProgress({ status, total, startedAt, compact = fals
   const index = Math.max(0, steps.findIndex((s) => s.id === current));
   const count = a?.total ?? total;
   const done = a ? Math.min(a.done, count) : 0;
+  // 1.7.4: every step after "Write changes" has all of them in the file
+  const writeIndex = steps.findIndex((s) => s.id === "apply_write");
+  const implemented = index > writeIndex || (finishing && a != null) ? count : a?.stage === "apply_write" ? done : 0;
 
   let title = "Sending the changes";
   let detail = `${count} change${count !== 1 ? "s" : ""} to apply`;
@@ -87,6 +90,9 @@ export default function ApplyProgress({ status, total, startedAt, compact = fals
           </span>
         )}
         <span className="ml-auto text-[11px] font-mono text-[#6B7280]">{clock(elapsed)}</span>
+      </div>
+      <div className="mt-0.5 text-[11px] text-[#1F3A5F]">
+        Change <span className="font-mono font-semibold">{implemented.toLocaleString()}</span> of <span className="font-mono font-semibold">{count.toLocaleString()}</span> implemented
       </div>
       <div className="mt-1.5 h-2 w-full bg-[#E5E7EB] rounded-full overflow-hidden">
         {percent == null ? (

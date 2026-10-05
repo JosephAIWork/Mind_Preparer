@@ -361,6 +361,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   note?: boolean;
+  /** 1.7.4: a status line the panel adds itself (green: fixed, amber: partly) -- shown, never sent to the model */
+  tone?: "success" | "warning";
   provenance?: { context_chars: number; detail_chars: number; lookups: number };
 }
 
@@ -405,6 +407,8 @@ export interface RecalcResult {
   message: string;
   /** Version the recalculation ran on (set by the backend). */
   version_id?: string;
+  /** 1.7.4: a recalculation after Recalculate-step fixes (v2.1, v2.2) makes the next major version (v3). */
+  version?: Version;
   /** false when Excel could not run at all (COM failure / not available) -- then the error lists mean nothing. */
   ran?: boolean;
   formula_errors: RecalcCell[];
@@ -432,7 +436,10 @@ export interface Version {
   file_name: string;
   sha256: string;
   created_at: string;
-  source: "upload" | "prep" | "assistant" | "formula" | "convert" | "grid_namer";
+  source: "upload" | "prep" | "assistant" | "formula" | "convert" | "grid_namer" | "recalculate";
+  /** 1.7.4: v{major}.{minor}; minor 0 is shown as v{major} */
+  major?: number;
+  minor?: number;
   change_log: Operation[];
   verified_opens_in_excel: boolean | null;
 }

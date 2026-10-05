@@ -8,7 +8,7 @@ import type { PrepProgressEntry } from "../types";
  * a curve going down instead of a list that never seems to end.
  */
 function short(v: string): string {
-  return v.replace("ver-0", "v").replace("ver-", "v");
+  return v.replace(/^ver-0*(\d)/, "v$1");
 }
 
 function Trend({ now, before, goodWhenDown = true }: { now: number; before: number | null; goodWhenDown?: boolean }) {

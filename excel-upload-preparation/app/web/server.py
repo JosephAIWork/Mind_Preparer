@@ -152,13 +152,28 @@ def _register_file(s: Session, path: Path) -> str:
     return name
 
 
-def _add_version(s: Session, path: Path, source: str, label_body: str, change_log: list[dict[str, Any]], verified: bool | None, sha256: str) -> dict[str, Any]:
-    n = len(s.versions) + 1
-    vid = f"ver-{n:03d}"
+def _add_version(
+    s: Session, path: Path, source: str, label_body: str, change_log: list[dict[str, Any]], verified: bool | None, sha256: str, minor: bool = False
+) -> dict[str, Any]:
+    """1.7.4: versions are numbered major.minor. A fix made on the Recalculate
+    step (`minor`) is the next minor of the current major (v2 -> v2.1 -> v2.2);
+    everything else -- and a recalculation after such fixes -- starts the next
+    major (v3). Ids follow the number: ver-002, ver-002.1, ..."""
+    current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
+    if minor and current is not None:
+        major = current.get("major", 1)
+        n_minor = 1 + max((v.get("minor", 0) for v in s.versions if v.get("major") == major), default=0)
+    else:
+        major = 1 + max((v.get("major", 0) for v in s.versions), default=0)
+        n_minor = 0
+    number = f"{major}.{n_minor}" if n_minor else f"{major}"
+    vid = f"ver-{major:03d}" + (f".{n_minor}" if n_minor else "")
     download_name = _register_file(s, path)
     version = {
         "id": vid,
-        "label": f"v{n} — {label_body}",
+        "major": major,
+        "minor": n_minor,
+        "label": f"v{number} — {label_body}",
         "file_name": download_name,
         "sha256": sha256[:12],
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -655,7 +670,8 @@ def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any
     who = {"assistant": "Assistant", "formula": "Formula fix", "prep": "Prep"}[source]
     verified = res.get("verified_opens_in_excel")
     label = f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
-    version = _add_version(s, output, source, label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"])
+    minor = payload.get("versionStep") == "minor"  # 1.7.4: a fix on the Recalculate step
+    version = _add_version(s, output, source, label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"], minor=minor)
     out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version}
     reanalyzed = bool(payload.get("reanalyze", True)) and res["status"] in ("APPLIED", "PARTIAL")
     if reanalyzed:
@@ -996,6 +1012,14 @@ def recalc(session_id: str) -> dict[str, Any]:
     else:
         out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
         out["compared_with_original"] = original is not None
+    # 1.7.4: a recalculation after fixes (v2.1, v2.2, ...) closes the round: the
+    # same file becomes the next major version (v3), and the recalculation is its own
+    current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
+    if out["ran"] and current is not None and current.get("minor"):
+        short = current["label"].split(" — ")[0]
+        version = _add_version(s, s.current_path, "recalculate", f"recalculated {short}", [], current.get("verified_opens_in_excel"), current["sha256"])
+        out["version"] = version
+        out["version_id"] = version["id"]
     s.recalc = out
     s.recalc_version_id = s.current_version_id
     s.recalc_path = copy_path

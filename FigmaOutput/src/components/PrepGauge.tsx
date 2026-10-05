@@ -94,7 +94,7 @@ function WrittenBar({ label, written, refused, left, note }: { label: string; wr
 }
 
 function short(v: string): string {
-  return v.replace("ver-0", "v").replace("ver-", "v").replace(/^v0+(\d)/, "v$1");
+  return v.replace(/^ver-0*(\d)/, "v$1");
 }
 
 export default function PrepGauge({ readiness, progress }: { readiness: Readiness | null; progress: PrepProgress | null }) {

@@ -501,3 +501,24 @@ def test_the_gauge_counts_the_changes_every_apply_wrote(client, flagged_model_br
     assert progress["written"]["blocking_applied"] == len(first) and progress["written"]["optional_applied"] == len(second)
     # the same figures on demand
     assert client.get(f"/api/sessions/{sid}/readiness").json()["prep_progress"]["written"] == progress["written"]
+
+
+def test_recalculate_step_fixes_are_minor_versions_and_a_recalculation_closes_the_round(client, plain_grid_xlsx):
+    """1.7.4: v1 -> Prep v2 -> Recalculate-step fixes v2.1, v2.2 -> recalculate v3 -> fix v3.1."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+
+    def apply(value, step):
+        op = {"op": "set_value", "sheet": "Data", "cell": "Z99", "value": value, "after": value}
+        out = client.post(f"/api/sessions/{sid}/apply", json={"operations": [op], "reanalyze": False, "versionStep": step})
+        assert out.status_code == 200, out.text
+        return out.json()["version"]
+
+    v2 = apply("a", "major")
+    assert (v2["id"], v2["label"].split(" — ")[0]) == ("ver-002", "v2")
+    assert [apply(x, "minor")["label"].split(" — ")[0] for x in ("b", "c")] == ["v2.1", "v2.2"]
+    if not com_available():
+        pytest.skip("recalculation needs Excel")
+    rec = client.post(f"/api/sessions/{sid}/recalculate").json()
+    assert rec["version"]["id"] == "ver-003" and rec["version"]["label"] == "v3 — recalculated v2.2" and rec["version_id"] == "ver-003"
+    assert "version" not in client.post(f"/api/sessions/{sid}/recalculate").json()  # nothing to close: v3 stays v3
+    assert apply("d", "minor")["label"].startswith("v3.1 — ")

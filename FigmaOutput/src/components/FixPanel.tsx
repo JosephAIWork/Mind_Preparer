@@ -179,7 +179,7 @@ export default function FixPanel() {
   const [winLoading, setWinLoading] = useState(false);
   const [showFormulas, setShowFormulas] = useState(false);
   // a running Apply: the operations sent, when, and the backend's own account of it
-  const [applyRun, setApplyRun] = useState<{ total: number; startedAt: number } | null>(null);
+  const [applyRun, setApplyRun] = useState<{ total: number; startedAt: number; fromChat: boolean } | null>(null);
   const applyStatus = useScanStatus(sessionId, busy === "apply", 500);
 
   const isRecalc = target?.kind === "recalc";
@@ -265,13 +265,14 @@ export default function FixPanel() {
   const siblings = isRecalc ? target.cells ?? [] : [];
   const total = isGroup ? targetCells.length : siblings.length + 1;
 
-  async function applyOps(ops: Operation[], label: string) {
+  async function applyOps(ops: Operation[], label: string, fromChat = false) {
     if (!sessionId || ops.length === 0) return;
     setBusy("apply");
-    setApplyRun({ total: ops.length, startedAt: Date.now() });
+    setApplyRun({ total: ops.length, startedAt: Date.now(), fromChat });
     setError(null);
     try {
-      const out = await api.applyOperations(sessionId, ops, { reanalyze: true });
+      // 1.7.4: a fix on the Recalculate step is a minor version (v2.1, v2.2, ...)
+      const out = await api.applyOperations(sessionId, ops, { reanalyze: true, versionStep: isRecalcAny ? "minor" : "major" });
       addVersion(out.version);
       applyAnalysis({ summary: out.summary, report: out.report, plan: out.plan, delta: out.delta, readiness: out.readiness, prep_progress: out.prep_progress });
       setApplyReport(out.outcome ? { report: out.outcome, verified: out.result.verified_opens_in_excel } : null);
@@ -304,6 +305,20 @@ export default function FixPanel() {
         content: `Fix panel (${isGroup ? `${targetCells.length} cells · ${target?.cause ?? target?.error}` : isRecalc ? `${target?.error} at ${target?.sheet}!${target?.cell}` : target?.rule_id}): ${out.result.applied.length} change(s) applied via ${out.result.method === "excel_com" ? "Excel" : "openpyxl"}${failed.length ? `, ${failed.length} failed` : ""}, re-analyzed (${vlabel}).`,
         note: true,
       });
+      // 1.7.4: say in this panel's chat, in green, that the fix is in
+      const n = out.result.applied.length;
+      const sent = n + failed.length;
+      const status: ChatMessage =
+        n === 0
+          ? { role: "assistant", tone: "warning", content: `Not fixed: none of the ${sent} change${sent !== 1 ? "s" : ""} could be implemented — the workbook is unchanged.` }
+          : failed.length
+          ? { role: "assistant", tone: "warning", content: `Partly fixed: ${n} of ${sent} changes implemented in ${vlabel}; ${failed.length} could not be applied (see the message above).` }
+          : {
+              role: "assistant",
+              tone: "success",
+              content: `✓ Fixed: ${n} of ${sent} change${sent !== 1 ? "s" : ""} implemented in ${vlabel}${out.result.verified_opens_in_excel ? ", verified it opens in Excel" : ""}.${isRecalcAny ? " Recalculate to confirm the error is gone." : ""}`,
+            };
+      setMessages((m) => [...m, status]);
       setProposal(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -319,6 +334,7 @@ export default function FixPanel() {
     setError(null);
     try {
       const res = await api.recalculate(sessionId);
+      if (res.version) addVersion(res.version);
       setRecalcResult(res);
       if (res.ran === false) {
         setRecalcNote(`Recalculation could not run (${res.message}) — nothing can be concluded; try again.`);
@@ -326,6 +342,10 @@ export default function FixPanel() {
       }
       const failing = new Set([...res.formula_errors, ...res.addin_gap_errors].map(cellKey));
       const left = targetCells.filter((c) => failing.has(cellKey(c)));
+      if (left.length === 0) {
+        const what = targetCells.length > 1 ? `none of the ${targetCells.length} cells fails` : `no error at ${targetCells[0]?.sheet}!${targetCells[0]?.cell}`;
+        setMessages((m) => [...m, { role: "assistant", tone: "success", content: `✓ Fixed and confirmed: after a full recalculation ${what} any more.` }]);
+      }
       setRecalcNote(
         left.length === 0
           ? `Recalculated: ${targetCells.length > 1 ? `none of the ${targetCells.length} cells fail` : `no error at ${targetCells[0]?.sheet}!${targetCells[0]?.cell}`} any more (${res.status}: ${res.message})`
@@ -348,7 +368,7 @@ export default function FixPanel() {
     setBusy("chat");
     setDraft(null);
     try {
-      const reply = await api.chatStream(sessionId, messages, q, target ?? undefined, (ev) => setDraft((d) => nextDraft(d, ev)));
+      const reply = await api.chatStream(sessionId, messages.filter((m) => !m.tone), q, target ?? undefined, (ev) => setDraft((d) => nextDraft(d, ev)));
       setMessages([...next, { role: "assistant", content: reply.text, provenance: reply.provenance }]);
       if (reply.proposal && (reply.proposal.operations.length > 0 || reply.proposal.errors.length > 0)) {
         setProposal(reply.proposal);
@@ -562,7 +582,7 @@ export default function FixPanel() {
             {error}
           </div>
         )}
-        {busy === "apply" && applyRun && (
+        {busy === "apply" && applyRun && !applyRun.fromChat && (
           <div className="border border-[#1F3A5F]/30 rounded-lg bg-white px-3 py-2">
             <ApplyProgress status={applyStatus} total={applyRun.total} startedAt={applyRun.startedAt} compact />
           </div>
@@ -622,8 +642,15 @@ export default function FixPanel() {
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div
                   className={`max-w-[92%] rounded-xl px-3 py-2 text-[12px] leading-relaxed ${
-                    m.role === "user" ? "bg-[#1F3A5F] text-white" : "bg-[#F9FAFB] border border-[#E5E7EB] text-[#374151]"
+                    m.role === "user"
+                      ? "bg-[#1F3A5F] text-white"
+                      : m.tone === "success"
+                      ? "bg-[#F0FDFA] border border-[#0F766E]/30 text-[#0F766E] font-semibold"
+                      : m.tone === "warning"
+                      ? "bg-[#FFF1CC] border border-[#8A5A00]/20 text-[#8A5A00]"
+                      : "bg-[#F9FAFB] border border-[#E5E7EB] text-[#374151]"
                   }`}
+                  role={m.tone ? "status" : undefined}
                 >
                   <ChatMarkdown content={m.content} />
                 </div>
@@ -652,10 +679,15 @@ export default function FixPanel() {
                 {proposal.errors.map((e, i) => (
                   <div key={i} className="mt-1 text-[11px] text-[#8A5A00] bg-[#FFF1CC] rounded px-2 py-1">⚠ {e}</div>
                 ))}
+                {busy === "apply" && applyRun?.fromChat ? (
+                  <div className="mt-2 border border-[#1F3A5F]/30 rounded-lg bg-white px-3 py-2">
+                    <ApplyProgress status={applyStatus} total={applyRun.total} startedAt={applyRun.startedAt} compact />
+                  </div>
+                ) : (
                 <div className="flex gap-2 mt-2">
                   {proposal.operations.length > 0 && (
                     <button
-                      onClick={() => applyOps(proposal.operations, "Assistant fix")}
+                      onClick={() => applyOps(proposal.operations, "Assistant fix", true)}
                       disabled={busy !== null}
                       className="px-3 py-1.5 bg-[#1F3A5F] text-white rounded-md text-[12px] font-semibold hover:bg-[#162d4a] disabled:opacity-40"
                     >
@@ -664,6 +696,7 @@ export default function FixPanel() {
                   )}
                   <button onClick={() => setProposal(null)} className="px-3 py-1.5 border border-[#E5E7EB] text-[#6B7280] rounded-md text-[12px]">Discard</button>
                 </div>
+                )}
               </div>
             )}
             <div ref={bottomRef} />

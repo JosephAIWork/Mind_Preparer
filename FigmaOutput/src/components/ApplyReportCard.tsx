@@ -27,7 +27,7 @@ const STATUS_TEXT: Record<Status, string> = {
 };
 
 export function shortVersion(id: string | null | undefined): string {
-  return (id ?? "").replace("ver-0", "v").replace("ver-", "v").replace(/^v0+(\d)/, "v$1");
+  return (id ?? "").replace(/^ver-0*(\d)/, "v$1");
 }
 
 function arrows(text: string): string {

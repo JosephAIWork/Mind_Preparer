@@ -10,10 +10,11 @@ const sourceLabel: Record<string, string> = {
   assistant: "assistant change, verified",
   formula: "formula fix, verified",
   convert: "converted",
+  recalculate: "recalculated",
 };
 
 export default function VersionChip({ version }: Props) {
-  const vNum = version.label.match(/v(\d+)/)?.[1] ?? "?";
+  const vNum = version.label.match(/v(\d+(?:\.\d+)?)/)?.[1] ?? "?";
   const desc = sourceLabel[version.source] ?? version.source;
   const isVerified = version.verified_opens_in_excel === true;
   return (

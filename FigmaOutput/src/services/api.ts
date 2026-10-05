@@ -174,7 +174,7 @@ export async function reanalyze(sessionId: string, versionId: string): Promise<R
 export async function applyOperations(
   sessionId: string,
   operations: Operation[],
-  options: { reanalyze?: boolean } = {}
+  options: { reanalyze?: boolean; versionStep?: "minor" | "major" } = {}
 ): Promise<ApplyOutcome> {
   if (USE_MOCKS) {
     await delay(3000);
@@ -204,6 +204,7 @@ export async function applyOperations(
   return post<ApplyOutcome>(`/sessions/${encodeURIComponent(sessionId)}/apply`, {
     operations,
     reanalyze: options.reanalyze ?? true,
+    versionStep: options.versionStep ?? "major",
   });
 }
 
