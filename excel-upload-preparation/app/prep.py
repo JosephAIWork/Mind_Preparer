@@ -37,7 +37,17 @@ import openpyxl
 
 from .change_apply import append_change_log, plan_loop_case_fix
 from .excel_com import close_quietly, com_available, excel_session, open_workbook, verify_opens_in_excel
-from .formula_utils import cell_refs_in_formula, col_to_num, mask_strings, num_to_col, parse_ref, ref_text
+from .formula_utils import (
+    cell_refs_in_formula,
+    col_to_num,
+    collapse_na_reference_calls,
+    describe_reference_problem,
+    mask_strings,
+    num_to_col,
+    parse_ref,
+    ref_text,
+    reference_arg_problems,
+)
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
 from .inventory import cell_value, make_immutable_copy, sha256_of
 from .validators.io import EXPORT_COLUMNS
@@ -795,16 +805,25 @@ def plan_unprotect_sheets(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+_SHEET_REF_ERROR_RE = re.compile(r"(?<![:\w'.])(?:'(?:[^']|'')+'|[A-Za-z0-9_.]+)!#REF!(?![:\w])")
+
+
 def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool]:
     """Replace broken references with NA(): every standalone reference to a broken
-    defined name and every standalone literal #REF!. Returns (fixed, has_unfixable)
-    where has_unfixable is True if a #REF! remains (e.g. a range endpoint A1:#REF!
-    that cannot be safely NA()-swapped)."""
+    defined name and every standalone literal #REF!, sheet-qualified or not
+    ('BASE Polices'!#REF!, 1.7.2). A call that then holds NA() where Excel needs
+    a range (SUMIFS(NA(),...) -- Excel refuses such a formula) becomes NA()
+    itself (`collapse_na_reference_calls`; exact, it could only ever produce an
+    error). Returns (fixed, has_unfixable) where has_unfixable is True if a
+    #REF! remains (e.g. a range endpoint A1:#REF! that cannot be safely
+    NA()-swapped) or Excel would still refuse the result."""
     fixed = formula
     for nm in sorted(broken_names, key=len, reverse=True):
         fixed = re.sub(r"(?<![A-Za-z0-9_.])" + re.escape(nm) + r"(?![A-Za-z0-9_.])", "NA()", fixed)
+    fixed = _SHEET_REF_ERROR_RE.sub("NA()", fixed)
     fixed = re.sub(r"(?<![:!\w])#REF!(?![:\w])", "NA()", fixed)  # standalone #REF! only
-    return fixed, ("#REF!" in fixed)
+    fixed = collapse_na_reference_calls(fixed)
+    return fixed, ("#REF!" in fixed or bool(reference_arg_problems(fixed)))
 
 
 def plan_fix_broken_refs(analysis, report) -> tuple[list[dict], list[str]]:
@@ -910,11 +929,25 @@ def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]]) ->
     return {**op, "cell": ref_text(ref["c1"], at + shift)}
 
 
-def _com_message(exc: BaseException) -> str:
-    """Excel's own message out of a pywin32 com_error, else str(exc)."""
+EXCEL_REFUSED_FORMULA = -2146827284  # 0x800A03EC: Excel would not accept the value/formula
+
+
+def _com_message(exc: BaseException, op: dict[str, Any] | None = None) -> str:
+    """Excel's own message out of a pywin32 com_error, else a plain-English
+    one: Excel often gives no text at all (just 0x800A03EC), which used to
+    reach the user as a raw tuple."""
     info = getattr(exc, "excepinfo", None)
     if info and len(info) > 2 and info[2]:
         return str(info[2])
+    scode = info[5] if info and len(info) > 5 else None
+    if scode == EXCEL_REFUSED_FORMULA:
+        formula = str((op or {}).get("after") or "")
+        problems = reference_arg_problems(formula) if formula.startswith("=") else []
+        if problems:
+            return f"Excel refused this formula: {describe_reference_problem(problems[0])} (NA(), numbers, text and calculations are not accepted there)"
+        if formula.startswith("="):
+            return "Excel refused this formula -- it is not a formula Excel can store (check the syntax and the function arguments)"
+        return "Excel refused this change (error 0x800A03EC)"
     return str(exc)
 
 
@@ -1004,7 +1037,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
                 rng.FormulaArray = o["after"]
             except Exception as exc:
                 raise ValueError(
-                    f"could not write the array formula over {o['sheet']}!{target}: {_com_message(exc)} -- if the range overlaps an "
+                    f"could not write the array formula over {o['sheet']}!{target}: {_com_message(exc, o)} -- if the range overlaps an "
                     "existing array formula, the operations must cover all of that array (or use its exact range)"
                 ) from exc
         finally:
@@ -1050,7 +1083,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]]) -> tupl
                         raise ValueError(f"unknown op {o['op']}")
                     applied.append(record)
                 except Exception as exc:
-                    failed.append({**o, "error": _com_message(exc)[:300]})
+                    failed.append({**o, "error": _com_message(exc, o)[:300]})
                 finally:
                     ws = None
             wb.Save()
@@ -1196,6 +1229,7 @@ def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dic
                     formula = str(raw.get("formula", "")).strip()
                     if not formula.startswith("="):
                         raise ValueError("formula must start with '='")
+                    _refuse_what_excel_refuses(sheet, ref["ref"], formula)
                     if ref["cells"] == 1 and _same_content(before, formula):
                         raise ValueError(f"{sheet}!{ref['ref']} already contains the formula {formula}; nothing would change -- the formula itself must be different")
                     ops.append({**base, "op": "set_formula", "cell": ref["ref"], "before": before, "after": formula})
@@ -1213,6 +1247,7 @@ def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dic
                 formula = str(raw.get("formula", "")).strip()
                 if not formula.startswith("="):
                     raise ValueError("formula must start with '='")
+                _refuse_what_excel_refuses(sheet, ref["ref"], formula)
                 current = _array_formula_at(analysis, sheet, ref["ref"])
                 if current is not None and _same_content(current, formula):
                     raise ValueError(
@@ -1248,6 +1283,30 @@ def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dic
             errors.append(f"operation {i} ({op}): {exc}")
     ops, array_errors = _array_coverage(ops, analysis)
     return ops, errors + array_errors
+
+
+def _refuse_what_excel_refuses(sheet: str, cell: str, formula: str) -> None:
+    """1.7.2: a formula Excel would refuse to store (a value where a function
+    needs a cell range, e.g. SUMIFS(NA(), ...)) is rejected here, with the
+    concrete repair, so the assistant fixes it before the user sees it --
+    instead of Excel failing it at Apply time."""
+    problems = reference_arg_problems(formula)
+    if not problems:
+        return
+    listed = "; ".join(describe_reference_problem(p) for p in problems[:3])
+    collapsed = collapse_na_reference_calls(formula)
+    if collapsed != formula and not reference_arg_problems(collapsed):
+        repair = (
+            f"Use {collapsed} instead: a call with a broken range can only ever produce an error, so the whole call "
+            "becomes NA() (results, IFERROR branches included, stay the same)"
+        )
+    else:
+        repair = "Point it at a real range (e.g. 'Sheet'!C:C) if you know which one was meant, or replace the whole formula with =NA()"
+    raise ValueError(
+        f"Excel would refuse the formula for {sheet}!{cell}: {listed}. SUMIF(S), COUNTIF(S), AVERAGEIF(S), MAXIFS, MINIFS, "
+        f"COUNTBLANK, OFFSET, ROW, COLUMN and SUBTOTAL only accept a cell range there -- not NA(), #N/A, a number, text or a "
+        f"calculation. {repair}."
+    )
 
 
 def _same_content(before: Any, after: Any) -> bool:

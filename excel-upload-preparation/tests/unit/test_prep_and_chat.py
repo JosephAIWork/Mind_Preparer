@@ -138,6 +138,8 @@ def test_chat_completion_payload_shape(monkeypatch):
     calls = {}
 
     class FakeResp:
+        status_code, text, headers = 200, "", {"content-type": "application/json"}
+
         def raise_for_status(self):
             pass
 
@@ -152,13 +154,136 @@ def test_chat_completion_payload_shape(monkeypatch):
     import requests
 
     monkeypatch.setattr(requests, "post", fake_post)
-    out = llm.chat_completion([{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2"}], "SYS")
+    out = llm.chat_completion([{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2"}], "SYS", model_id="claude-sonnet-5")
     assert out["text"] == "ok"
-    msgs = calls["payload"]["messages"]
-    assert msgs[0] == {"role": "system", "content": "SYS"}
-    assert [m["role"] for m in msgs[1:]] == ["user", "assistant", "user"]
+    payload = calls["payload"]
+    # the Anthropic Messages passthrough: system is top-level, never a message
+    assert payload["system"] == "SYS" and "stream" not in payload
+    assert [m["role"] for m in payload["messages"]] == ["user", "assistant", "user"]
+    assert payload["messages"][0]["content"] == [{"type": "text", "text": "q1"}]
+    # Sonnet 5 rejects temperature (400 "deprecated") and thinks by default: low
+    # effort + headroom so thinking never eats the answer; the 4.x models keep temperature
+    assert "temperature" not in payload
+    assert payload["output_config"] == {"effort": "low"} and payload["max_tokens"] == 1200 + llm.THINKING_HEADROOM_TOKENS
+    llm.chat_completion([{"role": "user", "content": "q"}], "SYS", model_id="claude-sonnet-4-6", temperature=0.3)
+    assert calls["payload"]["temperature"] == 0.3 and "output_config" not in calls["payload"] and calls["payload"]["max_tokens"] == 1200
     assert llm.extract_formula("Use this:\n=INDEX(A:A,1)\nbecause...") == "=INDEX(A:A,1)"
     assert llm.extract_formula("no formula here") is None
+
+
+class _FakeStreamResp:
+    """A requests.Response stand-in for streamed replies: `lines` are the raw
+    SSE body lines (bytes), `ctype` the Content-Type."""
+
+    def __init__(self, lines=(), ctype="text/event-stream; charset=utf-8", body=None, status=200, text=""):
+        self._lines, self.headers, self._body, self.status_code, self.text = list(lines), {"content-type": ctype}, body, status, text
+        self.closed = False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_lines(self, decode_unicode=False):
+        return iter(self._lines)
+
+    def json(self):
+        return self._body
+
+    def close(self):
+        self.closed = True
+
+
+def _sse(*events):
+    import json as _json
+
+    out = []
+    for ev in events:
+        out += [f"event: {ev['type']}".encode(), b"data: " + _json.dumps(ev, ensure_ascii=False).encode("utf-8"), b""]
+    return out
+
+
+def _stream_events(*chunks, stop=True, stop_reason="end_turn"):
+    # a thinking block first, as Sonnet 5 sends it: never shown, never passed on
+    evs = [{"type": "message_start", "message": {"usage": {"input_tokens": 10}}}, {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}]
+    evs += [{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "secret"}}, {"type": "content_block_stop", "index": 0}]
+    evs += [{"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}, {"type": "ping"}]
+    evs += [{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": c}} for c in chunks]
+    evs += [{"type": "content_block_stop", "index": 1}, {"type": "message_delta", "delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": 5}}]
+    if stop:
+        evs.append({"type": "message_stop"})
+    return _sse(*evs)
+
+
+def _patch_post(monkeypatch, responses):
+    import requests
+
+    calls = []
+    it = iter(responses)
+
+    def fake_post(url, headers=None, json=None, timeout=None, stream=False):
+        calls.append({"payload": dict(json), "stream": stream})
+        return next(it)
+
+    monkeypatch.setattr(llm, "find_api_key", lambda start_dir=None: ("key", "https://example.invalid"))
+    monkeypatch.setattr(requests, "post", fake_post)
+    return calls
+
+
+def test_chat_completion_streams_text_deltas(monkeypatch):
+    resp = _FakeStreamResp(_stream_events("Hello ", "wörld", "   done"))
+    calls = _patch_post(monkeypatch, [resp])
+    chunks = []
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", model_id="claude-sonnet-5", on_delta=chunks.append)
+    assert out == {"available": True, "text": "Hello wörld   done", "message": None}
+    assert chunks == ["Hello ", "wörld", "   done"]
+    assert calls[0]["stream"] is True and calls[0]["payload"]["stream"] is True and resp.closed
+
+
+def test_chat_completion_stream_failures_and_fallbacks(monkeypatch):
+    # cut off before message_stop -> an error result, never a partial answer
+    _patch_post(monkeypatch, [_FakeStreamResp(_stream_events("half", stop=False))])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", on_delta=lambda t: None)
+    assert out["text"] is None and "without message_stop" in out["message"]
+    # an error event mid-stream
+    _patch_post(monkeypatch, [_FakeStreamResp(_sse({"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}))])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", on_delta=lambda t: None)
+    assert out["text"] is None and "overloaded_error" in out["message"]
+    # a gateway that ignores `stream` and answers JSON: read it, hand it over in one piece
+    chunks = []
+    _patch_post(monkeypatch, [_FakeStreamResp(ctype="application/json", body={"content": [{"type": "text", "text": "whole"}]})])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", on_delta=chunks.append)
+    assert out["text"] == "whole" and chunks == ["whole"]
+    # cut off at max_tokens: said so, in the text and in the stream
+    chunks = []
+    _patch_post(monkeypatch, [_FakeStreamResp(_stream_events("partial", stop_reason="max_tokens"))])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", on_delta=chunks.append)
+    assert out["text"] == "partial" + llm.TRUNCATED_NOTE and chunks == ["partial", llm.TRUNCATED_NOTE]
+    # nothing but thinking (the 2026-09-24 Sonnet 5 failure): a clear message, not an empty answer
+    _patch_post(monkeypatch, [_FakeStreamResp(_stream_events(stop_reason="max_tokens"))])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", on_delta=lambda t: None)
+    assert out["text"] is None and "returned no text (stop_reason max_tokens)" in out["message"]
+    # MIND_READY_STREAM=0: not streamed at all
+    monkeypatch.setenv("MIND_READY_STREAM", "0")
+    calls = _patch_post(monkeypatch, [_FakeStreamResp(ctype="application/json", body={"content": [{"type": "text", "text": "plain"}]})])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", on_delta=lambda t: None)
+    assert out["text"] == "plain" and calls[0]["stream"] is False and "stream" not in calls[0]["payload"]
+
+
+def test_chat_completion_retries_without_a_refused_tuning_param(monkeypatch):
+    calls = _patch_post(monkeypatch, [
+        _FakeStreamResp(ctype="application/json", status=400, text='{"error": {"message": "`temperature` is deprecated for this model."}}'),
+        _FakeStreamResp(ctype="application/json", body={"content": [{"type": "text", "text": "ok"}]}),
+    ])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", model_id="claude-opus-4-9")
+    assert out["text"] == "ok"
+    assert "temperature" in calls[0]["payload"] and "temperature" not in calls[1]["payload"]
+    # a newer model that does not know output_config
+    calls = _patch_post(monkeypatch, [
+        _FakeStreamResp(ctype="application/json", status=400, text='{"error": {"message": "output_config: Extra inputs are not permitted"}}'),
+        _FakeStreamResp(ctype="application/json", body={"content": [{"type": "thinking", "thinking": "x"}, {"type": "text", "text": "fine"}], "stop_reason": "end_turn"}),
+    ])
+    out = llm.chat_completion([{"role": "user", "content": "q"}], "SYS", model_id="claude-sonnet-6")
+    assert out["text"] == "fine" and "output_config" in calls[0]["payload"] and "output_config" not in calls[1]["payload"]
 # --- context-aware grid titles (1.5.0) ------------------------------------------------
 
 
@@ -239,10 +364,16 @@ def test_answer_question_returns_validated_proposal_and_does_lookups(tmp_path, f
 
     def fake_chat(messages, system_prompt, **kwargs):
         seen.append([m["content"] for m in messages])
-        return {"available": True, "text": next(replies), "message": None}
+        text = next(replies)
+        if kwargs.get("on_delta"):
+            kwargs["on_delta"](text)
+        return {"available": True, "text": text, "message": None}
 
     monkeypatch.setattr(chat_context, "chat_completion", fake_chat)
-    reply = chat_context.answer_question([], "rename the Settings sheet to Config", result["workbook_analysis"], result["validation_report"])
+    events = []
+    reply = chat_context.answer_question([], "rename the Settings sheet to Config", result["workbook_analysis"], result["validation_report"], on_event=events.append)
+    assert [(e["type"], e.get("phase")) for e in events] == [("phase", "answer"), ("delta", None), ("phase", "lookup"), ("delta", None)]
+    assert events[1]["text"].startswith("```lookup")
     assert reply["lookups"] == 1
     assert "<lookup_result>" in seen[1][-1] and "A3 = #Assumptions /Reorder /Inpt" in seen[1][-1] and "## Sheet Settings" in seen[1][-1]
     assert reply["text"] == "I will rename the sheet."
@@ -439,7 +570,9 @@ def test_assistant_retries_a_rejected_proposal(tmp_path, array_formula_xlsx, mon
         return {"available": True, "text": next(replies), "message": None}
 
     monkeypatch.setattr(chat_context, "chat_completion", fake_chat)
-    reply = chat_context.answer_question([], "fix C9", result["workbook_analysis"], result["validation_report"])
+    events = []
+    reply = chat_context.answer_question([], "fix C9", result["workbook_analysis"], result["validation_report"], on_event=events.append)
+    assert [(e["phase"], e["n"]) for e in events if e["type"] == "phase"] == [("answer", 0), ("repair", 1)]
     assert len(seen) == 2 and "<proposal_rejected>" in seen[1][-1] and "part of the array formula C5:C9" in seen[1][-1]
     assert reply["proposal_retries"] == 1 and reply["proposal_errors"] == []
     assert [o["op"] for o in reply["proposal"]] == ["set_array_formula"] and reply["proposal"][0]["range"] == "C5:C9"

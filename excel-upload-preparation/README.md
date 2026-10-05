@@ -22,11 +22,19 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.7.1)
+## Current status (1.7.2)
 
 All 12 phases have a real implementation, and **every active rule (94 of
 94) has a real validator** -- nothing falls through to `NOT_SUPPORTED` any
 more except the two honest cases below.
+
+- **Assistant speed** (1.7.2): the assistant runs on `claude-sonnet-5`
+  (env `MIND_READY_MODEL` overrides) at `effort: low` (env
+  `MIND_READY_EFFORT`; Sonnet 5's default thinking made answers slow and cut
+  them off) and its replies stream -- the web app
+  shows the text as it is written, with a status line during lookups and
+  proposal repairs (`POST /api/sessions/{id}/chat/stream`, NDJSON;
+  `MIND_READY_STREAM=0` turns streaming off).
 
 - **Large workbooks** (1.6.6): every upload is first inspected from the zip
   package alone (`app/sizing.py` -- size on disk, *decompressed* size, and

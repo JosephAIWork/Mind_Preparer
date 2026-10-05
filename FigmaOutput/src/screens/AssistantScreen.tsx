@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import { useStore } from "../store";
 import * as api from "../services/api";
-import type { ChatMessage, Proposal } from "../types";
+import type { ChatDraft, ChatMessage, Proposal } from "../types";
 import OperationsTable from "../components/OperationsTable";
 import ChatMarkdown from "../components/ChatMarkdown";
+import StreamingDraft, { nextDraft } from "../components/StreamingDraft";
 
 function ProvenanceLine({ p }: { p: NonNullable<ChatMessage["provenance"]> }) {
   return (
@@ -99,13 +100,16 @@ export default function AssistantScreen() {
 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // 1.7.2: a chat turn in flight (as opposed to an apply) and its reply so far
+  const [streaming, setStreaming] = useState(false);
+  const [draft, setDraft] = useState<ChatDraft | null>(null);
   const [pendingProposal, setPendingProposal] = useState<{ proposal: Proposal; msgIdx: number } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatHistory, loading]);
+  }, [chatHistory, loading, draft]);
 
   if (!sessionId) {
     return (
@@ -125,8 +129,10 @@ export default function AssistantScreen() {
     setInput("");
     appendChatMessage({ role: "user", content: question });
     setLoading(true);
+    setStreaming(true);
+    setDraft(null);
     try {
-      const reply = await api.chat(sessionId!, chatHistory, question);
+      const reply = await api.chatStream(sessionId!, chatHistory, question, undefined, (ev) => setDraft((d) => nextDraft(d, ev)));
       const msg: ChatMessage & { proposal?: Proposal } = {
         role: "assistant",
         content: reply.text,
@@ -140,6 +146,8 @@ export default function AssistantScreen() {
       appendChatMessage({ role: "assistant", content: `The assistant could not answer: ${e instanceof Error ? e.message : String(e)}`, note: true });
     } finally {
       setLoading(false);
+      setStreaming(false);
+      setDraft(null);
     }
   }
 
@@ -166,6 +174,21 @@ export default function AssistantScreen() {
         content: `Applied ${result.applied.length} change${result.applied.length !== 1 ? "s" : ""} via ${result.method === "excel_com" ? "Excel" : "openpyxl"} · ${verified}${failed} · re-analyzed as ${outcome.version.label}`,
         note: true,
       });
+      if (result.failed.length) {
+        // 1.7.2: say WHY, grouped by reason (17 identical refusals read as one line, not 17)
+        const byReason = new Map<string, string[]>();
+        for (const f of result.failed) {
+          const reason = f.error ?? "unknown reason";
+          byReason.set(reason, [...(byReason.get(reason) ?? []), `${f.sheet}!${f.cell ?? f.row ?? f.column ?? ""}`]);
+        }
+        const lines = [...byReason.entries()].map(
+          ([reason, cells]) => `- **${cells.length} cell${cells.length !== 1 ? "s" : ""}** (${cells.slice(0, 6).join(", ")}${cells.length > 6 ? ", …" : ""}): ${reason}`
+        );
+        appendChatMessage({
+          role: "assistant",
+          content: `${result.failed.length} change${result.failed.length !== 1 ? "s were" : " was"} not applied — the workbook keeps the old content there:\n\n${lines.join("\n")}`,
+        });
+      }
       setDownloadName(result.output_name);
     } catch (e) {
       appendChatMessage({ role: "assistant", content: `The change could not be applied: ${e instanceof Error ? e.message : String(e)}`, note: true });
@@ -221,7 +244,14 @@ export default function AssistantScreen() {
             </div>
           </div>
         )}
-        {loading && (
+        {loading && streaming && (
+          <div className="flex justify-start">
+            <div className="max-w-[75%]">
+              <StreamingDraft draft={draft} className="rounded-2xl rounded-tl-sm px-4 py-3 text-[13px] leading-relaxed bg-white border border-[#E5E7EB] text-[#374151]" />
+            </div>
+          </div>
+        )}
+        {loading && !streaming && (
           <div className="flex justify-start">
             <div className="bg-white border border-[#E5E7EB] rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
               <div className="flex gap-1">

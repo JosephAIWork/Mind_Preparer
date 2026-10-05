@@ -214,6 +214,17 @@ export interface ChatReply {
   provenance: { context_chars: number; detail_chars: number; lookups: number };
 }
 
+/** 1.7.2: which model call of a turn is running -- the first answer, a lookup round-trip, or a repair of a rejected proposal. */
+export type ChatPhase = "answer" | "lookup" | "repair";
+
+/** A live (streamed) reply while the turn runs. `text` is the current model call's text so far. */
+export interface ChatDraft {
+  phase: ChatPhase;
+  text: string;
+}
+
+export type ChatStreamEvent = { type: "phase"; phase: ChatPhase; n: number } | { type: "delta"; text: string };
+
 export interface RecalcCell { sheet: string; cell: string; formula: string; error: string; array?: string }
 
 /** Recalculation errors that share one root cause (same unknown function, same formula shape, same missing add-in function). */

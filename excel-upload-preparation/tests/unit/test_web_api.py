@@ -98,6 +98,51 @@ def test_chat_returns_reply_and_validated_proposal(client, flagged_model_broken_
     assert client.post(f"/api/sessions/{sid}/chat", json={"history": [], "question": "   "}).status_code == 422
 
 
+def test_chat_stream_sends_phases_deltas_then_the_chat_payload(client, flagged_model_broken_xlsx, monkeypatch):
+    """1.7.2: /chat/stream is the same turn as /chat, as NDJSON lines."""
+    import json
+
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    answer = 'Renaming.\n```changes\n{"summary": "rename", "operations": [{"op": "rename_sheet", "sheet": "Settings", "new_name": "Config"}]}\n```'
+
+    def fake_chat(messages, system_prompt, **kwargs):
+        if kwargs.get("on_delta"):
+            kwargs["on_delta"](answer[:5])
+            kwargs["on_delta"](answer[5:])
+        return {"available": True, "text": answer, "message": None}
+
+    monkeypatch.setattr(chat_context, "chat_completion", fake_chat)
+    turn = {"history": [], "question": "rename Settings to Config", "focus": {"rule_id": "RES-002", "sheet": "Model", "cell": "J6"}}
+    res = client.post(f"/api/sessions/{sid}/chat/stream", json=turn)
+    assert res.status_code == 200 and res.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in res.text.splitlines() if line.strip()]
+    assert [e["type"] for e in events] == ["phase", "delta", "delta", "done"]
+    assert events[0] == {"type": "phase", "phase": "answer", "n": 0}
+    assert events[1]["text"] + events[2]["text"] == answer
+    done = {k: v for k, v in events[-1].items() if k != "type"}
+    assert done == client.post(f"/api/sessions/{sid}/chat", json=turn).json()
+    assert done["text"] == "Renaming." and [o["op"] for o in done["proposal"]["operations"]] == ["rename_sheet"]
+    # validation errors stay plain HTTP errors (nothing is streamed)
+    assert client.post(f"/api/sessions/{sid}/chat/stream", json={"history": [], "question": "  "}).status_code == 422
+    assert client.post("/api/sessions/nope/chat/stream", json={"history": [], "question": "hi"}).status_code == 404
+
+
+def test_chat_stream_reports_a_failed_turn_in_band(client, flagged_model_broken_xlsx, monkeypatch):
+    import json
+
+    sid = _upload(client, flagged_model_broken_xlsx)["sessionId"]
+
+    def boom(messages, system_prompt, **kwargs):
+        raise ValueError("gateway exploded")
+
+    monkeypatch.setattr(chat_context, "chat_completion", boom)
+    res = client.post(f"/api/sessions/{sid}/chat/stream", json={"history": [], "question": "hi"})
+    events = [json.loads(line) for line in res.text.splitlines() if line.strip()]
+    assert events[-1]["type"] == "error" and "gateway exploded" in events[-1]["detail"]
+    assert client.get("/api/health").json()["streaming"] is True
+
+
 def test_reports_and_recalculate_endpoints(client, plain_grid_xlsx):
     body = _upload(client, plain_grid_xlsx)
     sid = body["sessionId"]

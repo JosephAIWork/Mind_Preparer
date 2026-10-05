@@ -256,7 +256,9 @@ def broken_defined_name_refs(rule, analysis: dict[str, Any], config: dict[str, A
             "ERROR",
             f"{len(sites)} cell(s) contain broken references (#REF! literals or references to #REF! defined names) -- "
             f"Mind's converter cannot compile them. First: {sites[0]['sheet']}!{sites[0]['cell']}. "
-            "Fix: replace the broken reference with NA() (an error stays an error) or delete the cell if it has no impact.",
+            "Fix: replace the broken reference with NA() (an error stays an error) or delete the cell if it has no impact. "
+            "Where a function needs a cell range (SUMIF(S)/COUNTIF(S)/AVERAGEIF(S)/MAXIFS/MINIFS/OFFSET/ROW/COLUMN/SUBTOTAL), "
+            "Excel refuses NA() -- replace that whole call with NA() instead (e.g. =SUMIFS('Data'!#REF!,J:J,\"x\") -> =NA()).",
             {"broken_names": broken, "sites": sites[:80]},
             location={"sheet": sites[0]["sheet"], "cell": sites[0]["cell"]},
         )

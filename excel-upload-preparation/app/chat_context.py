@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .formula_utils import parse_ref, ref_text
 from .grids import all_grids
@@ -290,11 +290,14 @@ def answer_question(
     prep_actions: list[dict[str, Any]] | None = None,
     model_id: str | None = None,
     extra_context: str | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one turn (with up to MAX_LOOKUPS lookup round-trips). Returns the
     display text, the raw text, and any validated change proposal.
     `extra_context` (e.g. the last recalculation) is appended to the system
-    context for this turn."""
+    context for this turn. `on_event` (1.7.2) streams the turn: a
+    {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
+    model call, then {"type": "delta", "text"} for each chunk of its reply."""
     context = build_context_pack(analysis, validation_report, prep_actions)
     detail = retrieve(question, analysis, validation_report)
     system = SYSTEM_PROMPT + "\n\n<workbook_context>\n" + context + "\n</workbook_context>"
@@ -302,10 +305,18 @@ def answer_question(
         system += "\n\n<recalculation>\n" + _trim(extra_context, 6000) + "\n</recalculation>"
     turn = question if not detail else f"{question}\n\n<retrieved_detail>\n{detail}\n</retrieved_detail>"
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]] + [{"role": "user", "content": turn}]
-    kwargs = {"model_id": model_id} if model_id else {}
+    kwargs: dict[str, Any] = {"model_id": model_id} if model_id else {}
+    if on_event is not None:
+        kwargs["on_delta"] = lambda text: on_event({"type": "delta", "text": text})
+
+    def _phase(phase: str, n: int) -> None:
+        if on_event is not None:
+            on_event({"type": "phase", "phase": phase, "n": n})
+
     lookups = 0
     result: dict[str, Any] = {"available": False, "text": None, "message": "no call made"}
     while True:
+        _phase("lookup" if lookups else "answer", lookups)
         result = chat_completion(messages, system, **kwargs)
         text = result.get("text") or ""
         spec, err = extract_block(text, "lookup")
@@ -334,6 +345,7 @@ def answer_question(
             {"role": "user", "content": "<proposal_rejected>\n" + "\n".join(f"- {e}" for e in errors) + "\n</proposal_rejected>\n"
              "Propose the changes again in a ```changes block, fixing every point above (keep the explanation short)."},
         ]
+        _phase("repair", retries)
         result = chat_completion(messages, system, **kwargs)
         raw_text = result.get("text") or ""
         ops, errors, summary = _validated(raw_text)

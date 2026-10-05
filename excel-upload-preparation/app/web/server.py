@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import sys
 import tempfile
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PACKAGE_ROOT))
@@ -42,7 +43,7 @@ from app.config import load_config  # noqa: E402
 from app.excel_com import com_available  # noqa: E402
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
-from app.llm import extract_formula, llm_available, suggest_formula_fix  # noqa: E402
+from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
@@ -434,6 +435,9 @@ def health() -> dict[str, Any]:
         # 1.6.6: deferred upload + sheet selection + scan status are available
         "upload_gate": True,
         "size_threshold_mb": round(size_threshold_bytes(load_config()) / MB, 1),
+        # 1.7.2: the assistant's model and POST /chat/stream
+        "model": DEFAULT_MODEL_ID,
+        "streaming": True,
     }
 
 
@@ -658,9 +662,9 @@ def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
     return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None}
 
 
-@app.post("/api/sessions/{session_id}/chat")
-def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    s = _session(session_id)
+def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]], str, str | None]:
+    """(history, question, extra_context) for one chat turn; raises the
+    409/422 HTTP errors before any model call."""
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
     question = str(payload.get("question") or "").strip()
@@ -740,7 +744,10 @@ def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]
             question = f"[About the recalculation error {focus.get('error', '')}{where}{formula}.{siblings}{array_note}] {question}"
         else:
             question = f"[About finding {focus['rule_id']}{where}] {question}"
-    reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra)
+    return history, question, extra
+
+
+def _chat_payload(reply: dict[str, Any]) -> dict[str, Any]:
     proposal = None
     if reply.get("proposal") or reply.get("proposal_errors"):
         proposal = {"summary": reply.get("proposal_summary"), "operations": [_public_op(o) for o in reply.get("proposal", [])], "errors": reply.get("proposal_errors", [])}
@@ -749,6 +756,45 @@ def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]
         "proposal": proposal,
         "provenance": {"context_chars": reply.get("context_chars", 0), "detail_chars": reply.get("detail_chars", 0), "lookups": reply.get("lookups", 0)},
     }
+
+
+@app.post("/api/sessions/{session_id}/chat")
+def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    s = _session(session_id)
+    history, question, extra = _chat_turn(s, payload)
+    reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra)
+    return _chat_payload(reply)
+
+
+@app.post("/api/sessions/{session_id}/chat/stream")
+def chat_stream(session_id: str, payload: dict[str, Any] = Body(...)) -> StreamingResponse:
+    """The same turn as /chat, streamed as NDJSON (one JSON object per line):
+    {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
+    model call, {"type": "delta", "text"} for each chunk of the reply, then
+    {"type": "done", <the /chat payload>} or {"type": "error", "detail"}."""
+    s = _session(session_id)
+    history, question, extra = _chat_turn(s, payload)
+    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def work() -> None:
+        try:
+            reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra, on_event=events.put)
+            events.put({"type": "done", **_chat_payload(reply)})
+        except Exception as exc:  # the stream has started: report in-band
+            events.put({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=work, name=f"chat-{session_id}", daemon=True).start()
+
+    def lines():
+        while True:
+            ev = events.get()
+            if ev is None:
+                return
+            yield json.dumps(ev, ensure_ascii=False, default=str) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/sessions/{session_id}/recalculate")

@@ -1,4 +1,4 @@
-import type { ApplyResult, CellWindow, ChatMessage, ChatReply, Delta, FixTarget, Mode, Operation, PrepAction, RecalcResult, ReportBuild, ScanStatus, SizeInfo, ValidationReport, Version, WorkbookSummary } from "../types";
+import type { ApplyResult, CellWindow, ChatMessage, ChatReply, ChatStreamEvent, Delta, FixTarget, Mode, Operation, PrepAction, RecalcResult, ReportBuild, ScanStatus, SizeInfo, ValidationReport, Version, WorkbookSummary } from "../types";
 
 import workbookMock from "../mocks/workbook.json";
 import reportMock from "../mocks/report.json";
@@ -228,7 +228,11 @@ export async function chat(sessionId: string, history: ChatMessage[], question: 
       provenance: { context_chars: 14200, detail_chars: 2100, lookups: 1 },
     };
   }
-  return post<ChatReply>(`/sessions/${encodeURIComponent(sessionId)}/chat`, {
+  return post<ChatReply>(`/sessions/${encodeURIComponent(sessionId)}/chat`, chatBody(history, question, focus));
+}
+
+function chatBody(history: ChatMessage[], question: string, focus?: FixTarget) {
+  return {
     history: history.map((m) => ({ role: m.role, content: m.content, note: m.note ?? false })),
     question,
     focus: focus
@@ -244,7 +248,64 @@ export async function chat(sessionId: string, history: ChatMessage[], question: 
           cause: focus.cause,
         }
       : undefined,
+  };
+}
+
+/**
+ * 1.7.2: the same turn as chat(), streamed. The backend sends NDJSON lines --
+ * `phase` before every model call, `delta` for each chunk of its text -- and
+ * ends with `done` (the chat() payload) or `error`. Falls back to chat() with
+ * mocks or on a backend without the route (404).
+ */
+export async function chatStream(
+  sessionId: string,
+  history: ChatMessage[],
+  question: string,
+  focus: FixTarget | undefined,
+  onEvent: (ev: ChatStreamEvent) => void
+): Promise<ChatReply> {
+  if (USE_MOCKS) return chat(sessionId, history, question, focus);
+  const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(chatBody(history, question, focus)),
   });
+  if (res.status === 404 || res.status === 405) {
+    // A pre-1.7.2 backend has no such route: FastAPI answers "Not Found", or 405 via the GET-only
+    // SPA catch-all. Anything else (e.g. an unknown session) is a real error.
+    const body = await res.json().catch(() => null);
+    if (!body || body.detail === "Not Found" || body.detail === "Method Not Allowed") return chat(sessionId, history, question, focus);
+    throw new Error(typeof body.detail === "string" ? body.detail : `${res.status} ${res.statusText}`);
+  }
+  if (!res.ok || !res.body) return unwrap<ChatReply>(res);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const out: { reply: ChatReply | null } = { reply: null };
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    const ev = JSON.parse(line);
+    if (ev.type === "done") {
+      out.reply = { text: ev.text, proposal: ev.proposal ?? null, provenance: ev.provenance };
+    } else if (ev.type === "error") {
+      throw new Error(ev.detail || "the assistant failed");
+    } else if (ev.type === "phase" || ev.type === "delta") {
+      onEvent(ev as ChatStreamEvent);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      handle(buffer.slice(0, nl));
+      buffer = buffer.slice(nl + 1);
+    }
+  }
+  handle(buffer + decoder.decode());
+  if (!out.reply) throw new Error("the reply stream ended early");
+  return out.reply;
 }
 
 export async function recalculate(sessionId: string): Promise<RecalcResult> {

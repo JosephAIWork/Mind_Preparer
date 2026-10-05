@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import * as api from "../services/api";
-import type { CellWindow, ChatMessage, Finding, FixTarget, Operation, Proposal } from "../types";
+import type { CellWindow, ChatDraft, ChatMessage, Finding, FixTarget, Operation, Proposal } from "../types";
 import StatusPill from "./StatusPill";
 import OperationsTable from "./OperationsTable";
 import ChatMarkdown from "./ChatMarkdown";
+import StreamingDraft, { nextDraft } from "./StreamingDraft";
 
 interface Site { sheet: string; cell: string; detail: string }
 
@@ -160,6 +161,7 @@ export default function FixPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState<"chat" | "apply" | "recalc" | null>(null);
+  const [draft, setDraft] = useState<ChatDraft | null>(null); // 1.7.2: the reply being streamed
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
   const [recalcNote, setRecalcNote] = useState<string | null>(null);
@@ -331,8 +333,9 @@ export default function FixPanel() {
     const next = [...messages, { role: "user" as const, content: q }];
     setMessages(next);
     setBusy("chat");
+    setDraft(null);
     try {
-      const reply = await api.chat(sessionId, messages, q, target ?? undefined);
+      const reply = await api.chatStream(sessionId, messages, q, target ?? undefined, (ev) => setDraft((d) => nextDraft(d, ev)));
       setMessages([...next, { role: "assistant", content: reply.text, provenance: reply.provenance }]);
       if (reply.proposal && (reply.proposal.operations.length > 0 || reply.proposal.errors.length > 0)) {
         setProposal(reply.proposal);
@@ -341,6 +344,7 @@ export default function FixPanel() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
+      setDraft(null);
     }
   }
 
@@ -605,10 +609,8 @@ export default function FixPanel() {
               </div>
             ))}
             {busy === "chat" && (
-              <div className="flex gap-1 px-2 py-1">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="w-1.5 h-1.5 bg-[#9CA3AF] rounded-full animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
-                ))}
+              <div className="flex justify-start">
+                <StreamingDraft draft={draft} className="max-w-[92%] rounded-xl px-3 py-2 text-[12px] leading-relaxed bg-[#F9FAFB] border border-[#E5E7EB] text-[#374151]" />
               </div>
             )}
             {proposal && (

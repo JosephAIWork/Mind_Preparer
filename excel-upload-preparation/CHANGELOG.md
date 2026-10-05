@@ -1,5 +1,97 @@
 # Changelog
 
+## 1.7.2
+
+### Formulas Excel refuses are caught before Apply (17 failed fixes on a real workbook)
+
+On `_20240118 Horizon PM PRC 122024 - Anonymisé V2.xlsm` the assistant
+proposed 21 fixes for `'BASE Polices'!#REF!` on sheet C20; 17 failed at
+Apply with a raw `(-2147352567, 'Exception occurred.', (..., -2146827284), None)`.
+Cause: it rewrote `SUMIFS('BASE Polices'!#REF!, ...)` to `SUMIFS(NA(), ...)`
+(the REF-001 `#REF!` -> `NA()` idea), and Excel refuses to store any formula
+with a value where a function needs a cell range (COM 0x800A03EC, nothing is
+written). The 4 that worked were `SUM(NA())` -- SUM takes values.
+
+- **`formula_utils.reference_arg_problems`** knows the reference-only
+  argument positions of SUMIF, SUMIFS, COUNTIF, COUNTIFS, AVERAGEIF(S),
+  MAXIFS, MINIFS, COUNTBLANK, OFFSET, ROW, COLUMN, AREAS, CELL and SUBTOTAL,
+  and flags an argument there only when it is certainly not a reference
+  (NA(), #N/A, a number, text, TRUE, an array constant, arithmetic,
+  IFERROR/FILTER/...). A range, a name, `#REF!` and INDEX / OFFSET /
+  INDIRECT / IF / IFS / CHOOSE / SWITCH / XLOOKUP / LET pass. 49 cases were
+  checked one by one in Excel and are pinned in `tests/unit/test_reference_args.py`.
+- **`collapse_na_reference_calls`**: a call holding NA() in such a position
+  becomes `NA()` itself, innermost first (`=+SUMIFS(NA(),J:J,"x")` ->
+  `=+NA()`; `=IFERROR(SUMIF(NA(),1),0)` -> `=IFERROR(NA(),0)`). Exact: the
+  call held a broken range, so it could only ever produce an error.
+- **Assistant proposals** (`validate_proposal`): a `set_formula` /
+  `set_array_formula` Excel would refuse is rejected with the concrete repair
+  (`Use =+NA() instead ...`), so the assistant's repair round fixes it
+  before the user sees a proposal.
+- **REF-001 prep action** (`fix_broken_refs`): now also rewrites
+  sheet-qualified broken references (`'BASE Polices'!#REF!`; they used to be
+  "left for review") and collapses calls the NA() swap would make invalid.
+  The REF-001 recommendation text tells the assistant the same.
+- **Plain-English apply errors** (`_com_message`): 0x800A03EC now reads
+  "Excel refused this formula: SUMIFS argument 1 must be a cell range, but it
+  is NA() ..." instead of the raw COM tuple; the Assistant screen lists the
+  failed cells grouped by reason (the Fix panel already listed them).
+
+### Faster assistant: Sonnet 5 by default, and replies stream as they are written
+
+A "Propose a fix" turn could sit on bouncing dots for minutes: one turn is up
+to five model calls in a row (the answer, up to 2 ```lookup round-trips, up to
+2 repairs of a rejected ```changes block), each sent without streaming.
+
+- **Default model `claude-sonnet-5`** (`app/llm.py` `DEFAULT_MODEL_ID`; the
+  grid namer uses the same constant). Measured through the APIM gateway on
+  2026-09-24, same ~150-word answer, one run each: Sonnet 4.6 7.7 s, Sonnet 5
+  6.2 s, Opus 4.8 6.7 s, GPT-4.1 3.7 s; the gateway still has no Haiku.
+  `set MIND_READY_MODEL=claude-sonnet-4-6` switches back.
+- **Sonnet 5 rejects `temperature`** (400 "`temperature` is deprecated for
+  this model"). `chat_completion` now sends it only to the 4.x models
+  (`_takes_temperature`) and, for any other model that answers such a 400,
+  retries once without it.
+- **Sonnet 5 thinks before it answers by default** -- and its thinking is
+  not streamed through the gateway. On a real chat turn (3k input tokens,
+  `max_tokens` 1200) it spent ~885 tokens / ~9 s thinking and then ran out
+  of room: `stop_reason: max_tokens`, answer cut off or EMPTY (shown as
+  "(no answer: None)"). Newer models now get `output_config.effort: "low"`
+  (env `MIND_READY_EFFORT`; empty = the model's default) plus
+  `THINKING_HEADROOM_TOKENS` (3000) on top of `max_tokens`; a 400 naming
+  `output_config` drops it and retries. A reply that is cut off now ends
+  with "_(The answer was cut off at the length limit.)_" and an empty one
+  says "The model returned no text (stop_reason ...)" -- never silent.
+  Live, same turn on a small workbook: Sonnet 5 first text 1.4-3.6 s, done
+  in 5-8 s with a valid proposal; Sonnet 4.6 first text 1.9-3.5 s, done in
+  12-15 s.
+- **Streaming**: `chat_completion(..., on_delta=)` posts `stream: true` and
+  parses the gateway's SSE (`_sse_data` / `_parse_claude_stream`, ported
+  from IFRS_DataScraper/app/apim.py: bytes-level lines decoded as UTF-8; an
+  `error` event or a stream without `message_stop` is a failed call, never a
+  partial answer). A gateway that ignores `stream` and answers JSON is read
+  the old way. `MIND_READY_STREAM=0` turns streaming off.
+- `answer_question(..., on_event=)` reports a `phase` event
+  (`answer` / `lookup` / `repair`) before every model call and a `delta` for
+  each chunk of text.
+- **Web API**: `POST /api/sessions/{id}/chat/stream` runs the same turn as
+  `/chat` and answers NDJSON lines (`phase`, `delta`..., then `done` with the
+  `/chat` payload, or `error`); 404/409/422 stay plain HTTP errors. `/chat` is
+  unchanged (the body is now shared through `_chat_turn` / `_chat_payload`).
+  `/api/health` reports `model` and `streaming`.
+- **Front-end**: `api.chatStream` (falls back to `api.chat` with mocks or on
+  an older backend); `components/StreamingDraft.tsx` shows the reply as it
+  arrives in the Assistant screen and the Fix panel, with "Looking up cells in
+  the workbook…" / "Checking the proposed change…" between calls and
+  "Preparing the change…" while the model writes its ```changes block (that
+  block is never shown). The proposal card appears when the turn is done, as
+  before.
+- Tests: SSE parsing, cut-off and error streams, JSON fallback, the
+  temperature rule and retry, the phase events of the lookup and repair
+  scenarios, and `/chat/stream` (same `done` payload as `/chat`, in-band
+  error). `test_chat_completion_payload_shape` updated for the top-level
+  `system` param of the 2026-09-16 route switch.
+
 ## 1.7.1
 
 ### One backend again: the Shlomo copy's size gate and scan status folded into the main app

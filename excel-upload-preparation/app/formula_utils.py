@@ -275,3 +275,152 @@ def ref_text(c1: int, r1: int, c2: int | None = None, r2: int | None = None) -> 
     if c2 is None or r2 is None or (c2 == c1 and r2 == r1):
         return a
     return f"{a}:{num_to_col(c2)}{r2}"
+
+
+# --- 1.7.2: arguments Excel only accepts as a reference ---------------------------------
+# In these argument positions Excel accepts a range, a defined name, #REF! or a
+# function that returns a reference -- and REFUSES the whole formula (COM error
+# 0x800A03EC, nothing is written) for anything else: NA(), #N/A, a number, text,
+# TRUE, an array constant, arithmetic (A1:A5+0), IFERROR(...), FILTER(...).
+# Verified one by one in Excel on 2026-09-24 after an assistant fix rewrote
+# SUMIFS('BASE Polices'!#REF!, ...) to SUMIFS(NA(), ...) in 17 cells and Excel
+# refused every one. Positions are 0-based.
+def _ifs_positions(n: int) -> list[int]:  # SUMIFS(sum_range, criteria_range1, criteria1, criteria_range2, ...)
+    return [0] + list(range(1, n, 2))
+
+
+REFERENCE_ARGS = {
+    "SUMIF": lambda n: [0, 2],
+    "AVERAGEIF": lambda n: [0, 2],
+    "COUNTIF": lambda n: [0],
+    "SUMIFS": _ifs_positions,
+    "AVERAGEIFS": _ifs_positions,
+    "MAXIFS": _ifs_positions,
+    "MINIFS": _ifs_positions,
+    "COUNTIFS": lambda n: list(range(0, n, 2)),  # COUNTIFS(criteria_range1, criteria1, ...)
+    "COUNTBLANK": lambda n: [0],
+    "OFFSET": lambda n: [0],
+    "ROW": lambda n: [0],
+    "COLUMN": lambda n: [0],
+    "AREAS": lambda n: [0],
+    "CELL": lambda n: [1],
+    "SUBTOTAL": lambda n: list(range(1, n)),
+}
+# Functions whose result can be a reference (Excel accepts them in those positions).
+REFERENCE_FUNCTIONS = {"INDEX", "OFFSET", "INDIRECT", "IF", "IFS", "CHOOSE", "SWITCH", "XLOOKUP", "LET"}
+_OPERATOR_CHARS = set("+-*/^&=<>%")
+
+
+def _closing_paren(masked: str, open_at: int) -> int:
+    """Index of the parenthesis closing the one at `open_at` (-1 if none)."""
+    depth = 0
+    for i in range(open_at, len(masked)):
+        if masked[i] == "(":
+            depth += 1
+        elif masked[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _arg_spans(masked: str, start: int, end: int) -> list[tuple[int, int]]:
+    """(start, end) of each top-level argument between `start` and `end`
+    (exclusive), split on commas outside parens/braces; strings and quoted
+    sheet names are already masked."""
+    spans, depth, s = [], 0, start
+    for i in range(start, end):
+        ch = masked[i]
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            spans.append((s, i))
+            s = i + 1
+    if masked[start:end].strip() or spans:
+        spans.append((s, end))
+    return spans
+
+
+def not_a_reference(arg: str) -> bool:
+    """True only when `arg` is certainly NOT a reference in Excel's eyes (see
+    REFERENCE_ARGS). Unknown shapes (names, unions, A1:INDEX(...), add-in
+    calls) are given the benefit of the doubt."""
+    s = arg.strip()
+    while s.startswith("(") and _closing_paren(mask_strings(s), 0) == len(s) - 1:
+        s = s[1:-1].strip()
+    if not s:
+        return False  # an omitted optional argument
+    if s[0] in '"{' or as_number(s) is not None or s.upper() in ("TRUE", "FALSE"):
+        return True
+    if s.startswith("#"):
+        return s.upper() != "#REF!"
+    masked = mask_strings(s)
+    call = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(", masked)
+    if call and _closing_paren(masked, call.end() - 1) == len(s) - 1:
+        name = strip_storage_prefix(call.group(1)).upper()
+        return name not in REFERENCE_FUNCTIONS and not name.startswith("MM_")
+    depth = 0
+    for ch in masked:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and ch in _OPERATOR_CHARS:
+            return True  # arithmetic / comparison / concatenation gives a value
+    return False
+
+
+def reference_arg_problems(formula: str) -> list[dict]:
+    """Every argument in a reference-only position (REFERENCE_ARGS) that is
+    certainly not a reference -- i.e. why Excel would refuse to store this
+    formula. Each: {function, position (1-based), arg, start, end, call}
+    with start/end the span of the whole call in `formula`."""
+    if not formula or not formula.startswith("="):
+        return []
+    masked = mask_strings(formula)
+    problems = []
+    for m in FUNCTION_CALL_RE.finditer(masked):
+        name = strip_storage_prefix(m.group(1)).upper()
+        rule = REFERENCE_ARGS.get(name)
+        if rule is None:
+            continue
+        close = _closing_paren(masked, m.end() - 1)
+        if close < 0:
+            continue
+        spans = _arg_spans(masked, m.end(), close)
+        for pos in rule(len(spans)):
+            if pos < len(spans):
+                a, b = spans[pos]
+                arg = formula[a:b].strip()
+                if not_a_reference(arg):
+                    problems.append({"function": name, "position": pos + 1, "arg": arg, "start": m.start(), "end": close + 1, "call": formula[m.start() : close + 1]})
+    return problems
+
+
+def describe_reference_problem(p: dict) -> str:
+    return f"{p['function']} argument {p['position']} must be a cell range, but it is {p['arg']}"
+
+
+def _is_na(arg: str) -> bool:
+    s = arg.replace(" ", "").upper()
+    while s.startswith("(") and s.endswith(")"):
+        s = s[1:-1]
+    return s in ("NA()", "#N/A")
+
+
+def collapse_na_reference_calls(formula: str) -> str:
+    """Replace every call that has NA() / #N/A in a reference-only position by
+    NA() itself, innermost first: `=SUMIFS(NA(),J:J,"x")` -> `=NA()`, and
+    `=IFERROR(SUMIF(NA(),1),0)` -> `=IFERROR(NA(),0)`. Exact: such a call can
+    only ever have produced an error (it held a broken #REF! range), and NA()
+    is an error too, so every result -- IFERROR branches included -- stays the
+    same, while Excel now accepts the formula. Other problems are left alone."""
+    for _ in range(100):
+        na = [p for p in reference_arg_problems(formula) if _is_na(p["arg"])]
+        if not na:
+            break
+        p = min(na, key=lambda q: q["end"] - q["start"])
+        formula = formula[: p["start"]] + "NA()" + formula[p["end"] :]
+    return formula
