@@ -139,6 +139,9 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                     last = line
                 if st.get("state") in ("done", "error", "idle"):
                     break
+            if st.get("state") == "done":
+                # the whole result: every kind of fix with its reason, what is left and why (not the recalculation / analysis payloads)
+                st = {k: v for k, v in _get(base, f"/api/sessions/{sid}/auto-fix?full=1").items() if k not in ("recalc", "analysis")}
             fix = st.get("result") or {}
             (out_dir / "autofix_result.json").write_text(json.dumps(st, indent=1, ensure_ascii=False), encoding="utf-8")
             step("auto-fix", t, state=st.get("state"), error=st.get("error"), status=fix.get("status"), passes=fix.get("passes"),
