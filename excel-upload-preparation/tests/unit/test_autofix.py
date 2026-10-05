@@ -306,6 +306,12 @@ def test_what_indirect_and_offset_point_at_is_asked_from_excel(tmp_path):
     assert set(fixed) == {"B2", "C3"} and fixed["B2"]["sheet"] == "Data"  # C1 and C2 clear by themselves once Data!B2 is fixed
     after = _values(Path(res["output_path"]))
     assert after["Calc!C1"] == 0 and after["Calc!C2"] == 1 and after["Calc!C3"] == 0
+    # the scratch sheet the targets were asked on is gone from the saved file
+    wb = openpyxl.load_workbook(res["output_path"], read_only=True)
+    try:
+        assert wb.sheetnames == ["Calc", "Data"]
+    finally:
+        wb.close()
 
 
 # --- the assistant's say ----------------------------------------------------------------------

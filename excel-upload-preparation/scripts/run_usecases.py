@@ -6,6 +6,18 @@ exactly as a user would with the buttons:
     Recalculate again (the independent confirmation)
 
     python scripts/run_usecases.py --base http://127.0.0.1:8601 --out <dir> a.xlsm b.xlsm
+    python scripts/run_usecases.py --ports 8601,8602 --out <dir> a.xlsm b.xlsm c.xlsm
+
+With --ports the script starts a fresh server of its own for every workbook
+(one per port, so as many workbooks run side by side as there are ports) and
+stops it afterwards: a session keeps its analysis in memory, and four large
+workbooks in one server process do not fit.
+
+A workbook above the app's size limit is uploaded the way the upload screen
+offers: the sheets that hold most of the file (--skip-share, default one sheet
+>= 50 % of the unpacked size -- a data dump) are left out of the *scan*. The
+workbook itself stays whole: Prep, the recalculation and the automatic fixer
+work on all of it.
 
 Writes <out>/<stem>/result.json (every step, timings, error counts), the final
 workbook, and <out>/summary.json. Nothing is uploaded anywhere but the local app.
@@ -14,7 +26,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import queue
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -55,7 +71,7 @@ def _recalc_facts(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bool, autofix_options: dict[str, Any]) -> dict[str, Any]:
+def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bool, autofix_options: dict[str, Any], skip_share: float = 0.5) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     result: dict[str, Any] = {"workbook": str(workbook), "size_mb": round(workbook.stat().st_size / 1e6, 1), "base": base, "steps": [], "started": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -70,11 +86,15 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
         result["app"] = _get(base, "/api/health")
         t = time.time()
         with workbook.open("rb") as f:
-            body = _post(base, "/api/sessions", files={"file": (workbook.name, f, "application/octet-stream")}, data={"mode": "plan"})
+            body = _post(base, "/api/sessions", files={"file": (workbook.name, f, "application/octet-stream")}, data={"mode": "plan", "defer": "1"})
         sid = body["sessionId"]
         result["session"] = sid
+        size = body.get("size") or {}
+        skipped = [sh["name"] for sh in size.get("sheets", []) if size.get("above_threshold") and (sh.get("share") or 0) >= skip_share]
+        body = _post(base, f"/api/sessions/{sid}/analyze", json={"ignore_sheets": skipped})
         plan = body["plan"]
-        step("upload+analyze", t, report_status=body["report"]["status"], status_counts=body["report"]["summary"]["status_counts"],
+        step("upload+analyze", t, unpacked_mb=size.get("decompressed_mb"), above_size_limit=size.get("above_threshold"), sheets_left_out_of_the_scan=skipped,
+             report_status=body["report"]["status"], status_counts=body["report"]["summary"]["status_counts"],
              readiness=(body.get("readiness") or {}).get("state"), blocking=(body.get("readiness") or {}).get("blocking_count"))
 
         previous = None
@@ -148,23 +168,91 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
     return result
 
 
+def _serve(port: int, log: Path) -> subprocess.Popen:
+    """A server of this app on `port`, started for one workbook."""
+    root = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "MIND_READY_PORT": str(port), "PYTHONUTF8": "1"}
+    proc = subprocess.Popen([sys.executable, "-m", "app.web.server"], cwd=root, env=env, stdout=log.open("w", encoding="utf-8"), stderr=subprocess.STDOUT)
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            if requests.get(f"http://127.0.0.1:{port}/api/health", timeout=3).ok:
+                return proc
+        except requests.RequestException:
+            time.sleep(1)
+    proc.kill()
+    raise RuntimeError(f"the server on port {port} did not answer")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("workbooks", nargs="+", type=Path)
-    ap.add_argument("--base", default="http://127.0.0.1:8600")
+    ap.add_argument("--base", default="http://127.0.0.1:8600", help="a server that is already running")
+    ap.add_argument("--ports", default="", help="instead of --base: start a fresh server per workbook on these ports, e.g. 8601,8602")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--prep-rounds", type=int, default=3)
+    ap.add_argument("--skip-share", type=float, default=0.5, help="above the size limit, leave a sheet out of the scan when it holds at least this share of the file")
     ap.add_argument("--no-autofix", action="store_true", help="stop after the first recalculation (a baseline of what Prep leaves)")
     ap.add_argument("--no-assistant", action="store_true", help="auto-fix without asking the assistant (the built-in strategies only)")
+    ap.add_argument("--allow-handled", action="store_true", help="auto-fix with keep_good_values off: also fix errors a formula hides, listing every value that changes")
     args = ap.parse_args()
-    options = {"use_assistant": not args.no_assistant}
-    summary = []
-    for wb in args.workbooks:
-        res = flow(args.base, wb, args.out / wb.stem, args.prep_rounds, not args.no_autofix, options)
-        summary.append({k: res.get(k) for k in ("workbook", "ok", "clean", "errors_before_autofix", "errors_after", "total_seconds", "failure", "versions", "readiness")})
+    options = {"use_assistant": not args.no_assistant, "keep_good_values": not args.allow_handled, "time_budget_min": 240}
+    args.out.mkdir(parents=True, exist_ok=True)
+    results: dict[str, dict[str, Any]] = {}
+    lock = threading.Lock()
+
+    def save() -> None:
+        summary = [
+            {k: results[str(wb)].get(k) for k in ("workbook", "ok", "clean", "errors_before_autofix", "errors_after", "total_seconds", "failure", "versions", "readiness")}
+            for wb in args.workbooks if str(wb) in results
+        ]
         (args.out / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False), encoding="utf-8")
+
+    def one(base: str, wb: Path) -> None:
+        res = flow(base, wb, args.out / wb.stem, args.prep_rounds, not args.no_autofix, options, args.skip_share)
+        with lock:
+            results[str(wb)] = res
+            save()
+
+    if args.ports:
+        jobs: queue.Queue[Path] = queue.Queue()
+        for wb in args.workbooks:
+            jobs.put(wb)
+
+        def worker(port: int) -> None:
+            while True:
+                try:
+                    wb = jobs.get_nowait()
+                except queue.Empty:
+                    return
+                (args.out / wb.stem).mkdir(parents=True, exist_ok=True)
+                try:
+                    proc = _serve(port, args.out / wb.stem / "server.log")
+                except Exception as exc:
+                    with lock:
+                        results[str(wb)] = {"workbook": str(wb), "ok": False, "failure": str(exc)}
+                        save()
+                    continue
+                try:
+                    one(f"http://127.0.0.1:{port}", wb)
+                finally:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+
+        threads = [threading.Thread(target=worker, args=(int(p),)) for p in args.ports.split(",") if p.strip()]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    else:
+        for wb in args.workbooks:
+            one(args.base, wb)
+    summary = json.loads((args.out / "summary.json").read_text(encoding="utf-8")) if (args.out / "summary.json").exists() else []
     print(json.dumps(summary, indent=1, ensure_ascii=False))
-    return 0 if all(s.get("ok") and s.get("clean") for s in summary) else 1
+    return 0 if summary and all(x.get("ok") and x.get("clean") for x in summary) else 1
 
 
 if __name__ == "__main__":

@@ -123,6 +123,36 @@ def dynamic_calls(a1_formula: str) -> list[str]:
         pos = end + 1
 
 
+def qualify_refs(text: str, sheet: str) -> str:
+    """Give every reference of a formula fragment that names no sheet the sheet
+    it is written on, so the fragment means the same from another sheet."""
+    prefix = "'" + sheet.replace("'", "''") + "'!"
+    out: list[str] = []
+    pos = 0
+    for m in _STRING_RE.finditer(text):
+        out.append(_REF_RE.sub(lambda r: r.group(0) if r.group("sheet") else prefix + r.group(0), text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_REF_RE.sub(lambda r: r.group(0) if r.group("sheet") else prefix + r.group(0), text[pos:]))
+    return "".join(out)
+
+
+def target_probe(r1c1_formula: str, sheet: str) -> str | None:
+    """A formula (R1C1, every reference naming its sheet) that says where the
+    INDIRECT / OFFSET calls of `r1c1_formula` point: "row|column|sheet number|
+    rows|columns" per call, ";"-separated, "!" for a call that points nowhere.
+    Turned into A1 for the cell it probes, it can be written anywhere."""
+    calls = dynamic_calls(r1c1_formula)
+    if not calls:
+        return None
+    parts = []
+    for call in calls:
+        q = qualify_refs(call, sheet)
+        parts.append(f'IFERROR(MIN(ROW({q}))&"|"&MIN(COLUMN({q}))&"|"&SHEET({q})&"|"&ROWS({q})&"|"&COLUMNS({q}),"!")')
+    probe = "=" + '&";"&'.join(parts)
+    return probe if len(probe) < 8000 else None
+
+
 @dataclass(frozen=True)
 class Parsed:
     """What an R1C1 formula text reads, independent of the cell it sits in."""
@@ -130,6 +160,7 @@ class Parsed:
     names: tuple[str, ...]                  # candidate defined names, upper-cased
     funcs: frozenset[str]
     dynamic: bool                           # INDIRECT / OFFSET / a table reference: reads cells the text does not show
+    resolvable: bool                        # ... and all of it is INDIRECT / OFFSET, which Excel can be asked about
     external: bool                          # reads another workbook
     broken: bool                            # contains a literal #REF!
 
@@ -195,8 +226,9 @@ def parse_r1c1(formula: str) -> Parsed:
         external = True  # an external workbook prefix that no reference followed (e.g. a name in another book)
     funcs = frozenset(_STORAGE_PREFIX_RE.sub("", f).upper() for f in _FUNC_RE.findall(rest))
     names = tuple(sorted({n.upper() for n in _NAME_RE.findall(rest)} - {"TRUE", "FALSE"}))
-    dynamic = bool(funcs & DYNAMIC_FUNCS) or bool(_TABLE_RE.search(rest))
-    parsed = Parsed(tuple(refs), names, funcs, dynamic, external, broken)
+    table = bool(_TABLE_RE.search(rest))
+    dynamic = bool(funcs & DYNAMIC_FUNCS) or table
+    parsed = Parsed(tuple(refs), names, funcs, dynamic, dynamic and not table and not (funcs & DYNAMIC_FUNCS) - RESOLVABLE_FUNCS, external, broken)
     if len(_PARSE_CACHE) < 200_000:
         _PARSE_CACHE[formula] = parsed
     return parsed
@@ -509,6 +541,7 @@ class _Engine:
         self.t0 = time.time()
         self.sheets: list[_Sheet] = []
         self.sheet_index: dict[str, int] = {}
+        self.sheet_numbers: dict[int, int] = {}  # what SHEET() answers (position among all sheets, charts included) -> index here
         self.names: dict[str, tuple] = {}
         self.err: dict[Key, int] = {}            # formula cells that are errors now
         self.err0: set[Key] = set()              # ... that were errors when the workbook was opened
@@ -521,6 +554,8 @@ class _Engine:
         self.fixed_groups: set[tuple[int, int, str]] = set()  # (sheet, error, R1C1 text) with a fix already kept
         self.protected: dict[Key, str] = {}      # error cells that must stay: a good value depends on the error -> why
         self._dynamic_cache: dict[tuple[Key, str], list | None] = {}
+        self._scratch: tuple[int, int] | None = None  # (sheet index, column): the empty column probes are written in
+        self._scratch_ok = True
         self._last_test: tuple | None = None     # (violations, changed, written) of the last all-or-nothing round that failed
         self.moved_good: dict[Key, tuple[Any, Any]] = {}      # keep_good_values=False: good cell -> (value at start, value now)
         self._by_code: dict[int, CellIndex] = {}
@@ -626,6 +661,13 @@ class _Engine:
             sh.ws = ws
             self.sheets.append(sh)
             self.sheet_index[sh.name.upper()] = sh.index
+        try:
+            for n in range(1, int(wb.Sheets.Count) + 1):
+                i = self.sheet_index.get(str(wb.Sheets(n).Name).upper())
+                if i is not None:
+                    self.sheet_numbers[n] = i
+        except Exception:
+            self.sheet_numbers = {s.index + 1: s.index for s in self.sheets}
         total = sum(s.nr for s in self.sheets) or 1
         done = 0
         for sh in self.sheets:
@@ -775,7 +817,7 @@ class _Engine:
             elif target[0] == "dynamic":
                 dynamic = True
         if parsed.dynamic:
-            resolved = self.dynamic_rects(key, text) if not (parsed.funcs & DYNAMIC_FUNCS) - RESOLVABLE_FUNCS and not _TABLE_RE.search(_STRING_RE.sub('""', text)) else None
+            resolved = self.dynamic_rects(key, text) if parsed.resolvable else None
             if resolved is None:
                 dynamic = True
             else:
@@ -784,55 +826,135 @@ class _Engine:
 
     def dynamic_rects(self, key: Key, text: str) -> list[tuple[int, int, int, int, int]] | None:
         """The ranges the INDIRECT / OFFSET calls of the formula at `key` point at
-        right now (Worksheet.Evaluate of CELL("address", <call>), ROWS, COLUMNS).
-        A call that points nowhere (a sheet that does not exist) reads nothing:
-        that error is the cell's own. None when Excel could not tell."""
-        slot = (key, text)
-        if slot in self._dynamic_cache:
-            return self._dynamic_cache[slot]
-        si, row, col = key
-        sh = self.sheets[si]
-        out: list[tuple[int, int, int, int, int]] | None = []
-        try:
-            for call in dynamic_calls(r1c1_to_a1(text, row, col)):
-                if len(call) > 235:
-                    out = None
+        (see resolve_dynamic). None when it was not asked, or Excel could not tell."""
+        return self._dynamic_cache.get((key, text))
+
+    def _scratch_column(self) -> tuple[int, int] | None:
+        """An empty column, a few columns right of everything used, on the sheet
+        that leaves most room -- where probe formulas are written, read and
+        cleared. (A scratch *sheet* was tried first: adding a sheet makes Excel
+        re-evaluate GET.WORKBOOK-style names, which fails with macros disabled.)"""
+        if self._scratch is None and self._scratch_ok:
+            for sh in sorted(self.sheets, key=lambda x: x.c0 + x.nc):
+                col = sh.c0 + sh.nc + 3
+                if col > MAX_COL - 2:
                     break
-                address = _retry(lambda: sh.ws.Evaluate(f'CELL("address",{call})'))
-                self.counts["evaluations"] += 1
-                if not isinstance(address, str):
-                    continue  # an error value: the call points nowhere
-                m = _ADDRESS_RE.match(address.strip())
-                if not m:
-                    out = None
-                    break
-                sheet = m.group("sheet")
-                sj = si
-                if sheet:
-                    sheet = sheet[1:-1].replace("''", "'") if sheet.startswith("'") else sheet
-                    sheet = sheet.split("]")[-1]
-                    sj = self.sheet_index.get(sheet.upper(), -1)
-                    if sj < 0:
+                try:
+                    if bool(sh.ws.ProtectContents):
                         continue
-                r1 = int(m.group("row"))
-                c1 = 0
-                for ch in m.group("col"):
-                    c1 = c1 * 26 + ord(ch) - 64
-                height = _retry(lambda: sh.ws.Evaluate(f"ROWS({call})"))
-                width = _retry(lambda: sh.ws.Evaluate(f"COLUMNS({call})"))
-                h = int(height) if isinstance(height, float) and height >= 1 else 1
-                w = int(width) if isinstance(width, float) and width >= 1 else 1
-                out.append((sj, r1, r1 + h - 1, c1, c1 + w - 1))
-        except Exception:
-            out = None
-        if len(self._dynamic_cache) < 500_000:
-            self._dynamic_cache[slot] = out
+                except Exception:
+                    continue
+                self._scratch = (sh.index, col)
+                break
+            if self._scratch is None:
+                self._scratch_ok = False
+                self.note("no free column for probe formulas: what INDIRECT / OFFSET point at stays unknown")
+        return self._scratch
+
+    def drop_scratch(self) -> None:
+        """Nothing is left behind: probes are cleared as soon as they are read."""
+        self._scratch = None
+
+    def resolve_dynamic(self, keys: Iterable[Key]) -> None:
+        """Ask Excel where the INDIRECT / OFFSET calls of these cells point, all
+        at once: one probe formula per cell, written down an empty column (one
+        write), one recalculation, one read, then cleared.
+        Worksheet.Evaluate would do it cell by cell -- and answers #REF! for
+        INDIRECT inside another function."""
+        probes: list[tuple[Key, str, str]] = []
+        for key in keys:
+            text = self.formula_at(key)
+            if text is None or (key, text) in self._dynamic_cache or not parse_r1c1(text).resolvable:
+                continue
+            probe = target_probe(text, self.sheets[key[0]].name)
+            if probe is None:
+                self._dynamic_cache[(key, text)] = None
+                continue
+            probes.append((key, text, r1c1_to_a1(probe, key[1], key[2])))
+        if not probes:
+            return
+        where = self._scratch_column()
+        if where is None:
+            for key, text, _ in probes:
+                self._dynamic_cache[(key, text)] = None
+            return
+        t = time.time()
+        sh = self.sheets[where[0]]
+        ws = sh.ws
+        col = where[1]
+        step = 50_000
+        for start in range(0, len(probes), step):
+            batch = probes[start:start + step]
+            n = len(batch)
+
+            def write() -> None:
+                rng = ws.Range(ws.Cells(1, col), ws.Cells(n, col))
+                try:
+                    rng.Formula = tuple((b[2],) for b in batch)
+                finally:
+                    rng = None
+
+            ok = True
+            try:
+                _retry(write)
+            except Exception:
+                ok = False
+                for i, b in enumerate(batch):  # one probe Excel refuses: write them one by one
+                    try:
+                        cell = ws.Cells(i + 1, col)
+                        try:
+                            cell.Formula = b[2]
+                        finally:
+                            cell = None
+                    except Exception:
+                        pass
+            self.calculate()
+
+            def read() -> Any:
+                rng = ws.Range(ws.Cells(1, col), ws.Cells(n, col))
+                try:
+                    values = rng.Value2
+                    rng.ClearContents()
+                    return values
+                finally:
+                    rng = None
+
+            try:
+                values = _retry(read)
+            except Exception:
+                values = None
+            if not isinstance(values, tuple):
+                values = ((values,),)
+            for i, (key, text, _) in enumerate(batch):
+                value = values[i][0] if i < len(values) else None
+                self._dynamic_cache[(key, text)] = self._probe_rects(value)
+            if not ok:
+                self.counts["probe_fallbacks"] += 1
+        self.counts["dynamic_resolved"] += len(probes)
+        self.timings["dynamic"] += time.time() - t
+
+    def _probe_rects(self, value: Any) -> list[tuple[int, int, int, int, int]] | None:
+        if not isinstance(value, str):
+            return None
+        out: list[tuple[int, int, int, int, int]] = []
+        for part in value.split(";"):
+            if part == "!":
+                continue  # the call points nowhere: that error is the cell's own
+            try:
+                r, c, sheet_no, h, w = (int(float(x)) for x in part.split("|"))
+            except ValueError:
+                return None
+            sj = self.sheet_numbers.get(sheet_no, -1)
+            if sj >= 0:
+                out.append((sj, r, r + max(1, h) - 1, c, c + max(1, w) - 1))
         return out
 
     def classify(self) -> tuple[list[Key], list[Key], list[Key]]:
         """-> (roots, uncertain, propagated) among the error formula cells.
         An error is propagated when a cell it reads holds the same error."""
         blocked = self.blocked_cells()
+        self._dynamic_cache.clear()  # what a formula pointed at before the last fixes may not hold any more
+        self.resolve_dynamic(list(self.err))
         by_code: dict[int, CellIndex] = {}
         for key, code in self.err.items():
             by_code.setdefault(code, CellIndex())
@@ -888,6 +1010,7 @@ class _Engine:
         if not violations:
             return 0
         moved = CellIndex([k for k, _, _ in changed] + list(written))
+        self.resolve_dynamic([k for k, _, _ in changed if k not in written])
         was_error = {k for k, old, _ in changed if _is_error(old)}
         seen: set[Key] = set()
         stack = [k for k, _, _ in violations[:3000]]
@@ -1248,6 +1371,7 @@ class _Engine:
             the unit has failed without needing a round of its own,
             whether the walk is complete)."""
         moved = CellIndex([k for k, _, _ in changed] + list(written))
+        self.resolve_dynamic([k for k, _, _ in changed if k not in written])
         NOBODY, MANY = 0, 1
         label: dict[Key, Any] = {}      # cell -> NOBODY | a unit key (it alone) | MANY
         kids: dict[Key, list[Key]] = {}
@@ -1851,6 +1975,7 @@ def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = N
                         engine.note(f"stopped: {stopped}")
                         left = len(engine.genuine_errors()) + len(engine.const_err)
                         status = "clean" if left == 0 else ("partial" if engine.counts["accepted"] else "stuck")
+                    engine.drop_scratch()
                     if engine.counts["accepted"]:
                         engine.confirm()
                         left = len(engine.genuine_errors()) + len(engine.const_err)
@@ -1875,7 +2000,9 @@ def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = N
 
             session()
     except Exception as exc:
-        out.update({"status": "error", "ran": False, "message": f"The automatic fixer failed: {type(exc).__name__}: {str(exc)[:300]}"})
+        import traceback
+
+        out.update({"status": "error", "ran": False, "message": f"The automatic fixer failed: {type(exc).__name__}: {str(exc)[:300]}", "trace": traceback.format_exc()[-2500:]})
         return out
     out["seconds"] = round(time.time() - t0, 1)
     out["stopped"] = stopped
