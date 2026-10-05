@@ -236,3 +236,73 @@ def test_array_formulas_and_dead_formulas_and_error_constants(tmp_path):
     assert by_cell["D1"]["after"] == 0 and by_cell["F1"]["strategy"] == "error value cleared"
     after = _values(Path(res["output_path"]))
     assert after["Calc!B1"] == 2.5 and after["Calc!B2"] == 0 and after["Calc!B3"] == 5 and after["Calc!D2"] == 1 and after["Calc!F2"] == 0
+
+
+@needs_excel
+def test_an_error_a_formula_swallows_on_purpose_is_left_where_it_is_swallowed_and_the_rest_is_cleaned(tmp_path):
+    def fill(wb, ws):
+        ws["A1"], ws["B1"] = 10, 0
+        ws["C1"] = "=A1/B1"                      # the root: #DIV/0!
+        ws["C2"] = "=C1+1"                       # three cells that only repeat it ...
+        ws["C3"] = "=C2*2"
+        ws["C4"] = "=C3+5"
+        ws["E1"] = "=IFERROR(SUM(C4:C4),-1)"     # ... down to a formula that swallows it: -1 today, a sum once C4 has any value
+        ws["G2"] = "=C2*10"                      # branches off: these can be cleaned
+        ws["G3"] = "=C3*10"
+        ws["G4"] = "=G2+G3"
+
+    src = _book(tmp_path, fill)
+    res = run_autofix(src, tmp_path / "work")
+    assert res["status"] == "partial" and res["errors_before"] == 7 and res["errors_after"] == 1
+    # 0 in C1..C3 would reach E1; empty text does not (""+1 is an error again), so they are fixed with ""
+    # and one error is left: C4, the cell E1 swallows
+    assert [g["cell"] for g in res["left"]] == ["C4"] and "E1" in res["left"][0]["why"]
+    by_cell = {g["cell"]: g["after"] for g in res["fixes"]}
+    assert by_cell["C1"] == '=IFERROR(A1/B1,"")' and by_cell["G2"] == "=IFERROR(C2*10,0)"  # numbers resume off the channel
+    after = _values(Path(res["output_path"]))
+    assert after["Calc!E1"] == -1 and after["Calc!G2"] == 0 and after["Calc!G3"] == 0 and after["Calc!G4"] == 0
+    # lifting the owner's rule: everything is fixed in one go, and the value that moved is listed
+    res = run_autofix(src, tmp_path / "work2", AutoFixConfig(keep_good_values=False))
+    assert res["status"] == "clean" and res["passes"] == 1 and res["good_values_changed"] == 1
+    moved = res["good_values_changed_list"][0]
+    assert (moved["cell"], moved["before"], moved["after"]) == ("E1", -1, 7)
+
+
+@needs_excel
+def test_a_channel_no_fix_can_enter_is_pinned_at_once(tmp_path):
+    def fill(wb, ws):
+        ws["A1"], ws["B1"] = 10, 0
+        ws["C1"] = "=A1/B1"                      # the root: #DIV/0!
+        for r in range(2, 12):
+            ws[f"C{r}"] = f"=C{r - 1}"           # ten cells passing it on as it is (text would pass too)
+            ws[f"G{r}"] = f"=C{r}*10"            # a branch off each of them
+        ws["E1"] = "=IFERROR(SUM(C11:C11),-1)"   # the swallowing formula: 0 and "" in C1 both end up here
+
+    src = _book(tmp_path, fill)
+    res = run_autofix(src, tmp_path / "work")
+    assert res["status"] == "partial" and res["errors_before"] == 21 and res["errors_after"] == 11
+    assert {g["cell"] for g in res["left"]} == {"C1", "C2"}  # C1, and the block C2:C11 (one formula, one entry)
+    assert res["passes"] <= 4  # not one pass per level of the channel
+    after = _values(Path(res["output_path"]))
+    assert after["Calc!E1"] == -1 and all(after[f"Calc!G{r}"] == 0 for r in range(2, 12))
+
+
+@needs_excel
+def test_what_indirect_and_offset_point_at_is_asked_from_excel(tmp_path):
+    def fill(wb, ws):
+        data = wb.create_sheet("Data")
+        data["A1"], data["A2"] = 4, 0
+        data["B1"] = "=1/A1"
+        data["B2"] = "=1/A2"                     # the root: #DIV/0!
+        ws["A1"], ws["A2"] = "Data", 2
+        ws["C1"] = '=INDIRECT("\'"&A1&"\'!B"&A2)'  # only repeats Data!B2 -- nothing in its text says so
+        ws["C2"] = "=OFFSET(Data!B1,1,0)+1"      # the same through OFFSET
+        ws["C3"] = '=INDIRECT("Nowhere!A1")'     # its own error: the sheet does not exist
+
+    src = _book(tmp_path, fill)
+    res = run_autofix(src, tmp_path / "work")
+    assert res["status"] == "clean" and res["errors_before"] == 4
+    fixed = {g["cell"]: g for g in res["fixes"]}
+    assert set(fixed) == {"B2", "C3"} and fixed["B2"]["sheet"] == "Data"  # C1 and C2 clear by themselves once Data!B2 is fixed
+    after = _values(Path(res["output_path"]))
+    assert after["Calc!C1"] == 0 and after["Calc!C2"] == 1 and after["Calc!C3"] == 0

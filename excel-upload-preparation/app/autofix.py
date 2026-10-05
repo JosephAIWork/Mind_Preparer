@@ -48,7 +48,7 @@ from typing import Any, Callable, Iterable
 
 from .change_apply import append_change_log
 from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place, verify_opens_in_excel
-from .formula_utils import num_to_col
+from .formula_utils import collapse_na_reference_calls, num_to_col
 from .inventory import make_immutable_copy, sha256_of
 from .recalc import XL_ERROR_CODES
 
@@ -62,7 +62,8 @@ MAX_ROW, MAX_COL = 1_048_576, 16_384
 NUMERIC_TOL = 1e-9
 TRANSIENT_COM_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
 VOLATILE_FUNCS = {"NOW", "TODAY", "RAND", "RANDBETWEEN", "RANDARRAY"}
-DYNAMIC_FUNCS = {"INDIRECT", "OFFSET", "CELL", "INFO", "GETPIVOTDATA", "EVALUATE"}
+DYNAMIC_FUNCS = {"INDIRECT", "OFFSET", "GETPIVOTDATA", "EVALUATE"}  # they read cells the formula text does not name
+RESOLVABLE_FUNCS = {"INDIRECT", "OFFSET"}                       # ... and for these Excel can say which ones
 LOOKUP_FUNCS = {"VLOOKUP", "HLOOKUP", "XLOOKUP", "LOOKUP", "MATCH", "XMATCH", "INDEX"}
 ERROR_CODE_OF = {v: k for k, v in XL_ERROR_CODES.items()}
 MAX_REPORTED = 400  # groups / left-over cells listed in the result (the counts are always complete)
@@ -91,6 +92,35 @@ _TABLE_RE = re.compile(rf"[A-Za-z_À-￿][{_WORD}]*\[")
 _REF_LITERAL_RE = re.compile(rf"(?<![:{_WORD}'])(?:{_SHEET_PREFIX})?#REF!(?![:\w])")
 _PURE_NA_RE = re.compile(r"^=\s*\+?\s*NA\(\s*\)\s*$", re.IGNORECASE)
 _STORAGE_PREFIX_RE = re.compile(r"^_xl[a-z]+\.", re.IGNORECASE)
+
+
+_DYNAMIC_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:INDIRECT|OFFSET)\s*\(", re.IGNORECASE)
+_ADDRESS_RE = re.compile(r"^(?:(?P<sheet>'(?:[^']|'')+'|[^!]+)!)?\$?(?P<col>[A-Z]{1,3})\$?(?P<row>\d{1,7})$")
+
+
+def dynamic_calls(a1_formula: str) -> list[str]:
+    """The outermost INDIRECT(...) / OFFSET(...) calls of an A1 formula, as text."""
+    masked = _STRING_RE.sub(lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', a1_formula)
+    out: list[str] = []
+    pos = 0
+    while True:
+        m = _DYNAMIC_CALL_RE.search(masked, pos)
+        if not m:
+            return out
+        depth = 0
+        end = -1
+        for k in range(m.end() - 1, len(masked)):
+            if masked[k] == "(":
+                depth += 1
+            elif masked[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = k
+                    break
+        if end < 0:
+            return out
+        out.append(a1_formula[m.start():end + 1])
+        pos = end + 1
 
 
 @dataclass(frozen=True)
@@ -362,9 +392,12 @@ def candidate_fixes(formula: str, parsed: Parsed, kind_of_value: str, preferred:
     body: str | None = formula[1:]
     dead = False
     if parsed.broken:
+        # the deleted reference becomes NA(); a call that needs a range there (SUMIFS(#REF!, ...) --
+        # Excel refuses SUMIFS(NA(), ...)) becomes NA() as a whole. What is left may still compute
+        # in another branch, so IFERROR goes first; the plain value is the last resort.
         substituted = _REF_LITERAL_RE.sub("NA()", formula)
-        body = None if "#REF!" in substituted.upper() else substituted[1:]
-        dead = body is None
+        body = None if "#REF!" in substituted.upper() else collapse_na_reference_calls(substituted)[1:]
+        dead = True
     if body is not None and _PURE_NA_RE.match("=" + body):
         body, dead = None, True
     out: list[dict[str, Any]] = []
@@ -393,9 +426,13 @@ CONSTANT_FIXES = [
 # --- configuration, units -------------------------------------------------------------------
 @dataclass
 class AutoFixConfig:
-    max_passes: int = 40
+    max_passes: int = 500
     time_budget_s: float = 3 * 3600
     numeric_tol: float = NUMERIC_TOL
+    # The owner's rule: a good number never changes. False lifts it -- for the values that
+    # only exist because a formula was swallowing the error being fixed (=IFERROR(<the error>, 0)
+    # shows 0 today and computes once the error is gone). Every such change is then listed.
+    keep_good_values: bool = True
     # advisor(groups) -> {group key: {"fallback": '0'|'""'|'FALSE', "reason": str}} -- the assistant's say on
     # what an error group should return (app/autofix_advisor.py); None = the built-in order only
     advisor: Callable[[list[dict[str, Any]]], dict[str, dict[str, Any]]] | None = None
@@ -481,6 +518,12 @@ class _Engine:
         self.votes: dict[tuple[int, str], list[int]] = {}  # (sheet, R1C1 text) -> [numbers, texts, booleans] among healthy cells
         self.units: dict[Key, Unit] = {}
         self.cell_unit: dict[Key, Key] = {}      # every cell of an array / spill unit -> the unit's key
+        self.fixed_groups: set[tuple[int, int, str]] = set()  # (sheet, error, R1C1 text) with a fix already kept
+        self.protected: dict[Key, str] = {}      # error cells that must stay: a good value depends on the error -> why
+        self._dynamic_cache: dict[tuple[Key, str], list | None] = {}
+        self._last_test: tuple | None = None     # (violations, changed, written) of the last all-or-nothing round that failed
+        self.moved_good: dict[Key, tuple[Any, Any]] = {}      # keep_good_values=False: good cell -> (value at start, value now)
+        self._by_code: dict[int, CellIndex] = {}
         self.advice: dict[str, dict[str, Any]] = {}
         self.group_sample: dict[str, dict[str, Any]] = {}
         self.timings: dict[str, float] = defaultdict(float)
@@ -711,12 +754,14 @@ class _Engine:
             return list(range(min(a, b), max(a, b) + 1))
         return []
 
-    def precedent_rects(self, key: Key, parsed: Parsed) -> tuple[list[tuple[int, int, int, int, int]], bool]:
+    def precedent_rects(self, key: Key, text: str) -> tuple[list[tuple[int, int, int, int, int]], bool]:
         """Every rectangle the formula at `key` reads that this module can see,
-        and whether it also reads something it cannot (dynamic)."""
+        and whether it also reads something it cannot (dynamic). What INDIRECT
+        and OFFSET point at is asked from Excel, cell by cell."""
+        parsed = parse_r1c1(text)
         si, row, col = key
         out: list[tuple[int, int, int, int, int]] = []
-        dynamic = parsed.dynamic
+        dynamic = False
         for ref in parsed.refs:
             for sj in self._sheets_of(ref[0], si):
                 r1, r2, c1, c2 = ref_rect(ref, row, col)
@@ -729,25 +774,83 @@ class _Engine:
                 out.append(target[1:])
             elif target[0] == "dynamic":
                 dynamic = True
+        if parsed.dynamic:
+            resolved = self.dynamic_rects(key, text) if not (parsed.funcs & DYNAMIC_FUNCS) - RESOLVABLE_FUNCS and not _TABLE_RE.search(_STRING_RE.sub('""', text)) else None
+            if resolved is None:
+                dynamic = True
+            else:
+                out.extend(resolved)
         return out, dynamic
+
+    def dynamic_rects(self, key: Key, text: str) -> list[tuple[int, int, int, int, int]] | None:
+        """The ranges the INDIRECT / OFFSET calls of the formula at `key` point at
+        right now (Worksheet.Evaluate of CELL("address", <call>), ROWS, COLUMNS).
+        A call that points nowhere (a sheet that does not exist) reads nothing:
+        that error is the cell's own. None when Excel could not tell."""
+        slot = (key, text)
+        if slot in self._dynamic_cache:
+            return self._dynamic_cache[slot]
+        si, row, col = key
+        sh = self.sheets[si]
+        out: list[tuple[int, int, int, int, int]] | None = []
+        try:
+            for call in dynamic_calls(r1c1_to_a1(text, row, col)):
+                if len(call) > 235:
+                    out = None
+                    break
+                address = _retry(lambda: sh.ws.Evaluate(f'CELL("address",{call})'))
+                self.counts["evaluations"] += 1
+                if not isinstance(address, str):
+                    continue  # an error value: the call points nowhere
+                m = _ADDRESS_RE.match(address.strip())
+                if not m:
+                    out = None
+                    break
+                sheet = m.group("sheet")
+                sj = si
+                if sheet:
+                    sheet = sheet[1:-1].replace("''", "'") if sheet.startswith("'") else sheet
+                    sheet = sheet.split("]")[-1]
+                    sj = self.sheet_index.get(sheet.upper(), -1)
+                    if sj < 0:
+                        continue
+                r1 = int(m.group("row"))
+                c1 = 0
+                for ch in m.group("col"):
+                    c1 = c1 * 26 + ord(ch) - 64
+                height = _retry(lambda: sh.ws.Evaluate(f"ROWS({call})"))
+                width = _retry(lambda: sh.ws.Evaluate(f"COLUMNS({call})"))
+                h = int(height) if isinstance(height, float) and height >= 1 else 1
+                w = int(width) if isinstance(width, float) and width >= 1 else 1
+                out.append((sj, r1, r1 + h - 1, c1, c1 + w - 1))
+        except Exception:
+            out = None
+        if len(self._dynamic_cache) < 500_000:
+            self._dynamic_cache[slot] = out
+        return out
 
     def classify(self) -> tuple[list[Key], list[Key], list[Key]]:
         """-> (roots, uncertain, propagated) among the error formula cells.
         An error is propagated when a cell it reads holds the same error."""
+        blocked = self.blocked_cells()
         by_code: dict[int, CellIndex] = {}
         for key, code in self.err.items():
-            by_code.setdefault(code, CellIndex()).by_sheet[key[0]].add((key[1], key[2]))
+            by_code.setdefault(code, CellIndex())
+            if key not in blocked:
+                by_code[code].by_sheet[key[0]].add((key[1], key[2]))
         for key, code in self.const_err.items():
-            by_code.setdefault(code, CellIndex()).by_sheet[key[0]].add((key[1], key[2]))
+            if key not in blocked:
+                by_code.setdefault(code, CellIndex()).by_sheet[key[0]].add((key[1], key[2]))
         roots: list[Key] = []
         uncertain: list[Key] = []
         propagated: list[Key] = []
         for key, code in self.err.items():
+            if key in blocked:
+                continue
             text = self.formula_at(key)
             if text is None:
                 continue
-            parsed = parse_r1c1(text)
-            rects, dynamic = self.precedent_rects(key, parsed)
+            rects, dynamic = self.precedent_rects(key, text)
             idx = by_code[code]
             me = (key[1], key[2])
             hit = False
@@ -761,7 +864,123 @@ class _Engine:
                 uncertain.append(key)
             else:
                 roots.append(key)
+        self._by_code = by_code
         return roots, uncertain, propagated
+
+    def blocked_cells(self) -> set[Key]:
+        """Error cells every fix of which failed: they stay, listed for a person.
+        The cells that read them are not "only repeating" an error that will go
+        away -- they are where the cleaning can still start."""
+        out: set[Key] = set(self.protected)
+        for u in self.units.values():
+            if u.accepted is None and u.tries >= len(u.fixes):
+                out.update(u.cells if u.kind == "array" else [u.key])
+        return out
+
+    def pin_channel(self, unit: Unit, violations: list, changed: list, written: dict[Key, Unit]) -> int:
+        """`unit` failed alone, with its last fix: good values moved. Between it
+        and those values runs a channel of error cells -- each of them, fixed,
+        would move the same values (the formula at the end is swallowing the
+        error: =IFERROR(<...>, 0), =IF(ISERROR(...))...). They are kept as they
+        are, at once, instead of being found out one level per pass; the cells
+        that read them from outside the channel are where cleaning goes on.
+        -> how many cells were pinned."""
+        if not violations:
+            return 0
+        moved = CellIndex([k for k, _, _ in changed] + list(written))
+        was_error = {k for k, old, _ in changed if _is_error(old)}
+        seen: set[Key] = set()
+        stack = [k for k, _, _ in violations[:3000]]
+        while stack and len(seen) < 400_000:
+            key = stack.pop()
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in written:
+                continue
+            text = self.formula_at(key)
+            if text is None:
+                continue
+            rects, _ = self.precedent_rects(key, text)
+            for sj, r1, r2, c1, c2 in rects:
+                for r, c in moved.cells_in(sj, r1, r2, c1, c2, limit=20_000):
+                    if (sj, r, c) not in seen:
+                        stack.append((sj, r, c))
+        own = set(unit.cells)
+        k0, old0, new0 = violations[0]
+        why = (
+            f"it feeds {self.sheets[k0[0]].name}!{a1(k0[1], k0[2])}"
+            + (f" and {len(violations) - 1} more good value(s)" if len(violations) > 1 else "")
+            + f", which only hold(s) because this error is there: fixing it would change {self.sheets[k0[0]].name}!{a1(k0[1], k0[2])} from {_show(old0)} to {_show(new0)}"
+        )
+        n = 0
+        for key in seen:
+            if key in was_error and key not in own and key not in self.protected and key in self.err:
+                self.protected[key] = why
+                n += 1
+        if n:
+            self.note(f"{self.sheets[unit.key[0]].name}!{a1(unit.key[1], unit.key[2])} cannot be fixed without changing a good value: {n} error cell(s) between it and that value stay as they are")
+        return n
+
+    def chain_members(self, roots: list[Key], propagated: list[Key]) -> list[Key]:
+        """A recurrence down a column (=R[-1]C+RC[3]-R[-1]C[3], 600 rows) where every
+        cell fails on its own: fixing the first one only makes the second one the
+        next root, one pass per row. Once a formula block has had a fix kept and
+        shows a root again, the cells of that block whose only failing inputs are
+        cells of the block being fixed are taken in the same pass. A block that
+        merely repeats its first cell's error never gets here: fixing that cell
+        clears it."""
+        advanced: set[tuple[int, int, str]] = set()
+        for key in roots:
+            g = (key[0], self.err[key], self.formula_at(key) or "")
+            if g in self.fixed_groups:
+                advanced.add(g)
+        if not advanced:
+            return []
+        candidates = {k for k in propagated if (k[0], self.err.get(k, 0), self.formula_at(k) or "") in advanced}
+        if not candidates:
+            return []
+        fixing = set(roots)
+        waiting: dict[Key, set[Key]] = {}
+        readers: dict[Key, list[Key]] = defaultdict(list)
+        for key in candidates:
+            idx = self._by_code[self.err[key]]
+            rects, _ = self.precedent_rects(key, self.formula_at(key) or "")
+            failing: set[Key] = set()
+            ok = True
+            for sj, r1, r2, c1, c2 in rects:
+                hits = idx.cells_in(sj, r1, r2, c1, c2, limit=40, exclude=(key[1], key[2]) if sj == key[0] else None)
+                if len(hits) >= 40:
+                    ok = False
+                    break
+                for r, c in hits:
+                    p = (sj, r, c)
+                    if p not in candidates and p not in fixing:
+                        ok = False
+                        break
+                    failing.add(p)
+                if not ok:
+                    break
+            if not ok:
+                continue
+            waiting[key] = {p for p in failing if p not in fixing}
+            for p in waiting[key]:
+                readers[p].append(key)
+        members: list[Key] = []
+        queue = [k for k, w in waiting.items() if not w]
+        while queue:
+            key = queue.pop()
+            if key in fixing:
+                continue
+            fixing.add(key)
+            members.append(key)
+            for reader in readers.get(key, ()):
+                w = waiting.get(reader)
+                if w is not None:
+                    w.discard(key)
+                    if not w:
+                        queue.append(reader)
+        return members
 
     # -- units --
     def _kind_of_value(self, si: int, text: str, parsed: Parsed) -> str:
@@ -823,15 +1042,16 @@ class _Engine:
                             fresh.append(unit)
         return fresh
 
-    def _ladder(self, si: int, code: int, text: str, parsed: Parsed) -> list[dict[str, Any]]:
+    def _ladder(self, si: int, code: int, text: str, parsed: Parsed, key: Key | None = None) -> list[dict[str, Any]]:
         advice = self.advice.get(self.group_key(si, code, text)) or {}
-        fixes = candidate_fixes(text, parsed, self._kind_of_value(si, text, parsed), advice.get("fallback"))
+        preferred = advice.get("fallback")
+        fixes = candidate_fixes(text, parsed, self._kind_of_value(si, text, parsed), preferred)
         if advice.get("reason"):
             fixes = [{**f, "why": advice["reason"]} if n == 0 else f for n, f in enumerate(fixes)]
         return fixes
 
     def _plain_unit(self, key: Key, text: str, parsed: Parsed, code: int) -> Unit:
-        unit = Unit(key, key[1], key[2], "cell", text, XL_ERROR_CODES[code], self.group_key(key[0], code, text), self._ladder(key[0], code, text, parsed))
+        unit = Unit(key, key[1], key[2], "cell", text, XL_ERROR_CODES[code], self.group_key(key[0], code, text), self._ladder(key[0], code, text, parsed, key))
         self.units[key] = unit
         return unit
 
@@ -871,7 +1091,7 @@ class _Engine:
             self.cell_unit[key] = anchor
             return None
         anchor_text = self.formula_at(anchor) or text
-        unit = Unit(anchor, r2, c2, kind, anchor_text, XL_ERROR_CODES[code], self.group_key(si, code, anchor_text), self._ladder(si, code, anchor_text, parse_r1c1(anchor_text)))
+        unit = Unit(anchor, r2, c2, kind, anchor_text, XL_ERROR_CODES[code], self.group_key(si, code, anchor_text), self._ladder(si, code, anchor_text, parse_r1c1(anchor_text), anchor))
         self.units[anchor] = unit
         if kind == "array":
             for k in unit.cells:
@@ -1012,56 +1232,140 @@ class _Engine:
             if text is not None and text in self.volatile_texts:
                 continue
             out.append((key, old, new))
+        if out and not self.cfg.keep_good_values:
+            for key, old, new in out:
+                first = self.moved_good.get(key)
+                self.moved_good[key] = (first[0] if first else old, new)
+            return []
         return out
 
-    def blame(self, violations: list[tuple[Key, Any, Any]], changed: list[tuple[Key, Any, Any]], written: dict[Key, Unit]) -> tuple[set[Key], bool]:
+    def blame(self, violations: list[tuple[Key, Any, Any]], changed: list[tuple[Key, Any, Any]], written: dict[Key, Unit]) -> tuple[set[Key], dict[Key, list], bool]:
         """Walk back from each violation through the cells whose value moved, to
-        the units written in this pass. -> (unit keys, whether the walk is complete)."""
+        the units written in this round.
+        -> (every unit some violation leads back to,
+            {unit: its violations} for the units that are the ONLY one a violation
+            leads back to -- that good value moved because of that unit alone, so
+            the unit has failed without needing a round of its own,
+            whether the walk is complete)."""
         moved = CellIndex([k for k, _, _ in changed] + list(written))
+        NOBODY, MANY = 0, 1
+        label: dict[Key, Any] = {}      # cell -> NOBODY | a unit key (it alone) | MANY
+        kids: dict[Key, list[Key]] = {}
+        open_cells: set[Key] = set()
         blamed: set[Key] = set()
-        complete = True
-        seen: set[Key] = set()
-        stack = [k for k, _, _ in violations[:400]]
-        start = set(stack)
-        if len(violations) > 400:
-            complete = False
-        while stack:
-            if len(seen) > 60_000:
-                complete = False
-                break
-            key = stack.pop()
-            if key in seen:
-                continue
-            seen.add(key)
-            unit = written.get(key)
-            if unit is not None:
-                blamed.add(unit.key)
-                continue
-            text = self.formula_at(key)
-            if text is None:
-                continue
-            rects, dynamic = self.precedent_rects(key, parse_r1c1(text))
-            if dynamic:
-                complete = False
-            found = False
-            for sj, r1, r2, c1, c2 in rects:
-                for r, c in moved.cells_in(sj, r1, r2, c1, c2, limit=5000):
-                    if (sj, r, c) != key:
-                        found = True
-                        stack.append((sj, r, c))
-            if not found and key in start:
-                complete = False
-        return blamed, complete
+        sole: dict[Key, list] = defaultdict(list)
+        complete = len(violations) <= 3000
+        for violation in violations[:3000]:
+            stack = [violation[0]]
+            while stack:
+                if len(label) > 500_000:
+                    complete = False
+                    break
+                key = stack[-1]
+                if key in label:
+                    stack.pop()
+                    continue
+                unit = written.get(key)
+                if unit is not None:
+                    label[key] = unit.key
+                    blamed.add(unit.key)
+                    stack.pop()
+                    continue
+                if key not in kids:
+                    found: list[Key] = []
+                    text = self.formula_at(key)
+                    if text is not None:
+                        rects, dynamic = self.precedent_rects(key, text)
+                        if dynamic:
+                            complete = False
+                        for sj, r1, r2, c1, c2 in rects:
+                            for r, c in moved.cells_in(sj, r1, r2, c1, c2, limit=5000):
+                                if (sj, r, c) != key:
+                                    found.append((sj, r, c))
+                    kids[key] = found
+                    open_cells.add(key)
+                    waiting = [c for c in found if c not in label and c not in open_cells]
+                    if waiting:
+                        stack.extend(waiting)
+                        continue
+                who: Any = NOBODY
+                for c in kids[key]:
+                    got = label.get(c, NOBODY)
+                    if got == NOBODY:
+                        continue
+                    if who == NOBODY:
+                        who = got
+                    elif who != got:
+                        who = MANY
+                    if who == MANY:
+                        break
+                label[key] = who
+                open_cells.discard(key)
+                stack.pop()
+            who = label.get(violation[0], NOBODY)
+            if who == NOBODY:
+                complete = False  # a good value moved and nothing written explains it
+            elif who != MANY:
+                sole[who].append(violation)
+        return blamed, dict(sole), complete
 
-    def settle(self, units: list[Unit], label: str, depth: int = 0) -> list[Unit]:
+    def settle(self, units: list[Unit], label: str) -> list[Unit]:
         """Apply the units' current fixes and keep the ones that pass the gate.
         A unit that fails moves on to its next fix (tried on a later pass).
-        -> the accepted units."""
+        -> the accepted units.
+
+        One round for the whole lot. When good values moved, the walk back from
+        them names the suspects (often too many: a cell that reads two fixed
+        cells blames both); they are taken out, the rest is kept, and the
+        suspects are then tried again by halves until each has an exact verdict
+        -- a group that passes alone is kept, a single unit that fails alone has
+        failed."""
         self.check_budget()
-        units = [u for u in units if u.tries < len(u.fixes)]
+        units = [u for u in units if u.tries < len(u.fixes) and u.accepted is None]
         if not units:
             return []
         self.tell("fix", f"{label}: writing {len(units)} fix{'es' if len(units) != 1 else ''}", None, pass_no=self.passes, writing=len(units))
+        kept, suspects = self._round(units, use_blame=True)
+        if suspects:
+            self.note(f"{label}: {len(kept)} kept at once, {len(suspects)} suspected of changing a good value -> tried again by halves")
+        stack = [suspects] if suspects else []
+        rounds = 0
+        while stack:
+            self.check_budget()
+            group = [u for u in stack.pop() if u.tries < len(u.fixes) and u.accepted is None]
+            if not group:
+                continue
+            rounds += 1
+            self.tell("fix", f"{label}: checking {len(group)} suspected fix{'es' if len(group) != 1 else ''} ({len(kept)} kept so far)", None, pass_no=self.passes, writing=len(group))
+            ok, violations = self._round(group, use_blame=False)
+            kept += ok
+            rest = [u for u in group if u.accepted is None and u.tries < len(u.fixes)]
+            if not violations or not rest:
+                continue
+            if len(group) == 1:
+                unit = rest[0]
+                self._failed(unit, violations, False)
+                if unit.tries >= len(unit.fixes) and self._last_test is not None:
+                    self.pin_channel(unit, *self._last_test)
+                continue
+            if len(rest) == 1:
+                stack.append(rest)  # its partner had its own verdict: this one is tried alone
+                continue
+            half = self._split(rest)
+            stack.append(rest[half:])
+            stack.append(rest[:half])
+        if rounds:
+            self.note(f"{label}: {rounds} extra round(s) to sort out the suspects")
+        return kept
+
+    def _round(self, units: list[Unit], use_blame: bool) -> tuple[list[Unit], list[Any]]:
+        """Write `units`, recalculate, read, judge. Excel is left holding exactly
+        the accepted state, and the stored values match it.
+
+        use_blame=True  -> (kept, suspects): the units the walk back from the moved
+                           good values points at are reverted *without a verdict*.
+        use_blame=False -> (kept, violations): all or nothing; with violations
+                           everything is reverted and nothing is kept."""
         refused = self.apply(units)
         for u in refused:
             u.tries += 1
@@ -1069,66 +1373,64 @@ class _Engine:
             self.revert([u for u in refused if u.kind != "cell"], count=False)  # a half-written array
             bad = {u.key for u in refused}
             units = [u for u in units if u.key not in bad]
-            if not units:
+        if not units:
+            if refused:
                 self.calculate()
-                return []
+            return [], []
         self.calculate()
         fresh, changed = self.read_changes()
         written: dict[Key, Unit] = {}
         for u in units:
             for k in u.cells:
                 written[k] = u
-        # a fix that leaves its own cell in error cured nothing
         new_value = {k: new for k, _, new in changed}
-        useless = [u for u in units if u.kind != "const" and _is_error(new_value.get(u.key, self.value_at(u.key) if u.key not in new_value else None))]
+        # a fix that leaves its own cell in error cured nothing
+        useless = [u for u in units if u.kind != "const" and _is_error(new_value[u.key] if u.key in new_value else self.value_at(u.key))]
         violations = self.judge(changed, set(written))
         if not violations and not useless:
             self._accept(units, fresh, changed)
-            return units
-        guilty: set[Key] = {u.key for u in useless}
-        useless_keys = set(guilty)
-        complete = True
+            return units, []
+        useless_keys = {u.key for u in useless}
+        suspects: list[Unit] = []
+        guilty: list[Unit] = []
         if violations:
-            blamed, complete = self.blame(violations, changed, written)
-            guilty |= blamed
-        if complete and guilty:
-            out = [u for u in units if u.key in guilty]
-            keep = [u for u in units if u.key not in guilty]
-            self.revert(out)
-            for u in out:
-                self._failed(u, violations, u.key in useless_keys)
-            self.calculate()
-            fresh, changed = self.read_changes()
-            violations = self.judge(changed, {k for u in keep for k in u.cells})
-            if not violations:
-                self._accept(keep, fresh, changed)
-                return keep
-            if not keep:
-                for key, _, _ in violations:  # nothing of ours is written any more: these move by themselves
-                    self.unstable.add(key)
-                self.commit(fresh, changed)
-                return []
-            units = keep  # the walk missed something: fall through to the split
-        # everything back, then find the guilty ones by halves
-        self.revert(units)
+            blamed, sole, complete = self.blame(violations, changed, written) if use_blame else (set(), {}, False)
+            if complete and blamed:
+                guilty = [u for u in units if u.key in sole and u.key not in useless_keys]
+                suspects = [u for u in units if u.key in blamed and u.key not in sole and u.key not in useless_keys]
+                for u in guilty:
+                    self._failed(u, sole[u.key], False)
+                    if u.tries >= len(u.fixes):
+                        self.pin_channel(u, sole[u.key], changed, written)
+            else:
+                suspects = [u for u in units if u.key not in useless_keys]
+        out_keys = useless_keys | {u.key for u in suspects} | {u.key for u in guilty}
+        keep = [u for u in units if u.key not in out_keys]
+        if violations and not use_blame:
+            self._last_test = (violations, changed, written)
+        self.revert(useless + suspects + guilty)
+        for u in useless:
+            self._failed(u, [], True)
         self.calculate()
         fresh, changed = self.read_changes()
-        leftover = self.judge(changed, set())
-        if leftover:
-            # these moved although nothing is written any more: they are not ours (volatile / iterative)
-            for key, _, _ in leftover:
+        moved = self.judge(changed, {k for u in keep for k in u.cells})
+        if moved and keep:
+            # the walk missed a culprit: everything back, every unit of this round is a suspect
+            self.revert(keep)
+            suspects = suspects + keep
+            keep = []
+            self.calculate()
+            fresh, changed = self.read_changes()
+            moved = self.judge(changed, set())
+        if moved:
+            # these move although nothing of ours is written: volatile / iterative, not ours to guard
+            for key, _, _ in moved:
                 self.unstable.add(key)
-            self.note(f"{len(leftover)} cell(s) change by themselves between recalculations: left out of the gate")
-        self.commit(fresh, [c for c in changed])
-        if len(units) == 1:
-            self._failed(units[0], violations, units[0].key in useless_keys)
-            return []
-        if depth > 24:
-            for u in units:
-                self._failed(u, violations, False)
-            return []
-        half = self._split(units)
-        return self.settle(units[:half], label, depth + 1) + self.settle(units[half:], label, depth + 1)
+            self.note(f"{len(moved)} cell(s) change by themselves between recalculations: left out of the gate")
+        self._accept(keep, fresh, changed)
+        if use_blame:
+            return keep, suspects
+        return keep, violations
 
     @staticmethod
     def _split(units: list[Unit]) -> int:
@@ -1154,6 +1456,8 @@ class _Engine:
         for u in units:
             fix = u.fixes[u.tries]
             u.accepted = fix
+            if u.kind != "const":
+                self.fixed_groups.add((u.key[0], ERROR_CODE_OF.get(u.error, 0), u.old))
             if u.kind == "const":
                 self.const_err.pop(u.key, None)
                 continue
@@ -1199,7 +1503,7 @@ class _Engine:
             if advice and u.kind != "const" and u.tries == 0:
                 si = u.key[0]
                 code = ERROR_CODE_OF.get(u.error, 0)
-                u.fixes = self._ladder(si, code, u.old, parse_r1c1(u.old))
+                u.fixes = self._ladder(si, code, u.old, parse_r1c1(u.old), u.key)
 
     def _context(self, unit: Unit) -> dict[str, Any]:
         """What the assistant may look at: the labels left of and above the cell,
@@ -1218,7 +1522,7 @@ class _Engine:
         except Exception:
             pass
         reads = []
-        rects, _ = self.precedent_rects(unit.key, parse_r1c1(unit.old))
+        rects, _ = self.precedent_rects(unit.key, unit.old)
         for sj, r1, r2, c1, c2 in rects[:6]:
             if (r2 - r1 + 1) * (c2 - c1 + 1) <= 4:
                 for r in range(r1, r2 + 1):
@@ -1292,32 +1596,41 @@ class _Engine:
             name_gap = {k for k in roots + uncertain + propagated if k not in remaining}
             roots = [k for k in roots if k not in name_gap]
             uncertain = [k for k in uncertain if k not in name_gap]
-            fresh_units = self.make_units(roots) + self.make_const_units()
+            chain = self.chain_members(roots, propagated) if roots else []
+            if chain:
+                self.note(f"pass {self.passes}: {len(chain)} cell(s) of formula blocks that fail row after row are taken together")
+                roots = roots + chain
+            t = time.time()
+            self.make_units(roots)
+            self.make_const_units()
             todo = self._open_units(roots) + [u for u in self.units.values() if u.kind == "const" and u.accepted is None and u.tries < len(u.fixes)]
             tier = "the cells where errors start"
             if not todo:
                 self.make_units(uncertain)
                 todo = self._open_units(uncertain)
                 tier = "cells that read other cells indirectly (INDIRECT / OFFSET / a named formula)"
-            if not todo and not any(u.accepted is None and u.tries >= len(u.fixes) for u in self.units.values()):
+            if not todo:
                 # nothing is a clear starting point (errors that feed each other): take them all
                 rest = [k for k in propagated if k not in name_gap]
                 self.make_units(rest)
                 todo = self._open_units(rest)
                 tier = "the remaining error cells"
-                last_resort = True
+                last_resort = last_resort or bool(todo)
+            self.timings["units"] += time.time() - t
             if not todo:
                 break
             self.note(f"pass {self.passes}: {len(remaining)} errors, {len(roots)} roots, {len(uncertain)} uncertain, {len(propagated)} propagated -> {len(todo)} unit(s) to fix ({tier})")
             self.ask_advisor(todo)
             todo.sort(key=lambda u: (u.group, u.key))
             before = len(remaining) + len(self.const_err)
+            verdicts = sum(u.tries for u in todo)
             accepted = self.settle(todo, f"Pass {self.passes}")
             after = len(self.genuine_errors()) + len(self.const_err)
-            self.note(f"pass {self.passes}: {len(accepted)} of {len(todo)} fix(es) kept, errors {before} -> {after}")
+            failed = sum(u.tries for u in todo) - verdicts
+            self.note(f"pass {self.passes}: {len(accepted)} of {len(todo)} fix(es) kept, {failed} failed, errors {before} -> {after}")
             self.tell("pass", f"Pass {self.passes}: {len(accepted)} fix(es) kept, {after} error(s) left", None, pass_no=self.passes, errors=after, kept=len(accepted))
-            stalled = stalled + 1 if after >= before and not accepted else 0
-            if stalled >= 6:
+            stalled = 0 if accepted or failed else stalled + 1
+            if stalled >= 3:
                 break
         self.last_resort_used = last_resort
         left = len(self.genuine_errors()) + len(self.const_err)
@@ -1400,13 +1713,15 @@ class _Engine:
             g = left_groups.get(gk)
             if g is None:
                 why = "its error comes from another cell that could not be fixed"
-                if unit is not None and unit.notes:
+                if key in self.protected:
+                    why = self.protected[key]
+                elif unit is not None and unit.notes:
                     why = "; ".join(unit.notes[-3:])
                 elif unit is not None and not unit.fixes:
                     why = "no safe fix is known for this formula"
                 g = left_groups[gk] = {
                     "sheet": self.sheets[key[0]].name, "cell": a1(key[1], key[2]), "error": XL_ERROR_CODES.get(code, "?"),
-                    "formula": r1c1_to_a1(text, key[1], key[2]) if text else "", "count": 0, "why": why, "tried": bool(unit is not None and unit.notes),
+                    "formula": r1c1_to_a1(text, key[1], key[2]) if text else "", "count": 0, "why": why, "tried": bool(unit is not None and unit.notes) or key in self.protected,
                 }
             g["count"] += 1
             if len(left) < 5000:
@@ -1417,6 +1732,12 @@ class _Engine:
                 "sheet": self.sheets[key[0]].name, "cell": a1(key[1], key[2]), "error": XL_ERROR_CODES.get(code, "?"), "formula": "(an error value typed or pasted as data)",
                 "count": 1, "why": "; ".join(unit.notes[-3:]) if unit and unit.notes else "not fixed", "tried": bool(unit and unit.notes),
             }
+        moved_good = []
+        for key, (old, new) in sorted(self.moved_good.items()):
+            if _same(old, new, self.cfg.numeric_tol):
+                continue
+            text = self.formula_at(key) or ""
+            moved_good.append({"sheet": self.sheets[key[0]].name, "cell": a1(key[1], key[2]), "before": _plain(old), "after": _plain(new), "formula": r1c1_to_a1(text, key[1], key[2]) if text else ""})
         addin_gap = [k for k in self.err if k not in remaining]
         fix_groups = sorted(groups.values(), key=lambda g: -g["cells"])
         left_list = sorted(left_groups.values(), key=lambda g: (not g["tried"], -g["count"]))
@@ -1433,6 +1754,8 @@ class _Engine:
             "left_cells": left,
             "addin_gap_cells": [{"sheet": self.sheets[k[0]].name, "cell": a1(k[1], k[2]), "formula": r1c1_to_a1(self.formula_at(k) or "", k[1], k[2])} for k in sorted(addin_gap)[:2000]],
             "unstable_cells": len(self.unstable),
+            "good_values_changed": len(moved_good), "good_values_changed_list": moved_good[:2000],
+            "keep_good_values": self.cfg.keep_good_values,
             "formula_cells": self.formula_cells,
             "applied": applied,
             "timings": {k: round(v, 1) for k, v in self.timings.items()},
@@ -1455,6 +1778,13 @@ def _show(v: Any) -> str:
     return repr(v) if isinstance(v, str) else str(v)
 
 
+def _plain(v: Any) -> Any:
+    """A cell value for a JSON result: error codes as their text."""
+    if v.__class__ is int and v in XL_ERROR_CODES:
+        return XL_ERROR_CODES[v]
+    return v
+
+
 def _com_text(exc: BaseException) -> str:
     info = getattr(exc, "excepinfo", None)
     if info and len(info) > 2 and info[2]:
@@ -1469,6 +1799,9 @@ def summary_sentence(res: dict[str, Any]) -> str:
     if res.get("status") == "unchanged":
         return "No formula error to fix: the workbook already recalculates clean."
     fixed = f"{res.get('cells_rewritten', 0)} cell(s) rewritten in {res.get('passes', 0)} pass(es); errors {before} → {after}"
+    moved = res.get("good_values_changed", 0)
+    if res.get("status") == "clean" and moved:
+        return f"Clean: every formula recalculates without an error. {fixed}. {moved} value(s) that an error handler was hiding have changed (listed)."
     if res.get("status") == "clean":
         return f"Clean: every formula recalculates without an error. {fixed}. No value that was good before has changed."
     if res.get("status") == "partial":
@@ -1582,8 +1915,10 @@ if __name__ == "__main__":  # python -m app.autofix <workbook> <work dir>
         if stage != "read":
             print(f"  [{stage}] {message}", flush=True)
 
-    result = run_autofix(Path(sys.argv[1]), Path(sys.argv[2]), AutoFixConfig(progress=_print))
-    brief = {k: v for k, v in result.items() if k not in ("applied", "fixes", "left", "recalc", "change_log_entry", "log")}
+    stop_file = Path(sys.argv[2]) / "STOP"  # create it to end the run cleanly (what is accepted is kept)
+    result = run_autofix(Path(sys.argv[1]), Path(sys.argv[2]), AutoFixConfig(progress=_print, keep_good_values="--allow-handled" not in sys.argv, should_stop=stop_file.exists))
+    Path(sys.argv[2], "autofix_result.json").write_text(json.dumps(result, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    brief = {k: v for k, v in result.items() if k not in ("applied", "fixes", "left", "recalc", "change_log_entry", "log", "good_values_changed_list")}
     print(json.dumps(brief, indent=1, ensure_ascii=False, default=str))
     print("--- log")
     print("\n".join(result.get("log", [])))
