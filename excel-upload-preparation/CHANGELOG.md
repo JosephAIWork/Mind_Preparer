@@ -48,7 +48,12 @@ How it works (`app/autofix.py`), in ONE Excel session:
   rewrite is written to the **whole block** -- every cell sharing the formula
   -- and kept only if the error cells are cured, **every cell of the block
   that works today still returns exactly the same value**, and the numbers
-  gate passes. Otherwise it is undone and the wrap is used.
+  gate passes. Otherwise it is undone and the wrap is used. A language model's
+  text is about to go into a client's workbook, so before anything is written
+  `repair_refused()` checks that the rewrite only reads what the original
+  reads (same sheets, same names, no other workbook), only calls what the
+  original calls plus a short list of guards (IF, IFERROR, IFNA, N, VALUE,
+  ISNUMBER...), and holds no DDE link.
 - **The numbers gate**: recalculate, re-read every formula cell, and compare
   with the workbook as it was opened. A formula cell that had a valid value
   must still have exactly that value. The walk back from a moved value names
@@ -148,12 +153,18 @@ Three changes:
   cells of PVFP, more on CNHI's 124,000). A mixed block is split into rows, a
   mixed row into cells; the result is the same cell for cell
   (`tests/unit/test_explicit_colors.py` compares both ways).
-- Tests: `tests/unit/test_autofix.py` (25: R1C1 reading, range index, the
+- A COM lesson: the fixer's Excel session lives in a function of its own
+  (`_fix_in_excel`). While the Excel proxy of that session was still held by
+  `run_autofix`'s frame during the next session (`verify_opens_in_excel`),
+  its late release left the thread's COM apartment unusable: the next
+  recalculation in the same process failed with "The interface is unknown"
+  (8 tests of the full suite, each passing when run alone).
+- Tests: `tests/unit/test_autofix.py` (26: R1C1 reading, range index, the
   ladder, and the engine in a real Excel -- roots, rollback, layers, arrays,
   swallowed errors, pinned channels, INDIRECT / OFFSET, the assistant's
   fallbacks and repairs), `tests/unit/test_numbers_check.py` (4), three more
   in `test_prep_reference_safety.py`, two in `test_web_api.py`,
-  `test_explicit_colors.py` (2).
+  `test_explicit_colors.py` (2). Full suite: 281 passed.
 
 ## 1.7.4
 

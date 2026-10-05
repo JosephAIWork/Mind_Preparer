@@ -165,7 +165,7 @@ export default function AutoFixPanel({ blocked = false, onRunningChange }: Props
         <div className="text-[13px] font-semibold text-[#111827]">Fix all automatically</div>
         <p className="text-[12px] text-[#6B7280] mt-1 max-w-2xl">
           The app goes through the errors by itself: it finds the cells where errors start, fixes them, recalculates,
-          and undoes any fix that changes a value that is good today. You can still fix errors one by one below.
+          and undoes any fix that changes a value that is good today. Every fix is listed with its reason. You can still fix errors one by one below.
         </p>
 
         {!running && (
@@ -180,7 +180,7 @@ export default function AutoFixPanel({ blocked = false, onRunningChange }: Props
             </button>
             <label className="flex items-center gap-2 text-[12px] text-[#374151] cursor-pointer select-none">
               <input type="checkbox" checked={useAssistant} onChange={(e) => setUseAssistant(e.target.checked)} className="accent-[#0F766E]" />
-              Ask the assistant which value fits each error
+              Ask the assistant which fix fits each kind of error
             </label>
           </div>
         )}

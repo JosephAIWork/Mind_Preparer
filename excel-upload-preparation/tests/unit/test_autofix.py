@@ -421,3 +421,26 @@ def test_the_assistants_repair_is_taken_only_when_it_is_a_formula_without_a_dead
     got = parse_answer(text)
     assert got[1] == {"fallback": "0", "reason": "r1", "formula": "=R[-1]C+N(RC[-1])"}
     assert "formula" not in got[2] and "formula" not in got[3] and "formula" not in got[4]
+
+
+def test_a_rewrite_by_the_assistant_may_only_guard_what_the_original_already_reads():
+    """A language model's text goes into a client's workbook: it may add a guard or a
+    conversion, never a new source of data or a new way to reach outside."""
+    from app.autofix import repair_refused
+
+    old = "=R[-1]C+RC[-1]/Data!R5C3*Rate"
+    assert repair_refused(old, "=R[-1]C+IF(Data!R5C3=0,0,N(RC[-1])/Data!R5C3)*Rate") is None
+    assert repair_refused(old, "=IFNA(R[-1]C+RC[-1]/Data!R5C3*Rate,0)") is None
+    assert "same formula" in repair_refused(old, old)
+    assert "DDE" in repair_refused(old, "=cmd|'/c calc'!A1")
+    assert "another workbook" in repair_refused(old, "=R[-1]C+'[Other.xlsx]Sheet1'!R1C1")
+    assert "WEBSERVICE" in repair_refused(old, '=R[-1]C+WEBSERVICE("http://x")')
+    assert "INDIRECT" in repair_refused(old, '=R[-1]C+INDIRECT("A1")')
+    assert "SECRET" in repair_refused(old, "=R[-1]C+Secret")
+    assert "Hidden" in repair_refused(old, "=R[-1]C+Hidden!R1C1")
+    assert "#REF!" in repair_refused(old, "=R[-1]C+#REF!")
+    assert "reads nothing" in repair_refused("=RC[-1]/RC[-2]", "=0")
+    assert "not a formula" in repair_refused(old, "0")
+    # what the original already does stays allowed: its own lookup, its own other workbook
+    assert repair_refused("=VLOOKUP(RC1,Data!C1:C2,2,FALSE)", "=IFNA(VLOOKUP(RC1,Data!C1:C2,2,FALSE),0)") is None
+    assert repair_refused("='[Src.xlsx]A'!R1C1/RC[-1]", "=IF(RC[-1]=0,0,'[Src.xlsx]A'!R1C1/RC[-1])") is None

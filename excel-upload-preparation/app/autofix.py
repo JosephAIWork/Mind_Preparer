@@ -456,6 +456,47 @@ def candidate_fixes(formula: str, parsed: Parsed, kind_of_value: str, preferred:
     return out
 
 
+# What a repair written by the assistant may add to a formula. A language model's text is
+# about to be written into a client's workbook: it may guard, convert and test -- nothing else.
+SAFE_REPAIR_FUNCS = frozenset({
+    "IF", "IFS", "IFERROR", "IFNA", "N", "T", "VALUE", "NA", "ISNUMBER", "ISTEXT", "ISBLANK", "ISERROR", "ISERR", "ISNA",
+    "AND", "OR", "NOT", "MAX", "MIN", "ABS", "SUM", "ROUND", "LEN", "TRIM",
+})
+
+
+def repair_refused(old: str, new: str) -> str | None:
+    """Why the assistant's rewrite `new` of the formula `old` (both R1C1) must not
+    be written at all -- None when it may be tried. It may only read what the
+    original reads (the same sheets, the same names, no other workbook) and
+    call what the original calls plus a short list of guards; DDE, a deleted
+    reference and a formula that reads nothing any more are refused. Whether it
+    is *right* is then decided by the block check and the numbers gate."""
+    if not new.startswith("=") or len(new) > 4000:
+        return "it is not a formula of a reasonable length"
+    if new == old:
+        return "it is the same formula"
+    if "|" in _STRING_RE.sub('""', new):
+        return "it contains '|' (a DDE link)"
+    was, now = parse_r1c1(old), parse_r1c1(new)
+    if now.broken:
+        return "it contains #REF!"
+    if now.external and not was.external:
+        return "it reads another workbook"
+    extra = sorted(now.funcs - was.funcs - SAFE_REPAIR_FUNCS)
+    if extra:
+        return f"it calls {', '.join(extra)}, which the original formula does not"
+    names = sorted(set(now.names) - set(was.names))
+    if names:
+        return f"it uses the name {', '.join(names)}, which the original formula does not"
+    sheets = {r[0] for r in was.refs}
+    other = sorted({str(r[0][1]) for r in now.refs if r[0] is not None and r[0] not in sheets and len(r[0]) > 1})
+    if other:
+        return f"it reads the sheet {', '.join(other)}, which the original formula does not"
+    if was.refs and not now.refs and not now.names:
+        return "it reads nothing any more"
+    return None
+
+
 CONSTANT_FIXES = [
     {"kind": "value", "content": "", "strategy": "error value cleared", "what": "the cell held an error value typed or pasted as data: cleared"},
     {"kind": "value", "content": 0, "strategy": "error value replaced by 0", "what": "the cell held an error value typed or pasted as data: replaced by 0"},
@@ -1480,9 +1521,11 @@ class _Engine:
                 continue
             rounds += 1
             self.tell("fix", f"{label}: checking {len(group)} suspected fix{'es' if len(group) != 1 else ''} ({len(kept)} kept so far)", None, pass_no=self.passes, writing=len(group))
+            tried = {id(u): u.tries for u in group}
             ok, violations = self._round(group, use_blame=False)
             kept += ok
-            rest = [u for u in group if u.accepted is None and u.tries < len(u.fixes)]
+            # a unit Excel refused, or whose own cell stayed in error, got its verdict inside the round
+            rest = [u for u in group if u.accepted is None and u.tries < len(u.fixes) and u.tries == tried[id(u)]]
             if not violations or not rest:
                 continue
             if len(group) == 1:
@@ -1668,10 +1711,10 @@ class _Engine:
             self.repair_tried.add(block)
             advice = self.advice[units[0].group]
             formula = str(advice["formula"])
-            old = parse_r1c1(block[1])
-            new = parse_r1c1(formula)
-            if formula == block[1] or new.broken or (old.refs and not new.refs and not new.names):
-                continue  # not a repair: the same formula, or one that reads nothing any more
+            refused = repair_refused(block[1], formula)
+            if refused:
+                self.note(f"repair proposed for {self.sheets[block[0]].name}!{a1(units[0].key[1], units[0].key[2])} not tried: {refused}")
+                continue
             trials.append({"block": block, "units": units, "formula": formula, "reason": advice.get("reason") or ""})
         if not trials:
             return todo
@@ -2076,8 +2119,11 @@ class _Engine:
         }
 
     def release(self) -> None:
+        """Let go of every COM proxy: none may outlive the Excel session."""
         for sh in self.sheets:
             sh.ws = None
+        self.wb = None
+        self.excel = None
 
 
 def _show(v: Any) -> str:
@@ -2128,6 +2174,64 @@ def summary_sentence(res: dict[str, Any]) -> str:
     return f"Nothing could be fixed safely: {after} error(s) are left for a person."
 
 
+def _fix_in_excel(copy_path: Path, cfg: AutoFixConfig, out: dict[str, Any]) -> str | None:
+    """The Excel session of a run: open the copy, run the engine, confirm, save.
+    Fills `out` with the engine's report. -> why the run stopped early, if it did."""
+    stopped: str | None = None
+    with excel_session() as excel:
+        def session() -> None:
+            nonlocal stopped
+            wb = None
+            engine = None
+            try:
+                wb = open_for_write(excel, copy_path)
+                calc_mode = None
+                try:
+                    calc_mode = excel.Calculation
+                    excel.Calculation = XL_MANUAL
+                except Exception:
+                    calc_mode = None
+                for attr, value in (("ScreenUpdating", False), ("CalculationInterruptKey", 0)):
+                    try:
+                        setattr(excel, attr, value)
+                    except Exception:
+                        pass
+                engine = _Engine(excel, wb, cfg)
+                try:
+                    status = engine.run()
+                except Stop as exc:
+                    stopped = str(exc)
+                    engine.note(f"stopped: {stopped}")
+                    left = len(engine.genuine_errors()) + len(engine.const_err)
+                    status = "clean" if left == 0 else ("partial" if engine.counts["accepted"] else "stuck")
+                engine.drop_scratch()
+                if engine.counts["accepted"]:
+                    engine.confirm()
+                    left = len(engine.genuine_errors()) + len(engine.const_err)
+                    status = "clean" if left == 0 else "partial"
+                out.update(engine.report())
+                out["status"] = status
+                out["ran"] = True
+                if engine.counts["accepted"]:
+                    engine.tell("save", "Saving the fixed copy", None)
+                    if calc_mode is not None:
+                        try:
+                            excel.Calculation = calc_mode
+                        except Exception:
+                            pass
+                    save_in_place(wb, copy_path)
+                    out["saved"] = True
+            finally:
+                if engine is not None:
+                    engine.release()
+                engine = None
+                close_quietly(wb)
+                wb = None
+
+        session()
+    return stopped
+
+
 def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = None) -> dict[str, Any]:
     """Fix the formula errors of `source_path` on a fresh copy in `work_dir`.
 
@@ -2142,58 +2246,12 @@ def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = N
     t0 = time.time()
     copy_path, source_sha = make_immutable_copy(source_path, Path(work_dir))
     out: dict[str, Any] = {"status": "error", "ran": False}
-    stopped: str | None = None
     try:
-        with excel_session() as excel:
-            def session() -> None:
-                nonlocal stopped
-                wb = None
-                engine = None
-                try:
-                    wb = open_for_write(excel, copy_path)
-                    calc_mode = None
-                    try:
-                        calc_mode = excel.Calculation
-                        excel.Calculation = XL_MANUAL
-                    except Exception:
-                        calc_mode = None
-                    for attr, value in (("ScreenUpdating", False), ("CalculationInterruptKey", 0)):
-                        try:
-                            setattr(excel, attr, value)
-                        except Exception:
-                            pass
-                    engine = _Engine(excel, wb, cfg)
-                    try:
-                        status = engine.run()
-                    except Stop as exc:
-                        stopped = str(exc)
-                        engine.note(f"stopped: {stopped}")
-                        left = len(engine.genuine_errors()) + len(engine.const_err)
-                        status = "clean" if left == 0 else ("partial" if engine.counts["accepted"] else "stuck")
-                    engine.drop_scratch()
-                    if engine.counts["accepted"]:
-                        engine.confirm()
-                        left = len(engine.genuine_errors()) + len(engine.const_err)
-                        status = "clean" if left == 0 else "partial"
-                    out.update(engine.report())
-                    out["status"] = status
-                    out["ran"] = True
-                    if engine.counts["accepted"]:
-                        engine.tell("save", "Saving the fixed copy", None)
-                        if calc_mode is not None:
-                            try:
-                                excel.Calculation = calc_mode
-                            except Exception:
-                                pass
-                        save_in_place(wb, copy_path)
-                        out["saved"] = True
-                finally:
-                    if engine is not None:
-                        engine.release()
-                    close_quietly(wb)
-                    wb = None
-
-            session()
+        # In a function of its own: every frame that holds the Excel proxy is gone before the
+        # next Excel session (verify_opens_in_excel) starts. A proxy of the session before,
+        # released while a new one runs, leaves the thread's COM apartment unusable -- the
+        # next recalculation in the process failed with "The interface is unknown".
+        stopped = _fix_in_excel(copy_path, cfg, out)
     except Exception as exc:
         import traceback
 
