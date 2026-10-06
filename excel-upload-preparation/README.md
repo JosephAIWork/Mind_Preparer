@@ -22,7 +22,7 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.1)
+## Current status (1.8.2)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
@@ -36,7 +36,9 @@ the two honest cases below.
   **FRM-009**: a number compared with an empty cell, directly or through a
   reference / VLOOKUP that lands on one (0 in Excel, not 0 in Mind). Each has
   a Prep action that rewrites the formulas without changing Excel's values;
-  after both, Mind reported no difference for Horizon.
+  after both, Mind reported no difference for Horizon. **FRM-010** (1.8.2): an
+  exact lookup whose key holds `""` over a table Prep gave a title -- Mind
+  matches the empty header cell; same action.
 
 - **Fix all automatically** (1.8.0): one button on the Recalculate screen and
   the app goes through the formula errors by itself (`app/autofix.py`,

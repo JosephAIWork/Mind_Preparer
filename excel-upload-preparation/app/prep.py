@@ -1137,12 +1137,14 @@ def plan_guard_blank_arithmetic(analysis, report) -> tuple[list[dict], list[str]
             skipped.append(f"{where}: holds a broken reference (#REF!) -- repair that first, then run Prep again")
         else:
             cells = ", ".join(s["blank_cells"][:3])
+            what = "looks it up (Mind would match an empty cell of the table)" if s.get("lookup_key") and not s.get("arithmetic") else "computes on"
             note = (
-                f'{cells} holds "": Excel stops there and returns the IFERROR fallback, Mind computes on; the test for "" now comes first (same result in Excel)'
+                f'{cells} holds "": Excel stops there and returns the IFERROR fallback, Mind {what}; the test for "" now comes first (same result in Excel)'
                 if s["blank_now"]
                 else f"same formula as the rest of its block, where {cells} holds \"\"; kept as one formula down the block (same result in Excel)"
             )
-            ops.append(_op("set_formula", "guard_blank_arithmetic", "FRM-008", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+            rule = "FRM-010" if s.get("lookup_key") and not s.get("arithmetic") else "FRM-008"
+            ops.append(_op("set_formula", "guard_blank_arithmetic", rule, s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
     return ops, skipped
 
 
@@ -1189,7 +1191,7 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
     {"id": "freeze_spill_refs", "title": "Replace spilled-range references (A1#) by the fixed range they cover today", "rule_ids": ["FRM-003"], "default_on": True, "level": BLOCKING,
      "caution": "Mind rejects ANCHORARRAY() (Office 365 dynamic arrays); each 'A1#' becomes the range the spill covers now, so a source that grows later will not be followed -- add MM_RANGE by hand if it must", "planner": plan_freeze_spill_refs},
-    {"id": "guard_blank_arithmetic", "title": "Test for empty text before the arithmetic (Mind counts \"\" as 0, Excel stops on it)", "rule_ids": ["FRM-008"], "default_on": True, "level": BLOCKING,
+    {"id": "guard_blank_arithmetic", "title": "Test for empty text before the arithmetic or lookup (Mind counts \"\" as 0 and matches it to an empty cell; Excel stops on it)", "rule_ids": ["FRM-008", "FRM-010"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), down the whole filled-down block; Excel returns the same values ('Did the numbers change?' proves it)", "planner": plan_guard_blank_arithmetic},
     {"id": "empty_cells_as_zero", "title": "Read empty cells as 0 where they are compared with a number (Mind does not)", "rule_ids": ["FRM-009"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: N() goes around the reading of an empty cell, or around the reference / lookup that lands on it; Excel returns the same values -- N() of text is 0 as well, so look again if such a cell is meant to hold text one day", "planner": plan_empty_cells_as_zero},

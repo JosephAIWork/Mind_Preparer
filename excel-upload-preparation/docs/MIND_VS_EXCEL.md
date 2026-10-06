@@ -135,18 +135,80 @@ The same in Mind, so there is nothing to rewrite:
 - `cell=""` on an empty cell (C41), and arithmetic on an empty cell (Horizon:
   `C11 = C3+C7-C15` matched).
 
+## The third difference: a lookup with a "" key, after Prep's titles
+
+Mind reported no difference for the file above (the v2 rewritten by a script).
+The same model **through the app** -- Prep with its grid titles, the fixer, Prep
+again -- came back with one group: `CALCUL!T192:T812`, "Mind returns NaN", on
+the rows after the loan ends, where the key F is `""`:
+
+    T192 = 1+($C$10=1)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),IF(F192<50,Criteres!$O$12,Criteres!$O$33))
+
+The formula is identical in both files. Four more uploads found the cause:
+
+- Taking back Prep's 29 title cells on `CALCUL`: still NaN. Taking back the 29
+  on `Criteres`: clean. Testing for `""` before the lookup (column T only): clean.
+- A sheet `Diag` with each part of the formula in its own cell, in three
+  versions of the file (D: as the app made it; E: the two titles around the
+  table T looks up taken back -- `Criteres!N8`, `O10`; F: the other 27 taken back):
+
+| Cell | What it shows | Excel | D: the app's output | E: N8, O10 taken back | F: the other 27 taken back |
+|---|---|---|---|---|---|
+| C2 | the key: CALCUL!F192 ("" in Excel) | (blank) | same | same | same |
+| C3 | is the key ""? | TRUE | same | same | same |
+| C4 | the lookup with that key | not found | **Mind: text** | same | **Mind: text** |
+| C5 | the fallback alone | 1.15 | same | same | same |
+| C6 | lookup, else fallback (what T multiplies by 0) | 1.15 | **Mind: text** | same | **Mind: text** |
+| C7 | 0 times that | 0 | **Mind: NaN** | same | **Mind: NaN** |
+| C8 | the lookup with the number 51 | 1.0942 | same | same | same |
+| C9 | the lookup with the number 71 (last row) | 1.15 | same | same | same |
+| C10 | the lookup with CALCUL!F35 (51) | 1.0942 | same | same | same |
+| C11 | Criteres!O12 | 1.0879 | same | same | same |
+| C12 | Criteres!O33 | 1.15 | same | same | same |
+| C13 | Criteres!N12 | 50 | same | same | same |
+| C14 | is Criteres!O33 a number? | TRUE | same | same | same |
+| C15 | is Criteres!N11 (no header) ""? | TRUE | same | same | same |
+| C16 | Criteres!O11 (the header) | AT - Âge atteint | same | same | same |
+| C17 | the lookup with "" typed in the formula | not found | **Mind: text** | same | **Mind: text** |
+| C18 | the lookup with that key, table without its header row | not found | same | same | same |
+| C19 | the same key on the other table (Criteres E:F) | not found | **Mind: text** | **Mind: text** | same |
+| C20 | CALCUL!T192 | 100% | **Mind: NaN** | same | **Mind: NaN** |
+| C21 | CALCUL!T35 | 100% | same | same | same |
+| C22 | T192's formula rebuilt here | 1 | **Mind: NaN** | same | **Mind: NaN** |
+| C23 | does the key match anything in the first column? | not found | **Mind: differs** | same | **Mind: differs** |
+| C24 | is the lookup's result a number? | FALSE | same | same | same |
+| C25 | is the lookup's result text? | FALSE | **Mind: differs** | same | **Mind: differs** |
+
+So: **a titled table whose first header cell is empty** (`Criteres!N11`; the
+header `AT - Âge atteint` sits in O11 only) makes Mind match a `""` key to
+that empty header cell. The lookup returns the header text (C4, C6, C17, C25),
+`0 * text` is NaN (C7, C20, C22), and MATCH returns a row (C23). Without the
+title, and in Excel, `""` finds nothing. Number keys are not affected (C8-C10).
+The same happens on the other table of that sheet (C19, titles `E8`, `F10`).
+A small test workbook with the same layout on invented data did not
+reproduce it (`Mind_test_workbook_3.xlsx`): what in Mind's grid detection
+makes the difference is not known.
+
+Rule **FRM-010** flags an exact VLOOKUP / HLOOKUP / MATCH inside IFERROR whose
+key is a cell that holds `""` and whose looked-up column or row has an empty
+cell; the Prep action puts the test for `""` in front, as for FRM-008.
+
 ## In the app
 
-- Rules **FRM-008** and **FRM-009** (`app/validators/mind_values.py`), both
+- Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all
   REQUIRED. On the files above they flag exactly what Mind listed: Horizon v2
   -- 1,242 cells for FRM-008 (E192:E812, F192:F812), H9 and C20!C15 for
   FRM-009; Horizon v4 -- nothing; the test workbook -- C19, C20, and C33, C34,
   C44, C49 (through C32 and C43).
-- Prep actions **Test for empty text before the arithmetic** and **Read empty
-  cells as 0 where they are compared** write the rewrites; Excel's values stay
-  as they are.
+- Prep actions **Test for empty text before the arithmetic or lookup** (FRM-008,
+  FRM-010) and **Read empty cells as 0 where they are compared** (FRM-009) write
+  the rewrites; Excel's values stay as they are.
 
 ## Not covered
+
+- A `""` key in a lookup that is not inside IFERROR (in Excel that cell shows
+  #N/A -- the recalculation step catches it), or in XLOOKUP / INDEX-MATCH forms
+  other than MATCH(key, range, 0).
 
 - `IF(ISERROR(x), ...)` used instead of IFERROR.
 - INDEX/MATCH, XLOOKUP, OFFSET or INDIRECT landing on an empty cell: only

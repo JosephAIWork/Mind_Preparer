@@ -5,6 +5,8 @@ confirmed in Mind with a 49-cell test workbook:
 
   FRM-008  =IFERROR(1+INT((D192-1)/12),"") with D192 = "": blank in Excel, a number in Mind
   FRM-009  =IF(D35<=$H$9,0,1) with H9 = a VLOOKUP that lands on an empty cell: 1 in Excel, 0 in Mind
+  FRM-010  =1+(...)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),...) with F192 = "": Excel finds nothing,
+           Mind matches the empty header cell N11 and returns the header text -- NaN
 """
 from pathlib import Path
 
@@ -53,6 +55,13 @@ def _model(path: Path) -> Path:
     c["H10"] = "=Loans!C3+1"                                    # arithmetic on an empty cell: 0 in both
     c["I5"] = "=IF(Loans!C2>5,1,0)"                             # a cell that holds a number
     c["I6"] = '=IF(Loans!C3="x",1,0)'                           # compared with text
+    rates = wb.create_sheet("Rates")                            # a table whose first header cell is empty, as Horizon's Criteres!N11:O33
+    rates["B1"] = "Loading"
+    for i, (age, loading) in enumerate(((50, 1.08), (51, 1.09), (52, 1.1), (53, 1.11), (54, 1.12), (55, 1.15)), start=2):
+        rates[f"A{i}"], rates[f"B{i}"] = age, loading
+    for r in range(5, 11):
+        c[f"J{r}"] = f"=1+($B$1=9)*IFERROR(VLOOKUP(E{r},Rates!$A$1:$B$7,2,0),IF(E{r}<50,Rates!$B$2,Rates!$B$7))"   # Horizon's column T: the key E is "" on rows 8-10
+        c[f"K{r}"] = f"=IFERROR(VLOOKUP(E{r},Loans!A:C,2,0),0)"                                                  # the same key, but no empty cell in Loans!A to match
     wb.save(path)
     wb.close()
     return path
@@ -75,7 +84,7 @@ def _calculated(path: Path) -> Path:
 
 def test_a_workbook_excel_never_calculated_is_not_checked(tmp_path):
     analysis = build_analysis(_model(tmp_path / "raw.xlsx"), tmp_path / "w", "raw")
-    for rule_id in ("FRM-008", "FRM-009"):
+    for rule_id in ("FRM-008", "FRM-009", "FRM-010"):
         f = _finding(analysis, rule_id)
         assert f["status"] == "NOT_SUPPORTED" and "no stored values" in f["message"]
     plan = {a["id"]: a for a in plan_actions(analysis, {"findings": []})}
@@ -91,13 +100,22 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     assert blank["status"] == "ERROR" and blank["priority"] == "REQUIRED"
     sites = {s["cell"]: s for s in blank["observed"]["sites"]}
     # the three rows where D is "", the rest of that filled-down block, and the IFERROR inside a larger formula
-    assert set(sites) == {"E5", "E6", "E7", "E8", "E9", "E10", "H9"}
+    assert set(sites) == {"E5", "E6", "E7", "E8", "E9", "E10", "H9"}                        # not the lookups: those are FRM-010's
     assert [c for c, s in sites.items() if s["blank_now"]] == ["E8", "E9", "E10", "H9"]
     assert sites["E8"]["suggested_formula"] == '=IF(D8="","",IFERROR(1+INT((D8-1)/12),""))'
     assert sites["E5"]["suggested_formula"] == '=IF(D5="","",IFERROR(1+INT((D5-1)/12),""))'
     assert sites["H9"]["suggested_formula"] == '=1+IF(D8="",5,IFERROR(D8*2,5))'
     assert blank["observed"]["blank_now"] == 4 and blank["observed"]["with_proposal"] == 7
     assert "Mind counts" in blank["message"] and "Test for empty text before the arithmetic" in blank["message"]
+
+    lookup = _finding(analysis, "FRM-010")
+    assert lookup["status"] == "ERROR" and lookup["priority"] == "REQUIRED"
+    sites = {s["cell"]: s for s in lookup["observed"]["sites"]}
+    assert set(sites) == {"J5", "J6", "J7", "J8", "J9", "J10"}                                 # K: Loans!A1:A3 has no empty cell, Excel and Mind both find nothing
+    assert [c for c, s in sites.items() if s["blank_now"]] == ["J8", "J9", "J10"]
+    assert sites["J8"]["suggested_formula"] == '=1+($B$1=9)*IF(E8="",IF(E8<50,Rates!$B$2,Rates!$B$7),IFERROR(VLOOKUP(E8,Rates!$A$1:$B$7,2,0),IF(E8<50,Rates!$B$2,Rates!$B$7)))'
+    assert sites["J8"]["lookup_key"] and not sites["J8"]["arithmetic"]
+    assert "header cell of a table" in lookup["message"]
 
     empty = _finding(analysis, "FRM-009")
     assert empty["status"] == "ERROR"
@@ -109,8 +127,9 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     assert sites[("reads_empty", "H5")]["suggested_formula"] == "=IF(1<=N(Loans!C3),0,1)"
     assert "Read empty cells as 0 where they are compared" in empty["message"]
 
-    plan = {a["id"]: a for a in plan_actions(analysis, {"findings": [blank, empty]})}
-    assert plan["guard_blank_arithmetic"]["level"] == "blocking" and plan["guard_blank_arithmetic"]["count"] == 7
+    plan = {a["id"]: a for a in plan_actions(analysis, {"findings": [blank, lookup, empty]})}
+    assert plan["guard_blank_arithmetic"]["level"] == "blocking" and plan["guard_blank_arithmetic"]["count"] == 13
+    assert {o["rule_id"] for o in plan["guard_blank_arithmetic"]["operations"]} == {"FRM-008", "FRM-010"}
     assert plan["empty_cells_as_zero"]["count"] == 3 and not plan["empty_cells_as_zero"]["skipped"]
     ops = plan["guard_blank_arithmetic"]["operations"] + plan["empty_cells_as_zero"]["operations"]
     out = apply_operations(src, tmp_path / "prep", ops)
@@ -121,7 +140,7 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     assert res["ran"] and res["clean"] is True and res["counts"]["compared"] == res["counts"]["same"] > 20
 
     after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
-    assert _finding(after, "FRM-008")["status"] == "PASS" and _finding(after, "FRM-009")["status"] == "PASS"
+    assert {_finding(after, rid)["status"] for rid in ("FRM-008", "FRM-009", "FRM-010")} == {"PASS"}
 
 
 def test_which_side_of_a_comparison_a_reference_is():

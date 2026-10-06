@@ -50,6 +50,7 @@ _COORD_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})")
 _NAME_BEFORE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$")
 _IFERROR_RE = re.compile(r"(?<![A-Za-z0-9_.])IFERROR\s*\(", re.IGNORECASE)
 _LOOKUP_RE = re.compile(r"(VLOOKUP|HLOOKUP)\s*\(", re.IGNORECASE)
+_EXACT_LOOKUP_RE = re.compile(r"(?<![A-Za-z0-9_.])(VLOOKUP|HLOOKUP|MATCH)\s*\(", re.IGNORECASE)
 _CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
 
 _SCANS: dict[str, dict[str, Any]] = {}  # one scan serves both rules and both Prep actions
@@ -105,6 +106,7 @@ class _Book:
         self._fc: dict[str, dict] = {}
         self._vc: dict[str, dict] = {}
         self._land: dict[tuple[str, int, int], tuple[str, int, int] | None] = {}
+        self._vectors: dict[tuple, tuple[bool, bool]] = {}
 
     def _cells(self, wb, cache: dict[str, dict], sheet: str) -> dict:
         cells = cache.get(sheet)
@@ -133,6 +135,31 @@ class _Book:
     def size(self, sheet: str) -> tuple[int, int]:
         ws = self.f[sheet]
         return ws.max_row, ws.max_column
+
+    def lookup_vector(self, sheet: str, r: dict, name: str) -> tuple[bool, bool] | None:
+        """For the column (VLOOKUP) or row (HLOOKUP) a lookup searches, or a one-line MATCH range:
+        (holds an empty cell, holds a formula that returned "") within the sheet's used area."""
+        tsheet = r["sheet"] or sheet
+        if tsheet not in self.sheets:
+            return None
+        if name == "VLOOKUP" or (name == "MATCH" and r["c1"] == r["c2"]):
+            cells = [(row, r["c1"]) for row in range(r["r1"], min(r["r2"], self.size(tsheet)[0]) + 1)]
+        elif name == "HLOOKUP" or (name == "MATCH" and r["r1"] == r["r2"]):
+            cells = [(r["r1"], col) for col in range(r["c1"], min(r["c2"], self.size(tsheet)[1]) + 1)]
+        else:
+            return None
+        key = (tsheet, r["ref"], name == "HLOOKUP" or (name == "MATCH" and r["r1"] == r["r2"]))
+        hit = self._vectors.get(key)
+        if hit is None:
+            empty = blank = False
+            for row, col in cells:
+                v = self.content(tsheet, row, col)
+                if v is None:
+                    empty = True
+                elif _is_formula(v) and self.stored(tsheet, row, col) is None:
+                    blank = True
+            hit = self._vectors[key] = (empty, blank)
+        return hit
 
     # --- a formula that lands on an empty cell --------------------------------------------
     def landing(self, sheet: str, row: int, col: int) -> tuple[str, int, int] | None:
@@ -426,6 +453,8 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         return out
 
     blank_flagged: dict[tuple[str, int, int], dict[int, set[int]]] = {}
+    arithmetic_marks: dict[tuple[str, int, int], set[int]] = {}
+    lookup_marks: dict[tuple[str, int, int], set[int]] = {}
     iferror_by_column: dict[tuple[str, int], list[tuple[dict, int, int]]] = {}
     origins: dict[tuple[str, int, int], dict[str, Any]] = {}
     for f, row, col in formulas:
@@ -505,6 +534,38 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     if _tests_for_empty_text(compact, _compact(masked[m.start():m.end()])):
                         continue
                     guards.setdefault(ci, set()).add(k)
+                    arithmetic_marks.setdefault((sheet, row, col), set()).add(k)
+                # FRM-010: an exact lookup whose key is a cell that returned "", over a column / row with an empty cell
+                for m2 in _EXACT_LOOKUP_RE.finditer(masked, lo, hi):
+                    open2 = m2.end() - 1
+                    close2 = _closing_paren(masked, open2)
+                    if close2 == -1 or close2 > hi:
+                        continue
+                    spans3 = _arg_spans(masked, open2 + 1, close2)
+                    name = m2.group(1).upper()
+                    exact = (name != "MATCH" and len(spans3) == 4 and formula[spans3[3][0]:spans3[3][1]].strip().upper() in ("0", "FALSE")) or (name == "MATCH" and len(spans3) == 3 and formula[spans3[2][0]:spans3[2][1]].strip() == "0")
+                    if not exact:
+                        continue
+                    key_text = formula[spans3[0][0]:spans3[0][1]].strip()
+                    k = next((i for i, m in enumerate(refs) if spans3[0][0] <= m.start() and m.end() <= spans3[0][1] and formula[m.start():m.end()] == key_text), None)
+                    if k is None or ":" in refs[k].group("ref"):
+                        continue
+                    tsheet = _ref_sheet(formula, refs[k], sheet)
+                    trow, tcol = _ref_cell(refs[k])
+                    if not _is_formula(book.content(tsheet, trow, tcol)) or book.stored(tsheet, trow, tcol) is not None:
+                        continue  # the key is a formula cell that returned ""
+                    r = parse_ref(formula[spans3[1][0]:spans3[1][1]].strip())
+                    vec = book.lookup_vector(sheet, r, name) if r else None
+                    if vec is None or not vec[0] or vec[1]:
+                        continue  # no empty cell to match -- or a "" that Excel would match too
+                    if not _reaches_unconditionally(masked, m2.start(), open_at):
+                        continue
+                    if compact is None:
+                        compact = _compact(masked)
+                    if _tests_for_empty_text(compact, _compact(masked[refs[k].start():refs[k].end()])):
+                        continue
+                    guards.setdefault(ci, set()).add(k)
+                    lookup_marks.setdefault((sheet, row, col), set()).add(k)
                 if ci in guards and not _fallback_fired(book, formula, calls, ci, sheet, row, col):
                     del guards[ci]
             if guards:
@@ -512,6 +573,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
 
     # FRM-008: the whole filled-down block gets the same test, so a column keeps one formula
     patterns: dict[tuple[str, int, str], dict[int, set[int]]] = {}
+    pattern_kinds: dict[tuple[str, int, str], set[str]] = {}
     parsed: dict[tuple[str, int, int], tuple] = {}
     for (sheet, col) in {(s, c) for s, _, c in blank_flagged}:
         for f, row, _ in iferror_by_column.get((sheet, col), []):
@@ -525,6 +587,9 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                 union = patterns.setdefault((sheet, col, rel), {})
                 for ci, ks in g.items():
                     union.setdefault(ci, set()).update(ks)
+                kinds = pattern_kinds.setdefault((sheet, col, rel), set())
+                kinds.update(["arithmetic"] if (sheet, row, col) in arithmetic_marks else [])
+                kinds.update(["lookup"] if (sheet, row, col) in lookup_marks else [])
     for (sheet, row, col), (f, masked, refs, rel) in sorted(parsed.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1])):
         union = patterns.get((sheet, col, rel))
         if not union:
@@ -533,8 +598,10 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         calls = _iferror_calls(masked)
         array = bool(f.get("array_ref"))
         cells = sorted({formula[refs[k].start():refs[k].end()] for ks in union.values() for k in ks})
+        kinds = pattern_kinds.get((sheet, col, rel), set())
         out["blank_arithmetic"].append({
             "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": (sheet, row, col) in blank_flagged,
+            "arithmetic": "arithmetic" in kinds, "lookup_key": "lookup" in kinds,
             "suggested_formula": None if array else _guarded(formula, refs, calls, union), "issue": "an array formula: rewrite it by hand" if array else None,
         })
 
@@ -567,17 +634,10 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
         return _not_checked(exc)
     if not res["checked"]:
         return _not_checked(None)
-    sites = res["blank_arithmetic"]
-    now = sum(1 for s in sites if s["blank_now"])
-    with_fix = sum(1 for s in sites if s["suggested_formula"])
-    shown = sorted(sites, key=lambda s: not s["blank_now"])
-    observed = {
-        "sites": [{**s, "formula": s["formula"][:300]} for s in (shown if limit is None else shown[:limit])],
-        "sites_count": len(sites), "blank_now": now, "with_proposal": with_fix, "without_proposal": len(sites) - with_fix,
-    }
+    sites = [s for s in res["blank_arithmetic"] if s["arithmetic"]]
+    observed, first, now, with_fix = _blank_text_observed(sites, limit)
     if not sites:
         return finding("PASS", 'No IFERROR hides arithmetic on a cell that holds "" (empty text).', observed)
-    first = shown[0]
     return finding(
         "ERROR",
         f'{now} formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR. Excel stops on the "" (#VALUE!) and returns the IFERROR fallback; '
@@ -585,8 +645,49 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
         "1,242 cells blank in Excel held a value). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
-        + f". The Prep action 'Test for empty text before the arithmetic' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks, "
+        + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks, "
         "so each column keeps one formula; Excel's results stay the same"
+        + (f"; {len(sites) - with_fix} array formula(s) are left to rewrite by hand." if len(sites) - with_fix else "."),
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    )
+
+
+BLANK_TEXT_ACTION = "Test for empty text before the arithmetic or lookup"
+
+
+def _blank_text_observed(sites: list[dict], limit: int | None) -> tuple[dict, dict | None, int, int]:
+    now = sum(1 for s in sites if s["blank_now"])
+    with_fix = sum(1 for s in sites if s["suggested_formula"])
+    shown = sorted(sites, key=lambda s: not s["blank_now"])
+    observed = {
+        "sites": [{**s, "formula": s["formula"][:300]} for s in (shown if limit is None else shown[:limit])],
+        "sites_count": len(sites), "blank_now": now, "with_proposal": with_fix, "without_proposal": len(sites) - with_fix,
+    }
+    return observed, (shown[0] if shown else None), now, with_fix
+
+
+def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
+    """FRM-010: an exact lookup whose key is a cell that holds "", inside IFERROR -- Excel finds nothing and
+    returns the fallback; Mind matches an empty cell of the looked-up column (the header of a titled table)."""
+    try:
+        res = scan(analysis)
+    except Exception as exc:
+        return _not_checked(exc)
+    if not res["checked"]:
+        return _not_checked(None)
+    sites = [s for s in res["blank_arithmetic"] if s["lookup_key"]]
+    observed, first, now, with_fix = _blank_text_observed(sites, limit)
+    if not sites:
+        return finding("PASS", 'No IFERROR hides an exact lookup (VLOOKUP, HLOOKUP, MATCH) whose key is a cell that holds "" over a column or row with an empty cell.', observed)
+    return finding(
+        "ERROR",
+        f'{now} formula(s) look up (VLOOKUP, HLOOKUP or MATCH, exact match) a key that holds "" (empty text) in a column or row that has an empty cell, inside IFERROR. '
+        'Excel finds nothing and returns the IFERROR fallback; Mind matches the empty cell -- the header cell of a table Prep gave a title -- and returns that row '
+        "(confirmed in Mind on the model Horizon: =1+($C$10=1)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),...) came back NaN on 621 rows, the lookup returned the header text). "
+        f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
+        + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
+        + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks; Excel's results stay the same"
         + (f"; {len(sites) - with_fix} array formula(s) are left to rewrite by hand." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},

@@ -195,3 +195,24 @@ rules:
   fail_if:
   - A number is compared with an empty cell, or with a formula cell that lands on one.
   severity_source: BLOCKER
+- id: FRM-010
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Empty text as lookup key -- VLOOKUP("") finds nothing in Excel (IFERROR returns its fallback); Mind matches an empty cell of the looked-up column, the header of a titled table, and returns that row.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-06, model Horizon, column T, and three diagnostic uploads)
+    article: FRM-010
+  validation:
+    deterministic: true
+    implementation: validators.formula.blank_text_lookup_key
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No IFERROR hides an exact lookup whose key holds "" over a column or row with an empty cell.
+  fail_if:
+  - An exact VLOOKUP / HLOOKUP / MATCH inside IFERROR takes a key that holds "" and searches a column or row that has an empty cell.
+  severity_source: BLOCKER

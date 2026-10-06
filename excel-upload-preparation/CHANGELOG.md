@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.8.2
+
+**FRM-010 -- empty text as lookup key.** The Horizon file the app made in
+1.8.1 went to Mind and came back with one group left: `CALCUL!T192:T812`,
+NaN, where `T = 1+($C$10=1)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),...)`
+and F192 holds `""`. Four diagnostic uploads (`docs/MIND_VS_EXCEL.md`) showed
+the mechanism: once Prep has given the looked-up table a title, Mind matches
+the `""` key to the table's empty first header cell (`Criteres!N11`) and the
+lookup returns the header text; `0 * text` is NaN. In Excel, and in Mind
+without the title, `""` finds nothing and IFERROR returns its fallback. Number
+keys are not affected. The rule flags an exact VLOOKUP / HLOOKUP / MATCH
+inside IFERROR whose key holds `""` over a column or row with an empty cell;
+the Prep action **Test for empty text before the arithmetic or lookup** (now
+serving FRM-008 and FRM-010) puts `IF(key="", fallback, ...)` in front, down
+the whole filled-down block. On the app's Horizon output it flags exactly
+T35:T812; on the version Mind cleared, nothing. 102 rules.
+
 ## 1.8.1
 
 **Two places where Mind computes another value than Excel**, found the only
