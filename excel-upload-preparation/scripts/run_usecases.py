@@ -149,9 +149,12 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                     last = line
                 if st.get("state") in ("done", "error", "idle"):
                     break
+            fixed_plan: list[dict[str, Any]] = []
             if st.get("state") == "done":
                 # the whole result: every kind of fix with its reason, what is left and why (not the recalculation / analysis payloads)
-                st = {k: v for k, v in _get(base, f"/api/sessions/{sid}/auto-fix?full=1").items() if k not in ("recalc", "analysis")}
+                whole = _get(base, f"/api/sessions/{sid}/auto-fix?full=1")
+                fixed_plan = (whole.get("analysis") or {}).get("plan") or []
+                st = {k: v for k, v in whole.items() if k not in ("recalc", "analysis")}
             fix = st.get("result") or {}
             (out_dir / "autofix_result.json").write_text(json.dumps(st, indent=1, ensure_ascii=False), encoding="utf-8")
             if one_comparison and fix.get("numbers_check"):
@@ -161,6 +164,23 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                  cells_rewritten=fix.get("cells_rewritten"), left_for_a_person=fix.get("left_count"), rolled_back=fix.get("rolled_back"),
                  broken_by_prep=fix.get("regression_cells"), good_values_changed=fix.get("good_values_changed"),
                  by_strategy=fix.get("by_strategy"), version=(st.get("version") or {}).get("label"), summary=fix.get("summary"))
+
+            # 1.8.1: what the verdict asks for next. A fix can be a form Mind computes differently
+            # (=IFERROR(x,0) over arithmetic on "": FRM-008); the analysis of the fixed version says so
+            # and Prep rewrites it -- the blocking actions only, as the screen's next step does.
+            again = [a for a in fixed_plan if a.get("default_on") and a.get("level") == "blocking" and a.get("count", 0) > 0]
+            if again:
+                t = time.time()
+                ops = [o for a in again for o in a["operations"]]
+                out = _post(base, f"/api/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True})
+                res = out["result"]
+                step("prep after the fixer", t, sent=len(ops), by_action={a["id"]: a["count"] for a in again}, applied=len(res.get("applied", [])), failed=len(res.get("failed", [])),
+                     failed_sample=[f"{f.get('sheet')}!{f.get('cell') or f.get('range') or ''}: {str(f.get('error'))[:160]}" for f in res.get("failed", [])[:5]],
+                     version=out["version"]["label"], verified=res.get("verified_opens_in_excel"),
+                     readiness=(out.get("readiness") or {}).get("state"), blocking=(out.get("readiness") or {}).get("blocking_count"))
+                t = time.time()
+                numbers = _post(base, f"/api/sessions/{sid}/numbers-check")
+                step("numbers check (after the fixer's Prep: original vs final)", t, ran=numbers.get("ran"), clean=numbers.get("clean"), verdict=numbers.get("verdict"), counts=numbers.get("counts"))
 
             t = time.time()
             rec = _post(base, f"/api/sessions/{sid}/recalculate")

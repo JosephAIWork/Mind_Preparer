@@ -153,3 +153,45 @@ rules:
   fail_if:
   - The result of INDIRECT is used as a value.
   severity_source: BLOCKER
+- id: FRM-008
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Empty text in arithmetic -- Excel stops on "" (#VALUE!) and IFERROR returns its fallback; Mind counts "" as 0 and computes a number.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-06, model Horizon and a 49-cell test workbook)
+    article: FRM-008
+  validation:
+    deterministic: true
+    implementation: validators.formula.blank_text_arithmetic
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No IFERROR hides arithmetic on a cell that holds "" (empty text).
+  fail_if:
+  - A formula does arithmetic on a cell that holds "" inside IFERROR and shows the fallback in Excel.
+  severity_source: BLOCKER
+- id: FRM-009
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Empty cell compared with a number -- Excel reads the empty cell as 0; Mind does not, so the comparison goes the other way.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-06, model Horizon and a 49-cell test workbook)
+    article: FRM-009
+  validation:
+    deterministic: true
+    implementation: validators.formula.empty_cell_compared
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula compares a number with an empty cell, directly or through a reference or lookup that lands on an empty cell.
+  fail_if:
+  - A number is compared with an empty cell, or with a formula cell that lands on one.
+  severity_source: BLOCKER

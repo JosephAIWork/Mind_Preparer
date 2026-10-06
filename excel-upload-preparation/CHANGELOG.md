@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.8.1
+
+**Two places where Mind computes another value than Excel**, found the only
+way they can be found: by uploading. Horizon came out of 1.8.0 with zero
+error cells in Excel and "Acceptable by Mind"; in Mind, 4,352 cells held
+another value than in Excel. Two causes, each confirmed in Mind with a
+49-cell test workbook on invented data (`scripts/build_mind_test_workbook.py`;
+what was tested and how it came out: `docs/MIND_VS_EXCEL.md`). With both
+rewritten, Mind reports **no difference** for Horizon.
+
+- **FRM-008 -- empty text in arithmetic.** `=IFERROR(1+INT((D192-1)/12),"")`
+  with D192 = `""`: Excel stops on the `""` (#VALUE!) and returns the IFERROR
+  fallback; Mind counts `""` as 0, computes a number and never reaches the
+  fallback. 1,242 cells were blank in Excel and held a value in Mind, and
+  what read them went wrong after them (two columns came out NaN in Mind).
+  Prep action **Test for empty text before the arithmetic**:
+  `=IF(D192="","",IFERROR(1+INT((D192-1)/12),""))`, down the whole filled-down
+  block so a column keeps one formula.
+- **FRM-009 -- an empty cell compared with a number.** Excel reads an empty
+  cell as 0; Mind does not (`0 = empty` is false there, `1 <= empty` is true).
+  The dangerous form is the one nobody sees: a formula that *lands* on an
+  empty cell and shows 0 in Excel -- a plain reference (`=+OUTPUT!P4`) or an
+  exact lookup (`H9 = VLOOKUP(B2,'Base Pret'!A:K,11,0)`, the loan had no
+  deferral period). `IF(D35<=$H$9,0,1)` returned 0 in Mind on the 157 live
+  months of the loan and the reserves came out wrong. Prep action **Read empty
+  cells as 0 where they are compared**: `=N(VLOOKUP(...))` on the cell that
+  lands (one rewrite serves all 942 comparisons that read it), or `N(ref)` where
+  the empty cell is compared directly.
+
+Both rules are REQUIRED (a model that computes wrong in Mind is not
+acceptable), both actions are on by default and leave Excel's values as they
+are -- "Check the numbers" proves it on every formula cell. They read the
+values Excel stored in the file, so a workbook Excel never calculated is
+reported as not checked.
+
+What the rules do **not** cover, so that they flag only what Mind confirmed:
+`IF(ISERROR(x),...)` in place of IFERROR; INDEX/MATCH, XLOOKUP and OFFSET
+landing on an empty cell (plain references and exact VLOOKUP / HLOOKUP are
+worked out; the others would need Excel to say where they land); a cell that
+is empty in another scenario than the one saved in the file.
+
+**The automatic fixer and FRM-008.** "Fix all automatically" answers a
+#VALUE! with `=IFERROR(formula, 0)`. When the #VALUE! came from `""` in
+arithmetic, that is exactly the form Mind computes differently. It is caught:
+the analysis after the fix raises FRM-008 and the verdict sends the user back
+to Prep for the rewrite above. On Horizon the fixer happened to choose the
+other repair (`N()`), which Mind computes like Excel.
+
+**Tested so far.** Horizon through the whole app flow on this code: Prep
+wrote the 1,557 rewrites and changed no computed value, the fixer took 721
+error cells to 0, the Prep round after the fixer rewrote the 665 formulas the
+fixer had left in a form Mind computes differently, verdict "Acceptable by
+Mind". That final file has not been uploaded to Mind yet (the one Mind
+cleared was rewritten by a script with the same forms). **Palermo, PVFP and
+CNHI have not been re-run on 1.8.1**: the run was stopped when the machine
+ran out of memory. `scripts/run_usecases.py` now applies the blocking Prep
+actions once more after the fixer, as the verdict asks.
+
+Also: `app/validators/mind_values.py` (the scan, shared by the two rules and
+the two actions), `tests/unit/test_mind_values.py` (4 tests), 101 rules.
+
 ## 1.8.0
 
 Built and tested in one unattended run (2026-10-05/06) on four client models:

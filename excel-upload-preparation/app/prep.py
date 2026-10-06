@@ -1110,6 +1110,71 @@ def plan_freeze_spill_refs(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+# --- FRM-008 / FRM-009: where Mind computes another value than Excel (1.8.1) ---------------
+def _mind_values(analysis: dict[str, Any]) -> dict[str, Any] | None:
+    from .validators.mind_values import scan
+
+    try:
+        res = scan(analysis)
+    except Exception:
+        return None
+    return res if res.get("checked") else None
+
+
+def plan_guard_blank_arithmetic(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-008: =IFERROR(x, fallback) whose x does arithmetic on a cell that holds ""
+    becomes =IF(cell="", fallback, IFERROR(x, fallback)). In Excel the "" made x an
+    error and the fallback came out; now the fallback comes out before the arithmetic
+    is tried, in Excel and in Mind alike. The rest of a filled-down block gets the
+    same formula: where the cell is not "", the IF hands straight on to the original."""
+    ops, skipped = [], []
+    res = _mind_values(analysis)
+    for s in (res or {}).get("blank_arithmetic", []):
+        where = f"{s['sheet']}!{s['cell']}"
+        if not s["suggested_formula"]:
+            skipped.append(f"{where}: {s.get('issue') or 'no rewrite proposed'}")
+        elif "#REF!" in s["formula"]:
+            skipped.append(f"{where}: holds a broken reference (#REF!) -- repair that first, then run Prep again")
+        else:
+            cells = ", ".join(s["blank_cells"][:3])
+            note = (
+                f'{cells} holds "": Excel stops there and returns the IFERROR fallback, Mind computes on; the test for "" now comes first (same result in Excel)'
+                if s["blank_now"]
+                else f"same formula as the rest of its block, where {cells} holds \"\"; kept as one formula down the block (same result in Excel)"
+            )
+            ops.append(_op("set_formula", "guard_blank_arithmetic", "FRM-008", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+    return ops, skipped
+
+
+def plan_empty_cells_as_zero(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-009: N() around what reads an empty cell into a comparison with a number --
+    around the formula that lands on the empty cell (a plain reference, an exact
+    lookup: one rewrite serves every formula that reads it), or around the
+    reference itself where the empty cell is read directly. N(empty) is 0 and
+    N(number) is the number, in Excel and in Mind."""
+    ops, skipped = [], []
+    res = _mind_values(analysis)
+    if not res:
+        return ops, skipped
+    taken = {(s["sheet"], s["cell"]) for s in res["blank_arithmetic"] if s["suggested_formula"]}
+    for kind, sites in (("lands", res["origins"]), ("reads", res["direct"])):
+        for s in sites:
+            where = f"{s['sheet']}!{s['cell']}"
+            if not s["suggested_formula"]:
+                skipped.append(f"{where}: {s.get('issue') or 'no rewrite proposed'}")
+            elif "#REF!" in s["formula"]:
+                skipped.append(f"{where}: holds a broken reference (#REF!) -- repair that first, then run Prep again")
+            elif (s["sheet"], s["cell"]) in taken:
+                skipped.append(f"{where}: already rewritten by 'Test for empty text before the arithmetic' in this round -- run Prep again for this one")
+            elif kind == "lands":
+                note = f"lands on {s['lands_on']}, which is empty: 0 in Excel, not 0 in Mind once compared ({s['readers']} comparison(s) read this cell); N() makes it 0 in both"
+                ops.append(_op("set_formula", "empty_cells_as_zero", "FRM-009", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+            else:
+                note = f"compares {', '.join(s['empty_cells'][:3])} (empty) with a number: 0 in Excel, not 0 in Mind; N() makes it 0 in both"
+                ops.append(_op("set_formula", "empty_cells_as_zero", "FRM-009", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+    return ops, skipped
+
+
 # 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
@@ -1124,6 +1189,10 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
     {"id": "freeze_spill_refs", "title": "Replace spilled-range references (A1#) by the fixed range they cover today", "rule_ids": ["FRM-003"], "default_on": True, "level": BLOCKING,
      "caution": "Mind rejects ANCHORARRAY() (Office 365 dynamic arrays); each 'A1#' becomes the range the spill covers now, so a source that grows later will not be followed -- add MM_RANGE by hand if it must", "planner": plan_freeze_spill_refs},
+    {"id": "guard_blank_arithmetic", "title": "Test for empty text before the arithmetic (Mind counts \"\" as 0, Excel stops on it)", "rule_ids": ["FRM-008"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), down the whole filled-down block; Excel returns the same values ('Did the numbers change?' proves it)", "planner": plan_guard_blank_arithmetic},
+    {"id": "empty_cells_as_zero", "title": "Read empty cells as 0 where they are compared with a number (Mind does not)", "rule_ids": ["FRM-009"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: N() goes around the reading of an empty cell, or around the reference / lookup that lands on it; Excel returns the same values -- N() of text is 0 as well, so look again if such a cell is meant to hold text one day", "planner": plan_empty_cells_as_zero},
     {"id": "separate_merged_grids", "title": "Insert an empty row before a '#Title' trapped inside a grid", "rule_ids": ["STR-001"], "default_on": True, "level": BLOCKING,
      "caution": "inserts whole rows through Excel; formulas follow, but VBA code or other workbooks addressing these rows by number will not", "planner": plan_separate_merged_grids},
     {"id": "loop_name_case", "title": "Normalise loop-name capitalisation (MM_LOOP / MM_RESULT / MM_DIMSIZE ...)", "rule_ids": ["LOOP-002", "RES-002"], "default_on": True, "level": BLOCKING, "planner": plan_loop_name_case},

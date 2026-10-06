@@ -22,11 +22,21 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.0)
+## Current status (1.8.1)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Same numbers in Mind as in Excel** (1.8.1): two rules for formulas that
+  recalculate clean in Excel and still come out different in Mind -- found by
+  uploading Horizon, each confirmed in Mind with a small test workbook
+  (`docs/MIND_VS_EXCEL.md`). **FRM-008**: arithmetic on a cell that holds `""`
+  inside IFERROR (Excel returns the fallback, Mind computes a number).
+  **FRM-009**: a number compared with an empty cell, directly or through a
+  reference / VLOOKUP that lands on one (0 in Excel, not 0 in Mind). Each has
+  a Prep action that rewrites the formulas without changing Excel's values;
+  after both, Mind reported no difference for Horizon.
 
 - **Fix all automatically** (1.8.0): one button on the Recalculate screen and
   the app goes through the formula errors by itself (`app/autofix.py`,
