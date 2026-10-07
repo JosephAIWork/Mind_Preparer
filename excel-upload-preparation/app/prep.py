@@ -1372,11 +1372,14 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
             ops = _drop_merged_targets(list(ops), skipped, merged)
             kept = []
             for o in ops:
+                # two actions filling the same EMPTY cell (a header over an array, a grid title): the first keeps it.
+                # A cell that holds something is left to both, as before (a header corrected twice in one round).
                 key = (o["sheet"], str(o.get("cell") or o.get("range") or ""))
-                if o["op"] in CELL_OPS and key in taken:
+                empty_target = o["op"] == "set_value" and o.get("before") in (None, "")
+                if empty_target and key in taken:
                     skipped.append(f"{key[0]}!{key[1]}: written by the action '{taken[key]}' in this round -- run Prep again for this one")
                     continue
-                if o["op"] in CELL_OPS:
+                if empty_target:
                     taken[key] = a["id"]
                 kept.append(o)
             ops = kept
