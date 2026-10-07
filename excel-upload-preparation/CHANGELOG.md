@@ -33,7 +33,9 @@ changes in two rounds, no error before or after, no computed value changed on
 nothing to rewrite in it. PVFP: 65,883 -> 887 left on purpose (the errors its
 own formulas hide), 215 rewrites after the fixer, no computed value changed on
 152,324 formula cells, still blocked by FRM-006 / FRM-007 by hand (19 min).
-Palermo not re-run on this version.
+Palermo: 290 Prep changes (12 of them FRM-009: empty cells read as 0 where
+compared), 511 -> 0, no good value changed, no computed value changed on 56,647
+formula cells, still blocked by REF-001 / RSK-002 by hand (16 min).
 
 ## 1.8.1
 
