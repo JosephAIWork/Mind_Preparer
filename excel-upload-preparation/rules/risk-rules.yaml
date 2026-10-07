@@ -32,7 +32,7 @@ rules:
     deterministic: false
     implementation: validators.risk.rsk_002
   correction:
-    automatic: false
+    automatic: true
   on_unevaluable: NOT_SUPPORTED
   fail_if: Array calculations exceed grid boundaries.
   severity_source: BLOCKER

@@ -22,11 +22,17 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.2)
+## Current status (1.8.3)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Three more fixes done by Prep** (1.8.3): 3-D references written out sheet
+  by sheet (FRM-006), the header row extended over array formulas wider than
+  their grid (RSK-002), and a name that does not exist replaced by NA()
+  (REF-001) -- the three findings on which Mind refused Palermo and PVFP after
+  1.8.2. Excel's values stay the same; "Check the numbers" proves it.
 
 - **Same numbers in Mind as in Excel** (1.8.1): two rules for formulas that
   recalculate clean in Excel and still come out different in Mind -- found by

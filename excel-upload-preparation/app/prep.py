@@ -48,6 +48,7 @@ from .formula_utils import (
     parse_ref,
     ref_text,
     reference_arg_problems,
+    undefined_names,
 )
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
 from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
@@ -980,13 +981,18 @@ def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, An
     broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
     name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
     lit_re = re.compile(r"#REF!")
+    # 1.8.3: a name no definition exists for (misspelt, or deleted) is broken too -- Excel shows
+    # #NAME? where it is evaluated, Mind refuses the formula ('not a function') even in a branch
+    # never taken. It becomes NA() like a #REF! name.
+    known = {str(d["name"]).upper() for d in wb0.get("defined_names", []) if d.get("name")} | {str(t).upper() for sh in wb0.get("sheets", []) for t in sh.get("tables", [])}
     out = []
     for f in wb0.get("formulas", []):
         formula = f.get("formula") or ""
         masked = mask_strings(formula)
-        if not ((name_re is not None and name_re.search(masked)) or lit_re.search(masked)):
+        unknown = undefined_names(formula, known) if formula.startswith("=") else []
+        if not ((name_re is not None and name_re.search(masked)) or lit_re.search(masked) or unknown):
             continue
-        fixed, unfixable, collapsed = _na_fix_formula(formula, broken)
+        fixed, unfixable, collapsed = _na_fix_formula(formula, broken + unknown)
         out.append((f, fixed, unfixable or fixed == formula, collapsed))
     return out
 
@@ -1177,6 +1183,99 @@ def plan_empty_cells_as_zero(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+# --- FRM-006: 3-D references written out sheet by sheet (1.8.3) -------------------------------
+def plan_expand_3d_references(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-006: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets between the
+    two tabs, the ones Mind imports (a sheet with no grid is left out). Exact as long as the
+    sheets left out hold nothing at the referenced cells -- checked here, cell by cell; a
+    sheet that does hold something there is left for a person (Mind imports no such sheet, and
+    the sum would change without it)."""
+    from .validators.references import three_d_references
+
+    ops, skipped = [], []
+    try:
+        finding = three_d_references(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    by_cell = {(x["sheet"], x["cell"]): x for x in analysis["workbooks"][0].get("formulas", []) if x.get("array_ref")}
+    for site in (finding.get("observed") or {}).get("sites", []):
+        where = f"{site['sheet']}!{site['cell']}"
+        if not site.get("suggested_formula"):
+            skipped.append(f"{where}: {site.get('issue') or 'no rewrite proposed'}")
+            continue
+        formula = site["formula"]
+        held = _held_on_omitted_sheets(analysis, formula, site["references"])
+        if held:
+            skipped.append(f"{where}: {', '.join(held[:3])} hold(s) a value at the referenced cell(s) but Mind imports no such sheet (nothing on it makes a grid): listing the sheets would change the result -- by hand")
+            continue
+        omitted = sorted({x for r in site["references"] if r.get("sheets") for x in r.get("omitted_empty", [])})
+        note = "each sheet between the two tabs listed explicitly (Mind reads 'First:Last' as one sheet name)" + (f"; {', '.join(omitted[:4])} left out: no grid, nothing at those cells" if omitted else "")
+        f = by_cell.get((site["sheet"], site["cell"]))
+        if f:
+            ops.append(_op("set_array_formula", "expand_3d_references", "FRM-006", site["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after=site["suggested_formula"], note=note))
+        else:
+            ops.append(_op("set_formula", "expand_3d_references", "FRM-006", site["sheet"], cell=site["cell"], before=formula, after=site["suggested_formula"], note=note))
+    return ops, skipped
+
+
+def _held_on_omitted_sheets(analysis: dict[str, Any], formula: str, references: list[dict[str, Any]]) -> list[str]:
+    """The sheets a 3-D proposal leaves out that hold something at the referenced cells."""
+    held: list[str] = []
+    refs = [r for r in cell_refs_in_formula(formula) if r.get("sheet") and ":" in str(r["sheet"])]
+    for span in references:
+        for sheet in span.get("omitted_empty", []):
+            if sheet in held:
+                continue
+            for r in refs:
+                if r["sheet"] != f"{span['first']}:{span['last']}":
+                    continue
+                rows = range(r["r1"], min(r["r2"], r["r1"] + 400) + 1)
+                cols = range(r["c1"], min(r["c2"], r["c1"] + 400) + 1)
+                if any(cell_value(analysis, sheet, rr, cc) is not None for rr in rows for cc in cols):
+                    held.append(sheet)
+                    break
+    return held
+
+
+# --- RSK-002: headers over every column an array formula covers (1.8.3) -----------------------
+def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
+    """RSK-002: Mind refuses an array formula that reaches past its grid ('Ensure that the
+    column headers cover the entire array formula'). The grid's header row is extended over
+    every column the arrays cover: each empty header cell gets 'Period n', n being the column's
+    place in the array (a merged header already covers the columns it spans). An array that
+    reaches below the grid is left for a person."""
+    ops, skipped = [], []
+    wb0 = analysis["workbooks"][0]
+    grids = all_grids(analysis)
+    by_grid: dict[tuple[str, str], dict[str, Any]] = {}
+    for f in wb0.get("formulas", []):
+        if not f.get("array_ref"):
+            continue
+        target, origin = parse_ref(f["array_ref"]), parse_ref(f["cell"])
+        if not target or not origin:
+            continue
+        g = grid_containing([x for x in grids if x["sheet"] == f["sheet"]], origin["r1"], origin["c1"])
+        if not g or (target["r2"] <= g["last_row"] and target["c2"] <= g["last_col"]):
+            continue
+        if target["r2"] > g["last_row"]:
+            skipped.append(f"{f['sheet']}!{f['cell']}: the array {f['array_ref']} reaches below its grid {g['ref']} -- by hand")
+            continue
+        entry = by_grid.setdefault((f["sheet"], g["ref"]), {"grid": g, "first_col": target["c1"], "last_col": target["c2"], "cells": []})
+        entry["first_col"] = min(entry["first_col"], target["c1"])
+        entry["last_col"] = max(entry["last_col"], target["c2"])
+        entry["cells"].append(f["cell"])
+    for (sheet, _ref), e in sorted(by_grid.items()):
+        g = e["grid"]
+        for col in range(g["last_col"] + 1, e["last_col"] + 1):
+            cell = ref_text(col, g["first_row"])
+            if cell_value(analysis, sheet, g["first_row"], col) is not None:
+                skipped.append(f"{sheet}!{cell}: the header row holds something here already; the grid stops at {g['ref']} all the same -- by hand")
+                continue
+            ops.append(_op("set_value", "cover_array_headers", "RSK-002", sheet, cell=cell, before=None, after=f"Period {col - e['first_col'] + 1}",
+                           note=f"header over column {num_to_col(col)} so that the grid {g['display_name']} covers the array formula(s) {', '.join(e['cells'][:3])}" + (" ..." if len(e["cells"]) > 3 else "")))
+    return ops, skipped
+
+
 # 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
@@ -1189,6 +1288,10 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: a broken reference becomes NA(); the cell already returned an error, so no valid result changes", "planner": plan_fix_broken_refs},
     {"id": "fix_broken_refs_whole", "title": "Replace formulas built on a broken range with =NA()", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
      "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
+    {"id": "expand_3d_references", "title": "Write 3-D references ('First:Last'!cell) out sheet by sheet", "rule_ids": ["FRM-006"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets Mind imports; a sheet with no grid is left out only when it holds nothing at those cells, so Excel's result is the same ('Did the numbers change?' proves it)", "planner": plan_expand_3d_references},
+    {"id": "cover_array_headers", "title": "Extend the header row over every column an array formula covers", "rule_ids": ["RSK-002"], "default_on": True, "level": BLOCKING,
+     "caution": "writes 'Period n' into the empty header cells above the array's columns (Mind refuses an array formula that reaches past its grid); rename them by hand if the model has better words", "planner": plan_cover_array_headers},
     {"id": "freeze_spill_refs", "title": "Replace spilled-range references (A1#) by the fixed range they cover today", "rule_ids": ["FRM-003"], "default_on": True, "level": BLOCKING,
      "caution": "Mind rejects ANCHORARRAY() (Office 365 dynamic arrays); each 'A1#' becomes the range the spill covers now, so a source that grows later will not be followed -- add MM_RANGE by hand if it must", "planner": plan_freeze_spill_refs},
     {"id": "guard_blank_arithmetic", "title": "Test for empty text before the arithmetic or lookup (Mind counts \"\" as 0 and matches it to an empty cell; Excel stops on it)", "rule_ids": ["FRM-008", "FRM-010"], "default_on": True, "level": BLOCKING,
@@ -1259,6 +1362,7 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
     and there only where the deterministic name would be a weak one."""
     out = []
     merged = merged_ranges(analysis)
+    taken: dict[tuple[str, str], str] = {}  # 1.8.3: one write per cell -- the action earlier in the table keeps it
     for a in ACTIONS:
         try:
             if a["id"] == "create_grid_titles":
@@ -1266,6 +1370,16 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
             else:
                 ops, skipped = a["planner"](analysis, validation_report)
             ops = _drop_merged_targets(list(ops), skipped, merged)
+            kept = []
+            for o in ops:
+                key = (o["sheet"], str(o.get("cell") or o.get("range") or ""))
+                if o["op"] in CELL_OPS and key in taken:
+                    skipped.append(f"{key[0]}!{key[1]}: written by the action '{taken[key]}' in this round -- run Prep again for this one")
+                    continue
+                if o["op"] in CELL_OPS:
+                    taken[key] = a["id"]
+                kept.append(o)
+            ops = kept
         except Exception as exc:  # a planner bug must never hide the other actions
             ops, skipped = [], [f"planner error: {exc}"]
         out.append({

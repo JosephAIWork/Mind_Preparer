@@ -125,7 +125,7 @@ rules:
     deterministic: true
     implementation: validators.formula.three_d_references
   correction:
-    automatic: false
+    automatic: true
   on_unevaluable: NOT_SUPPORTED
   pass_if:
   - No formula references a sheet range ('First:Last'!cell).

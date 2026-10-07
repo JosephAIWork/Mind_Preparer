@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.8.3
+
+**Three findings that stopped Mind now have a Prep action.** Palermo and
+PVFP came out of 1.8.2 with zero error cells and were refused by Mind's
+converter on exactly the findings the app had listed "by hand":
+
+- **FRM-006, 3-D references** (PVFP, 10,404 formulas: "Sheet '>> Reporting:>>>'
+  not found in workbook"). Action **Write 3-D references out sheet by sheet**:
+  `=SUM('LoB 1:>>'!E5)` becomes `=SUM('LoB 1'!E5,'LoB 2'!E5,...)` over the
+  sheets between the two tabs that Mind imports. A sheet with no grid is left
+  out only when it holds nothing at the referenced cells (checked cell by
+  cell); otherwise the formula is left for a person, because the sum would
+  change without that sheet.
+- **RSK-002, array formulas wider than their grid** (Palermo, 10 TRANSPOSE
+  rows on `Temp`: "exceeds the grid size. Ensure that the column headers cover
+  the entire array formula"). Action **Extend the header row over every column
+  an array formula covers**: the empty header cells above the array get
+  `Period n`. On Palermo that also ends the two stray titles Prep used to put
+  on the array's loose cells (`#Temp F5`, `#Temp G5`): the table is one grid
+  again (`B4:DZ14`).
+- **REF-001, a name that does not exist** (Palermo, 100 cells:
+  `Semi_dynamic_increase_rates_array`, "not a function"). It sat in a branch
+  Excel never takes, so no #NAME? ever showed; Mind compiles every branch. The
+  existing action **Replace broken references with NA()** now treats an
+  undefined name like a #REF! one: `HLOOKUP(Country,NA(),...)` in that branch.
+  The closest existing name (`Semi_dynamic_increase_rates`) is in the finding
+  for whoever wants the lookup to work instead.
+
+**One write per cell.** Two actions could aim at the same cell in one round
+(the array headers and a grid title on `Temp!F4`); the action earlier in the
+table now keeps it and the other is listed as skipped for the next round.
+
+Checked on the originals before the use-case runs: Palermo, 225 operations,
+no computed value changed (56,647 formula cells), FRM-006 / RSK-002 / REF-001
+all PASS afterwards. PVFP: see the results below.
+
 ## 1.8.2
 
 **FRM-010 -- empty text as lookup key.** The Horizon file the app made in

@@ -508,9 +508,9 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
                 f"(\"Sheet '{ref0['first']}:{ref0['last']}' not found in workbook ... on compiling formula\"). First: {first['sheet']}!{first['cell']} = {first['formula'][:80]}"
                 + (f" spans {n_sheets} sheet(s) in tab order: {', '.join(ref0['sheets'][:8])}{' ...' if n_sheets > 8 else ''}" if n_sheets else f" ({first['issue']})")
                 + (f"; {', '.join(ref0['omitted_empty'][:6])} hold no grid and are left out of the proposal (Mind imports no empty sheet)" if ref0.get("omitted_empty") else "")
-                + ". Fix by hand or with the assistant: list every sheet explicitly, as in the proposed formula"
+                + ". The Prep action 'Write 3-D references out sheet by sheet' lists every sheet explicitly, as in the proposed formula"
                 + (f" {first['suggested_formula'][:160]}" if first["suggested_formula"] else "")
-                + "."
+                + " (a sheet left out must hold nothing at those cells; otherwise by hand)."
             )
         if gridless_sites:
             g0 = gridless_sites[0]
@@ -521,7 +521,7 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
         first_site = sites[0] if sites else gridless_sites[0]
         return finding(
             "ERROR",
-            " ".join(parts) + " No automatic repair.",
+            " ".join(parts) + (" No automatic repair for the formulas reading a sheet without a grid." if gridless_sites else ""),
             observed,
             location={"sheet": first_site["sheet"], "cell": first_site["cell"]},
         )

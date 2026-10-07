@@ -484,7 +484,7 @@ def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_p
     assert sites["G37"]["suggested_formula"] is None and "Nope" in sites["G37"]["issue"]
     assert f["observed"]["gridless_sheets"] == [">> Reporting", ">>>"]
     assert [(g["cell"], g["sheets"]) for g in f["observed"]["formulas_reading_gridless_sheets"]] == [("H2", [">> Reporting"])]
-    assert "not found in workbook" in f["message"] and "Spreadsheet not found" in f["message"] and "No automatic repair" in f["message"]
+    assert "not found in workbook" in f["message"] and "Spreadsheet not found" in f["message"] and "sheet by sheet" in f["message"]
 
 
 def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(tmp_path, engine, config):
