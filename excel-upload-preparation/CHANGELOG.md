@@ -17,6 +17,15 @@ serving FRM-008 and FRM-010) puts `IF(key="", fallback, ...)` in front, down
 the whole filled-down block. On the app's Horizon output it flags exactly
 T35:T812; on the version Mind cleared, nothing. 102 rules.
 
+**A correction found by PVFP.** The rewrite goes down the whole filled-down
+block, and on PVFP one row of such a block read a cell that holds an error:
+`IF(#REF!="", 0, ...)` is `#REF!` where `IFERROR(..., 0)` returned 0 -- 19
+computed values changed, 9 into errors, and the numbers check after the
+fixer's Prep said so. A row whose tested cell holds an error now keeps its
+formula (Excel and Mind both stop on the error and fall back), listed in the
+action's skip list. On PVFP: 120 rewrites, 7 held back, no computed value
+changed.
+
 ## 1.8.1
 
 **Two places where Mind computes another value than Excel**, found the only

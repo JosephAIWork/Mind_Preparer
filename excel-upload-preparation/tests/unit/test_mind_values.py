@@ -55,6 +55,10 @@ def _model(path: Path) -> Path:
     c["H10"] = "=Loans!C3+1"                                    # arithmetic on an empty cell: 0 in both
     c["I5"] = "=IF(Loans!C2>5,1,0)"                             # a cell that holds a number
     c["I6"] = '=IF(Loans!C3="x",1,0)'                           # compared with text
+    c["M5"], c["M6"], c["M7"] = 3, 4, 5
+    c["M8"], c["M9"], c["M10"] = '=IF(B1=2,"",0)', "=1/0", 6                     # "" on row 8, an error on row 9
+    for r in range(5, 11):
+        c[f"L{r}"] = f"=IFERROR(M{r}*2,0)"                                     # one block: row 8 needs the test, row 9 must be left alone
     rates = wb.create_sheet("Rates")                            # a table whose first header cell is empty, as Horizon's Criteres!N11:O33
     rates["B1"] = "Loading"
     for i, (age, loading) in enumerate(((50, 1.08), (51, 1.09), (52, 1.1), (53, 1.11), (54, 1.12), (55, 1.15)), start=2):
@@ -100,12 +104,15 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     assert blank["status"] == "ERROR" and blank["priority"] == "REQUIRED"
     sites = {s["cell"]: s for s in blank["observed"]["sites"]}
     # the three rows where D is "", the rest of that filled-down block, and the IFERROR inside a larger formula
-    assert set(sites) == {"E5", "E6", "E7", "E8", "E9", "E10", "H9"}                        # not the lookups: those are FRM-010's
-    assert [c for c, s in sites.items() if s["blank_now"]] == ["E8", "E9", "E10", "H9"]
+    assert set(sites) == {"E5", "E6", "E7", "E8", "E9", "E10", "H9", "L5", "L6", "L7", "L8", "L9", "L10"}   # not the lookups: those are FRM-010's
+    assert [c for c, s in sites.items() if s["blank_now"]] == ["E8", "E9", "E10", "H9", "L8"]
+    # row 9 of the L block reads an error: IF(#DIV/0!="",...) would be #DIV/0! where IFERROR gave 0 -- left alone (PVFP, 19 values changed)
+    assert sites["L9"]["suggested_formula"] is None and "holds an error" in sites["L9"]["issue"]
+    assert sites["L8"]["suggested_formula"] == '=IF(M8="",0,IFERROR(M8*2,0))' and sites["L10"]["suggested_formula"] == '=IF(M10="",0,IFERROR(M10*2,0))'
     assert sites["E8"]["suggested_formula"] == '=IF(D8="","",IFERROR(1+INT((D8-1)/12),""))'
     assert sites["E5"]["suggested_formula"] == '=IF(D5="","",IFERROR(1+INT((D5-1)/12),""))'
     assert sites["H9"]["suggested_formula"] == '=1+IF(D8="",5,IFERROR(D8*2,5))'
-    assert blank["observed"]["blank_now"] == 4 and blank["observed"]["with_proposal"] == 7
+    assert blank["observed"]["blank_now"] == 5 and blank["observed"]["with_proposal"] == 12 and blank["observed"]["without_proposal"] == 1
     assert "Mind counts" in blank["message"] and "Test for empty text before the arithmetic" in blank["message"]
 
     lookup = _finding(analysis, "FRM-010")
@@ -128,7 +135,8 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     assert "Read empty cells as 0 where they are compared" in empty["message"]
 
     plan = {a["id"]: a for a in plan_actions(analysis, {"findings": [blank, lookup, empty]})}
-    assert plan["guard_blank_arithmetic"]["level"] == "blocking" and plan["guard_blank_arithmetic"]["count"] == 13
+    assert plan["guard_blank_arithmetic"]["level"] == "blocking" and plan["guard_blank_arithmetic"]["count"] == 18
+    assert len(plan["guard_blank_arithmetic"]["skipped"]) == 1 and "L9" in plan["guard_blank_arithmetic"]["skipped"][0]
     assert {o["rule_id"] for o in plan["guard_blank_arithmetic"]["operations"]} == {"FRM-008", "FRM-010"}
     assert plan["empty_cells_as_zero"]["count"] == 3 and not plan["empty_cells_as_zero"]["skipped"]
     ops = plan["guard_blank_arithmetic"]["operations"] + plan["empty_cells_as_zero"]["operations"]
@@ -137,7 +145,7 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
 
     # Excel computes exactly what it did
     res = compare_workbooks(src, Path(out["output_path"]), Moves())
-    assert res["ran"] and res["clean"] is True and res["counts"]["compared"] == res["counts"]["same"] > 20
+    assert res["ran"] and res["clean"] is True and res["counts"]["same"] > 40 and res["counts"]["error_to_error"] == 1   # M9 = 1/0 before and after
 
     after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
     assert {_finding(after, rid)["status"] for rid in ("FRM-008", "FRM-009", "FRM-010")} == {"PASS"}

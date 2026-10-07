@@ -60,6 +60,10 @@ def _is_formula(v: Any) -> bool:
     return isinstance(v, str) and len(v) > 1 and v.startswith("=")
 
 
+def _is_error_value(v: Any) -> bool:
+    return isinstance(v, str) and v.startswith("#") and v.rstrip("!?") in ("#REF", "#VALUE", "#DIV/0", "#N/A", "#NAME", "#NUM", "#NULL", "#SPILL", "#CALC", "#GETTING_DATA")
+
+
 def _is_number(v: Any) -> bool:
     return (isinstance(v, (int, float)) and not isinstance(v, bool)) or isinstance(v, (datetime.date, datetime.time, datetime.timedelta))
 
@@ -599,10 +603,19 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         array = bool(f.get("array_ref"))
         cells = sorted({formula[refs[k].start():refs[k].end()] for ks in union.values() for k in ks})
         kinds = pattern_kinds.get((sheet, col, rel), set())
+        # A cell the new test reads must not hold an error: IF(#REF!="", ...) is #REF!, where the
+        # IFERROR it replaces returned the fallback (seen on PVFP: 19 values changed, 9 into errors).
+        # Such a row keeps its formula -- Excel and Mind both stop on the error and fall back.
+        errors = sorted({
+            formula[refs[k].start():refs[k].end()]
+            for ks in union.values() for k in ks
+            if _is_error_value(book.value(_ref_sheet(formula, refs[k], sheet), *_ref_cell(refs[k])))
+        })
+        issue = "an array formula: rewrite it by hand" if array else (f"{', '.join(errors[:3])} holds an error: the IFERROR already returns its fallback in Excel and in Mind; left as it is" if errors else None)
         out["blank_arithmetic"].append({
             "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": (sheet, row, col) in blank_flagged,
             "arithmetic": "arithmetic" in kinds, "lookup_key": "lookup" in kinds,
-            "suggested_formula": None if array else _guarded(formula, refs, calls, union), "issue": "an array formula: rewrite it by hand" if array else None,
+            "suggested_formula": None if issue else _guarded(formula, refs, calls, union), "issue": issue,
         })
 
     for key in sorted(origins):
@@ -647,7 +660,7 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks, "
         "so each column keeps one formula; Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} array formula(s) are left to rewrite by hand." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
@@ -688,7 +701,7 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks; Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} array formula(s) are left to rewrite by hand." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
@@ -734,7 +747,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
         + " ".join(p + "." for p in parts)
         + f" The Prep action 'Read empty cells as 0 where they are compared' puts N() around {with_fix} of them (N of an empty cell is 0 in both; N of a number is the number); "
         "Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} array formula(s) are left to rewrite by hand." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
