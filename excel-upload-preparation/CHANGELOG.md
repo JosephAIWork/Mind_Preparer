@@ -34,7 +34,16 @@ table now keeps it and the other is listed as skipped for the next round.
 
 Checked on the originals before the use-case runs: Palermo, 225 operations,
 no computed value changed (56,647 formula cells), FRM-006 / RSK-002 / REF-001
-all PASS afterwards. PVFP: see the results below.
+all PASS afterwards. PVFP, 10,404 operations, no computed value changed
+(152,324 formula cells), FRM-006 PASS afterwards.
+
+**Through the whole app flow on 1.8.3 (2026-10-07):** Palermo -- 477 Prep
+changes (100 undefined-name formulas, 125 headers, 12 empty cells read as 0,
+titles), 511 error cells -> 0, no computed value changed, **"Acceptable by
+Mind"** (55 min, the machine busy with the test suite). PVFP -- 10,949 Prep
+changes, 65,883 -> 887 kept on purpose, 210 rewrites after the fixer, no
+computed value changed; one blocking finding left, FRM-007 (INDIRECT used as
+a value, 4,410 formulas), by hand or with the assistant (57 min).
 
 ## 1.8.2
 
