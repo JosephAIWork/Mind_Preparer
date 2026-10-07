@@ -26,6 +26,15 @@ formula (Excel and Mind both stop on the error and fall back), listed in the
 action's skip list. On PVFP: 120 rewrites, 7 held back, no computed value
 changed.
 
+**Tested on 1.8.2 (2026-10-07, one model at a time on a quiet machine):**
+Horizon 721 error cells -> 0, "Acceptable by Mind" (10 min). CNHI: 5,156 Prep
+changes in two rounds, no error before or after, no computed value changed on
+577,707 formula cells, "Acceptable by Mind" (27 min); the new rules found
+nothing to rewrite in it. PVFP: 65,883 -> 887 left on purpose (the errors its
+own formulas hide), 215 rewrites after the fixer, no computed value changed on
+152,324 formula cells, still blocked by FRM-006 / FRM-007 by hand (19 min).
+Palermo not re-run on this version.
+
 ## 1.8.1
 
 **Two places where Mind computes another value than Excel**, found the only
