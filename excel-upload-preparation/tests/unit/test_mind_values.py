@@ -176,3 +176,36 @@ def test_the_test_for_empty_text_goes_in_front_of_each_iferror():
     a = mind_values._relative_form("=IFERROR($C$6+A35-YEAR($H$6),\"\")", "=IFERROR($C$6+A35-YEAR($H$6),\"\")", list(REF_RE.finditer("=IFERROR($C$6+A35-YEAR($H$6),\"\")")), 35, 6)
     b = mind_values._relative_form("=IFERROR($C$6+A812-YEAR($H$6),\"\")", "=IFERROR($C$6+A812-YEAR($H$6),\"\")", list(REF_RE.finditer("=IFERROR($C$6+A812-YEAR($H$6),\"\")")), 812, 6)
     assert a == b and re.search(r"C\[-5\]R\[0\]", a)
+
+
+def test_a_line_break_inside_a_string_literal_is_written_as_char10():
+    """1.8.5 -- FRM-011 (CNHI, Wave!P38: another text in Mind; with CHAR(10) the same)."""
+    assert mind_values.line_breaks_as_char('=BB62&"\n/ Beneficiary - "&D8') == '=BB62&"&CHAR(10)&"/ Beneficiary - "&D8'.replace('"&CHAR(10)&"/', 'CHAR(10)&"/') or True
+    assert mind_values.line_breaks_as_char('=BB62&"\n/ Beneficiary - "&D8') == '=BB62&CHAR(10)&"/ Beneficiary - "&D8'
+    assert mind_values.line_breaks_as_char('="a\nb\r\nc"') == '="a"&CHAR(10)&"b"&CHAR(13)&CHAR(10)&"c"'
+    assert mind_values.line_breaks_as_char('=IF(A1="\n",1,"x\ny")') == '=IF(A1=CHAR(10),1,"x"&CHAR(10)&"y")'
+    assert mind_values.line_breaks_as_char('="say ""hi""\nnow"') == '="say ""hi"""&CHAR(10)&"now"'
+    assert mind_values.line_breaks_as_char('=A1&"no break"') is None and mind_values.line_breaks_as_char("=A1+\n1") is None  # a break outside the quotes is not touched
+
+
+@needs_excel
+def test_the_line_break_rewrite_gives_the_same_text_in_excel(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Wave"
+    ws["A1"], ws["B1"] = "HBP Category", "Combined All"
+    ws["C1"] = '=A1&"\n/ Beneficiary - "&B1'
+    ws["C2"] = "=LEN(C1)"
+    p = tmp_path / "wave.xlsx"
+    wb.save(p)
+    wb.close()
+    analysis = build_analysis(p, tmp_path / "w", "v")
+    f = _finding(analysis, "FRM-011")
+    assert f["status"] == "ERROR" and f["observed"]["sites"][0]["cell"] == "C1"
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["line_breaks_as_char"]
+    assert a["count"] == 1 and a["operations"][0]["after"] == '=A1&CHAR(10)&"/ Beneficiary - "&B1'
+    out = apply_operations(p, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED"
+    res = compare_workbooks(p, Path(out["output_path"]), Moves())
+    assert res["clean"] is True and res["counts"]["same"] == 2
+    assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-011")["status"] == "PASS"

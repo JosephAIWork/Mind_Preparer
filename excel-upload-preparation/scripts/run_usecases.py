@@ -54,9 +54,12 @@ def _get(base: str, path: str) -> dict[str, Any]:
     return r.json()
 
 
+SKIP_ACTIONS: set[str] = set()  # --skip-actions: actions left unticked, as a user would
+
+
 def _default_ops(plan: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """What the Prep screen sends when the user presses Apply without touching a checkbox."""
-    chosen = [a for a in plan if a.get("default_on") and a.get("count", 0) > 0]
+    chosen = [a for a in plan if a.get("default_on") and a.get("count", 0) > 0 and a["id"] not in SKIP_ACTIONS]
     return [o for a in chosen for o in a["operations"]], {a["id"]: a["count"] for a in chosen}
 
 
@@ -168,7 +171,7 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
             # 1.8.1: what the verdict asks for next. A fix can be a form Mind computes differently
             # (=IFERROR(x,0) over arithmetic on "": FRM-008); the analysis of the fixed version says so
             # and Prep rewrites it -- the blocking actions only, as the screen's next step does.
-            again = [a for a in fixed_plan if a.get("default_on") and a.get("level") == "blocking" and a.get("count", 0) > 0]
+            again = [a for a in fixed_plan if a.get("default_on") and a.get("level") == "blocking" and a.get("count", 0) > 0 and a["id"] not in SKIP_ACTIONS]
             if again:
                 t = time.time()
                 ops = [o for a in again for o in a["operations"]]
@@ -236,10 +239,12 @@ def main() -> int:
     ap.add_argument("--skip-share", type=float, default=0.5, help="in a very large workbook, leave a sheet out of the scan when it holds at least this share of the file")
     ap.add_argument("--skip-above-mb", type=float, default=100.0, help="'very large': the workbook unpacks to at least this many MB")
     ap.add_argument("--no-autofix", action="store_true", help="stop after the first recalculation (a baseline of what Prep leaves)")
+    ap.add_argument("--skip-actions", default="", help="Prep actions to leave unticked, comma-separated (e.g. create_grid_titles,separate_merged_grids: no title rows inserted)")
     ap.add_argument("--no-assistant", action="store_true", help="auto-fix without asking the assistant (the built-in strategies only)")
     ap.add_argument("--allow-handled", action="store_true", help="auto-fix with keep_good_values off: also fix errors a formula hides, listing every value that changes")
     ap.add_argument("--one-comparison", action="store_true", help="compare with the original once: by the fixer when there are errors to fix, by the numbers check otherwise")
     args = ap.parse_args()
+    SKIP_ACTIONS.update(a.strip() for a in args.skip_actions.split(",") if a.strip())
     options = {"use_assistant": not args.no_assistant, "keep_good_values": not args.allow_handled, "time_budget_min": 240}
     args.out.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict[str, Any]] = {}

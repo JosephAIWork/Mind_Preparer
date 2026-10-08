@@ -1310,6 +1310,24 @@ def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+def plan_line_breaks_as_char(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-011: a line break typed inside a string literal becomes CHAR(10) (CHAR(13) for a
+    carriage return): the same text in Excel, and the text Mind computes too."""
+    from .validators.mind_values import line_break_in_text
+
+    ops, skipped = [], []
+    try:
+        finding = line_break_in_text(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    for s in (finding.get("observed") or {}).get("sites", []):
+        if not s["suggested_formula"]:
+            skipped.append(f"{s['sheet']}!{s['cell']}: {s.get('issue') or 'no rewrite proposed'}")
+            continue
+        ops.append(_op("set_formula", "line_breaks_as_char", "FRM-011", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note="the line break inside the quotes is written as CHAR(10): the same text in Excel, and in Mind"))
+    return ops, skipped
+
+
 # 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
@@ -1332,6 +1350,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "Mind rejects ANCHORARRAY() (Office 365 dynamic arrays); each 'A1#' becomes the range the spill covers now, so a source that grows later will not be followed -- add MM_RANGE by hand if it must", "planner": plan_freeze_spill_refs},
     {"id": "guard_blank_arithmetic", "title": "Test for empty text before the arithmetic or lookup (Mind counts \"\" as 0 and matches it to an empty cell; Excel stops on it)", "rule_ids": ["FRM-008", "FRM-010"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), down the whole filled-down block; Excel returns the same values ('Did the numbers change?' proves it)", "planner": plan_guard_blank_arithmetic},
+    {"id": "line_breaks_as_char", "title": "Write line breaks inside text as CHAR(10)", "rule_ids": ["FRM-011"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: a line break typed inside quotes becomes \"...\"&CHAR(10)&\"...\"; the text Excel shows is the same", "planner": plan_line_breaks_as_char},
     {"id": "empty_cells_as_zero", "title": "Read empty cells as 0 where they are compared with a number (Mind does not)", "rule_ids": ["FRM-009"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: N() goes around the reading of an empty cell, or around the reference / lookup that lands on it; Excel returns the same values -- N() of text is 0 as well, so look again if such a cell is meant to hold text one day", "planner": plan_empty_cells_as_zero},
     {"id": "separate_merged_grids", "title": "Insert an empty row before a '#Title' trapped inside a grid", "rule_ids": ["STR-001"], "default_on": True, "level": BLOCKING,

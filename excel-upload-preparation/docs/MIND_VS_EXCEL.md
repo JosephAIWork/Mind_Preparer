@@ -193,6 +193,89 @@ Rule **FRM-010** flags an exact VLOOKUP / HLOOKUP / MATCH inside IFERROR whose
 key is a cell that holds `""` and whose looked-up column or row has an empty
 cell; the Prep action puts the test for `""` in front, as for FRM-008.
 
+## CNHI: a diagnostic sheet on the app's output (2026-10-08)
+
+CNHI converted and ran in Mind, with value differences on nine sheets. A
+`Diag` sheet with 57 cells, each one part of the formulas concerned, was
+added to the app's output and uploaded:
+
+| Cell | What it shows | Excel | Mind |
+|---|---|---|---|
+| C2 | RAC Baseline!H15 as it is | 4.322152 | same |
+| C3 | its numerator: SUMPRODUCT(row, weights, --(labels=H7)) | 13688209 | same |
+| C4 | its denominator: SUMPRODUCT(weights, --(labels=H7)) | 3166989 | same |
+| C5 | the same with (labels=H7)*1 | 3166989 | same |
+| C6 | the same as one product inside SUMPRODUCT | 3166989 | **differs** |
+| C7 | the same with SUMIFS | 3166989 | **0** |
+| C8 | SUMPRODUCT of the weights alone | 15774369 | same |
+| C9 | how many labels equal H7 (COUNTIF) | 20 | **NaN** |
+| C10 | how many labels equal H7 (SUMPRODUCT --) | 20 | **differs** |
+| C11 | the label H7 | AF | same |
+| C12 | SUMPRODUCT of two rows (no condition) | 3.42E+11 | same |
+| C13 | RAC Baseline!E15 as it is | 4.083767 | **differs** |
+| C14 | RAC Baseline!I11 (a weight) | 3166989 | same |
+| C15 | YEAR of the projection midpoint | 2026 | same |
+| C16 | proj_year | 2026 | same |
+| C17 | the row offset (year difference x 117) | 0 | same |
+| C18 | OFFSET(RAC Baseline!H15, 0, 0) | 4.322152 | **differs** |
+| C19 | OFFSET(RAC Baseline!H15, 117, 0) | 3.989483 | same |
+| C20 | RAC Baseline!H132 (117 rows below H15) | 3.989483 | same |
+| C21 | RAC Calculation!E15 as it is | 4.322152 | **differs** |
+| C22 | Baseline!P76 as it is (a column offset) | 0 | same |
+| C23 | MATCH of the chosen column | 1 | same |
+| C24 | MATCH of the first column | 1 | same |
+| C25 | OFFSET(RAC Baseline!E19, 0, P76) | 36.70534 | **differs** |
+| C26 | OFFSET(RAC Baseline!E19, 0, 0) | 36.70534 | **differs** |
+| C27 | RAC Baseline!E19 as it is | 36.70534 | **differs** |
+| C28 | Baseline!O80 as it is | 36.70534 | **differs** |
+| C29 | the chosen column label | Combined All | same |
+| C30 | RAC Baseline!E12 | Combined All | same |
+| C31 | Validation list!D16 (holds 80+) | 80+ | **text** |
+| C32 | is it text? | TRUE | same |
+| C33 | its length | 3 | same |
+| C34 | the text 80+ typed in the formula | 80+ | **text** |
+| C35 | INDEX(age_band, 9) | 80+ | **text** |
+| C36 | MATCH(80, age limits, 1) | 9 | same |
+| C37 | MATCH(79, age limits, 1) | 8 | same |
+| C38 | INDEX(age_band, MATCH(80,...,1)) | 80+ | **text** |
+| C39 | INDEX(age_band, MATCH(79,...,1)) | 70-79 | same |
+| C40 | Age-Gender Mix!J16 (holds 80+) | 80+ | **text** |
+| C41 | Age-Gender Mix!J15 (holds 70-79) | 70-79 | same |
+| C42 | Exhibits!Z24 (holds 80+) | 80+ | **text** |
+| C43 | IRAT data!K6385 as it is | 80+ | **text** |
+| C44 | Validation list!D16 & "" | 80+ | **text** |
+| C45 | Wave!BB62 & a line break & text | HBP Category
+x | same |
+| C46 | Wave!BB62 & "/x" | HBP Category/x | same |
+| C47 | Wave!P38 as it is | HBP Category
+/ Beneficiary - Combined All | **text** |
+| C48 | Baseline Cost!G151 as it is | 0 | **differs** |
+| C49 | the SUMIFS inside it | 1.75E+10 | same |
+| C50 | COUNTIFS on the first criterion | 231 | same |
+| C51 | COUNTIFS on the second criterion | 32 | same |
+| C52 | the first criterion | Category A | same |
+| C53 | the second criterion | Wave 2 | same |
+| C54 | SUM of the whole H column | 1.19E+11 | same |
+| C55 | the SUMIFS with the criterion typed in | 9.01E+10 | same |
+| C56 | COUNTA of the F column | 674 | same |
+| C57 | Baseline Cost!G150 as it is | 1.75E+10 | same |
+
+What it settles:
+
+- The model's `SUMPRODUCT(row, weights, --(labels=H$7))` computes the same
+  (C2-C5). `COUNTIF` and `SUMIFS` over that 330-column row range do not
+  (C9: NaN, C7: 0), nor do single-argument SUMPRODUCT forms (C6, C10) -- the
+  model uses none of them.
+- The text `80+` is reported as different even typed into a formula (C34),
+  while `70-79` is not: not a model matter.
+- A line break typed inside a string literal gives another text (C47);
+  written as `CHAR(10)` it gives the same (C45) -- rule FRM-011.
+- `OFFSET(cell,0,0)` differs from the cell itself (C18 vs C2), and the
+  weighted averages `E15`, `E19` on `RAC Baseline` differ while every input
+  tested matches: not explained by the parts. Every sheet with numeric
+  differences is one where Prep inserted title rows; a run with the two
+  row-inserting actions off is the next test.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

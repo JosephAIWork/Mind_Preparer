@@ -751,3 +751,85 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
+
+
+# --- FRM-011: a line break inside a string literal -------------------------------------------
+# CNHI, Wave!P38: =BB62&"<line break>/ Beneficiary - "&D8 came back from Mind as another text,
+# while =BB62&CHAR(10)&"x" came back the same (Diag, 2026-10-08). The break written as CHAR(10)
+# is the same text in Excel.
+_BREAK_RE = re.compile(r"\r\n|\r|\n")
+
+
+def string_literal_spans(formula: str) -> list[tuple[int, int]]:
+    """(start, end) of every "..." literal, quotes included, "" inside a literal being an escaped quote."""
+    spans, i, n = [], 0, len(formula)
+    while i < n:
+        if formula[i] == '"':
+            j = i + 1
+            while j < n:
+                if formula[j] == '"':
+                    if j + 1 < n and formula[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            spans.append((i, min(j, n - 1)))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def line_breaks_as_char(formula: str) -> str | None:
+    """The formula with every line break inside a string literal written as CHAR(10) / CHAR(13); None when there is none."""
+    if not formula or not formula.startswith("=") or not _BREAK_RE.search(formula):
+        return None
+    out, last, changed = [], 0, False
+    for a, b in string_literal_spans(formula):
+        text = formula[a + 1:b]
+        if not _BREAK_RE.search(text):
+            continue
+        parts = []
+        pos = 0
+        for m in _BREAK_RE.finditer(text):
+            if m.start() > pos:
+                parts.append('"' + text[pos:m.start()] + '"')
+            parts.append("&".join("CHAR(13)" if ch == "\r" else "CHAR(10)" for ch in m.group(0)))
+            pos = m.end()
+        if pos < len(text):
+            parts.append('"' + text[pos:] + '"')
+        out.append(formula[last:a])
+        out.append("&".join(parts))
+        last = b + 1
+        changed = True
+    if not changed:
+        return None
+    out.append(formula[last:])
+    return "".join(out)
+
+
+def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
+    """FRM-011: a line break typed inside a formula's string literal -- Mind computes another text."""
+    wb0 = analysis["workbooks"][0]
+    sites = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        fixed = line_breaks_as_char(formula)
+        if fixed is None:
+            continue
+        array = bool(f.get("array_ref"))
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed, "issue": "an array formula: rewrite it by hand" if array else None})
+    observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for s in sites if s["suggested_formula"])}
+    if not sites:
+        return finding("PASS", "No formula holds a line break inside a string literal.", observed)
+    first = sites[0]
+    return finding(
+        "ERROR",
+        f"{len(sites)} formula(s) hold a line break typed inside a string literal (\"...\"): Mind computes another text for them (confirmed in Mind on the model CNHI, "
+        "Wave!P38; the same break written as CHAR(10) came back the same). "
+        f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
+        + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
+        + f". The Prep action 'Write line breaks inside text as CHAR(10)' rewrites {observed['with_proposal']} of them; the text Excel shows is the same.",
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    )

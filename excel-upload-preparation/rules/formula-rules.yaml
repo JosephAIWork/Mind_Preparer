@@ -216,3 +216,24 @@ rules:
   fail_if:
   - An exact VLOOKUP / HLOOKUP / MATCH inside IFERROR takes a key that holds "" and searches a column or row that has an empty cell.
   severity_source: BLOCKER
+- id: FRM-011
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Line break inside a string literal -- a line break typed inside the quotes of a formula; Mind computes another text, CHAR(10) gives the same text in both.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-08, model CNHI, Wave!P38 and a diagnostic sheet)
+    article: FRM-011
+  validation:
+    deterministic: true
+    implementation: validators.formula.line_break_in_text
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula holds a line break inside a string literal.
+  fail_if:
+  - A string literal in a formula holds a line break.
+  severity_source: BLOCKER
