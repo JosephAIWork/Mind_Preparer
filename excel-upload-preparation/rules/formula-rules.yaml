@@ -146,7 +146,7 @@ rules:
     deterministic: true
     implementation: validators.formula.indirect_as_value
   correction:
-    automatic: false
+    automatic: true
   on_unevaluable: NOT_SUPPORTED
   pass_if:
   - No formula compares, multiplies, divides, negates or concatenates the result of INDIRECT.

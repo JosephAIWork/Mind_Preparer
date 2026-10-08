@@ -1237,6 +1237,40 @@ def _held_on_omitted_sheets(analysis: dict[str, Any], formula: str, references: 
     return held
 
 
+# --- FRM-007: INDIRECT used as a value, replaced by the reference it builds (1.8.4) ------------
+def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-007: Mind returns a reference for INDIRECT and cannot use it as a value
+    ('Unable to cast AM.Models.AMReference to System.IConvertible'). Where the text INDIRECT
+    builds can be worked out from the workbook's constants ("'"&$G710&"'!$Z$16" with G710 =
+    "LoB 1"), the call becomes that direct reference -- the value Excel computes today. A target
+    that does not exist becomes NA() where it stands (that call was an error already). Text
+    that depends on a computed value is left for a person: the direct reference would freeze
+    one state of the model."""
+    from .validators.references import indirect_as_value
+
+    ops, skipped = [], []
+    try:
+        finding = indirect_as_value(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    arrays = {(x["sheet"], x["cell"]): x for x in analysis["workbooks"][0].get("formulas", []) if x.get("array_ref")}
+    for site in (finding.get("observed") or {}).get("sites", []):
+        where = f"{site['sheet']}!{site['cell']}"
+        if not site.get("suggested_formula"):
+            skipped.append(f"{where}: {site.get('issue') or 'no rewrite proposed'}")
+            continue
+        targets = sorted({c["target"] for c in site.get("calls", []) if c.get("target")})
+        note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind cannot use INDIRECT as a value; a text built from a changed input would no longer be followed"
+        if site.get("issue"):
+            note += "; " + site["issue"]
+        f = arrays.get((site["sheet"], site["cell"]))
+        if f:
+            ops.append(_op("set_array_formula", "direct_references", "FRM-007", site["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=site["formula"], after=site["suggested_formula"], note=note))
+        else:
+            ops.append(_op("set_formula", "direct_references", "FRM-007", site["sheet"], cell=site["cell"], before=site["formula"], after=site["suggested_formula"], note=note))
+    return ops, skipped
+
+
 # --- RSK-002: headers over every column an array formula covers (1.8.3) -----------------------
 def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
     """RSK-002: Mind refuses an array formula that reaches past its grid ('Ensure that the
@@ -1290,6 +1324,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
     {"id": "expand_3d_references", "title": "Write 3-D references ('First:Last'!cell) out sheet by sheet", "rule_ids": ["FRM-006"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets Mind imports; a sheet with no grid is left out only when it holds nothing at those cells, so Excel's result is the same ('Did the numbers change?' proves it)", "planner": plan_expand_3d_references},
+    {"id": "direct_references", "title": "Replace INDIRECT used as a value by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: INDIRECT(\"'\"&$G710&\"'!$Z$16\") becomes 'LoB 1'!$Z$16, the reference the text designates with today's inputs (Mind cannot use INDIRECT as a value); a text built from an input that changes later would no longer be followed -- Excel's values today stay the same", "planner": plan_direct_references},
     {"id": "cover_array_headers", "title": "Extend the header row over every column an array formula covers", "rule_ids": ["RSK-002"], "default_on": True, "level": BLOCKING,
      "caution": "writes 'Period n' into the empty header cells above the array's columns (Mind refuses an array formula that reaches past its grid); rename them by hand if the model has better words", "planner": plan_cover_array_headers},
     {"id": "freeze_spill_refs", "title": "Replace spilled-range references (A1#) by the fixed range they cover today", "rule_ids": ["FRM-003"], "default_on": True, "level": BLOCKING,

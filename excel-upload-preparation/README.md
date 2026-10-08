@@ -22,11 +22,14 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.3)
+## Current status (1.8.4)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **INDIRECT used as a value** (1.8.4): the Prep action writes the direct
+  reference the finding worked out (FRM-007), PVFP's last blocker.
 
 - **Three more fixes done by Prep** (1.8.3): 3-D references written out sheet
   by sheet (FRM-006), the header row extended over array formulas wider than

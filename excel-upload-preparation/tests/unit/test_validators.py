@@ -526,4 +526,4 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     assert sites["B2"]["suggested_formula"] == "=NOT(LoB1_Boolean)*2"
     assert sites["B3"]["suggested_formula"] is None and "cannot be worked out" in sites["B3"]["issue"]
     assert f["observed"]["with_proposal"] == 2 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
-    assert "AMReference" in f["message"] and "No automatic repair" in f["message"]
+    assert "AMReference" in f["message"] and "writes the proposals" in f["message"]

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.8.4
+
+**FRM-007 (INDIRECT used as a value) has a Prep action.** It was PVFP's last
+blocker after 1.8.3: 4,410 formulas such as
+`=IF(INDIRECT("'"&$G710&"'!$Z$16")=0,0,...)` -- Mind returns a reference for
+INDIRECT and cannot use it as a value. The finding already worked out the
+text each call builds from the workbook's constants and proposed the direct
+reference; the action **Replace INDIRECT used as a value by the reference its
+text builds** now writes it: `'LoB 1'!$Z$16`. A target that does not exist
+becomes `NA()` where it stands (that call was an error already); a text that
+depends on a computed value stays for a person, since the direct reference
+would freeze one state of the model. Excel's values today stay the same; the
+one thing given up is that a text built from an input changed *later* is no
+longer followed -- which Mind could not do anyway.
+
 ## 1.8.3
 
 **Three findings that stopped Mind now have a Prep action.** Palermo and

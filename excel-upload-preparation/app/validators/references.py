@@ -881,7 +881,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
             + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates; {observed['with_missing_targets']} also point at a sheet or name that does not exist "
             "(an error in Excel already: that call becomes NA() in its place); "
-            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). Fix by hand or with the assistant from the proposals. No automatic repair.",
+            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). The Prep action 'Replace INDIRECT used as a value by the reference its text builds' writes the proposals.",
             observed,
             location={"sheet": first["sheet"], "cell": first["cell"]},
         )

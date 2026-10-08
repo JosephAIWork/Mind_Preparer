@@ -136,3 +136,41 @@ def test_a_name_that_does_not_exist_becomes_na_where_it_stands(tmp_path):
     res = compare_workbooks(p, Path(out["output_path"]), Moves())
     assert res["clean"] is True
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "REF-001")["status"] == "PASS"
+
+
+@needs_excel
+def test_indirect_used_as_a_value_becomes_the_direct_reference(tmp_path):
+    """1.8.4 -- FRM-007 (PVFP, 4,410 formulas: 'Unable to cast AMReference to IConvertible')."""
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    inp = wb.active
+    inp.title = "Inputs"
+    lob = wb.create_sheet("LoB 1")
+    lob["Z12"], lob["Z16"] = 10, 4
+    inp["G710"], inp["G711"] = "LoB 1", "LoB 2"                 # LoB 2 is not a sheet
+    inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
+    inp["AA711"] = "=IFERROR(IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,1),-1)"   # the missing sheet: an error today, NA() tomorrow, -1 both ways
+    inp["B2"] = "=NOT(INDIRECT(\"LoB\"&COLUMN()-1&\"_Boolean\"))*2"
+    inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"                   # B4 is a formula with no stored value: by hand
+    inp["B4"] = "=G710"
+    inp["B5"] = True
+    wb.defined_names["LoB1_Boolean"] = DefinedName("LoB1_Boolean", attr_text="Inputs!$B$5")
+    p = tmp_path / "indirect.xlsx"
+    wb.save(p)
+    wb.close()
+    analysis = build_analysis(p, tmp_path / "w", "i")
+    a = _plan(analysis)["direct_references"]
+    by = {o["cell"]: o for o in a["operations"]}
+    assert a["level"] == "blocking" and set(by) == {"AA710", "AA711", "B2"}
+    assert by["AA710"]["after"] == "=IF('LoB 1'!$Z$16=0,0,66%*'LoB 1'!$Z$12/'LoB 1'!$Z$16)"
+    assert by["AA711"]["after"] == "=IFERROR(IF(NA()=0,0,1),-1)" and "LoB 2" in by["AA711"]["note"]
+    assert by["B2"]["after"] == "=NOT(LoB1_Boolean)*2"
+    assert len(a["skipped"]) == 1 and "B3" in a["skipped"][0] and "cannot be worked out" in a["skipped"][0]
+    out = apply_operations(p, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED" and not out["failed"]
+    res = compare_workbooks(p, Path(out["output_path"]), Moves())
+    assert res["clean"] is True and res["counts"]["good_to_other"] == 0
+    after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
+    f = _finding(after, "FRM-007")
+    assert f["status"] == "ERROR" and {s["cell"] for s in f["observed"]["sites"]} == {"B3"}     # only the one left for a person
