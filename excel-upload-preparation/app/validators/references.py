@@ -891,3 +891,43 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             location={"sheet": first["sheet"], "cell": first["cell"]},
         )
     return finding("PASS", "No formula uses the result of INDIRECT as a value.", observed)
+
+
+
+# --- REF-002 -----------------------------------------------------------------------------
+def external_links_in_formulas(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
+    """REF-002: formulas that read another workbook. Mind cannot follow an external link; Excel
+    shows the copy it kept of each external cell (the link's cache), or #REF! where it kept none."""
+    from ..external_links import external_references, freeze_formula, read_external_links
+
+    wb0 = analysis["workbooks"][0]
+    try:
+        links = read_external_links(wb0["copy_path"])
+    except Exception as exc:
+        return finding("NOT_SUPPORTED", f"The workbook's external links could not be read ({type(exc).__name__}: {str(exc)[:120]}).", {"sites": [], "links": []})
+    sites = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        if "[" not in formula or not external_references(formula):
+            continue
+        fixed, notes, issue = freeze_formula(formula, links)
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:200], "suggested_formula": fixed, "values": notes[:4], "issue": issue})
+    link_info = [{"index": x["index"], "file_name": x["file_name"], "target": x["target"], "reachable": x["reachable"], "sheets": x["sheets"][:8], "cached_cells": x["cached_cells"]} for x in links]
+    observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "links": link_info, "with_proposal": sum(1 for x in sites if x["suggested_formula"]), "without_proposal": sum(1 for x in sites if not x["suggested_formula"])}
+    if not sites and not links:
+        return finding("PASS", "No formula reads another workbook, and the package holds no external link.", observed)
+    if not sites:
+        return finding("WARNING", f"{len(links)} external link part(s) in the package but no formula reads them: the Prep action 'Freeze external links' removes them.", observed)
+    first = sites[0]
+    files = ", ".join(f"{x['file_name'] or '?'} ({'reachable' if x['reachable'] else 'not reachable from here'}, {x['cached_cells']} cell(s) kept)" for x in link_info[:3])
+    return finding(
+        "ERROR",
+        f"{len(sites)} formula(s) read another workbook ({files}). Mind cannot follow an external link: each of these is an error there, and the converter reports the link "
+        f"(PVFP: 20,934 such formulas, '20,000 deterministic errors'). Excel shows the copy it kept of each external cell, or #REF! where it kept none. "
+        f"First: {first['sheet']}!{first['cell']} = {first['formula'][:90]}"
+        + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
+        + f". The Prep action 'Freeze external links' writes that copy into {observed['with_proposal']} formula(s) (NA() where Excel kept none) and removes the link; Excel's values stay the same"
+        + (f"; {observed['without_proposal']} read a whole range of the other workbook and are left for a person." if observed["without_proposal"] else "."),
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    )

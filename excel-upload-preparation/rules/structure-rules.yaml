@@ -210,3 +210,24 @@ rules:
     automatic: false
   on_unevaluable: NOT_SUPPORTED
   severity_source: MEDIUM
+- id: REF-002
+  version: 1.0.0
+  status: active
+  category: structure
+  description: 'External links in formulas -- a formula that reads another workbook; Mind cannot follow an external link (every such formula is an error there), Excel shows the copy it kept.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-08, model PVFP, 20,934 formulas on a link to an unreachable file)
+    article: REF-002
+  validation:
+    deterministic: true
+    implementation: validators.structure.external_links_in_formulas
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula reads another workbook and the package holds no external link part.
+  fail_if:
+  - A formula reads a cell of another workbook.
+  severity_source: BLOCKER

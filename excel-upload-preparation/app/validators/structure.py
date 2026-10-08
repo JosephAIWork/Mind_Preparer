@@ -379,3 +379,6 @@ def totals_reconcile(rule, analysis: dict[str, Any], config: dict[str, Any]) -> 
             {"mismatches": mismatches[:50], "checked": checked},
         )
     return finding("PASS", f"All {checked} checked SUM/addition total(s) reconcile with their addends.", {"mismatches": [], "checked": checked})
+
+
+from .references import external_links_in_formulas  # noqa: E402,F401  (REF-002, 1.8.6)

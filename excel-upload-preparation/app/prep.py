@@ -56,7 +56,7 @@ from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
 
-STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility"}
+STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link"}
 CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula"}
 HIDE_MARKER = "&&Hide"
 EXCEL_SHEET_NAME_MAX = 31
@@ -1271,6 +1271,51 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+# --- REF-002: external links frozen to the values Excel keeps (1.8.6) ------------------------
+def plan_freeze_external_links(analysis, report) -> tuple[list[dict], list[str]]:
+    """REF-002: each reference to another workbook becomes the value Excel shows for it (the
+    copy kept in the link's cache: a number, a text, TRUE/FALSE), or NA() where Excel kept none
+    (#REF! already). Once every reference to a link is gone, the link itself is broken through
+    Excel, so the package carries no external link. A reference to a whole range of the other
+    workbook has no single value to write and is left for a person."""
+    from .external_links import external_references, freeze_formula, read_external_links
+
+    ops, skipped = [], []
+    wb0 = analysis["workbooks"][0]
+    try:
+        links = read_external_links(wb0["copy_path"])
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    if not links:
+        return ops, skipped
+    left_over: set[int] = set()
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        if "[" not in formula:
+            continue
+        refs = external_references(formula)
+        if not refs:
+            continue
+        fixed, notes, issue = freeze_formula(formula, links)
+        if fixed is None:
+            skipped.append(f"{f['sheet']}!{f['cell']}: {issue} -- by hand")
+            left_over.update(r["index"] for r in refs)
+            continue
+        note = "external reference frozen to the value Excel shows for it (" + "; ".join(notes[:3]) + ("; ..." if len(notes) > 3 else "") + ")"
+        if f.get("array_ref"):
+            ops.append(_op("set_array_formula", "freeze_external_links", "REF-002", f["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after=fixed, note=note))
+        else:
+            ops.append(_op("set_formula", "freeze_external_links", "REF-002", f["sheet"], cell=f["cell"], before=formula, after=fixed, note=note))
+    first_sheet = (wb0.get("sheets") or [{}])[0].get("name") or ""
+    for link in links:
+        if link["index"] in left_over:
+            skipped.append(f"link [{link['index']}] {link['file_name'] or ''}: kept, because formulas still read a range of it (see above)")
+            continue
+        ops.append(_op("break_external_link", "freeze_external_links", "REF-002", first_sheet, file_name=link["file_name"] or "", target=link["target"] or "", before=f"link to {link['file_name'] or link['target'] or '?'}", after="no external link",
+                       note="the link is broken through Excel once nothing reads it: the package carries no external link part"))
+    return ops, skipped
+
+
 # --- RSK-002: headers over every column an array formula covers (1.8.3) -----------------------
 def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
     """RSK-002: Mind refuses an array formula that reaches past its grid ('Ensure that the
@@ -1342,6 +1387,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "replaces the whole formula (its broken reference stood for a range, e.g. a deleted column inside SUMIFS); restore the real range by hand instead if you know it", "planner": plan_fix_broken_refs_whole},
     {"id": "expand_3d_references", "title": "Write 3-D references ('First:Last'!cell) out sheet by sheet", "rule_ids": ["FRM-006"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets Mind imports; a sheet with no grid is left out only when it holds nothing at those cells, so Excel's result is the same ('Did the numbers change?' proves it)", "planner": plan_expand_3d_references},
+    {"id": "freeze_external_links", "title": "Freeze external links: write the value Excel shows for each reference to another workbook, then break the link", "rule_ids": ["REF-002"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: a reference to another workbook becomes the copy Excel kept of that cell (a number or a text), NA() where it kept none; the values stop following the other file -- which they already do not when it cannot be reached", "planner": plan_freeze_external_links},
     {"id": "direct_references", "title": "Replace INDIRECT used as a value by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: INDIRECT(\"'\"&$G710&\"'!$Z$16\") becomes 'LoB 1'!$Z$16, the reference the text designates with today's inputs (Mind cannot use INDIRECT as a value); a text built from an input that changes later would no longer be followed -- Excel's values today stay the same", "planner": plan_direct_references},
     {"id": "cover_array_headers", "title": "Extend the header row over every column an array formula covers", "rule_ids": ["RSK-002"], "default_on": True, "level": BLOCKING,
@@ -1465,7 +1512,7 @@ def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
     phase2 = [_resolve_insert_at(o, row_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
-    sheet_level = [o for o in operations if o["op"] in ("rename_sheet", "set_sheet_visibility")]
+    sheet_level = [o for o in operations if o["op"] in ("rename_sheet", "set_sheet_visibility", "break_external_link")]
     return phase1 + row_inserts + col_inserts + phase2 + sheet_level
 
 
@@ -1517,6 +1564,21 @@ def _com_message(exc: BaseException, op: dict[str, Any] | None = None) -> str:
             return "Excel refused this formula -- it is not a formula Excel can store (check the syntax and the function arguments)"
         return "Excel refused this change (error 0x800A03EC)"
     return str(exc)
+
+
+def _break_external_link(wb: Any, o: dict[str, Any]) -> None:
+    """Excel's own Break Link on the one source whose file name matches: with every formula
+    that read it already rewritten, nothing is converted and the link definition goes."""
+    want = str(o.get("file_name") or "").lower()
+    sources = wb.LinkSources(1)  # xlExcelLinks
+    if not sources:
+        return
+    for src in sources:
+        if want and str(src).replace("\\", "/").lower().rsplit("/", 1)[-1] != want:
+            continue
+        wb.BreakLink(Name=src, Type=1)
+        return
+    raise ValueError(f"Excel lists no link named {o.get('file_name')!r}; its links: {list(sources)[:3]}")
 
 
 def _cells_of(ref_or_range: Any) -> list[str]:
@@ -1750,6 +1812,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             ws.Columns(col_to_num(str(o["column"]))).Insert()
         elif o["op"] == "rename_sheet":
             ws.Name = o["after"]
+        elif o["op"] == "break_external_link":
+            _break_external_link(wb, o)
         else:
             raise ValueError(f"unknown op {o['op']}")
         return record
