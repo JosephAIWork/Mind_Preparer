@@ -292,3 +292,35 @@ def test_a_blank_text_inside_a_range_in_array_arithmetic_is_named_in_the_test(tm
     assert out["status"] == "APPLIED"
     res = compare_workbooks(src, Path(out["output_path"]), Moves())
     assert res["clean"] is True
+    # a second round finds nothing more to guard (1.8.11: the first trial doubled the test)
+    again = build_analysis(Path(out["output_path"]), tmp_path / "w2", "r2")
+    assert _finding(again, "FRM-008")["status"] == "PASS"
+
+
+def test_an_isnumber_or_iserror_guard_counts_like_iferror(tmp_path):
+    """1.8.11 -- PVFP, Reporting_General!I23 = IF(ISNUMBER('LoB 1'!H171*NOT(LoB3_Boolean)),...,""): "" in Excel
+    (the product is #VALUE!, ISNUMBER says FALSE), 0 in Mind (test workbook 7)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["C3"] = '=IF(1=1,"",0)'                             # the "" cell
+    ws["C4"] = 5
+    ws["B5"] = '=IF(ISNUMBER(C3*1),C3*1,"")'
+    ws["B6"] = '=IF(ISERROR(C3*1),"",C3*1)'
+    ws["B7"] = '=IF(ISNUMBER(C4*1),C4*1,"")'               # a number: nothing to guard
+    ws["B8"] = '=IF(ISNUMBER(C3),C3*1,"")'                 # tests the cell itself: both say FALSE
+    p = tmp_path / "isnumber.xlsx"
+    wb.save(p)
+    wb.close()
+    src = _calculated(p)
+    analysis = build_analysis(src, tmp_path / "w", "r")
+    f = _finding(analysis, "FRM-008")
+    sites = {s["cell"]: s for s in f["observed"]["sites"]}
+    assert set(sites) == {"B5", "B6"}
+    assert sites["B5"]["suggested_formula"] == '=IF(C3="","",IF(ISNUMBER(C3*1),C3*1,""))'
+    assert sites["B6"]["suggested_formula"] == '=IF(C3="","",IF(ISERROR(C3*1),"",C3*1))'
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["guard_blank_arithmetic"]
+    out = apply_operations(src, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED" and len(out["applied"]) == 2
+    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    assert res["clean"] is True

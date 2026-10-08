@@ -157,7 +157,7 @@ rules:
   version: 1.0.0
   status: active
   category: formula
-  description: 'Empty text in arithmetic -- Excel stops on "" (#VALUE!) and IFERROR returns its fallback; Mind counts "" as 0 and computes a number.'
+  description: 'Empty text in arithmetic -- Excel stops on "" (#VALUE!) and IFERROR (or IF on ISNUMBER / ISERROR) returns its fallback; Mind counts "" as 0 and computes a number.'
   confidence: HIGH
   priority: REQUIRED
   source:
@@ -170,9 +170,9 @@ rules:
     automatic: true
   on_unevaluable: NOT_SUPPORTED
   pass_if:
-  - No IFERROR hides arithmetic on a cell that holds "" (empty text).
+  - No IFERROR (or IF on ISNUMBER / ISERROR) hides arithmetic on a cell that holds "" (empty text).
   fail_if:
-  - A formula does arithmetic on a cell that holds "" inside IFERROR and shows the fallback in Excel.
+  - A formula does arithmetic on a cell that holds "" inside IFERROR, or inside an IF that tests ISNUMBER / ISERROR on it, and shows the fallback in Excel.
   severity_source: BLOCKER
 - id: FRM-009
   version: 1.0.0

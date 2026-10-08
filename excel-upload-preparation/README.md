@@ -22,11 +22,17 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.10)
+## Current status (1.8.11)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **PVFP agrees with Mind** (1.8.11): the prepared PVFP converts and runs in
+  Mind with no real difference left. FRM-008 also guards `IF(ISNUMBER(X),X,"")`
+  and `IF(ISERROR(X),"",X)` on a `""` cell (test workbook 7); a lone text cell
+  that feeds INDIRECT's sheet name made Mind read the formula's own sheet
+  (STR-008's title fixes it).
 
 - **A `""` cell inside a range** (1.8.10): FRM-008 also guards array
   arithmetic (`IFERROR(SUMPRODUCT(row*weights),"")`) whose range holds a

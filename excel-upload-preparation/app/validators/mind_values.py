@@ -50,6 +50,8 @@ _CELL_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})")
 _COORD_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})")
 _NAME_BEFORE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$")
 _IFERROR_RE = re.compile(r"(?<![A-Za-z0-9_.])IFERROR\s*\(", re.IGNORECASE)
+_IF_RE = re.compile(r"(?<![A-Za-z0-9_.])IF\s*\(", re.IGNORECASE)
+_IS_TEST_RE = re.compile(r"^(ISNUMBER|ISERROR|ISERR)\s*\(", re.IGNORECASE)
 _LOOKUP_RE = re.compile(r"(VLOOKUP|HLOOKUP)\s*\(", re.IGNORECASE)
 _EXACT_LOOKUP_RE = re.compile(r"(?<![A-Za-z0-9_.])(VLOOKUP|HLOOKUP|MATCH)\s*\(", re.IGNORECASE)
 _CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
@@ -378,6 +380,42 @@ def _iferror_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int
     return out
 
 
+def _guard_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int]]]]:
+    """Every construct that hides an error of X behind a fallback: IFERROR(X, fb), and (1.8.11)
+    IF(ISNUMBER(X), ..., fb) / IF(ISERROR(X), fb, ...) / IF(ISERR(X), fb, ...). Each as
+    (start, open paren of X's call, close of the whole construct, [X span, fallback span]):
+    Excel takes the fallback when X errors on a "" cell, Mind computes X with "" as 0
+    (PVFP, Reporting_General!I23 = IF(ISNUMBER('LoB 1'!H171*NOT(LoB3_Boolean)),...,"")) ."""
+    out = _iferror_calls(masked)
+    for m in _IF_RE.finditer(masked):
+        open_at = m.end() - 1
+        close = _closing_paren(masked, open_at)
+        if close == -1:
+            continue
+        spans = _arg_spans(masked, open_at + 1, close)
+        if len(spans) != 3:
+            continue
+        a0, a1 = spans[0]
+        test = masked[a0:a1]
+        lead = len(test) - len(test.lstrip())
+        test_s = test.strip()
+        mt = _IS_TEST_RE.match(test_s)
+        if not mt:
+            continue
+        t_open = a0 + lead + mt.end() - 1
+        if _closing_paren(masked, t_open) != a0 + lead + len(test_s) - 1:
+            continue  # the test is more than the one IS... call
+        fallback = spans[2] if mt.group(1).upper() == "ISNUMBER" else spans[1]
+        out.append((m.start(), t_open, close, [(t_open + 1, a0 + lead + len(test_s) - 1), fallback]))
+    out.sort(key=lambda c: c[0])
+    return out
+
+
+def _has_guard_form(formula: str) -> bool:
+    upper = formula.upper()
+    return "IFERROR" in upper or (("ISNUMBER" in upper or "ISERR" in upper) and re.search(r"(?<![A-Z0-9_.])IF\s*\(", upper) is not None)
+
+
 def _relative_form(formula: str, masked: str, refs: list[re.Match], row: int, col: int) -> str:
     """The formula with every reference written relative to its own cell: equal for a filled-down block."""
     def rel(mm: re.Match) -> str:
@@ -472,7 +510,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         formula, sheet = f["formula"], f["sheet"]
         rest = formula[1:]
         compares = "=" in rest or "<" in rest or ">" in rest
-        has_iferror = "IFERROR" in formula.upper()
+        has_iferror = _has_guard_form(formula)
         if not (compares or has_iferror or book.stored(sheet, row, col) == "#VALUE!"):
             continue
         masked = mask_strings(formula) if ('"' in formula or "'" in formula) else formula
@@ -547,7 +585,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                                             "suggested_formula": None if array else f"=IF({test},NA(),{formula[1:]})", "issue": "an array formula: rewrite it by hand" if array else None})
         if has_iferror:
             iferror_by_column.setdefault((sheet, col), []).append((f, row, col))
-            calls = _iferror_calls(masked)
+            calls = _guard_calls(masked)
             guards: dict[int, set[int]] = {}
             range_blanks: dict[int, list[str]] = {}
             for ci, (_start, open_at, _close, spans2) in enumerate(calls):
@@ -566,10 +604,15 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                         if tsheet not in book.sheets or not _reaches_unconditionally(masked, m.start(), open_at):
                             continue
                         prefix = formula[m.start():m.start("ref")]  # the sheet part, quoted as written
+                        if compact is None:
+                            compact = _compact(masked)
                         for rr in range(r["r1"], r["r2"] + 1):
                             for cc in range(r["c1"], r["c2"] + 1):
                                 if _is_formula(book.content(tsheet, rr, cc)) and book.stored(tsheet, rr, cc) is None:
-                                    range_blanks.setdefault(ci, []).append(f'{prefix}{num_to_col(cc)}{rr}=""')
+                                    text = f"{prefix}{num_to_col(cc)}{rr}"
+                                    if _tests_for_empty_text(compact, _compact(text)):
+                                        continue  # already guarded (a second Prep round)
+                                    range_blanks.setdefault(ci, []).append(text + '=""')
                         continue
                     tsheet = _ref_sheet(formula, m, sheet)
                     trow, tcol = _ref_cell(m)
@@ -654,7 +697,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         if not union:
             continue
         formula = f["formula"]
-        calls = _iferror_calls(masked)
+        calls = _guard_calls(masked)
         array = bool(f.get("array_ref"))
         cells = sorted({formula[refs[k].start():refs[k].end()] for ks in union.values() for k in ks})
         kinds = pattern_kinds.get((sheet, col, rel), set())
@@ -727,10 +770,10 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
     sites = [s for s in res["blank_arithmetic"] if s["arithmetic"]]
     observed, first, now, with_fix = _blank_text_observed(sites, limit)
     if not sites:
-        return finding("PASS", 'No IFERROR hides arithmetic on a cell that holds "" (empty text).', observed)
+        return finding("PASS", 'No IFERROR (or IF on ISNUMBER / ISERROR) hides arithmetic on a cell that holds "" (empty text).', observed)
     return finding(
         "ERROR",
-        f'{now} formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR. Excel stops on the "" (#VALUE!) and returns the IFERROR fallback; '
+        f'{now} formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR, or inside an IF that tests ISNUMBER / ISERROR on it. Excel stops on the "" (#VALUE!) and returns the fallback; '
         'Mind counts "" as 0, computes a number and never reaches the fallback, so these cells get another value in Mind (confirmed in Mind on the model Horizon: '
         "1,242 cells blank in Excel held a value). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"

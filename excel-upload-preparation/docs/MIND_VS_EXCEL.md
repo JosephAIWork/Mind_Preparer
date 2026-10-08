@@ -328,6 +328,36 @@ a single-cell test (`E3=""`, test workbook 2) sees it. FRM-008 (1.8.10)
 names the `""` cells of the range one by one:
 `IF(OR(K53="",L53="",...),"",IFERROR(SUMPRODUCT(I53:DL53*...),""))`.
 
+With that: 68 lines, 59 the boolean rendering and 9 real. Test workbook 7
+(Data!C3 = `IF(1=1,"",0)`, Data!C4 = 5; Other!C5 = 7 inside a titled grid,
+Other!H2 = `Other` standing alone; Probe!C5 = 99 on the probe's own sheet):
+
+| Cell | What it tests | Excel | Mind |
+|---|---|---|---|
+| L2 | `IF(ISNUMBER(C3*1),C3*1,"")` on the `""` cell (PVFP, Reporting_General!I23) | "" | **0** |
+| L3 | guard `IF(C3="","",IF(ISNUMBER(C3*1),C3*1,""))` | "" | same |
+| L4 | the ISNUMBER form on a number | 5 | same |
+| L5 | `ISNUMBER(C3*1)` alone | FALSE | **TRUE** |
+| L6 | `IF(ISERROR(C3*1),"",C3*1)` | "" | **0** |
+| L7 | guard on the ISERROR form | "" | same |
+| L8 | `OFFSET(INDIRECT("'"&Data!C7&"'!C5"),,0)`, the sheet name from a cell under a label | 7 | same |
+| L9 | the same with the sheet name from a LONE text cell (Other!H2) | 7 | **99** (Probe!C5) |
+| L10 | `OFFSET(INDIRECT("'Other'!C5"),,0)` written out | 7 | same |
+| L11 | the direct reference `OFFSET('Other'!C5,,0)` | 7 | same |
+| L12 | `INDIRECT("''!C5")`, an empty sheet name | #REF! | **99** (the formula's own sheet) |
+| L13 | `SUM(INDIRECT(a):INDIRECT(b))` with the lone cell's sheet name | 6 | **0** |
+| L14 | `OFFSET('Other'!H4,,0)-0`, an empty cell outside any grid | 0 | same |
+| L15 | `'Other'!D5-0`, an empty cell inside a grid | 0 | same |
+
+So (1) ISNUMBER / ISERROR hide the `""` arithmetic like IFERROR does, and
+FRM-008 (1.8.11) guards those forms too; (2) a lone text cell that feeds
+INDIRECT's sheet name is empty in Mind, and an empty sheet name means the
+formula's own sheet there (`Reporting_LoB Total!E32` read its own H31,
+36,209, where Excel read `LoB_Total!H31`, empty): STR-008's title above F2
+fixes it. A sheet that holds only lone cells has no grid and does not exist
+in Mind at all ("Sheet not found" on compile). The PVFP 1.8.11 trial: 59
+lines, all the boolean rendering -- no real difference left.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

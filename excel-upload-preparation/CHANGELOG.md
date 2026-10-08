@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.8.11
+
+**PVFP agrees with Mind.** The 1.8.11 trial of PVFP (every Prep action of
+1.8.4 to 1.8.11 applied, no computed value changed against the original)
+converts and runs in Mind with 59 lines in the Deterministic Differences
+tab, all of them the comparison's own boolean rendering (1 against True): no
+real difference is left. Two things closed it, after 1.8.10's 9 cells.
+
+**FRM-008 also sees `IF(ISNUMBER(X), X, "")` and `IF(ISERROR(X), "", X)`.**
+`Reporting_General!I23 = IF(ISNUMBER('LoB 1'!H171*NOT(LoB3_Boolean)),...,"")`:
+in Excel the product on a `""` cell is #VALUE!, ISNUMBER says FALSE and the
+cell shows `""`; in Mind the `""` is 0, ISNUMBER says TRUE and the cell shows
+0 (test workbook 7). The same test as for IFERROR goes in front:
+`IF('LoB 1'!H171="","",IF(ISNUMBER(...),...,""))`. Six cells on PVFP.
+
+**A lone text cell feeding INDIRECT.** `Reporting_LoB Total!E32 =
+OFFSET(INDIRECT("'"&$F$2&"'!H31"),,0)-E8` with `F2 = LoB_Total` standing
+alone: Mind imports no lone text cell, builds `''!H31` and reads H31 of the
+formula's own sheet (36,209 against Excel's 0; test workbook 7: an empty
+sheet name means the formula's own sheet in Mind, #REF! in Excel). STR-008
+(1.8.8) already proposes the `#` title above F2; the earlier trials had not
+applied it. Three cells on PVFP.
+
+Also: a second Prep round no longer doubles the range test of 1.8.10 (a
+`""` cell the formula already tests is skipped).
+
 ## 1.8.10
 
 **FRM-008 inside a range.** PVFP's last 8 real differences were all
