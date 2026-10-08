@@ -105,8 +105,7 @@ def main() -> int:
         if conv["success"]:
             lines = read_deterministic_differences(page)
             result["deterministic_differences"] = len(lines)
-            (shots / "deterministic.txt").write_text("
-".join(lines), encoding="utf-8")
+            (shots / "deterministic.txt").write_text("\n".join(lines), encoding="utf-8")
             print(f"deterministic differences: {len(lines)} cell(s)" + (f" -> {shots / 'deterministic.txt'}" if lines else " (none: Mind agrees with Excel)"))
         if conv["success"] and args.run:
             added = add_template(page)

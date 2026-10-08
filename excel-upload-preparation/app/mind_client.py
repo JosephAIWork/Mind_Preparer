@@ -351,15 +351,23 @@ def open_manager(page: Page) -> bool:
 
 def ensure_folder(page: Page, folder: str = SANDBOX_FOLDER) -> bool:
     """Open `folder` in the manager, creating it when it does not exist."""
-    exists = page.evaluate("(f)=>[...document.querySelectorAll('a')].some(e=>((e.innerText||'').trim().startsWith(f)))", folder)
+    exists = False
+    for _ in range(6):  # 1.8.7: the manager's list may still be loading right after a run; look again before creating anything
+        exists = page.evaluate("(f)=>[...document.querySelectorAll('a')].some(e=>((e.innerText||'').trim().startsWith(f)))", folder)
+        if exists:
+            break
+        _wait(page, 1500)
     if not exists:
-        page.get_by_role("button", name=re.compile(r"^\s*New folder\s*$", re.I)).first.click(timeout=6000)
-        _wait(page, 1200)
-        kill_tour(page)
-        page.locator('input[placeholder="Choose a folder name"]').first.fill(folder, timeout=5000)
-        page.get_by_role("button", name=re.compile(r"^\s*Create new folder\s*$", re.I)).first.click(timeout=5000)
-        _wait(page, 2500)
-        kill_tour(page)
+        try:
+            page.get_by_role("button", name=re.compile(r"^\s*New folder\s*$", re.I)).first.click(timeout=6000)
+            _wait(page, 1200)
+            kill_tour(page)
+            page.locator('input[placeholder="Choose a folder name"]').first.fill(folder, timeout=5000)
+            page.get_by_role("button", name=re.compile(r"^\s*Create new folder\s*$", re.I)).first.click(timeout=5000)
+            _wait(page, 2500)
+            kill_tour(page)
+        except Exception:
+            return False
     try:
         page.get_by_role("link", name=re.compile(rf"^\s*{re.escape(folder)}")).first.click(timeout=6000)
         _wait(page, 1500)
