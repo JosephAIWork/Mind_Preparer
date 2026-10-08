@@ -307,6 +307,27 @@ no longer counted). With those: 1,151 -> 8 real cells, all from
 `IFERROR(SUMPRODUCT(I53:DL53*...),"")` -- a `""` inside a *range* in array
 arithmetic, test workbook 6.
 
+Test workbook 6 (Data!C3:H3 = 1..6 with E3 = `IF(1=1,"",0)`, C6:H6 all
+numbers, C9:H9 with E9 empty, C12:H12 the weights):
+
+| Cell | What it tests | Excel | Mind |
+|---|---|---|---|
+| C2 | `IFERROR(SUMPRODUCT(row*weights),"")` on the row holding a `""` cell | "" | **820** |
+| C3 | the same on the row of numbers only | 910 | same |
+| C4 | the same on the row holding an empty cell | 820 | same |
+| C5 | guard `IF(SUMPRODUCT(ISTEXT(row)*1)>0,"",...)` on the `""` row | "" | **820** |
+| C8 | `SUMPRODUCT(ISTEXT(row)*1)` on the `""` row | 1 | **0** |
+| C10 | `COUNTIF(row,"")` on the `""` row | 1 | same |
+| C11 | `COUNTIF(row,"")` on the row with an empty cell | 1 | **0** |
+| C13 | `COUNTA(row)-COUNT(row)` on the `""` row | 1 | **0** |
+| C15 | guard `IF(COUNTA(row)-COUNT(row)>0,"",...)` on the `""` row | "" | **820** |
+| C17 | `SUMPRODUCT(row, weights)`, two arguments, on the `""` row | 820 | same |
+
+So in Mind a `""` cell inside a range is a 0 to every range test, and only
+a single-cell test (`E3=""`, test workbook 2) sees it. FRM-008 (1.8.10)
+names the `""` cells of the range one by one:
+`IF(OR(K53="",L53="",...),"",IFERROR(SUMPRODUCT(I53:DL53*...),""))`.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

@@ -264,3 +264,31 @@ def test_an_error_cell_kept_on_purpose_stays_an_error_in_mind(tmp_path):
     res = compare_workbooks(src, Path(out["output_path"]), Moves())
     assert res["clean"] is True and res["counts"]["error_to_error"] == 1 and res["counts"]["good_to_other"] == 0
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-013")["status"] == "PASS"
+
+
+@needs_excel
+def test_a_blank_text_inside_a_range_in_array_arithmetic_is_named_in_the_test(tmp_path):
+    """1.8.10 -- FRM-008 on a range (PVFP, 'LoB 1'!H57 = IFERROR(SUMPRODUCT(I53:DL53*(...)),"")); test workbook 6:
+    no range test tells "" from empty in Mind, a cell="" test does."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    for i, v in enumerate((1, 2, 3, 4), start=3):
+        ws.cell(3, i, v); ws.cell(4, i, 10 * v)
+    ws["E3"] = '=IF(1=1,"",0)'                                  # the "" cell inside C3:F3
+    ws["B5"] = '=IFERROR(SUMPRODUCT(C3:F3*C4:F4),"")'          # "" in Excel, a number in Mind
+    ws["B6"] = '=IFERROR(SUMPRODUCT(C4:F4*C4:F4),"")'          # no "" involved
+    p = tmp_path / "range.xlsx"
+    wb.save(p)
+    wb.close()
+    src = _calculated(p)
+    analysis = build_analysis(src, tmp_path / "w", "r")
+    f = _finding(analysis, "FRM-008")
+    sites = {s["cell"]: s for s in f["observed"]["sites"]}
+    assert set(sites) == {"B5"} and sites["B5"]["blank_cells"] == ["E3"]
+    assert sites["B5"]["suggested_formula"] == '=IF(E3="","",IFERROR(SUMPRODUCT(C3:F3*C4:F4),""))'
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["guard_blank_arithmetic"]
+    out = apply_operations(src, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED"
+    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    assert res["clean"] is True

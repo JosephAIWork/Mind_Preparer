@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.8.10
+
+**FRM-008 inside a range.** PVFP's last 8 real differences were all
+`'LoB 1'!H57 = IFERROR(SUMPRODUCT(I53:DL53*(Inputs_PVFP!$H$84:$DK$84)),"")`
+and its kind: one `""` cell in the row makes the product #VALUE! in Excel
+(so `""`), while Mind counts the `""` as 0 and returns a number. Test
+workbook 6 looked for a range test that tells `""` from a number in both:
+none does -- in Mind `ISTEXT` and `COUNTA-COUNT` read a `""` cell as not
+text (0 against Excel's 1), and `COUNTIF(row,"")` counts it in both but
+counts an empty cell only in Excel. A single-cell test `cell=""` does work
+in Mind (test workbook 2). So FRM-008 now also names the `""` cells found
+inside a range operand of array arithmetic under IFERROR, and the Prep action
+writes `IF(OR(K53="",L53="",...),"",IFERROR(...))` -- the cells as they stand
+today, up to 600 cells per range. `SUMPRODUCT` counts as passing its
+arguments through unconditionally. On PVFP 1.8.9's file: 6 formulas rewritten,
+no value changed.
+
 ## 1.8.9
 
 **What was left on PVFP (1,151 cells), read with Mind's values.** Three

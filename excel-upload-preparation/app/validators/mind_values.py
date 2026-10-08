@@ -43,6 +43,7 @@ TWO_CHAR = ("<=", ">=", "<>")
 TRANSPARENT = {
     "INT", "ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC", "ABS", "SQRT", "EXP", "LN", "LOG", "LOG10", "POWER", "MOD", "SIGN", "CEILING", "FLOOR", "MROUND",
     "MAX", "MIN", "SUM", "PRODUCT", "AVERAGE", "YEAR", "MONTH", "DAY", "DATE", "EDATE", "EOMONTH", "VALUE", "TEXT",
+    "SUMPRODUCT",  # an error in its array arithmetic (SUMPRODUCT(range*range) with a "" cell) is the call's error
 }
 NUMERIC_CALLS = (TRANSPARENT - {"TEXT"}) | {"N", "LEN", "ROW", "COLUMN", "ROWS", "COLUMNS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "SUMPRODUCT", "TODAY", "NOW"}
 _CELL_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})")
@@ -392,13 +393,18 @@ def _relative_form(formula: str, masked: str, refs: list[re.Match], row: int, co
     return "".join(out)
 
 
-def _guarded(formula: str, refs: list[re.Match], calls: list, guards: dict[int, set[int]]) -> str:
-    """IFERROR(X, fallback) -> IF(cell="", fallback, IFERROR(X, fallback)) for each call in `guards`."""
-    for ci in sorted(guards, key=lambda i: calls[i][0], reverse=True):
+def _guarded(formula: str, refs: list[re.Match], calls: list, guards: dict[int, set[int]], extra: dict[int, list[str]] | None = None) -> str:
+    """IFERROR(X, fallback) -> IF(cell="", fallback, IFERROR(X, fallback)) for each call in `guards`;
+    `extra` adds tests written as text (the "" cells found inside a range operand)."""
+    keys = set(guards) | set(extra or {})
+    for ci in sorted(keys, key=lambda i: calls[i][0], reverse=True):
         start, _open, close, spans = calls[ci]
         tests = []
-        for k in sorted(guards[ci]):
+        for k in sorted(guards.get(ci, ())):
             t = formula[refs[k].start():refs[k].end()] + '=""'
+            if t not in tests:
+                tests.append(t)
+        for t in (extra or {}).get(ci, []):
             if t not in tests:
                 tests.append(t)
         test = tests[0] if len(tests) == 1 else "OR(" + ",".join(tests) + ")"
@@ -457,6 +463,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         return out
 
     blank_flagged: dict[tuple[str, int, int], dict[int, set[int]]] = {}
+    range_extra: dict[tuple[str, int, int], dict[int, list[str]]] = {}
     arithmetic_marks: dict[tuple[str, int, int], set[int]] = {}
     lookup_marks: dict[tuple[str, int, int], set[int]] = {}
     iferror_by_column: dict[tuple[str, int], list[tuple[dict, int, int]]] = {}
@@ -542,12 +549,27 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             iferror_by_column.setdefault((sheet, col), []).append((f, row, col))
             calls = _iferror_calls(masked)
             guards: dict[int, set[int]] = {}
+            range_blanks: dict[int, list[str]] = {}
             for ci, (_start, open_at, _close, spans2) in enumerate(calls):
                 if len(spans2) != 2:
                     continue
                 lo, hi = spans2[0]
                 for k, m in enumerate(refs):
-                    if m.start() < lo or m.end() > hi or ":" in m.group("ref") or not _is_arithmetic_operand(masked, m.start(), m.end(), lo, hi):
+                    if m.start() < lo or m.end() > hi or not _is_arithmetic_operand(masked, m.start(), m.end(), lo, hi):
+                        continue
+                    if ":" in m.group("ref"):
+                        # 1.8.10: a range in array arithmetic (SUMPRODUCT(I53:DL53*...)): its "" cells, named one by one
+                        r = parse_ref(formula[m.start():m.end()])
+                        if not r or r["whole_column"] or r["whole_row"] or (r["r2"] - r["r1"] + 1) * (r["c2"] - r["c1"] + 1) > 600:
+                            continue
+                        tsheet = r["sheet"] or sheet
+                        if tsheet not in book.sheets or not _reaches_unconditionally(masked, m.start(), open_at):
+                            continue
+                        prefix = formula[m.start():m.start("ref")]  # the sheet part, quoted as written
+                        for rr in range(r["r1"], r["r2"] + 1):
+                            for cc in range(r["c1"], r["c2"] + 1):
+                                if _is_formula(book.content(tsheet, rr, cc)) and book.stored(tsheet, rr, cc) is None:
+                                    range_blanks.setdefault(ci, []).append(f'{prefix}{num_to_col(cc)}{rr}=""')
                         continue
                     tsheet = _ref_sheet(formula, m, sheet)
                     trow, tcol = _ref_cell(m)
@@ -592,9 +614,20 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                         continue
                     guards.setdefault(ci, set()).add(k)
                     lookup_marks.setdefault((sheet, row, col), set()).add(k)
-                if ci in guards and not _fallback_fired(book, formula, calls, ci, sheet, row, col):
-                    del guards[ci]
-            if guards:
+                if (ci in guards or ci in range_blanks) and not _fallback_fired(book, formula, calls, ci, sheet, row, col):
+                    guards.pop(ci, None)
+                    range_blanks.pop(ci, None)
+            if range_blanks and not guards:
+                # a site of its own (no filled-down-block treatment: each row names its own "" cells)
+                array = bool(f.get("array_ref"))
+                cells = sorted({t[:-3] for ts in range_blanks.values() for t in ts})
+                out["blank_arithmetic"].append({
+                    "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": True, "arithmetic": True, "lookup_key": False,
+                    "suggested_formula": None if array else _guarded(formula, refs, calls, {}, range_blanks), "issue": "an array formula: rewrite it by hand" if array else None,
+                })
+            elif guards:
+                if range_blanks:
+                    range_extra[(sheet, row, col)] = range_blanks
                 blank_flagged[(sheet, row, col)] = guards
 
     # FRM-008: the whole filled-down block gets the same test, so a column keeps one formula
@@ -637,7 +670,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         out["blank_arithmetic"].append({
             "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": (sheet, row, col) in blank_flagged,
             "arithmetic": "arithmetic" in kinds, "lookup_key": "lookup" in kinds,
-            "suggested_formula": None if issue else _guarded(formula, refs, calls, union), "issue": issue,
+            "suggested_formula": None if issue else _guarded(formula, refs, calls, union, range_extra.get((sheet, row, col))), "issue": issue,
         })
 
     # 1.8.9: every formula cell that lands on an empty cell and is read by some formula -- AVERAGE,

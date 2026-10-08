@@ -22,11 +22,16 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.9)
+## Current status (1.8.10)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **A `""` cell inside a range** (1.8.10): FRM-008 also guards array
+  arithmetic (`IFERROR(SUMPRODUCT(row*weights),"")`) whose range holds a
+  `""` cell, naming the cells one by one -- no range test tells `""` from a
+  number in Mind (test workbook 6); PVFP's last 8 real differences.
 
 - **Lone text cells** (1.8.8): a text cell standing alone that formulas read
   gets a `#` title above it (STR-008) -- Mind imports no loose text cell; PVFP's
