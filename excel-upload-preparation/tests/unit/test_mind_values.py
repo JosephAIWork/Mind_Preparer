@@ -236,3 +236,31 @@ def test_a_formula_that_asks_excel_about_itself_is_frozen_to_what_it_shows(tmp_p
     res = compare_workbooks(src, Path(out["output_path"]), Moves())
     assert res["clean"] is True and res["counts"]["same"] == 4
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-012")["status"] == "PASS"
+
+
+@needs_excel
+def test_an_error_cell_kept_on_purpose_stays_an_error_in_mind(tmp_path):
+    """1.8.9 -- FRM-013 (PVFP, 'LoB 1'!AB78 = AB77-AB84: #VALUE! in Excel, a number in Mind)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["A1"], ws["B1"] = 10, '=IF(1=1,"",0)'             # B1 holds ""
+    ws["C1"] = "=A1-B1"                                    # #VALUE! in Excel, kept on purpose
+    ws["D1"] = '=IFERROR(C1/2,"No GEP")'                   # what reads it
+    ws["C2"] = "=IFERROR(A1-B1,0)"                         # guarded: FRM-008's, not FRM-013's
+    ws["C3"] = "=A1-A1"                                    # no "" involved
+    p = tmp_path / "kept.xlsx"
+    wb.save(p)
+    wb.close()
+    src = _calculated(p)
+    analysis = build_analysis(src, tmp_path / "w", "k")
+    f = _finding(analysis, "FRM-013")
+    assert f["status"] == "ERROR" and [s["cell"] for s in f["observed"]["sites"]] == ["C1"]
+    assert f["observed"]["sites"][0]["suggested_formula"] == '=IF(B1="",NA(),A1-B1)'
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["keep_error_cells"]
+    assert a["count"] == 1
+    out = apply_operations(src, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED"
+    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    assert res["clean"] is True and res["counts"]["error_to_error"] == 1 and res["counts"]["good_to_other"] == 0
+    assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-013")["status"] == "PASS"

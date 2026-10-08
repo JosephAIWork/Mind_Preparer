@@ -231,3 +231,24 @@ rules:
   fail_if:
   - A formula reads a cell of another workbook.
   severity_source: BLOCKER
+- id: STR-008
+  version: 1.0.0
+  status: active
+  category: structure
+  description: 'Lone text cell read by formulas -- a text cell with nothing around it (no grid, no title, no label beside it) that a formula reads; Mind imports grids, not loose text cells, and the formula gets nothing.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-08, model PVFP, LoB 1!G2, and test workbook 5)
+    article: STR-008
+  validation:
+    deterministic: true
+    implementation: validators.structure.lone_text_cells_read
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No text cell standing alone on its sheet is read by a formula.
+  fail_if:
+  - A formula reads a text cell that belongs to no grid and has no title above it or label beside it.
+  severity_source: BLOCKER

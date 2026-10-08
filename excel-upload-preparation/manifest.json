@@ -1,6 +1,6 @@
 {
   "name": "excel-upload-preparation",
-  "version": "1.8.4",
+  "version": "1.8.9",
   "ruleSetVersion": "1.2.0",
   "schemaVersion": "1.0.0",
   "entrypoint": "SKILL.md",

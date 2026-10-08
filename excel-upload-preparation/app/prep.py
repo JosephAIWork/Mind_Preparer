@@ -1394,6 +1394,61 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
     return ops, skipped
 
 
+def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]:
+    """STR-008: a '#' title in the empty cell above a text cell that stands alone and is read
+    by a formula, so that Mind imports it as a one-cell grid. Named after the label to its
+    left on the same row when there is one ('Nom Onglet :' -> '#Nom Onglet value'), else after
+    the cell. A cell with no empty cell above it is left for a person."""
+    from .validators.structure import lone_text_cells_read
+
+    ops, skipped = [], []
+    try:
+        finding = lone_text_cells_read(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    sites = (finding.get("observed") or {}).get("sites", [])
+    if not sites:
+        return ops, skipped
+    used = {g["name"].strip().lower() for g in all_grids(analysis) if g.get("name")}
+    grids = all_grids(analysis)
+    for s in sites:
+        ref = parse_ref(s["cell"])
+        row, col = ref["r1"], ref["c1"]
+        if row == 1:
+            skipped.append(f"{s['sheet']}!{s['cell']}: on the first row, no cell above for a title -- by hand (move the cell down one row, or write its value into the formulas)")
+            continue
+        above = cell_value(analysis, s["sheet"], row - 1, col)
+        if above is not None or grid_containing([g for g in grids if g["sheet"] == s["sheet"]], row - 1, col):
+            skipped.append(f"{s['sheet']}!{s['cell']}: the cell above ({ref_text(col, row - 1)}) is taken -- by hand")
+            continue
+        label = None
+        for c in range(col - 1, max(0, col - 5), -1):
+            v = cell_value(analysis, s["sheet"], row, c)
+            if _is_text(v):
+                label = v
+                break
+        base = (_clean_name(str(label).rstrip(": ").strip()) + " value") if label else f"{s['sheet']} {s['cell']}"
+        name = _unique_name(base, used)
+        used.add(name.lower())
+        ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(col, row - 1), before=None, after=f"#{name}",
+                       note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
+    return ops, skipped
+
+
+def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-013: an error cell kept on purpose (arithmetic on "", no IFERROR) becomes
+    IF(cell="",NA(),...): an error in Excel (#N/A for #VALUE!) and in Mind alike."""
+    ops, skipped = [], []
+    res = _mind_values(analysis)
+    for s in (res or {}).get("blank_errors", []):
+        if not s["suggested_formula"]:
+            skipped.append(f"{s['sheet']}!{s['cell']}: {s.get('issue') or 'no rewrite proposed'}")
+            continue
+        ops.append(_op("set_formula", "keep_error_cells", "FRM-013", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"],
+                       note=f"{', '.join(s['blank_cells'][:3])} holds \"\": #VALUE! in Excel, a number in Mind; NA() keeps it an error in both"))
+    return ops, skipped
+
+
 # 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
@@ -1422,6 +1477,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: CELL(\"filename\") / INFO() ask Excel about the file and the session, which Mind cannot answer; the text or number Excel shows today is written instead", "planner": plan_freeze_environment_formulas},
     {"id": "line_breaks_as_char", "title": "Write line breaks inside text as CHAR(10)", "rule_ids": ["FRM-011"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a line break typed inside quotes becomes \"...\"&CHAR(10)&\"...\"; the text Excel shows is the same", "planner": plan_line_breaks_as_char},
+    {"id": "keep_error_cells", "title": "Keep an error cell an error in Mind (arithmetic on \"\" with no IFERROR)", "rule_ids": ["FRM-013"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: a cell that shows #VALUE! because it computes on \"\" becomes IF(cell=\"\",NA(),...) -- #N/A in Excel instead of #VALUE!, still an error, and an error in Mind too; what read the error sees an error as before", "planner": plan_keep_error_cells},
     {"id": "empty_cells_as_zero", "title": "Read empty cells as 0 where they are compared with a number (Mind does not)", "rule_ids": ["FRM-009"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: N() goes around the reading of an empty cell, or around the reference / lookup that lands on it; Excel returns the same values -- N() of text is 0 as well, so look again if such a cell is meant to hold text one day", "planner": plan_empty_cells_as_zero},
     {"id": "separate_merged_grids", "title": "Insert an empty row before a '#Title' trapped inside a grid", "rule_ids": ["STR-001"], "default_on": True, "level": BLOCKING,
@@ -1429,6 +1486,8 @@ ACTIONS: list[dict[str, Any]] = [
     {"id": "loop_name_case", "title": "Normalise loop-name capitalisation (MM_LOOP / MM_RESULT / MM_DIMSIZE ...)", "rule_ids": ["LOOP-002", "RES-002"], "default_on": True, "level": BLOCKING, "planner": plan_loop_name_case},
     {"id": "reorder_input_flag", "title": "Add /Input to /Reorder grids", "rule_ids": ["INP-005"], "default_on": True, "level": BLOCKING, "planner": plan_reorder_input_flag},
     {"id": "special_headers", "title": "Correct headers of /ExportSettings, /ProjectSettings, /Parameters, /InputSettings grids", "rule_ids": ["EXP-003", "PRJ-002", "PAR-002", "INP-003"], "default_on": True, "level": BLOCKING, "planner": plan_special_headers},
+    {"id": "title_lone_text_cells", "title": "Give a lone text cell that formulas read a title of its own", "rule_ids": ["STR-008"], "default_on": True, "level": BLOCKING,
+     "caution": "writes a '#' title in the empty cell above a text cell that stands alone and is read by a formula: Mind imports grids, not loose text cells, and the formula would get nothing", "planner": plan_title_lone_text_cells},
     {"id": "create_grid_titles", "title": "Give every untitled grid one '#Name' title taken from the cells around it (captions, labels, headers)", "rule_ids": ["STR-004", "STR-002", "STR-001"], "default_on": True, "level": OPTIONAL,
      "level_note": "Mind accepts an untitled grid but lists it as 'Untitled' -- unusable for whoever opens the model", "planner": plan_create_grid_titles},
     {"id": "flag_spelling", "title": "Correct misspelt flags to the documented spelling", "rule_ids": ["FLG-001"], "default_on": True, "level": OPTIONAL, "planner": plan_flag_spelling},

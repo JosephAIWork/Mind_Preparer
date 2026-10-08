@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.8.9
+
+**What was left on PVFP (1,151 cells), read with Mind's values.** Three
+things. (1) `Reporting_LoB Total!H30 = AVERAGE(G35:H35)*...` where `G35 =
+Inputs_CoC!G33` and `G33` is empty: 0 in Excel, an empty cell in Mind, which
+AVERAGE skips -- 8,778 against 17,556. **FRM-009** now covers every formula
+cell that lands on an empty cell and is read by some formula (`N()` around
+it), not only the compared ones. (2) `'LoB 1'!AB78 = AB77-AB84` with `AB84`
+holding `""`: #VALUE! in Excel, kept on purpose by the fixer's rule; 0 in
+Mind, which counts `""` as 0 -- and every IFERROR fed by it ("No GEP") turned
+into a number there. **FRM-013** flags such an error cell; the Prep action
+**Keep an error cell an error in Mind** writes `IF(AB84="",NA(),AB77-AB84)`:
+#N/A instead of #VALUE! in Excel, still an error, and an error in Mind too.
+(3) The comparison renders Excel's booleans as 1/0 and Mind's as True/False:
+`scripts/mind_log_table.py` no longer counts those. 107 rules.
+
+## 1.8.8
+
+**STR-008 -- a text cell standing alone that formulas read.** PVFP 1.8.7
+converts and runs in Mind, with 20,000 deterministic differences -- all from
+one cell. `'LoB 1'!A122 = "GWP_Retained#"&$G$2` came back as `GWP_Retained#`:
+Mind's `$G$2` was empty, though it holds `LoB 1`. In the original, `E2` held
+the label `Nom Onglet :` and `G2` the value; Prep's title action had moved
+the label away to become a grid title, and a text cell standing alone is
+not something Mind imports (test workbook 5: a lone text is empty in Mind; a
+lone number, a text under a `#` title, next to or under a label, or inside
+a grid are all read). The rule flags a lone text cell that a formula reads;
+the Prep action **Give a lone text cell that formulas read a title of its
+own** writes a `#` title in the empty cell above it (`#Nom Onglet value`),
+a one-cell grid Mind imports; it runs before the title action. With that one
+title added to the 1.8.7 file, Mind's differences went from 20,000 to 1,151.
+106 rules.
+
+## 1.8.7
+
+**The app uploads to Mind itself.** `scripts/mind_upload.py <workbook> [--run]`
+creates a sandbox project (`zzz_mindready_...`), uploads, converts, runs,
+reads Mind's own errors (the whole text of each, with the cell it points at)
+and the "Deterministic Differences" tab, and deletes the project.
+`scripts/mind_log_table.py` turns that log into the merged table
+ResultCalc.xlsx builds, with no size limit. First results, 2026-10-08: the
+test workbooks and PVFP 1.8.4 convert and run; Palermo 1.8.3 converts and
+stops in the run.
+
+**FRM-012 -- a formula that asks Excel about itself.** Palermo's
+`'Saved down'!C5 = MID(CELL("filename",...),FIND("[",...)+1,...)` builds a
+save path for a macro from the file's name. Mind has no file: its
+`CELL("filename")` holds no `[`, FIND fails and the run stops
+("startIndex ('-1') must be a non-negative value"). The rule flags every
+formula that calls CELL or INFO; the Prep action **Write what CELL / INFO
+formulas show today in their place** writes the text or number Excel shows,
+as a formula (`="palermo.xlsm"`), so the numbers check still follows the
+cell. 105 rules.
+
+**CNHI, read with Mind's values** (the pasted log holds them): the numeric
+differences all come from `RAC Baseline`'s `--($V$7:$MU$7=H$7)`, which Mind
+evaluated as TRUE on the 178 *empty* cells of the label row and FALSE on the
+20 `AF` cells. Test workbook 4 (a label row with gaps, 27 forms) shows the
+construct itself computes correctly in Mind, so the cause lies in how Mind
+reads that sheet after Prep's 90 inserted title rows -- a run with the
+row-inserting actions off is the test. `80+` is the comparison's own doing
+(its Excel side reads `80+` as 80) and `Baseline Cost!G151` a 4e-6 rounding.
+
 ## 1.8.6
 
 **REF-002 -- external links, frozen.** PVFP in Mind: "20,000 deterministic

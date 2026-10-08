@@ -22,11 +22,25 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.4)
+## Current status (1.8.9)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Lone text cells** (1.8.8): a text cell standing alone that formulas read
+  gets a `#` title above it (STR-008) -- Mind imports no loose text cell; PVFP's
+  20,000 differences came from one such cell.
+
+- **Uploads to Mind by itself** (1.8.7): `scripts/mind_upload.py` converts and
+  runs a workbook in a sandbox project and reads Mind's errors and its
+  Deterministic Differences; `scripts/mind_log_table.py` tabulates them.
+  **FRM-012**: a formula that asks Excel about itself (`CELL("filename")`,
+  `INFO`) is frozen to what it shows.
+
+- **External links frozen** (1.8.6): a formula that reads another workbook
+  gets the copy Excel kept of that cell, and the link is broken (REF-002) --
+  PVFP's 20,934 such formulas were every one an error in Mind.
 
 - **INDIRECT used as a value** (1.8.4): the Prep action writes the direct
   reference the finding worked out (FRM-007), PVFP's last blocker.

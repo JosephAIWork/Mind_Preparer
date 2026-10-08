@@ -174,3 +174,34 @@ def test_indirect_used_as_a_value_becomes_the_direct_reference(tmp_path):
     after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
     f = _finding(after, "FRM-007")
     assert f["status"] == "ERROR" and {s["cell"] for s in f["observed"]["sites"]} == {"B3"}     # only the one left for a person
+
+
+def test_a_lone_text_cell_that_formulas_read_gets_a_title_of_its_own(tmp_path):
+    """1.8.8 -- STR-008 (PVFP, 'LoB 1'!G2: Mind imports no loose text cell; "GWP_Retained#"&$G$2 came back empty)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "LoB 1"
+    ws["E2"], ws["G2"] = "Nom Onglet :", "LoB 1"          # a label, a gap, the value: G2 stands alone
+    ws["C6"] = 42                                           # a number standing alone: Mind imports it
+    ws["J2"] = "unused"                                     # a lone text no formula reads
+    ws["B10"] = "Note"                                      # a lone text on row... read, and nothing above? B9 is empty
+    ws["E5"], ws["F5"] = "Line", "2024"
+    ws["E6"], ws["F6"] = "Premium", 100
+    ws["A20"] = '="GWP_Retained#"&$G$2'
+    ws["A21"] = "=C6*2"
+    ws["A22"] = "=B10&C6"
+    p = tmp_path / "lone.xlsx"
+    wb.save(p)
+    wb.close()
+    analysis = build_analysis(p, tmp_path / "w", "l")
+    f = _finding(analysis, "STR-008")
+    assert f["status"] == "ERROR" and {s["cell"] for s in f["observed"]["sites"]} == {"G2", "B10"}
+    a = _plan(analysis)["title_lone_text_cells"]
+    assert a["level"] == "blocking" and not a["skipped"]
+    by = {o["cell"]: o for o in a["operations"]}
+    assert by["G1"]["after"] == "#Nom Onglet value" and by["B9"]["after"] == "#LoB 1 B10"
+    out = apply_operations(p, tmp_path / "prep", a["operations"], prefer_excel=False)
+    assert out["status"] == "APPLIED"
+    after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
+    assert _finding(after, "STR-008")["status"] == "PASS"
+    assert any(g["sheet"] == "LoB 1" and g["ref"] == "G2" and g["name"] == "Nom Onglet value" for g in all_grids(after))

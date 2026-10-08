@@ -382,3 +382,38 @@ def totals_reconcile(rule, analysis: dict[str, Any], config: dict[str, Any]) -> 
 
 
 from .references import external_links_in_formulas  # noqa: E402,F401  (REF-002, 1.8.6)
+
+
+
+def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
+    """STR-008: a text cell with nothing around it (no grid, no title above, no label beside it)
+    that a formula reads. Mind imports grids; a text cell standing alone is not in the model,
+    and the formula gets nothing (PVFP: 'LoB 1'!G2 = "LoB 1" stood alone once Prep had moved
+    the label beside it into a title; "GWP_Retained#"&$G$2 came back as "GWP_Retained#" and
+    20,000 cells followed). A number standing alone is imported; so is a text under a '#'
+    title, next to or under a label, or inside a grid (test workbook 5, 2026-10-08)."""
+    from ..prep import reference_index, referenced_by, standalone_labels
+
+    try:
+        index = reference_index(analysis)
+    except Exception as exc:
+        return finding("NOT_SUPPORTED", f"The references could not be indexed ({type(exc).__name__}: {str(exc)[:120]}).", {"sites": []})
+    sites = []
+    for lab in standalone_labels(analysis):
+        owner = referenced_by(index, lab["sheet"], lab["row"], lab["col"])
+        if owner:
+            sites.append({"sheet": lab["sheet"], "cell": lab["cell"], "text": str(lab["text"])[:80], "read_by": owner})
+    observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites)}
+    if not sites:
+        return finding("PASS", "No text cell standing alone on its sheet is read by a formula.", observed)
+    first = sites[0]
+    return finding(
+        "ERROR",
+        f"{len(sites)} text cell(s) standing alone on their sheet -- no grid, no title above, no label beside -- are read by formulas. Mind imports grids, "
+        "not loose text cells: the formula gets nothing (confirmed in Mind on the model PVFP, 'LoB 1'!G2 = \"LoB 1\": \"GWP_Retained#\"&$G$2 came back as \"GWP_Retained#\" "
+        f"and 20,000 cells followed). First: {first['sheet']}!{first['cell']} = {first['text']!r}, read by {first['read_by']}. "
+        "The Prep action 'Give a lone text cell that formulas read a title of its own' writes a '#' title in the empty cell above it, which makes it a one-cell grid Mind imports "
+        "(a number standing alone is imported as it is; a text next to or under a label too).",
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    )

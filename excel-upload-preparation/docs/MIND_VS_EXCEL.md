@@ -276,6 +276,37 @@ What it settles:
   differences is one where Prep inserted title rows; a run with the two
   row-inserting actions off is the next test.
 
+## PVFP: a lone text cell, and what came after (2026-10-08)
+
+PVFP with its external links frozen (1.8.6) converts and runs in Mind -- with
+20,000 deterministic differences, all from one cell: `'LoB 1'!A122 =
+"GWP_Retained#"&$G$2` came back as `GWP_Retained#`, Mind's `$G$2` being
+empty though it holds `LoB 1`. Prep had moved the label beside it (`E2`,
+`Nom Onglet :`) into a grid title, leaving `G2` alone. Test workbook 5:
+
+| Cell | What it tests | Excel | Mind |
+|---|---|---|---|
+| C2 | a text cell standing alone (Lone!C3 = 'LoB 1'), read by a formula | x#LoB 1 | **empty (x#)** |
+| C3 | the same cell, is it empty? | FALSE | **TRUE** |
+| C4 | a number cell standing alone (Lone!C6 = 42) | 84 | same |
+| C5 | a text cell under a '#' title with no header (Lone!C9 = 'LoB 2', title at C8) | x#LoB 2 | same |
+| C6 | a text cell inside a titled 2-column grid (Grid!B4 = 'LoB 3') | x#LoB 3 | same |
+| C7 | a label next to a value, no title (Lone!F3 'Name', G3 'LoB 4') | x#LoB 4 | same |
+| C8 | a label above a value, no title (Lone!F6 'Name', F7 'LoB 5') | x#LoB 5 | same |
+| C9 | a text cell in the header row of a titled grid (Grid!B3 'Name') | x#Name | same |
+
+So Mind imports grids and loose *numbers*, but not a loose text cell. Rule
+**STR-008** flags a lone text cell that a formula reads; the Prep action
+writes a `#` title above it (a one-cell grid), before the title action runs.
+With that one title: 20,000 -> 1,151 differences. The rest, read with Mind's
+values: `AVERAGE` over a cell that lands on an empty cell (FRM-009 now covers
+every reader, `N()` at the origin); the error cells kept on purpose
+(`AB78 = AB77-AB84`, `AB84` holding `""`) computing in Mind (FRM-013,
+`IF(AB84="",NA(),...)`); the comparison's own boolean rendering (1 vs True,
+no longer counted). With those: 1,151 -> 8 real cells, all from
+`IFERROR(SUMPRODUCT(I53:DL53*...),"")` -- a `""` inside a *range* in array
+arithmetic, test workbook 6.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

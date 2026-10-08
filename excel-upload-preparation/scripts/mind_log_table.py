@@ -20,7 +20,7 @@ import re
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
-LINE_RE = re.compile(r"^(?P<wb>.+?) > (?P<sheet>.+?) > (?P<cell>\$?[A-Z]{1,3}\$?\d+): Excel value: (?P<excel>.*?) Mind value: (?P<mind>.*)$", re.S)
+LINE_RE = re.compile(r"^(?P<wb>.+?) > (?P<sheet>.+?) > (?P<cell>\$?[A-Z]{1,3}\$?\d+): Excel value: ?(?P<excel>.*?) ?Mind value: (?P<mind>.*)$", re.S)  # the Excel value may be blank
 COL_RE = re.compile(r"([A-Z]{1,3})(\d+)")
 
 
@@ -37,6 +37,8 @@ def _num(text: str) -> float | None:
 def kind_of(excel: str, mind: str) -> str:
     """The same words ResultCalc uses."""
     e, m = excel.strip(), mind.strip()
+    if (e, m.lower()) in (("1", "true"), ("0", "false")):
+        return "Same (a boolean: Excel's side shows 1/0, Mind's True/False)"
     en, mn = _num(e), _num(m)
     if m.lower() == "nan":
         return "Mind returns NaN"

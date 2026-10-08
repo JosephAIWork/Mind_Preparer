@@ -258,3 +258,24 @@ rules:
   fail_if:
   - A formula calls CELL or INFO.
   severity_source: BLOCKER
+- id: FRM-013
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Error cell kept on purpose that Mind computes -- arithmetic on "" (empty text) with no IFERROR shows #VALUE! in Excel; Mind counts "" as 0 and computes a number, and what read the error changes.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-08, model PVFP, LoB 1!AB78)
+    article: FRM-013
+  validation:
+    deterministic: true
+    implementation: validators.formula.blank_text_error_kept
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No error cell comes from arithmetic on a cell that holds "" without IFERROR.
+  fail_if:
+  - A cell shows #VALUE! because its formula does arithmetic on a cell that holds "", with no IFERROR.
+  severity_source: BLOCKER
