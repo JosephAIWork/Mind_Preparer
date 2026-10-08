@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.8.6
+
+**REF-002 -- external links, frozen.** PVFP in Mind: "20,000 deterministic
+errors" and "the workbook has external links". The file has 20,934 formulas
+that read another workbook (`='[1]General Assumptions'!$D$13*H21`,
+`=IFERROR('[1]BP by LoB'!F8,0)` ...) on a link to a file that cannot be
+reached from here. Excel shows the copy it kept of each external cell (the
+link's cache, 638 cells); Mind cannot follow a link at all, so every such
+formula is an error there -- the `NA()` rewrites were not the cause. The new
+rule flags every formula that reads another workbook; the Prep action
+**Freeze external links** writes the kept copy into the formula (a number, a
+text, TRUE/FALSE; `NA()` where Excel kept none -- that reference was #REF!
+already), then breaks the link through Excel so the package carries no
+external link part. Excel's values stay the same. A reference to a whole
+range of the other workbook has no single value and is left for a person.
+`app/external_links.py` reads the links and their caches. 104 rules.
+Checked on the PVFP original before the use-case run: 20,934 formulas
+rewritten and the link broken, no computed value changed (152,324 formula
+cells), no external link part left in the package.
+
+## 1.8.5
+
+**FRM-011 -- a line break inside a string literal.** CNHI's `Wave!P38`,
+`=BB62&"<line break>/ Beneficiary - "&D8`, came back from Mind as another
+text; on the diagnostic sheet the same break written as `CHAR(10)` came back
+the same. The rule flags every formula with a line break typed inside its
+quotes; the Prep action **Write line breaks inside text as CHAR(10)** rewrites
+it (`CHAR(13)` for a carriage return) -- the same text in Excel. 103 rules.
+
+**CNHI in Mind, what the diagnostic sheet settled** (`docs/MIND_VS_EXCEL.md`):
+the model's `SUMPRODUCT(..., --(labels=H$7))` computes the same in Mind; the
+text `80+` is reported as different even when typed into a formula (not a
+model matter); `COUNTIF` / `SUMIFS` over a 330-column row range give NaN / 0
+in Mind (the model does not use them); `OFFSET(cell,0,0)` and some weighted
+averages on `RAC Baseline` differ for reasons the parts do not explain. Every
+sheet with numeric differences is one where Prep inserted title rows -- a run
+with the two row-inserting actions off is the next test
+(`scripts/run_usecases.py --skip-actions create_grid_titles,separate_merged_grids`).
+
 ## 1.8.4
 
 **FRM-007 (INDIRECT used as a value) has a Prep action.** It was PVFP's last
