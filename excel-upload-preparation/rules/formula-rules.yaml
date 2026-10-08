@@ -237,3 +237,24 @@ rules:
   fail_if:
   - A string literal in a formula holds a line break.
   severity_source: BLOCKER
+- id: FRM-012
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Formula asks Excel about itself -- CELL("filename", ...), INFO(...): the file, its path, the session; Mind has nothing to answer with and the run stops.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-08, model Palermo, Saved down!C5)
+    article: FRM-012
+  validation:
+    deterministic: true
+    implementation: validators.formula.environment_formulas
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula calls CELL or INFO.
+  fail_if:
+  - A formula calls CELL or INFO.
+  severity_source: BLOCKER

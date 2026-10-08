@@ -73,6 +73,7 @@ FIX_HINTS: dict[str, str] = {
     "FRM-008": "Apply the Prep action 'Test for empty text before the arithmetic': =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), so Excel and Mind both return the fallback when the cell holds \"\".",
     "FRM-010": "Apply the Prep action 'Test for empty text before the arithmetic or lookup': the IFERROR around the lookup becomes =IF(key=\"\", fallback, IFERROR(lookup, fallback)), so Excel and Mind both return the fallback when the key holds \"\".",
     "REF-002": "Apply the Prep action 'Freeze external links': each reference to another workbook becomes the copy Excel kept of that cell (NA() where it kept none) and the link is broken; a whole-range reference is left for a person.",
+    "FRM-012": "Apply the Prep action 'Write what CELL / INFO formulas show today in their place': the formula becomes the text or number Excel shows; Mind cannot answer CELL(\"filename\") or INFO().",
     "FRM-011": "Apply the Prep action 'Write line breaks inside text as CHAR(10)': the break typed inside the quotes becomes \"...\"&CHAR(10)&\"...\", the same text in Excel and in Mind.",
     "FRM-009": "Apply the Prep action 'Read empty cells as 0 where they are compared': N() goes around the reading of the empty cell (or around the reference / lookup that lands on it), so it is 0 in Excel and in Mind.",
     "FRM-007": "Apply the Prep action 'Replace INDIRECT used as a value by the reference its text builds'; what it cannot work out from the workbook's constants is listed for a person.",

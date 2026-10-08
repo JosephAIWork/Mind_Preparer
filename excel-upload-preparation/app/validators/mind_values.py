@@ -833,3 +833,52 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
+
+
+# --- FRM-012: a formula that asks Excel about itself --------------------------------------------
+# Palermo, 'Saved down'!C5 = MID(CELL("filename",'Summary Output'!A1),FIND("[",CELL("filename",...))+1,...):
+# the file's path and name, used to build save paths for a macro. Mind has no file: its CELL("filename")
+# returned a text without "[", FIND failed and the run stopped ("startIndex ('-1') must be a
+# non-negative value", 2026-10-08). The value such a formula shows today is written in its place.
+_ENV_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
+
+
+def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
+    """FRM-012: CELL(...) / INFO(...) -- the Excel session, the file, its path: nothing Mind can answer."""
+    wb0 = analysis["workbooks"][0]
+    try:
+        book = _Book(analysis)
+    except Exception as exc:
+        return _not_checked(exc)
+    sites = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        if not _ENV_RE.search(mask_strings(formula)):
+            continue
+        m = _COORD_RE.match(str(f.get("cell") or ""))
+        stored = book.stored(f["sheet"], int(m.group(2)), col_to_num(m.group(1))) if m else None
+        calls = sorted({x.upper() for x in _ENV_RE.findall(mask_strings(formula))})
+        if f.get("array_ref"):
+            value, issue = None, "an array formula: rewrite it by hand"
+        elif stored is None:
+            value, issue = None, 'the cell shows "" or no value is stored: by hand'
+        elif _is_error_value(stored):
+            value, issue = None, f"the cell shows {stored} in Excel: by hand"
+        else:
+            value, issue = stored, None
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": calls, "value": value, "issue": issue})
+    observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for x in sites if x["issue"] is None)}
+    if not sites:
+        return finding("PASS", "No formula asks Excel about itself (CELL, INFO).", observed)
+    first = sites[0]
+    return finding(
+        "ERROR",
+        f"{len(sites)} formula(s) ask Excel about itself with {', '.join(sorted({c for x in sites for c in x['calls']}))} -- the file's name or path, the session. Mind has no file to answer with: "
+        "on the model Palermo, MID(CELL(\"filename\",...),FIND(\"[\",...)+1,...) stopped the run (\"startIndex ('-1') must be a non-negative value\"). "
+        f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
+        + (f" (shows {str(first['value'])[:60]!r} today)" if first["issue"] is None else f" ({first['issue']})")
+        + f". The Prep action 'Write what CELL / INFO formulas show today in their place' freezes {observed['with_proposal']} of them to the value Excel shows"
+        + (f"; {len(sites) - observed['with_proposal']} by hand." if len(sites) - observed["with_proposal"] else "."),
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    )

@@ -209,3 +209,30 @@ def test_the_line_break_rewrite_gives_the_same_text_in_excel(tmp_path):
     res = compare_workbooks(p, Path(out["output_path"]), Moves())
     assert res["clean"] is True and res["counts"]["same"] == 2
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-011")["status"] == "PASS"
+
+
+@needs_excel
+def test_a_formula_that_asks_excel_about_itself_is_frozen_to_what_it_shows(tmp_path):
+    """1.8.7 -- FRM-012 (Palermo, 'Saved down'!C5: CELL("filename") stopped Mind's run)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Saved down"
+    ws["B2"], ws["C2"] = "Directory", '=LEFT(CELL("filename",A1),FIND("[",CELL("filename",A1))-1)'
+    ws["B5"], ws["C5"] = "Spreadsheet", '=MID(CELL("filename",A1),FIND("[",CELL("filename",A1))+1,FIND("]",CELL("filename",A1))-FIND("[",CELL("filename",A1))-1)'
+    ws["C6"] = "=C2&C5"
+    ws["C7"] = "=LEN(C5)"
+    p = tmp_path / "env.xlsx"
+    wb.save(p)
+    wb.close()
+    src = _calculated(p)
+    analysis = build_analysis(src, tmp_path / "w", "e")
+    f = _finding(analysis, "FRM-012")
+    assert f["status"] == "ERROR" and {s["cell"] for s in f["observed"]["sites"]} == {"C2", "C5"}
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["freeze_environment_formulas"]
+    by = {o["cell"]: o for o in a["operations"]}
+    assert by["C5"]["after"] == '="env.xlsx"' and by["C2"]["after"].startswith('="') and by["C2"]["after"].endswith('\\"')
+    out = apply_operations(src, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED" and not out["failed"]
+    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    assert res["clean"] is True and res["counts"]["same"] == 4
+    assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-012")["status"] == "PASS"

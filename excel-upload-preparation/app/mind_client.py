@@ -413,8 +413,10 @@ def step_status(page: Page) -> dict[str, str]:
 
 
 def read_error_logs(page: Page) -> list[str]:
-    """Click 'Display Error Logs' and return the messages ('#N <kind>\\n<message>')."""
-    btn = page.get_by_role("button", name=re.compile(r"Display Error Logs", re.I))
+    """Click 'Display Error Logs' / 'View logs' and return the errors, each as one line:
+    '<kind>: <message lines> | MODEL ... | <model> > <instance> > <sheet>!<cell> | <mind ref>'
+    (1.8.6: the whole block of each error, not just its first line)."""
+    btn = page.get_by_role("button", name=re.compile(r"Display Error Logs|View logs", re.I))
     if not btn.count():
         return []
     try:
@@ -425,9 +427,14 @@ def read_error_logs(page: Page) -> list[str]:
     text = body_text(page)
     out: list[str] = []
     seen: set[str] = set()
-    for m in re.finditer(r"#\d+\s+([^\n]+)\n+\s*([^\n]+)", text):
-        msg = m.group(2).strip()
-        if msg and msg.lower() not in ("close", "hide error logs") and msg not in seen:
+    for block in re.split(r"(?=#\d+\s+[A-Za-z][^\n]*\n)", text):
+        m = re.match(r"#\d+\s+([^\n]+)\n(.*)", block, re.S)
+        if not m:
+            continue
+        body = re.split(r"\n\s*(?:Close|Hide Error Logs)\s*(?:\n|$)", m.group(2))[0]
+        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+        msg = (m.group(1).strip() + ": " + " | ".join(lines)) if lines else m.group(1).strip()
+        if msg not in seen:
             seen.add(msg)
             out.append(msg)
     return out

@@ -1373,6 +1373,27 @@ def plan_line_breaks_as_char(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-012: a formula that calls CELL(...) or INFO(...) becomes the value it shows today,
+    written as a formula (="<the path>" or =12): Mind cannot answer what those ask, and the value
+    is what the model carries in Excel."""
+    from .validators.mind_values import environment_formulas
+
+    ops, skipped = [], []
+    try:
+        finding = environment_formulas(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    for s in (finding.get("observed") or {}).get("sites", []):
+        if s["issue"]:
+            skipped.append(f"{s['sheet']}!{s['cell']}: {s['issue']}")
+            continue
+        from .external_links import _literal
+
+        ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(s["value"]), note=f"{', '.join(s['calls'])} asks Excel about itself; the value shown today is written in its place (as a formula, so the numbers check still follows the cell)"))
+    return ops, skipped
+
+
 # 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
@@ -1397,6 +1418,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "Mind rejects ANCHORARRAY() (Office 365 dynamic arrays); each 'A1#' becomes the range the spill covers now, so a source that grows later will not be followed -- add MM_RANGE by hand if it must", "planner": plan_freeze_spill_refs},
     {"id": "guard_blank_arithmetic", "title": "Test for empty text before the arithmetic or lookup (Mind counts \"\" as 0 and matches it to an empty cell; Excel stops on it)", "rule_ids": ["FRM-008", "FRM-010"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), down the whole filled-down block; Excel returns the same values ('Did the numbers change?' proves it)", "planner": plan_guard_blank_arithmetic},
+    {"id": "freeze_environment_formulas", "title": "Write what CELL / INFO formulas show today in their place", "rule_ids": ["FRM-012"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: CELL(\"filename\") / INFO() ask Excel about the file and the session, which Mind cannot answer; the text or number Excel shows today is written instead", "planner": plan_freeze_environment_formulas},
     {"id": "line_breaks_as_char", "title": "Write line breaks inside text as CHAR(10)", "rule_ids": ["FRM-011"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a line break typed inside quotes becomes \"...\"&CHAR(10)&\"...\"; the text Excel shows is the same", "planner": plan_line_breaks_as_char},
     {"id": "empty_cells_as_zero", "title": "Read empty cells as 0 where they are compared with a number (Mind does not)", "rule_ids": ["FRM-009"], "default_on": True, "level": BLOCKING,
