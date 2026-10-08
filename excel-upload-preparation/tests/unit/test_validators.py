@@ -447,6 +447,18 @@ def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, 
     soft.close()
     w = _finding(engine, config, build_analysis(p3, tmp_path / "w3", "s"), "FRM-005")
     assert w["status"] == "WARNING" and w["observed"]["conditional_cycles"] == 1 and "not documented" in w["message"]
+    # 1.8.4: a cycle that closes only through the table of a lookup -- a lookup reads one cell of it,
+    # and Excel reports no circular reference (PVFP, once INDIRECT had become direct references)
+    look = openpyxl.Workbook()
+    ws = look.active
+    ws.title = "S"
+    ws["A1"], ws["A2"], ws["A3"] = 5, "=INDEX($A$1:$C$3,1,1)*2", "=A2+1"   # A2's table holds A3, which reads A2
+    ws["B1"], ws["C1"] = 1, 2
+    p4 = tmp_path / "lookup.xlsx"
+    look.save(p4)
+    look.close()
+    w = _finding(engine, config, build_analysis(p4, tmp_path / "w4", "l"), "FRM-005")
+    assert w["status"] == "WARNING" and w["observed"]["conditional_cycles"] == 1 and w["observed"]["unconditional_cycles"] == 0
 
 
 def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_path, engine, config):

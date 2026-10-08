@@ -38,6 +38,11 @@ DYNAMIC_REFERENCE_FUNCTIONS = {"INDIRECT", "OFFSET"}
 # CHOOSE's and SWITCH's values, IFS' pairs after the first condition. A cycle that only closes
 # through such an argument is one Excel computes (the branches never evaluate together).
 CONDITIONAL_ARGS: dict[str, Any] = {"IF": {1, 2}, "IFERROR": {1}, "IFNA": {1}, "CHOOSE": "rest", "SWITCH": "rest", "IFS": "rest"}
+# 1.8.4: a lookup reads ONE cell of its table. A cycle that closes only through the table of an
+# INDEX / VLOOKUP / HLOOKUP / MATCH / LOOKUP / XLOOKUP is not a cycle for Excel (PVFP: once INDIRECT
+# became direct references, =INDEX(Inputs!$I$152:$CZ$10240, ...) reached a cell that reads the sheet
+# the lookup sits on; Excel reported no circular reference) -- it is reported as a conditional one.
+LOOKUP_TABLE_ARGS: dict[str, Any] = {"INDEX": {0}, "VLOOKUP": {1}, "HLOOKUP": {1}, "MATCH": {1}, "LOOKUP": "rest", "XLOOKUP": {1, 2}}
 COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}}
 MAX_CYCLES_REPORTED = 12
 # INDIRECT("'"&sheet&"'!"&ADDRESS(ROW(),COLUMN())): the cell reads its own address on a sheet chosen
@@ -88,7 +93,7 @@ def blank_arguments(formula: str, spec: dict[str, Any]) -> str:
 
 def unconditional_text(formula: str) -> str:
     """What a formula reads on every calculation: its conditionally evaluated arguments blanked."""
-    return blank_arguments(formula, CONDITIONAL_ARGS)
+    return blank_arguments(blank_arguments(formula, CONDITIONAL_ARGS), LOOKUP_TABLE_ARGS)
 
 
 class _Graph:
@@ -383,7 +388,7 @@ def circular_references(rule, analysis: dict[str, Any], config: dict[str, Any]) 
             f"{len(hard)} circular reference(s) among the formulas, read on every calculation: Mind's runner stops on the first one "
             f"('Run error: Circular reference found'){' -- Excel tolerates them because iterative calculation is on in this workbook' if iterative else ''}. "
             f"First: {' -> '.join(first['chain'])}. "
-            + (f"{len(soft)} more cycle(s) close only through an IF/IFERROR/CHOOSE branch (see the warning text). " if soft else "")
+            + (f"{len(soft)} more cycle(s) close only through an IF/IFERROR/CHOOSE branch or through the table of a lookup (INDEX, VLOOKUP, MATCH ...) (see the warning text). " if soft else "")
             + fix + dyn,
             observed,
             location={"sheet": first["sheet"], "cell": first["cell"]},
@@ -392,7 +397,7 @@ def circular_references(rule, analysis: dict[str, Any], config: dict[str, Any]) 
         first = soft[0]
         return finding(
             "WARNING",
-            f"{len(soft)} circular reference(s) that close only through an IF/IFERROR/CHOOSE branch, e.g. {' -> '.join(first['chain'])}: Excel computes them "
+            f"{len(soft)} circular reference(s) that close only through an IF/IFERROR/CHOOSE branch or through the table of a lookup (INDEX, VLOOKUP, MATCH ...), e.g. {' -> '.join(first['chain'])}: Excel computes them "
             "because the two branches never evaluate together; whether Mind's calculation order accepts them is not documented -- a run in Mind tells "
             "('Run error: Circular reference found' if not). " + fix + dyn,
             observed,
