@@ -358,6 +358,40 @@ fixes it. A sheet that holds only lone cells has no grid and does not exist
 in Mind at all ("Sheet not found" on compile). The PVFP 1.8.11 trial: 59
 lines, all the boolean rendering -- no real difference left.
 
+## Palermo and CNHI through the app (2026-10-08)
+
+**CNHI** (title actions unticked, so no title rows inserted): 5,043 lines,
+all artefacts -- `80+` read as 80 by the comparison's Excel side (Exhibits,
+Age-Gender Mix, IRAT data), five cells of rounding noise on Baseline Cost
+row 128. The 1.8.2 numeric differences (RAC Baseline, `--($V$7:$MU$7=H$7)`
+TRUE on 178 empty cells) do not appear without the title rows.
+
+**Palermo**: the run stopped on `'Policy summary'!Z6` ("Index was outside
+the bounds of the array"). Test workbook 8 (Data!C3 = 0 as the lookup text,
+Data!C4 = 0 as the switch):
+
+| Cell | What it tests | Excel | Mind |
+|---|---|---|---|
+| C2 | `IF(1=1,0,INDEX(INDIRECT(cell holding 0),1,1))` | 0 | same |
+| C3..C8 | unreached INDEX(INDIRECT("zzz")), INDEX(NA()), INDEX out of bounds, 1/0, NA(), a VLOOKUP that finds nothing | 0 | same |
+| C9, C10 | the same reached and caught by IFERROR | 0 | same |
+| C11 | `IF(C4=0,0,INDEX(INDIRECT(C3),1,1))`, the switch from a cell | 0 | same |
+| C12..C14 | unreached INDEX over a valid INDIRECT out of bounds, MATCH over INDIRECT(0), the NA() stand-in | 0 | same |
+| C15 | `INDEX(INDIRECT("Data!C5:D6"),2,2)` reached | 4 | same |
+
+So Mind does not evaluate the branch an IF does not take, and the run
+completed. The cause was the switch itself: `ME_Table` names
+`'Policy summary'!C36 = ME_charge_table_ME_lookup`, which names
+`'Non-economic assumptions'!D67 = VLOOKUP(Policy_tariff,Assumptions_array,
+MATCH(B67,Assumption_headings,0),FALSE)`, and that lookup lands on the
+empty cell P7: 0 in Excel, empty in Mind, so `ME_Table=0` is FALSE in Mind
+and Z6 computes `INDEX(INDIRECT(<empty>),...)`. The 1.8.9 scan missed it
+because every argument is a defined name; 1.8.12 reads them. With `N()`
+around 21 such lookups (no computed value changed), Palermo converts and
+runs; the five cells left were the `Saved down` file paths fed by the
+one-cell array formula `{=LEFT(CELL("filename",A1),...)}`, now frozen by
+FRM-012 as well.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

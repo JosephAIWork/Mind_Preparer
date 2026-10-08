@@ -217,7 +217,9 @@ def test_a_formula_that_asks_excel_about_itself_is_frozen_to_what_it_shows(tmp_p
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Saved down"
-    ws["B2"], ws["C2"] = "Directory", '=LEFT(CELL("filename",A1),FIND("[",CELL("filename",A1))-1)'
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    ws["B2"], ws["C2"] = "Directory", ArrayFormula("C2", '=LEFT(CELL("filename",A1),FIND("[",CELL("filename",A1))-1)')  # a one-cell array, as in Palermo (1.8.12)
     ws["B5"], ws["C5"] = "Spreadsheet", '=MID(CELL("filename",A1),FIND("[",CELL("filename",A1))+1,FIND("]",CELL("filename",A1))-FIND("[",CELL("filename",A1))-1)'
     ws["C6"] = "=C2&C5"
     ws["C7"] = "=LEN(C5)"
@@ -322,5 +324,42 @@ def test_an_isnumber_or_iserror_guard_counts_like_iferror(tmp_path):
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["guard_blank_arithmetic"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED" and len(out["applied"]) == 2
+    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    assert res["clean"] is True
+
+
+def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin(tmp_path):
+    """1.8.12 -- Palermo, 'Non-economic assumptions'!D67 = VLOOKUP(Policy_tariff,Assumptions_array,MATCH(B67,
+    Assumption_headings,0),FALSE) lands on an empty cell: 0 in Excel, empty in Mind; ME_Table=0 (a name on a cell
+    that reads it) is then FALSE in Mind, and the run stops in the branch Excel never takes."""
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    inp = wb.active
+    inp.title = "Inputs"
+    inp["B3"], inp["C3"] = "Tariff", "A"
+    for c, h in zip("BCD", ("Tariff", "X", "ME table")):
+        inp[f"{c}5"] = h
+    inp["B6"], inp["C6"] = "A", 1                                  # D6 stays empty
+    inp["B7"], inp["C7"], inp["D7"] = "B", 2, 5
+    calc = wb.create_sheet("Calc")
+    calc["A3"], calc["B3"] = "ME table", '=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(A3,Assumption_headings,0),FALSE)'
+    calc["A4"], calc["B4"] = "copy", "=ME_Table"
+    calc["A5"], calc["B5"] = "switch", "=IF(ME_Table=0,0,1)"
+    for name, ref in (("Policy_tariff", "Inputs!$C$3"), ("Assumptions_array", "Inputs!$B$6:$D$7"), ("Assumption_headings", "Inputs!$B$5:$D$5"), ("ME_Table", "Calc!$B$3")):
+        wb.defined_names[name] = DefinedName(name, attr_text=ref)
+    p = tmp_path / "names.xlsx"
+    wb.save(p)
+    wb.close()
+    src = _calculated(p)
+    analysis = build_analysis(src, tmp_path / "w", "r")
+    f = _finding(analysis, "FRM-009")
+    origins = {s["cell"]: s for s in f["observed"]["sites"] if s["kind"] == "lands_on_empty"}
+    assert set(origins) == {"B3"} and origins["B3"]["lands_on"] == "Inputs!D6"   # B4 lands there too but nothing reads B4
+    assert origins["B3"]["suggested_formula"] == "=N(VLOOKUP(Policy_tariff,Assumptions_array,MATCH(A3,Assumption_headings,0),FALSE))"
+    assert origins["B3"]["first_reader"]["cell"] == "name ME_Table"
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["empty_cells_as_zero"]
+    out = apply_operations(src, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED"
     res = compare_workbooks(src, Path(out["output_path"]), Moves())
     assert res["clean"] is True

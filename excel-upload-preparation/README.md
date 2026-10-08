@@ -22,11 +22,17 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.11)
+## Current status (1.8.12)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Palermo and CNHI in Mind** (1.8.12): CNHI without inserted title rows
+  agrees with Mind (5,043 lines, all comparison artefacts). Palermo converts
+  and runs once FRM-009 follows defined names into a lookup that lands on an
+  empty cell (the `ME_Table=0` switch was FALSE in Mind), and FRM-012 freezes
+  a one-cell array formula.
 
 - **PVFP agrees with Mind** (1.8.11): the prepared PVFP converts and runs in
   Mind with no real difference left. FRM-008 also guards `IF(ISNUMBER(X),X,"")`

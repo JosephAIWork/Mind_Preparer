@@ -40,6 +40,10 @@ def kind_of(excel: str, mind: str) -> str:
     if (e, m.lower()) in (("1", "true"), ("0", "false")):
         return "Same (a boolean: Excel's side shows 1/0, Mind's True/False)"
     en, mn = _num(e), _num(m)
+    if m.endswith("+") and _num(m[:-1]) is not None and e == m[:-1]:
+        return "Same (a text such as '80+': the comparison's Excel side reads it as the number)"
+    if en is not None and mn is not None and abs(en - mn) < 1e-5:
+        return "Same (rounding noise below 1e-5)"
     if m.lower() == "nan":
         return "Mind returns NaN"
     if e == "" and m != "":

@@ -32,6 +32,10 @@ import subprocess
 import sys
 import threading
 import time
+
+for _stream in (sys.stdout, sys.stderr):  # the fixer's messages hold arrows; a redirected console is cp1252 on Windows
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 from pathlib import Path
 from typing import Any
 

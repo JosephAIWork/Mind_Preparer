@@ -1390,7 +1390,12 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
             continue
         from .external_links import _literal
 
-        ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(s["value"]), note=f"{', '.join(s['calls'])} asks Excel about itself; the value shown today is written in its place (as a formula, so the numbers check still follows the cell)"))
+        note = f"{', '.join(s['calls'])} asks Excel about itself; the value shown today is written in its place (as a formula, so the numbers check still follows the cell)"
+        if s.get("array"):
+            # a single-cell array formula: written back as a one-cell array so Excel accepts the overwrite
+            ops.append(_op("set_array_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after="=" + _literal(s["value"]), note=note))
+        else:
+            ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(s["value"]), note=note))
     return ops, skipped
 
 

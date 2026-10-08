@@ -114,6 +114,56 @@ class _Book:
         self._vc: dict[str, dict] = {}
         self._land: dict[tuple[str, int, int], tuple[str, int, int] | None] = {}
         self._vectors: dict[tuple, tuple[bool, bool]] = {}
+        # 1.8.12: defined names that stand for a range (Palermo: VLOOKUP(Policy_tariff,Assumptions_array,MATCH(B67,Assumption_headings,0),FALSE))
+        self.names: dict[str, dict] = {}
+        for d in wb0.get("defined_names", []) or []:
+            val = str(d.get("value") or "").strip()
+            if d.get("name") and val and "#REF!" not in val and d.get("local_sheet_id") is None:
+                r = parse_ref(val[1:] if val.startswith("=") else val)
+                if r and r.get("sheet"):
+                    self.names[str(d["name"]).upper()] = r
+
+    def _named(self, text: str) -> dict | None:
+        """The range a bare defined name stands for, else None."""
+        t = text.strip()
+        if not re.fullmatch(r"[A-Za-z_\\][A-Za-z0-9_.]*", t):
+            return None
+        return self.names.get(t.upper())
+
+    def _range_of(self, sheet: str, text: str) -> dict | None:
+        r = parse_ref(text.strip())
+        return r if r else self._named(text)
+
+    def _match_index(self, sheet: str, text: str) -> int | None:
+        """MATCH(key, one-line range, 0) worked out from the workbook's values: the position, else None."""
+        m = re.match(r"\s*MATCH\s*\(", text, re.IGNORECASE)
+        if not m:
+            return None
+        masked = mask_strings(text)
+        open_at = m.end() - 1
+        close = _closing_paren(masked, open_at)
+        if close != len(text.rstrip()) - 1:
+            return None
+        spans = _arg_spans(masked, open_at + 1, close)
+        if len(spans) != 3 or text[spans[2][0]:spans[2][1]].strip() != "0":
+            return None
+        key = self._scalar(sheet, text[spans[0][0]:spans[0][1]].strip())
+        r = self._range_of(sheet, text[spans[1][0]:spans[1][1]])
+        if key is None or r is None or r["whole_column"] or r["whole_row"]:
+            return None
+        tsheet = r["sheet"] or sheet
+        if tsheet not in self.sheets:
+            return None
+        if r["r1"] == r["r2"]:
+            cells = [(r["r1"], c) for c in range(r["c1"], r["c2"] + 1)]
+        elif r["c1"] == r["c2"]:
+            cells = [(rr, r["c1"]) for rr in range(r["r1"], r["r2"] + 1)]
+        else:
+            return None
+        for i, (rr, cc) in enumerate(cells, start=1):
+            if _same_key(self.value(tsheet, rr, cc), key):
+                return i
+        return None
 
     def _cells(self, wb, cache: dict[str, dict], sheet: str) -> dict:
         cells = cache.get(sheet)
@@ -188,6 +238,10 @@ class _Book:
             return None
         body = _bare(formula[1:])
         r = _one_cell(body)
+        if r is None:
+            n = self._named(body)
+            if n and n["r1"] == n["r2"] and n["c1"] == n["c2"] and not n["whole_column"] and not n["whole_row"]:
+                r = n
         target = (r["sheet"] or sheet, r["r1"], r["c1"]) if r else self._lookup(sheet, body)
         if target is None or target[0] not in self.sheets:
             return None
@@ -204,6 +258,10 @@ class _Book:
         if s is not None:
             return s
         r = _one_cell(text)
+        if r is None:
+            n = self._named(text)
+            if n and n["r1"] == n["r2"] and n["c1"] == n["c2"] and not n["whole_column"] and not n["whole_row"]:
+                r = n
         return self.value(r["sheet"] or sheet, r["r1"], r["c1"]) if r else None
 
     def _lookup(self, sheet: str, body: str) -> tuple[str, int, int] | None:
@@ -221,7 +279,9 @@ class _Book:
             return None  # no 4th argument: an approximate match
         args = [body[a:b].strip() for a, b in spans]
         idx = as_number(args[2])
-        table = parse_ref(args[1])
+        if idx is None:
+            idx = self._match_index(sheet, args[2])  # 1.8.12: MATCH(heading, headings, 0) as the column index
+        table = self._range_of(sheet, args[1])  # 1.8.12: a defined name as the table
         if args[3].upper() not in ("0", "FALSE") or idx is None or idx != int(idx) or idx < 1 or table is None:
             return None
         tsheet = table["sheet"] or sheet
@@ -978,15 +1038,15 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         m = _COORD_RE.match(str(f.get("cell") or ""))
         stored = book.stored(f["sheet"], int(m.group(2)), col_to_num(m.group(1))) if m else None
         calls = sorted({x.upper() for x in _ENV_RE.findall(mask_strings(formula))})
-        if f.get("array_ref"):
-            value, issue = None, "an array formula: rewrite it by hand"
+        if f.get("array_ref") and str(f["array_ref"]).replace("$", "") not in (f["cell"], f"{f['cell']}:{f['cell']}"):
+            value, issue = None, "an array formula over several cells: rewrite it by hand"
         elif stored is None:
             value, issue = None, 'the cell shows "" or no value is stored: by hand'
         elif _is_error_value(stored):
             value, issue = None, f"the cell shows {stored} in Excel: by hand"
         else:
             value, issue = stored, None
-        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": calls, "value": value, "issue": issue})
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": calls, "value": value, "issue": issue, "array": bool(f.get("array_ref"))})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for x in sites if x["issue"] is None)}
     if not sites:
         return finding("PASS", "No formula asks Excel about itself (CELL, INFO).", observed)

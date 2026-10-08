@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.8.12
+
+**Palermo and CNHI in Mind (2026-10-08).** Both went through the app's
+whole chain (Prep, Recalculate, Fix all automatically, Recalculate) and
+then to Mind by `scripts/mind_upload.py`.
+
+**CNHI** with the title actions left unticked (`run_usecases.py
+--skip-actions create_grid_titles,separate_merged_grids`): 0 formula errors,
+no computed value changed (577,707 cells), converts and runs, 5,043 lines
+in the Deterministic Differences tab -- every one an artefact of the
+comparison (the text `80+` read as 80 on the Excel side, five cells of
+rounding noise around 1e-6). So the 1.8.2 numeric differences came from
+Prep's inserted title rows (RAC Baseline, `--($V$7:$MU$7=H$7)`); without
+them CNHI agrees with Mind. `scripts/mind_log_table.py` now counts those
+two artefacts as "Same". The readiness verdict still names one manual
+blocking finding on that file: the untitled grids whose action was left
+unticked.
+
+**Palermo**: 507 formula errors fixed to 0, converts, and the run stopped
+on `'Policy summary'!Z6 = IF(OR(ME_Table=0,...),0,INDEX(INDIRECT(
+ME_charge_table_ME_lookup),...))` with "Index was outside the bounds of the
+array". Test workbook 8 showed Mind does *not* evaluate the branch an IF
+does not take, so the cause was the switch: `ME_Table` is a name on a cell
+that reads `'Non-economic assumptions'!D67 = VLOOKUP(Policy_tariff,
+Assumptions_array,MATCH(B67,Assumption_headings,0),FALSE)`, which lands on
+the empty cell P7 -- 0 in Excel, empty in Mind, so `ME_Table=0` is FALSE
+there (FRM-009) and Mind walks into the INDEX. **FRM-009's landing
+resolver now reads defined names** (the key, the table, a name that stands
+for one cell) and works out `MATCH(heading, headings, 0)` as the column
+index; the Prep action writes `N()` around 21 such lookups on Palermo. With
+that, Palermo converts and runs; what Mind still computed differently were
+the five file-path cells on `Saved down`, all fed by `C2 =
+{LEFT(CELL("filename",A1),...)}`, a one-cell array formula FRM-012 had left
+for a person. **FRM-012 now freezes a one-cell array formula** too (written
+back as a one-cell array); an array over several cells stays by hand.
+
+Also: the harness prints UTF-8 (its progress line once crashed on the
+fixer's arrow when redirected to a file).
+
 ## 1.8.11
 
 **PVFP agrees with Mind.** The 1.8.11 trial of PVFP (every Prep action of
