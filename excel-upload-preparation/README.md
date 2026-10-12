@@ -22,11 +22,18 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.8.12)
+## Current status (1.9.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Model map** (1.9.0): a screen (and `GET .../model-map`, `python -m
+  app.model_map`) that says where a model's inputs are, which cell the run
+  loop sets and what bounds it, which settings stay for a run but change
+  between runs and how they are toggled, and where the outputs land -- read
+  off the macros, names, dropdowns, sheet names and formulas, each line with
+  its evidence. Checked on Horizon, PVFP, Palermo and CNHI.
 
 - **Palermo and CNHI in Mind** (1.8.12): CNHI without inserted title rows
   agrees with Mind (5,043 lines, all comparison artefacts). Palermo converts

@@ -669,3 +669,17 @@ def test_numbers_check_says_what_the_preparation_changed_and_the_fixer_does_not_
     assert [g["cell"] for g in result["fixes"]] == ["C5"] and [g["cell"] for g in result["left"]] == ["C6"]
     assert "it was 10 in the original workbook" in result["left"][0]["why"]
     assert result["numbers_check"]["clean"] is False and result["numbers_check"]["counts"]["good_to_error"] == 1
+
+
+def test_model_map_route_reads_the_analysed_copy(client, flagged_model_broken_xlsx):
+    """1.9.0: the Model map screen's data -- sections present, cached per version, 409 before an analysis."""
+    sid = _upload(client, flagged_model_broken_xlsx)["sessionId"]
+    body = client.get(f"/api/sessions/{sid}/model-map").json()
+    assert set(body) == {"version_id", "map"}
+    mp = body["map"]
+    assert set(mp) >= {"workbook", "has_macros", "sheets", "loop", "inputs", "run_settings", "outputs", "macros", "notes"}
+    assert mp["has_macros"] is False and mp["loop"]["found"] is False and isinstance(mp["loop"]["key_cells"], list)
+    assert {s["name"] for s in mp["sheets"]} >= {"Model"} and all(s["role"] in ("input", "output", "calculation", "divider", "other") for s in mp["sheets"])
+    again = client.get(f"/api/sessions/{sid}/model-map").json()
+    assert again["version_id"] == body["version_id"]
+    assert client.get("/api/sessions/nope/model-map").status_code == 404

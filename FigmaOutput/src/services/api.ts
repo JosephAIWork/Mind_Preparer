@@ -687,3 +687,50 @@ export async function listVersions(sessionId: string): Promise<Version[]> {
   const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/versions`);
   return unwrap<Version[]>(res);
 }
+
+
+// --- Model map (1.9.0): where the inputs, the loop driver, the run settings and the outputs are ---
+export interface MapCell { cell: string | null; name?: string | null; label?: string | null; value?: unknown; evidence?: string; how?: string }
+export interface ModelMap {
+  workbook: string;
+  has_macros: boolean;
+  notes: string[];
+  sheets: { name: string; role: string; dims: string | null; state: string | null; grids: number }[];
+  loop: {
+    found: boolean;
+    how_to_run: string | null;
+    drivers: (MapCell & { macro: string; loop_var: string; set_from?: string | null; set_from_name?: string | null; nested_depth: number })[];
+    bounds: (MapCell & { role: "first" | "last"; formula?: string | null; macro: string })[];
+    item_cells: (MapCell & { macro: string; template_sheet: string | null; template_present: boolean })[];
+    key_cells: (MapCell & { readers: number; cells: number })[];
+    entry_points: string[];
+    macros: { procedure: string; module: string | null; var: string; from: string; to: string; depth: number; drivers: string[]; outputs: number }[];
+  };
+  inputs: {
+    per_item: { cell: string; what: string; macro: string }[];
+    sheets: { sheet: string; formulas: number; state: string | null; why: string }[];
+    tables: { name: string; cell: string; readers: number; role: string }[];
+  };
+  run_settings: {
+    switches: (MapCell & { options: string[]; how: string })[];
+    named_settings: (MapCell & { readers: number; switch_like: boolean })[];
+    labelled: { sheet: string; cell: string; label: string; value: unknown }[];
+    status: (MapCell & { written_in: string[] })[];
+    tables: { name: string; cell: string; readers: number; role: string }[];
+  };
+  outputs: {
+    cells: (MapCell & { from: string | null; from_name: string | null; written_by: string; when: string })[];
+    sheets: { sheet: string; formulas: number; why: string }[];
+    saves: { in: string; path_from: string | null; name: string | null }[];
+  };
+  macros: { procedures: { name: string; module: string | null; statements: number; calls: string[] }[]; entry_points: string[] };
+}
+
+export async function modelMap(sessionId: string, refresh = false): Promise<{ version_id: string; map: ModelMap }> {
+  if (USE_MOCKS) {
+    await delay(200);
+    return { version_id: "mock", map: { workbook: "mock.xlsm", has_macros: false, notes: ["mock"], sheets: [], loop: { found: false, how_to_run: null, drivers: [], bounds: [], item_cells: [], key_cells: [], entry_points: [], macros: [] }, inputs: { per_item: [], sheets: [], tables: [] }, run_settings: { switches: [], named_settings: [], labelled: [], status: [], tables: [] }, outputs: { cells: [], sheets: [], saves: [] }, macros: { procedures: [], entry_points: [] } } };
+  }
+  const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/model-map${refresh ? "?refresh=true" : ""}`);
+  return unwrap<{ version_id: string; map: ModelMap }>(res);
+}

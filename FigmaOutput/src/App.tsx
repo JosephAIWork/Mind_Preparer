@@ -11,6 +11,7 @@ import ReportsScreen from "./screens/ReportsScreen";
 import HistoryScreen from "./screens/HistoryScreen";
 import MindScreen from "./screens/MindScreen";
 import GridNamerScreen from "./screens/GridNamerScreen";
+import ModelMapScreen from "./screens/ModelMapScreen";
 import FixPanel from "./components/FixPanel";
 import ReadinessBanner from "./components/ReadinessBanner";
 import { health } from "./services/api";
@@ -45,6 +46,7 @@ export default function App() {
               <Route path="/reports" element={<ReportsScreen />} />
               <Route path="/history" element={<HistoryScreen />} />
               <Route path="/mind" element={<MindScreen />} />
+              <Route path="/model-map" element={<ModelMapScreen />} />
             </Routes>
           </main>
         </div>

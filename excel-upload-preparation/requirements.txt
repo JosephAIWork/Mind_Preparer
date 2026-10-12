@@ -11,3 +11,4 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 playwright>=1.45  # real-Mind automation (app/mind_client.py, app/mind_loop.py); uses the installed Edge
+oletools>=0.60  # 1.9.0: the model map reads the VBA (olevba)

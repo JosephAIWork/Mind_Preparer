@@ -50,6 +50,7 @@ from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_fo
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
+from app.model_map import build_model_map  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Status, aggregate_status  # noqa: E402
 from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
@@ -118,6 +119,9 @@ class Session:
     original_baseline: dict[str, Any] | None = None
     # 1.7.2 -- live status of the current/last Apply (GET /status, field "apply")
     apply_status: dict[str, Any] = field(default_factory=dict)
+    # 1.9.0 -- the model map (inputs, loop driver, run settings, outputs) of the analysed version
+    model_map: dict[str, Any] | None = None
+    model_map_version_id: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def readiness(self) -> dict[str, Any] | None:
@@ -1294,6 +1298,22 @@ def readiness(session_id: str) -> dict[str, Any]:
     if r is None:
         raise HTTPException(status_code=409, detail="no analysis yet")
     return {"readiness": r, "prep_progress": prep_progress(s.plan_history, s.apply_history)}
+
+
+@app.get("/api/sessions/{session_id}/model-map")
+def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
+    """Where the model's inputs, loop driver, run settings and outputs are (1.9.0): read off the
+    analysed copy's macros, names, dropdowns, sheet names and formulas. Cached per analysed version."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    if s.model_map is None or refresh or s.model_map_version_id != s.current_version_id:
+        try:
+            s.model_map = json.loads(json.dumps(build_model_map(s.result["workbook_analysis"]), default=str))  # dates and openpyxl values as text
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"model map failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
+        s.model_map_version_id = s.current_version_id
+    return {"version_id": s.model_map_version_id, "map": s.model_map}
 
 
 @app.get("/api/sessions/{session_id}/cells")

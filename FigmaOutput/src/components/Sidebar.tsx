@@ -19,6 +19,7 @@ const navGroups: { title: string; items: { to: string; label: string; icon: stri
   {
     title: "TOOLS",
     items: [
+      { to: "/model-map", label: "Model map", icon: "🗺️" },
       { to: "/assistant", label: "Assistant", icon: "💬" },
       { to: "/grid-namer", label: "Grid Namer", icon: "🏷️" },
       { to: "/history", label: "History", icon: "🕐" },

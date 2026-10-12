@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.9.0
+
+**Model map: where the inputs, the loop, the run settings and the outputs
+are.** A new module `app/model_map.py`, the route `GET
+/api/sessions/{id}/model-map` and the screen **Model map** (Tools) read the
+analysed copy and say, for each item, the sheet and cells and why:
+
+- **The loop**: from the VBA (olevba): every `For` loop, the cell the macro
+  sets on each pass (the driver), the cells that give the first and last
+  value (the bounds), which macro to run. Horizon: `CALCUL!A2:NI2` takes row
+  *n* of `BASE Polices`, *n* from `CALCUL!T5` to `T6`. Palermo:
+  `Projection!C3` (MP_ROW_SELECT) from `Macro!B1` to `B2`. CNHI: scenario,
+  year and cluster on `Model Inputs!C8 / C173 / C174`, scenarios from
+  `Output!G2` to `G3`, run by `combined_macro`. A loop that copies sheets
+  (PVFP's `Macro1`) is not a run loop; it names the **item cell** instead
+  (`'LoB 1'!G2`, one sheet per LoB). Without a loop, the **key cells** are
+  the constants the formulas read most by absolute reference.
+- **Inputs**: the rows the loop walks through, the sheets whose name says
+  input / data / assumptions, the named tables formulas read.
+- **Run settings**: switches (dropdowns with their options, and the named
+  cells the macros test: `Full_Run?`, `Del_range2`, `SendEmails`), named
+  single constants formulas read (`Last_Year_Triangle`, `Valuation_date`,
+  `proj_year`), label | value pairs on small control sheets (Horizon's
+  `Parametres`), assumption tables. Cells the macro writes and reads back
+  (`Error_Flag`) are shown as status, not settings.
+- **Outputs**: every range a macro pastes results into, with its source and
+  when (each pass as one block per item, or once after the loop), the
+  areas cleared before a run, the sheets whose name says output, the save
+  path. Horizon: `OUTPUT!A{n}:J{n}` from `CALCUL!AY35:BH35`. Palermo:
+  `Macro!V13:AE140` per policy, then `Summary Output Pasted` from `Summary
+  Output`, saved as the path in `Saved down!C9`. CNHI: 30 paste blocks on
+  `RAC Baseline`, `SS Output`, `Inbound Output` and `Output`.
+
+Nothing is guessed: no model call, every line carries its evidence (the
+macro statement, the name, the validation). The screen's **Show** opens
+the cells around any item. `python -m app.model_map <workbook> [--json]`
+prints the same. `tests/unit/test_model_map.py` checks the parser on the
+four macro shapes and, when the local copies are present, the four
+models' maps against what was read by hand.
+
 ## 1.8.12
 
 **Palermo and CNHI in Mind (2026-10-08).** Both went through the app's
