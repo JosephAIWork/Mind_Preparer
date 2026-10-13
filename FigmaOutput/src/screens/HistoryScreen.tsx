@@ -15,6 +15,7 @@ function TimelineEntry({ version, index, total, sessionId, isCurrent, onRestore,
     convert: "bg-[#F9FAFB] text-[#6B7280]",
     grid_namer: "bg-[#FDF4FF] text-[#86198F]",
     autofix: "bg-[#F0FDFA] text-[#0F766E]",
+    loop: "bg-[#EFF6FF] text-[#1E40AF]",
   };
   return (
     <div className="flex items-start gap-4">

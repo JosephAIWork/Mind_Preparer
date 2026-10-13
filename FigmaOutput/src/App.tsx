@@ -14,10 +14,29 @@ import GridNamerScreen from "./screens/GridNamerScreen";
 import ModelMapScreen from "./screens/ModelMapScreen";
 import FixPanel from "./components/FixPanel";
 import ReadinessBanner from "./components/ReadinessBanner";
-import { health } from "./services/api";
+import { health, resumeSession } from "./services/api";
+import { useStore } from "./store";
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const sessionId = useStore((s) => s.sessionId);
+  const setSession = useStore((s) => s.setSession);
+  const setMode = useStore((s) => s.setMode);
+  const applyAnalysis = useStore((s) => s.applyAnalysis);
+
+  // 1.10.0: "/model-map?session=<id>" opens a session the backend still holds (after a reload).
+  useEffect(() => {
+    if (sessionId) return;
+    const wanted = new URLSearchParams(window.location.search).get("session");
+    if (!wanted) return;
+    resumeSession(wanted)
+      .then((r) => {
+        setMode(r.mode);
+        setSession(r.sessionId, r.summary, r.report, r.plan, r.version);
+        applyAnalysis({ versions: r.versions, readiness: r.readiness, prep_progress: r.prep_progress });
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Browser tab: "MindPrep v1.7.0" -- the version comes from the running backend.
   useEffect(() => {

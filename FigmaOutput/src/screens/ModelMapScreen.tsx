@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import * as api from "../services/api";
 import type { CellWindow, ModelMap } from "../services/api";
+import MindLoopSection from "./MindLoopSection";
 
 /**
  * Model map (1.9.0): where the model's inputs are, which cell the run loop sets,
@@ -167,6 +168,8 @@ export default function ModelMapScreen() {
               </>
             )}
           </Section>
+
+          {lp.found && <MindLoopSection sessionId={sessionId} />}
 
           <Section title="Inputs" hint="data the loop walks through, and the sheets that hold inputs" count={map.inputs.sheets.length}>
             {map.inputs.per_item.map((p) => <Row key={p.cell} sessionId={sessionId} cell={p.cell} title={p.what} sub={`macro ${p.macro}`} />)}

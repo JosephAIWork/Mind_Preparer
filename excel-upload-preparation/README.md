@@ -22,11 +22,19 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.9.0)
+## Current status (1.10.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Mind loop** (1.10.0): on the Model map screen, the macro's run loop as
+  Mind formulas -- `MM_LOOP` in every driver cell over its column of the
+  table (or the list, or the count), `MM_RESULT` row by row in the block the
+  macro writes per pass -- previewed with its bounds and name, then written
+  through Excel as a new version. What the two functions cannot say is
+  listed as not built, with why. `scripts/check_loop_plan.py` proves the
+  wiring in Excel against the macro (Horizon: 60 of 60 cells the same).
 
 - **Model map** (1.9.0): a screen (and `GET .../model-map`, `python -m
   app.model_map`) that says where a model's inputs are, which cell the run

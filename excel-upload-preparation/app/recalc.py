@@ -167,13 +167,27 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
         close_quietly(wb)
         wb = None
 
+    # 1.10.0: without the add-in every cell that reads an MM_ cell shows #NAME? as well (a Mind
+    # loop written into a model: the whole calculation sheet). A #NAME? whose own functions are
+    # all known -- Excel's or MM_ -- is downstream of the gap, not a defect of the workbook.
+    downstream = 0
+    if addin_gap_errors and not mmforexcel_loaded:
+        kept: list[dict[str, Any]] = []
+        for e in formula_errors:
+            if e["error"] == "#NAME?" and not _unknown_functions(e["formula"]):
+                addin_gap_errors.append({**e, "downstream": True})
+                downstream += 1
+            else:
+                kept.append(e)
+        formula_errors = kept
     if formula_errors:
         status = "ERROR"
         message = f"Recalculated; {len(formula_errors)} genuine formula error cell(s) found."
     elif addin_gap_errors:
         status = "NOT_SUPPORTED"
+        direct = len(addin_gap_errors) - downstream
         message = (
-            f"Recalculated, but {len(addin_gap_errors)} MM_ function call(s) show #NAME? because "
+            f"Recalculated, but {direct} MM_ function call(s)" + (f" and {downstream} cell(s) that read them" if downstream else "") + " show #NAME? because "
             "the MMForExcel add-in is not installed/loaded on this Excel automation instance "
             "(checked COMAddIns/AddIns; none found) -- Mind's own MM_001 rule expects this add-in "
             "whenever MM functions exist. This is not a workbook defect; it can't be verified as "
@@ -325,6 +339,9 @@ def group_errors(formula_errors: list[dict[str, Any]], addin_gap_errors: list[di
             sig = formula_signature(formula)
             _add((error, "sig:" + sig), f"{error} in formulas of the form {sig or '(empty)'}", "formula", e)
     for e in addin_gap_errors:
+        if e.get("downstream"):
+            _add(("#NAME?", "mm:downstream"), "#NAME? because the cell reads an MM_ function cell, and MM_ functions need the MMForExcel add-in -- the same environment gap, not a workbook defect", "addin_gap", {**e, "error": "#NAME?"})
+            continue
         formula = str(e.get("formula") or "")
         mm = sorted({fn for fn in called_functions(formula) if fn.startswith("MM_")})
         _add(("#NAME?", "mm:" + ",".join(mm)), f"#NAME? because {', '.join(mm) or 'an MM_ function'} needs the MMForExcel add-in -- an environment gap on this machine, not a workbook defect", "addin_gap", {**e, "error": "#NAME?"})

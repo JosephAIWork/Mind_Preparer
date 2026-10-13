@@ -1,0 +1,606 @@
+"""Mind loop -- the macro's run loop written as Mind formulas (1.10.0).
+
+The Model map (app.model_map) says which cell a macro sets on every pass (the driver), what it
+sets it from (a row of a table, an item of a list, a counter), the cells that bound the run, and
+where each pass's results are written. This module turns that into the Mind construct that runs
+through the same values without the macro:
+
+- every driver cell gets ``=MM_LOOP("Name", range)``: the loop, one value per row of the table
+  (or item of the list), so everything that reads the driver is computed for every value;
+- the block the macro writes on every pass gets ``=MM_RESULT(source, "Name", k)`` row by row:
+  row k reads the source cells for the k-th loop value, as the macro's k-th pass wrote them;
+- the area the macro clears before a run is emptied of what an earlier run left there.
+
+Everything comes from the map and the workbook. Where the macro does something these two
+functions cannot say (a block whose place depends on a counter the macro keeps, a counted loop
+with no cell holding the count, a block that depends on several nested loops) the plan says so
+and builds nothing for it. Loop names are the driver's defined name, else the source sheet's
+name; both are overridable.
+
+    python -m app.loop_builder <workbook.xlsm> [--json] [--name N] [--first a] [--last b]
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+from .formula_utils import col_to_num, num_to_col, parse_ref
+
+ACTION_ID = "mind_loop"
+RULE_ID = "LOOP-001"
+MAX_RESULT_CELLS = 60_000  # MM_RESULT formulas one plan writes at most (items x cells of the block)
+MAX_CLEARS = 5_000
+
+_PH_RE = re.compile(r"<([A-Za-z_]\w*)>")
+_VAR_ASSIGN_RE = re.compile(r"^\s*(?:Dim\s+[^:]+:\s*)?([A-Za-z_]\w*)\s*=")
+_OFFSET_RE = re.compile(r"\.Offset\(\s*(?P<r>[^,]+?)\s*,\s*(?P<c>[^)]+?)\s*\)", re.IGNORECASE)
+_RANGE_NAME_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)(?:\.Value2?)?""", re.IGNORECASE)
+_SAFE_EXPR_RE = re.compile(r"^[\d\s+\-*/().]+$")
+
+
+# --- small helpers --------------------------------------------------------------------------------
+def loop_name_from(text: str) -> str:
+    """A loop name Mind accepts everywhere: letters, digits and underscores."""
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", str(text or "")).strip("_")
+    return name or "Loop"
+
+
+def _qs(sheet: str) -> str:
+    """The sheet name as a formula writes it: quoted unless it is a plain word."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", sheet):
+        return sheet
+    return "'" + sheet.replace("'", "''") + "'"
+
+
+def _split(cell: str) -> tuple[str | None, str]:
+    """'Sheet'!A1:B2 -> (Sheet, A1:B2)."""
+    if "!" not in cell:
+        return None, cell
+    sheet, ref = cell.rsplit("!", 1)
+    return sheet.strip().strip("'").replace("''", "'"), ref.strip()
+
+
+def _cells_of(sheet: str, ref: str) -> list[tuple[int, int]]:
+    """(col, row) of every cell of a literal range, row-major."""
+    r = parse_ref(f"'{sheet}'!{ref}")
+    if not r or r["whole_column"] or r["whole_row"]:
+        return []
+    return [(c, row) for row in range(r["r1"], r["r2"] + 1) for c in range(r["c1"], r["c2"] + 1)]
+
+
+def _held(analysis: dict[str, Any], sheet: str, col: int, row: int) -> Any:
+    from .inventory import cell_value
+
+    try:
+        return cell_value(analysis, sheet, row, col)
+    except Exception:
+        return None
+
+
+def _number_at(analysis: dict[str, Any], sheet: str, ref: str) -> tuple[Any, str | None]:
+    """A cell's number: its constant, else the value Excel last stored for its formula."""
+    from .inventory import values_cell
+
+    r = parse_ref(ref)
+    if not r:
+        return None, None
+    held = _held(analysis, sheet, r["c1"], r["r1"])
+    if isinstance(held, str) and held.startswith("="):
+        try:
+            v = values_cell(analysis, sheet, r["r1"], r["c1"])
+        except Exception:
+            v = None
+        return v, held
+    return held, None
+
+
+def _as_int(v: Any) -> int | None:
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str):
+        try:
+            return _as_int(float(v.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _sheet_max(analysis: dict[str, Any], sheet: str) -> tuple[int, int]:
+    """(max column, max row) of a sheet's used range, from the inventory's dimensions."""
+    for s in analysis["workbooks"][0].get("sheets", []):
+        if s["name"] == sheet:
+            dims = s.get("dimensions") or s.get("dims")
+            r = parse_ref(str(dims)) if dims else None
+            if r and not r["whole_column"] and not r["whole_row"]:
+                return r["c2"], r["r2"]
+    return 16384, 1048576
+
+
+def _eval_shift(expr: str, var: str, value: int) -> int | None:
+    """`i - 1` at i = value, for the small arithmetic VBA writes inside Offset()."""
+    text = re.sub(rf"\b{re.escape(var)}\b", str(value), expr)
+    if not _SAFE_EXPR_RE.fullmatch(text):
+        return None
+    try:
+        return int(eval(text, {"__builtins__": {}}, {}))  # noqa: S307 -- digits and + - * / ( ) only, checked above
+    except Exception:
+        return None
+
+
+def _tight(expr: str) -> str:
+    """The expression without spaces, except inside quoted sheet names."""
+    parts = expr.split("'")
+    return "'".join(part if i % 2 else part.replace(" ", "") for i, part in enumerate(parts))
+
+
+def _bound_var(bound: dict[str, Any]) -> str | None:
+    """The VBA variable a bound was read into (`num_debut = Worksheets(...)`) -- the macro's
+    own clearing / writing statements use it, so the map's placeholders may carry it."""
+    m = _VAR_ASSIGN_RE.match(str(bound.get("text") or ""))
+    return m.group(1) if m else None
+
+
+def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any) -> tuple[int | None, dict[str, Any]]:
+    """The number a loop bound stands for, and where it came from."""
+    if override not in (None, ""):
+        n = _as_int(override)
+        return n, {"kind": "chosen", "value": n}
+    if bound.get("kind") == "literal":
+        n = _as_int(bound.get("value"))
+        return n, {"kind": "literal", "value": n}
+    if bound.get("kind") == "cell" and bound.get("cell"):
+        sheet, ref = _split(bound["cell"])
+        if sheet:
+            v, formula = _number_at(analysis, sheet, ref)
+            n = _as_int(v)
+            return n, {"kind": "cell", "cell": bound["cell"], "name": bound.get("name"), "value": n, "formula": formula}
+    return None, {"kind": "unknown", "text": bound.get("text")}
+
+
+# --- the loops -------------------------------------------------------------------------------------
+def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int) -> dict[str, Any]:
+    """The macro copies one row (or column) of a table into a driver row (or column): every
+    driver cell takes its own column (row) of the table as an MM_LOOP range."""
+    var = d["loop_var"]
+    src_sheet, src_ref = _split(d["set_from"])
+    drv_sheet, drv_ref = _split(d["cell"])
+    if not src_sheet or not drv_sheet:
+        return {"status": "not_built", "why": "the source or the driver has no sheet"}
+    m = re.fullmatch(r"\$?([A-Za-z]+|<\w+>)\$?(\d+|<\w+>)(?::\$?([A-Za-z]+|<\w+>)\$?(\d+|<\w+>))?", src_ref.replace("$", ""))
+    if not m:
+        return {"status": "not_built", "why": f"cannot read the source range {d['set_from']}"}
+    c1, r1, c2, r2 = m.group(1), m.group(2), m.group(3) or m.group(1), m.group(4) or m.group(2)
+    ph = f"<{var}>"
+    drv_cells = _cells_of(drv_sheet, drv_ref)
+    if not drv_cells:
+        return {"status": "not_built", "why": f"cannot read the driver range {d['cell']}"}
+    max_col, max_row = _sheet_max(analysis, src_sheet)
+    cells: list[dict[str, Any]] = []
+    skipped = 0
+    if r1 == ph and r2 == ph and ph not in (c1, c2):
+        # a row per loop value: the loop value is the row number; one range per column
+        cols = list(range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1))
+        for i, col in enumerate(cols):
+            if i >= len(drv_cells):
+                break
+            if col > max_col:
+                skipped += 1
+                continue
+            rng = f"{_qs(src_sheet)}!{num_to_col(col)}{first}:{num_to_col(col)}{last}"
+            dc, dr = drv_cells[i]
+            cells.append({"cell": f"{_qs(drv_sheet)}!{num_to_col(dc)}{dr}", "sheet": drv_sheet, "ref": f"{num_to_col(dc)}{dr}", "range": rng, "formula": f'=MM_LOOP("{name}",{rng})',
+                          "header": _held(analysis, src_sheet, col, 1) if first > 1 else None})
+        unit, axis = "row", "columns"
+        example_range = f"{_qs(src_sheet)}!{c1}{first}:{c1}{last}"
+    elif c1 == ph and c2 == ph and ph not in (r1, r2):
+        # a column per loop value: the loop value is the column number; one range per row
+        rows = list(range(int(r1), int(r2) + 1))
+        for i, row in enumerate(rows):
+            if i >= len(drv_cells):
+                break
+            if row > max_row:
+                skipped += 1
+                continue
+            rng = f"{_qs(src_sheet)}!{num_to_col(first)}{row}:{num_to_col(last)}{row}"
+            dc, dr = drv_cells[i]
+            cells.append({"cell": f"{_qs(drv_sheet)}!{num_to_col(dc)}{dr}", "sheet": drv_sheet, "ref": f"{num_to_col(dc)}{dr}", "range": rng, "formula": f'=MM_LOOP("{name}",{rng})', "header": None})
+        unit, axis = "column", "rows"
+        example_range = f"{_qs(src_sheet)}!{num_to_col(first)}{r1}:{num_to_col(last)}{r1}"
+    else:
+        return {"status": "not_built", "why": f"the loop value is not a plain row or column number in {d['set_from']}"}
+    notes = []
+    if skipped:
+        notes.append(f"{skipped} {axis} of the source past the sheet's used range hold nothing: no loop written for them (the macro copies them empty)")
+    return {"kind": f"{unit}_of_table", "status": "ready" if cells else "not_built", "cells": cells, "source_sheet": src_sheet, "unit": unit, "example_range": example_range, "notes": notes,
+            "how": f"{d['cell']} takes {unit} <k> of {_qs(src_sheet)} ({unit}s {first} to {last}): each cell its own column of the table, through MM_LOOP"}
+
+
+def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int) -> dict[str, Any]:
+    """The macro walks a list with Range("start").Offset(0, i - 1) (or Offset(i - 1, 0)):
+    the driver cell gets MM_LOOP over the stretch of the list the loop covers."""
+    var = d["loop_var"]
+    m = _OFFSET_RE.search(str(d.get("statement") or ""))
+    src_sheet, src_ref = _split(d["set_from"])
+    r = parse_ref(f"'{src_sheet}'!{src_ref}") if src_sheet else None
+    if not m or not r:
+        return {"status": "not_built", "why": f"cannot read the list the macro walks in: {d.get('statement')}"}
+    row_expr, col_expr = m.group("r"), m.group("c")
+    along_rows = re.search(rf"\b{re.escape(var)}\b", row_expr) is not None
+    expr = row_expr if along_rows else col_expr
+    s_first, s_last = _eval_shift(expr, var, first), _eval_shift(expr, var, last)
+    if s_first is None or s_last is None:
+        return {"status": "not_built", "why": f"cannot evaluate the offset {expr!r} at {var} = {first} and {last}"}
+    if along_rows:
+        rng = f"{_qs(src_sheet)}!{num_to_col(r['c1'])}{r['r1'] + s_first}:{num_to_col(r['c1'])}{r['r1'] + s_last}"
+    else:
+        rng = f"{_qs(src_sheet)}!{num_to_col(r['c1'] + s_first)}{r['r1']}:{num_to_col(r['c1'] + s_last)}{r['r1']}"
+    drv_sheet, drv_ref = _split(d["cell"])
+    cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": rng, "formula": f'=MM_LOOP("{name}",{rng})', "header": None}
+    return {"kind": "list", "status": "ready", "cells": [cell], "source_sheet": src_sheet, "unit": "item", "example_range": rng, "notes": [],
+            "how": f"{d['cell']} takes each item of {rng} in turn, through MM_LOOP"}
+
+
+def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, first_src: dict[str, Any], last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
+    """The driver is the loop counter itself (Palermo: Projection!C3 = polProcess): MM_LOOP over
+    a cell holding the count gives 1..n; another first value needs the IndexStart / IndexEnd
+    arguments; without a cell holding the count the plan asks for one."""
+    drv_sheet, drv_ref = _split(d["cell"])
+    notes: list[str] = []
+    ops_extra: list[dict[str, Any]] = []
+    if last_src.get("kind") == "cell" and last_src.get("formula") is None:
+        n_cell = last_src["cell"]
+        n_text = f"{_qs(_split(n_cell)[0])}!{_split(n_cell)[1]}"
+    elif count_cell:
+        sheet, ref = _split(count_cell)
+        if not sheet or not parse_ref(ref):
+            return {"status": "not_built", "why": f"the count cell {count_cell!r} is not Sheet!Cell"}
+        n_text = f"{_qs(sheet)}!{ref}"
+        ops_extra.append({"op": "set_value", "sheet": sheet, "cell": ref, "before": _held(analysis, sheet, parse_ref(ref)["c1"], parse_ref(ref)["r1"]), "after": last, "note": f"the count of the loop {name} (chosen cell)"})
+        notes.append(f"{count_cell} gets the count {last} (you chose the cell)")
+    else:
+        return {"status": "needs_decision", "kind": "counter", "cells": [], "notes": [],
+                "why": f"MM_LOOP needs a cell that holds the count ({last}); the macro's last value is {last_src.get('text') or last!r}, not a cell. Name a free cell for it (count cell) and the plan writes {last} there.",
+                "how": f"{d['cell']} is the loop counter itself ({first} to {last})"}
+    if first == 1:
+        formula = f'=MM_LOOP("{name}",{n_text})'
+    else:
+        if first_src.get("kind") == "cell":
+            f_sheet, f_ref = _split(first_src["cell"])
+            f_text = f"{_qs(f_sheet)}!{f_ref}"
+        else:
+            f_text = str(first)
+        formula = f'=MM_LOOP("{name}",{n_text},{first},{f_text},{n_text})'
+        notes.append(f"the run starts at {first}, not 1: the IndexStart / IndexEnd arguments of MM_LOOP say so (documented syntax, check it on the first run in Mind)")
+    cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": n_text, "formula": formula, "header": None}
+    return {"kind": "counter", "status": "ready", "cells": [cell], "source_sheet": None, "unit": "value", "example_range": n_text, "notes": notes, "extra_ops": ops_extra,
+            "how": f"{d['cell']} counts from {first} to {last} ({n_text} holds the count), through MM_LOOP"}
+
+
+def _derived_loop(analysis: dict[str, Any], d: dict[str, Any], names: Any, name: str, first: int, last: int, last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
+    """The driver is computed from the counter (CNHI: active_year = proj_year + i - 1): the
+    statement's right-hand side with MM_LOOP in the counter's place."""
+    st = str(d.get("statement") or "")
+    if "=" not in st:
+        return {"status": "not_built", "why": f"cannot read the statement {st!r}"}
+    rhs = st.split("=", 1)[1].strip()
+    var = d["loop_var"]
+    if last_src.get("kind") == "cell" and last_src.get("formula") is None:
+        n_text = f"{_qs(_split(last_src['cell'])[0])}!{_split(last_src['cell'])[1]}"
+        extra: list[dict[str, Any]] = []
+        note = None
+    elif count_cell:
+        sheet, ref = _split(count_cell)
+        if not sheet or not parse_ref(ref):
+            return {"status": "not_built", "why": f"the count cell {count_cell!r} is not Sheet!Cell"}
+        n_text = f"{_qs(sheet)}!{ref}"
+        extra = [{"op": "set_value", "sheet": sheet, "cell": ref, "before": _held(analysis, sheet, parse_ref(ref)["c1"], parse_ref(ref)["r1"]), "after": last - first + 1, "note": f"the count of the loop {name} (chosen cell)"}]
+        note = f"{count_cell} gets the count {last - first + 1} (you chose the cell)"
+    else:
+        return {"status": "needs_decision", "kind": "derived", "cells": [], "notes": [],
+                "why": f"MM_LOOP needs a cell that holds the count ({last - first + 1}); the loop runs {var} = {first} to {last} with no such cell. Name a free cell for it (count cell) and the plan writes the count there.",
+                "how": f"{d['cell']} is computed from the counter: {rhs}"}
+
+    def _name_to_ref(m: re.Match) -> str:
+        ref = names.ref(m.group("name")) if names else None
+        if not ref:
+            return m.group(0)
+        sheet, r = _split(ref)
+        return f"{_qs(sheet)}!{r.replace('$', '')}" if sheet else r.replace("$", "")
+
+    expr = _RANGE_NAME_RE.sub(_name_to_ref, rhs)
+    loop_text = f'MM_LOOP("{name}",{n_text})' if first == 1 else f'(MM_LOOP("{name}",{n_text})+{first - 1})'
+    expr = re.sub(rf"\b{re.escape(var)}\b", loop_text, expr)
+    if "Range(" in expr or "Cells(" in expr:
+        return {"status": "not_built", "why": f"the statement reads a range the plan cannot name: {rhs}"}
+    drv_sheet, drv_ref = _split(d["cell"])
+    cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": n_text, "formula": "=" + _tight(expr), "header": None}
+    return {"kind": "derived", "status": "ready", "cells": [cell], "source_sheet": None, "unit": "value", "example_range": n_text, "notes": [note] if note else [], "extra_ops": extra,
+            "how": f"{d['cell']} is computed from the counter ({first} to {last}): {rhs}"}
+
+
+# --- the plan --------------------------------------------------------------------------------------
+def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, names: dict[str, str] | None = None, name: str | None = None,
+                    first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, max_result_cells: int = MAX_RESULT_CELLS) -> dict[str, Any]:
+    """The Mind loop for the map's run loop: what goes where, with the operations that write it.
+
+    `names` maps a driver cell to the loop name wanted; `name` is the shorthand for the first
+    loop; `first` / `last` override the bounds read from the workbook; `count_cell` is where a
+    counted loop's size may be written when the workbook has no cell for it; `clear_old` also
+    empties what an earlier run left in the areas the macro clears (listed either way)."""
+    from .model_map import _Names
+
+    wb0 = analysis["workbooks"][0]
+    nm = _Names(wb0.get("defined_names", []) or [])
+    lp = model_map.get("loop") or {}
+    plan: dict[str, Any] = {"found": bool(lp.get("found")), "loops": [], "outputs": [], "clears": [], "operations": [], "notes": [], "counts": {"loop_cells": 0, "result_cells": 0, "cleared": 0, "extra": 0}, "how_it_runs": None}
+    if not lp.get("found"):
+        plan["notes"].append("No run loop in the macros: nothing to build." + (" The item cell(s) say which sheet copy is which item." if lp.get("item_cells") else ""))
+        return plan
+    drivers = lp.get("drivers") or []
+    names = dict(names or {})
+    if name and drivers:
+        names.setdefault(drivers[0]["cell"], name)
+    ops: list[dict[str, Any]] = []
+    built: dict[str, dict[str, Any]] = {}  # loop var -> loop entry
+    placeholders: dict[str, int] = {}  # bound variables the macro's statements use -> their value
+    for idx, d in enumerate(drivers):
+        first_n, first_src = _bound_value(analysis, d.get("from") or {}, first if idx == 0 else None)
+        last_n, last_src = _bound_value(analysis, d.get("to") or {}, last if idx == 0 else None)
+        loop_name = loop_name_from(names.get(d["cell"]) or d.get("name") or (_split(d["set_from"])[0] if d.get("set_from") else None) or d["loop_var"])
+        entry: dict[str, Any] = {"name": loop_name, "driver": d["cell"], "driver_name": d.get("name"), "label": d.get("label"), "macro": d.get("macro"), "loop_var": d["loop_var"],
+                                 "source": d.get("set_from"), "first": first_n, "last": last_n, "first_from": first_src, "last_from": last_src, "count": None, "cells": [], "notes": [], "status": "ready", "kind": None, "how": d.get("how")}
+        if first_n is None or last_n is None:
+            entry.update(status="needs_decision", why="the first or last value of the loop could not be read from the workbook (" + ", ".join(x for x in (first_src.get("text"), last_src.get("text")) if x) + "): type them in")
+            plan["loops"].append(entry)
+            continue
+        if last_n < first_n:
+            entry.update(status="needs_decision", why=f"the last value ({last_n}) is before the first ({first_n}): the macro would do nothing")
+            plan["loops"].append(entry)
+            continue
+        entry["count"] = last_n - first_n + 1
+        for b, v in ((d.get("from") or {}, first_n), (d.get("to") or {}, last_n)):
+            bv = _bound_var(b)
+            if bv:
+                placeholders[bv] = v
+        set_from = str(d.get("set_from") or "")
+        how = str(d.get("how") or "")
+        if set_from and f"<{d['loop_var']}>" in set_from:
+            res = _table_loop(analysis, d, loop_name, first_n, last_n)
+        elif how == "the loop value itself":
+            res = _counter_loop(analysis, d, loop_name, first_n, last_n, first_src, last_src, count_cell)
+        elif set_from and _OFFSET_RE.search(str(d.get("statement") or "")):
+            res = _list_loop(analysis, d, loop_name, first_n, last_n)
+        elif set_from and "through" in how:
+            res = _derived_loop(analysis, d, nm, loop_name, first_n, last_n, last_src, count_cell)
+        else:
+            res = {"status": "not_built", "why": f"the macro sets the driver in a way the plan cannot write as MM_LOOP: {d.get('statement')}"}
+        entry.update({k: v for k, v in res.items() if k != "extra_ops"})
+        if res.get("status") == "ready":
+            if entry["kind"] in ("row_of_table", "column_of_table") and first_n >= 1:
+                # the first value is the table's header row? (text in the first filled cells, numbers below)
+                src_sheet = res["source_sheet"]
+                head = [_held(analysis, src_sheet, c, first_n) for c in range(1, 6)]
+                below = [_held(analysis, src_sheet, c, first_n + 1) for c in range(1, 6)] if last_n > first_n else []
+                if any(isinstance(v, str) and v.strip() for v in head) and any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in below) and not any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in head):
+                    entry["notes"].append(f"the first value is row {first_n} of {_qs(src_sheet)}, its header row: the macro runs it too (its results are the first block). Set first to {first_n + 1} to leave it out.")
+            for c in res["cells"]:
+                r = parse_ref(c["ref"])
+                before = _held(analysis, c["sheet"], r["c1"], r["r1"]) if r else None
+                note = f"loop {loop_name}: the driver takes its value from {c['range']}"
+                if isinstance(before, str) and before.startswith("="):
+                    note += " (held a formula; the macro overwrote it with values on every pass)"
+                ops.append({"op": "set_formula", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": c["ref"], "before": before, "after": c["formula"], "note": note})
+            for o in res.get("extra_ops") or []:
+                ops.append({"action_id": ACTION_ID, "rule_id": RULE_ID, **o})
+                plan["counts"]["extra"] += 1
+            plan["counts"]["loop_cells"] += len(res["cells"])
+            built[d["loop_var"]] = entry
+        plan["loops"].append(entry)
+
+    # --- the outputs: one block per loop value -> MM_RESULT row by row ------------------------------
+    n_built = len(built)
+    for o in (model_map.get("outputs") or {}).get("cells") or []:
+        target = str(o.get("cell") or "")
+        vars_in = _PH_RE.findall(target)
+        loop_vars = sorted({v for v in vars_in if v in built})
+        entry_o: dict[str, Any] = {"target": target, "from": o.get("from"), "written_by": o.get("written_by"), "when": o.get("when"), "status": "ready", "cells": 0, "items": 0, "example": None, "loop": None}
+        when = str(o.get("when") or "")
+        if "cleared" in when:
+            # the area the macro empties before a run: what an earlier run left there goes
+            sub = target
+            for v, val in placeholders.items():
+                sub = sub.replace(f"<{v}>", str(val))
+            for lv, le in built.items():
+                sub = sub.replace(f"<{lv}>", str(le["first"]))
+            sheet, ref = _split(sub)
+            r = parse_ref(f"'{sheet}'!{ref}") if sheet and "<" not in sub else None
+            if not r:
+                entry_o.update(status="not_built", why=f"cannot place the cleared area {target}")
+                plan["clears"].append(entry_o)
+                continue
+            entry_o["resolved"] = sub
+            plan["clears"].append({**entry_o, "sheet": sheet, "r1": r["r1"], "r2": r["r2"], "c1": r["c1"], "c2": r["c2"]})
+            continue
+        if not o.get("from") or not loop_vars:
+            if "copy / paste" in when:
+                entry_o.update(status="nothing_to_do", why="a values copy made once after the loop: in Mind the sheet it copies from holds the results; read it there")
+            elif "same place" in when and built:
+                ex = ",".join(f'"{le["name"]}",k' for le in built.values())
+                entry_o.update(status="not_built", why=f"the macro writes every pass's block at a place it computes itself (a tariff, a counter): MM_RESULT cannot follow that. In Mind the results stay in {o.get('from') or 'the source block'} as one value per loop value; read one with =MM_RESULT(cell,{ex}).")
+            elif built:
+                ex = ",".join(f'"{le["name"]}",k' for le in built.values())
+                entry_o.update(status="not_built", why=f"not written per loop value in a way the plan can place; in Mind read {o.get('from') or 'the source'} with =MM_RESULT(cell,{ex}).")
+            else:
+                entry_o.update(status="not_built", why="no loop was built")
+            plan["outputs"].append(entry_o)
+            continue
+        if n_built > 1 and len(loop_vars) < n_built:
+            ex = ",".join(f'"{le["name"]}",k{i + 1}' for i, le in enumerate(built.values()))
+            entry_o.update(status="not_built", why=f"the block is placed by {', '.join(loop_vars)} only, but {n_built} nested loops run: MM_RESULT with one loop sums over the others. Read a block with =MM_RESULT(cell,{ex}).")
+            plan["outputs"].append(entry_o)
+            continue
+        lv = loop_vars[0]
+        le = built[lv]
+        from_sheet, from_ref = _split(str(o["from"]))
+        src_cells = _cells_of(from_sheet, from_ref) if from_sheet else []
+        if not src_cells:
+            entry_o.update(status="not_built", why=f"cannot read the source block {o['from']}")
+            plan["outputs"].append(entry_o)
+            continue
+        sub = target
+        for v, val in placeholders.items():
+            sub = sub.replace(f"<{v}>", str(val))
+        count = le["count"]
+        total = count * len(src_cells)
+        if total > max_result_cells:
+            entry_o.update(status="not_built", items=count, cells=total, why=f"{count} loop values x {len(src_cells)} cells = {total} MM_RESULT formulas, above the limit of {max_result_cells}; narrow the bounds or build this block by hand")
+            plan["outputs"].append(entry_o)
+            continue
+        written = 0
+        first_cell = None
+        for k in range(1, count + 1):
+            value = le["first"] + k - 1
+            tgt = sub.replace(f"<{lv}>", str(value))
+            t_sheet, t_ref = _split(tgt)
+            t_cells = _cells_of(t_sheet, t_ref) if t_sheet else []
+            if not t_cells or len(t_cells) != len(src_cells):
+                entry_o.update(status="not_built", why=f"the block {tgt} and its source {o['from']} are not the same shape")
+                written = -1
+                break
+            for (sc, sr), (tc, tr) in zip(src_cells, t_cells):
+                formula = f'=MM_RESULT({_qs(from_sheet)}!${num_to_col(sc)}${sr},"{le["name"]}",{k})'
+                before = _held(analysis, t_sheet, tc, tr)
+                ops.append({"op": "set_formula", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": t_sheet, "cell": f"{num_to_col(tc)}{tr}", "before": before, "after": formula,
+                            "note": f"loop {le['name']} value {k} (= {value}): what {_qs(from_sheet)}!{num_to_col(sc)}{sr} holds for it"})
+                if first_cell is None:
+                    first_cell = f"{_qs(t_sheet)}!{num_to_col(tc)}{tr} {formula}"
+                written += 1
+        if written < 0:
+            plan["outputs"].append(entry_o)
+            continue
+        entry_o.update(items=count, cells=written, example=first_cell, loop=le["name"])
+        plan["counts"]["result_cells"] += written
+        plan["outputs"].append(entry_o)
+
+    # --- the cleared areas: drop what an earlier run left outside the rows the plan writes ---------
+    from .inventory import open_cached
+
+    written_cells = {(op["sheet"], op["cell"].upper()) for op in ops if op["op"] == "set_formula"}
+    try:
+        wb = open_cached(analysis)
+    except Exception:
+        wb = None
+    for c in plan["clears"]:
+        if c.get("status") != "ready" or wb is None or c["sheet"] not in wb.sheetnames:
+            continue
+        ws = wb[c["sheet"]]
+        r2 = min(c["r2"], ws.max_row)
+        c2 = min(c["c2"], ws.max_column)
+        n = 0
+        over = 0
+        for row in ws.iter_rows(min_row=c["r1"], max_row=r2, min_col=c["c1"], max_col=c2):
+            for cell in row:
+                if cell.value is None or cell.value == "":
+                    continue
+                ref = f"{num_to_col(cell.column)}{cell.row}"
+                if (c["sheet"], ref) in written_cells:
+                    continue
+                if n >= MAX_CLEARS:
+                    over += 1
+                    continue
+                if clear_old:
+                    ops.append({"op": "clear_cell", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": ref, "before": cell.value, "after": None, "note": "the macro clears this area before a run; nothing from an earlier run stays"})
+                n += 1
+        c["cells"] = n
+        c["included"] = bool(clear_old and n)
+        if over:
+            c["why"] = f"{over} more filled cells in the area were left (limit {MAX_CLEARS})"
+        if clear_old:
+            plan["counts"]["cleared"] += n
+
+    plan["operations"] = ops
+    ready = [le for le in plan["loops"] if le["status"] == "ready"]
+    if ready:
+        parts = []
+        for le in ready:
+            parts.append(f"{le['name']} is a loop of {le['count']} values ({le['how']})")
+        outs = [o for o in plan["outputs"] if o["status"] == "ready"]
+        text = "In Mind: " + "; ".join(parts) + "."
+        for o in outs:
+            text += f" {_PH_RE.sub('k', o['target'])} reads {o['from']} for loop value k through MM_RESULT ({o['items']} blocks)."
+        text += " One run computes every value; the macro " + ", ".join(sorted({le["macro"] for le in ready if le.get("macro")})) + " is not needed in Mind."
+        plan["how_it_runs"] = text
+    if any(le["status"] == "needs_decision" for le in plan["loops"]):
+        plan["notes"].append("A loop needs a decision before it can be written: see its line.")
+    return plan
+
+
+def describe(plan: dict[str, Any]) -> str:
+    lines = []
+    if not plan["found"]:
+        return "\n".join(plan["notes"] or ["no run loop"])
+    for le in plan["loops"]:
+        lines.append(f"loop {le['name']}  driver {le['driver']}  {le['first']} -> {le['last']}  [{le['status']}]")
+        if le.get("why"):
+            lines.append(f"   {le['why']}")
+        for n in le.get("notes") or []:
+            lines.append(f"   note: {n}")
+        for c in (le.get("cells") or [])[:4]:
+            lines.append(f"   {c['cell']}  {c['formula']}")
+        if len(le.get("cells") or []) > 4:
+            lines.append(f"   ... {len(le['cells']) - 4} more cells")
+    for o in plan["outputs"]:
+        lines.append(f"output {o['target']} <- {o['from']}  [{o['status']}]" + (f"  {o['cells']} cells in {o['items']} blocks" if o.get("cells") else ""))
+        if o.get("example"):
+            lines.append(f"   e.g. {o['example']}")
+        if o.get("why"):
+            lines.append(f"   {o['why']}")
+    for c in plan["clears"]:
+        lines.append(f"clear {c.get('resolved') or c['target']}  {c.get('cells', 0)} filled cells  [{'written' if c.get('included') else 'listed only' if c['status'] == 'ready' else c['status']}]")
+    lines.append(f"operations: {len(plan['operations'])}")
+    if plan.get("how_it_runs"):
+        lines.append(plan["how_it_runs"])
+    for n in plan["notes"]:
+        lines.append(n)
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import tempfile
+
+    from .inventory import build_analysis
+    from .model_map import build_model_map
+
+    ap = argparse.ArgumentParser(description="The macro's run loop as Mind formulas: what goes where.")
+    ap.add_argument("workbook")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--name", default=None, help="loop name for the first loop")
+    ap.add_argument("--first", default=None)
+    ap.add_argument("--last", default=None)
+    ap.add_argument("--count-cell", default=None, help="Sheet!Cell to hold the count of a counted loop that has none")
+    ap.add_argument("--clear-old", action="store_true", help="also empty the areas the macro clears before a run")
+    ap.add_argument("--work", default=None)
+    a = ap.parse_args(argv)
+    work = Path(a.work) if a.work else Path(tempfile.mkdtemp(prefix="mind_loop_"))
+    analysis = build_analysis(Path(a.workbook), work, Path(a.workbook).stem)
+    plan = build_loop_plan(analysis, build_model_map(analysis), name=a.name, first=a.first, last=a.last, count_cell=a.count_cell, clear_old=a.clear_old)
+    out = sys.__stdout__
+    try:
+        out.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    out.write((json.dumps(plan, indent=1, default=str, ensure_ascii=False) if a.json else describe(plan)) + "\n")
+    out.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -12,6 +12,7 @@ const sourceLabel: Record<string, string> = {
   convert: "converted",
   recalculate: "recalculated",
   autofix: "fixed automatically, recalculated",
+  loop: "Mind loop written, verified",
 };
 
 export default function VersionChip({ version }: Props) {

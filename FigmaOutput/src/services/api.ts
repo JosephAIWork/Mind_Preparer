@@ -136,6 +136,12 @@ export async function uploadWorkbook(file: File, mode: Mode, options: UploadOpti
  * Scan a deferred upload (or scan the current version again) skipping
  * `ignoreSheets`. A long call: poll scanStatus() meanwhile for the indicator.
  */
+/** 1.10.0: a session the backend still holds, in the shape an upload returns (404 once the server restarted). */
+export async function resumeSession(sessionId: string): Promise<SessionStart & { mode: Mode }> {
+  const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`);
+  return unwrap<SessionStart & { mode: Mode }>(res);
+}
+
 export async function analyzeSession(sessionId: string, ignoreSheets: string[] = []): Promise<SessionStart> {
   if (USE_MOCKS) {
     await delay(3000);
@@ -724,6 +730,46 @@ export interface ModelMap {
     saves: { in: string; path_from: string | null; name: string | null }[];
   };
   macros: { procedures: { name: string; module: string | null; statements: number; calls: string[] }[]; entry_points: string[] };
+}
+
+// --- Mind loop (1.10.0): the macro's run loop as MM_LOOP / MM_RESULT formulas ---
+export interface LoopPlanCell { cell: string; sheet: string; ref: string; range: string; formula: string; header?: unknown }
+export interface LoopPlanLoop {
+  name: string; driver: string; driver_name: string | null; label: string | null; macro: string | null; loop_var: string; source: string | null;
+  first: number | null; last: number | null; count: number | null; first_from: Record<string, unknown>; last_from: Record<string, unknown>;
+  cells: LoopPlanCell[]; notes: string[]; status: "ready" | "needs_decision" | "not_built"; kind: string | null; how: string | null; why?: string;
+}
+export interface LoopPlanOutput { target: string; from: string | null; written_by: string | null; when: string | null; status: string; cells: number; items: number; example: string | null; loop: string | null; why?: string }
+export interface LoopPlanClear { target: string; resolved?: string; status: string; cells?: number; included?: boolean; why?: string }
+export interface LoopPlan {
+  found: boolean; loops: LoopPlanLoop[]; outputs: LoopPlanOutput[]; clears: LoopPlanClear[];
+  operations: Operation[]; operation_count: number; notes: string[];
+  counts: { loop_cells: number; result_cells: number; cleared: number; extra: number }; how_it_runs: string | null;
+}
+export interface LoopPlanOptions { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean }
+
+function loopQuery(o: LoopPlanOptions): string {
+  const q = new URLSearchParams();
+  if (o.name) q.set("name", o.name);
+  if (o.first) q.set("first", o.first);
+  if (o.last) q.set("last", o.last);
+  if (o.count_cell) q.set("count_cell", o.count_cell);
+  if (o.clear_old) q.set("clear_old", "true");
+  const t = q.toString();
+  return t ? `?${t}` : "";
+}
+
+export async function mindLoopPlan(sessionId: string, o: LoopPlanOptions = {}): Promise<{ version_id: string; plan: LoopPlan }> {
+  if (USE_MOCKS) {
+    await delay(200);
+    return { version_id: "mock", plan: { found: false, loops: [], outputs: [], clears: [], operations: [], operation_count: 0, notes: ["mock"], counts: { loop_cells: 0, result_cells: 0, cleared: 0, extra: 0 }, how_it_runs: null } };
+  }
+  const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/mind-loop-plan${loopQuery(o)}`);
+  return unwrap<{ version_id: string; plan: LoopPlan }>(res);
+}
+
+export async function applyMindLoopPlan(sessionId: string, o: LoopPlanOptions = {}): Promise<ApplyOutcome & { plan: Omit<LoopPlan, "operations" | "operation_count"> }> {
+  return post<ApplyOutcome & { plan: Omit<LoopPlan, "operations" | "operation_count"> }>(`/sessions/${encodeURIComponent(sessionId)}/mind-loop-plan/apply`, { ...o, reanalyze: true });
 }
 
 export async function modelMap(sessionId: string, refresh = false): Promise<{ version_id: string; map: ModelMap }> {

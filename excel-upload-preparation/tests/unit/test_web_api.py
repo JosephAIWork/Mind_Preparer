@@ -671,6 +671,35 @@ def test_numbers_check_says_what_the_preparation_changed_and_the_fixer_does_not_
     assert result["numbers_check"]["clean"] is False and result["numbers_check"]["counts"]["good_to_error"] == 1
 
 
+def test_mind_loop_plan_route_previews_and_writes_the_loop(client, tmp_path, monkeypatch):
+    """1.10.0: GET .../mind-loop-plan says what MM_LOOP / MM_RESULT formulas go where (nothing
+    written); POST .../mind-loop-plan/apply writes them into a new version with source "loop"."""
+    import openpyxl
+
+    from app import model_map
+    from tests.unit.test_loop_builder import HORIZON_STYLE, _horizon_book
+
+    path = _horizon_book(tmp_path, last_as_formula=False)
+    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("Module1", HORIZON_STYLE)])
+    sid = _upload(client, path)["sessionId"]
+    body = client.get(f"/api/sessions/{sid}/mind-loop-plan").json()
+    plan = body["plan"]
+    assert plan["found"] and plan["loops"][0]["status"] == "ready" and plan["operation_count"] == 11 and len(plan["operations"]) == 11
+    assert plan["outputs"][0]["cells"] == 8 and plan["clears"][0]["included"] is False
+    chosen = client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"name": "Policy", "first": "2", "clear_old": "true"}).json()["plan"]
+    assert chosen["loops"][0]["name"] == "Policy" and chosen["loops"][0]["first"] == 2 and chosen["operation_count"] == 3 + 6 + 1  # + the one cell an earlier run left
+    versions_before = len(client.get(f"/api/sessions/{sid}/versions").json())
+    res = client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={"name": "Policy", "first": "2"})
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["version"]["source"] == "loop" and out["version"]["label"].startswith("v2 — Mind loop:") and out["plan"]["loops"][0]["name"] == "Policy"
+    assert out["result"]["status"] in ("APPLIED", "PARTIAL") and len(client.get(f"/api/sessions/{sid}/versions").json()) == versions_before + 1
+    written = openpyxl.load_workbook(server.SESSIONS[sid].current_path)
+    assert written["CALCUL"]["A2"].value == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:A4)" and written["OUTPUT"]["A2"].value == '=MM_RESULT(CALCUL!$E$10,"Policy",1)'
+    written.close()
+    assert client.get("/api/sessions/nope/mind-loop-plan").status_code == 404
+
+
 def test_model_map_route_reads_the_analysed_copy(client, flagged_model_broken_xlsx):
     """1.9.0: the Model map screen's data -- sections present, cached per version, 409 before an analysis."""
     sid = _upload(client, flagged_model_broken_xlsx)["sessionId"]

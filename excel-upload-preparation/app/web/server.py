@@ -50,7 +50,8 @@ from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_fo
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
-from app.model_map import build_model_map  # noqa: E402
+from app.model_map import build_model_map
+from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Status, aggregate_status  # noqa: E402
 from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
@@ -669,6 +670,29 @@ def create_session(file: UploadFile = File(...), mode: str = Form("plan"), defer
     return {"sessionId": sid, **_run_scan(s, raw_path)}
 
 
+@app.get("/api/sessions/{session_id}")
+def session_state(session_id: str) -> dict[str, Any]:
+    """1.10.0: the state of an analysed session, in the shape an upload returns, so the web app
+    can open it again (`/?session=<id>`, or `/model-map?session=<id>`) after a reload."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
+    return {
+        "sessionId": s.id,
+        "mode": s.mode,
+        "summary": _summary(s.result["workbook_analysis"]),
+        "report": {k: v for k, v in s.result["validation_report"].items() if k != "_version_id"},
+        "plan": s.plan,
+        "version": current,
+        "versions": s.versions,
+        "size": s.size,
+        "scan": _scan_snapshot(s),
+        "readiness": s.readiness(),
+        "prep_progress": prep_progress(s.plan_history, s.apply_history),
+    }
+
+
 @app.post("/api/sessions/{session_id}/analyze")
 def analyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Scan a deferred upload (or scan the current version again) with the
@@ -698,28 +722,34 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
     return _run_scan(s, s.paths[vid])
 
 
-@app.post("/api/sessions/{session_id}/apply")
-def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    s = _session(session_id)
-    _refuse_while_fixing(session_id)
-    ops = _validate_ops(payload.get("operations"))
+def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool = False) -> dict[str, Any]:
+    """Write `ops` into a fresh copy of the current version, register the result as the next
+    version, re-analyse it when asked, and report the outcome (the shape every Apply returns)."""
     before = _before_apply(s)
-    res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
+    res = _tracked_apply(s, ops, reanalyze)
     output = Path(res["output_path"])
-    action_ids = {o.get("action_id") for o in ops}
-    source = "assistant" if action_ids == {"assistant"} else "formula" if action_ids == {"formula_replacement"} else "prep"
-    who = {"assistant": "Assistant", "formula": "Formula fix", "prep": "Prep"}[source]
     verified = res.get("verified_opens_in_excel")
     label = f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
-    minor = payload.get("versionStep") == "minor"  # 1.7.4: a fix on the Recalculate step
     version = _add_version(s, output, source, label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"], minor=minor)
     out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version}
-    reanalyzed = bool(payload.get("reanalyze", True)) and res["status"] in ("APPLIED", "PARTIAL")
+    reanalyzed = reanalyze and res["status"] in ("APPLIED", "PARTIAL")
     if reanalyzed:
         out.update(_run_scan(s, output))
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     return out
+
+
+@app.post("/api/sessions/{session_id}/apply")
+def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    s = _session(session_id)
+    _refuse_while_fixing(session_id)
+    ops = _validate_ops(payload.get("operations"))
+    action_ids = {o.get("action_id") for o in ops}
+    source = "assistant" if action_ids == {"assistant"} else "formula" if action_ids == {"formula_replacement"} else "prep"
+    who = {"assistant": "Assistant", "formula": "Formula fix", "prep": "Prep"}[source]
+    minor = payload.get("versionStep") == "minor"  # 1.7.4: a fix on the Recalculate step
+    return _apply_and_version(s, ops, source, who, bool(payload.get("reanalyze", True)), minor=minor)
 
 
 @app.post("/api/sessions/{session_id}/suggest")
@@ -1300,11 +1330,8 @@ def readiness(session_id: str) -> dict[str, Any]:
     return {"readiness": r, "prep_progress": prep_progress(s.plan_history, s.apply_history)}
 
 
-@app.get("/api/sessions/{session_id}/model-map")
-def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
-    """Where the model's inputs, loop driver, run settings and outputs are (1.9.0): read off the
-    analysed copy's macros, names, dropdowns, sheet names and formulas. Cached per analysed version."""
-    s = _session(session_id)
+def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:
+    """The model map of the current analysed version, built once per version."""
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
     if s.model_map is None or refresh or s.model_map_version_id != s.current_version_id:
@@ -1313,7 +1340,57 @@ def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"model map failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
         s.model_map_version_id = s.current_version_id
+    return s.model_map
+
+
+@app.get("/api/sessions/{session_id}/model-map")
+def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
+    """Where the model's inputs, loop driver, run settings and outputs are (1.9.0): read off the
+    analysed copy's macros, names, dropdowns, sheet names and formulas. Cached per analysed version."""
+    s = _session(session_id)
+    _model_map_of(s, refresh)
     return {"version_id": s.model_map_version_id, "map": s.model_map}
+
+
+def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """The Mind loop plan (1.10.0) for the current version with the caller's choices:
+    name / names, first, last, count_cell, clear_old."""
+    mp = _model_map_of(s)
+    names = payload.get("names") if isinstance(payload.get("names"), dict) else None
+    try:
+        plan = build_loop_plan(s.result["workbook_analysis"], mp, names=names, name=payload.get("name") or None, first=payload.get("first"), last=payload.get("last"),
+                               count_cell=payload.get("count_cell") or None, clear_old=bool(payload.get("clear_old")))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"loop plan failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
+    return json.loads(json.dumps(plan, default=str))
+
+
+@app.get("/api/sessions/{session_id}/mind-loop-plan")
+def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False) -> dict[str, Any]:
+    """1.10.0: the macro's run loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
+    the block the macro writes per pass -- as a plan (nothing written): the loops, the outputs,
+    the cleared areas, the operations, and what cannot be built and why."""
+    s = _session(session_id)
+    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old})
+    public = {k: v for k, v in plan.items() if k != "operations"}
+    public["operations"] = [_public_op(o) for o in plan["operations"][:200]]
+    public["operation_count"] = len(plan["operations"])
+    return {"version_id": s.current_version_id, "plan": public}
+
+
+@app.post("/api/sessions/{session_id}/mind-loop-plan/apply")
+def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """1.10.0: write the Mind loop plan (built again from the same choices, so what is written is
+    what was shown) into a new version and re-analyse it."""
+    s = _session(session_id)
+    _refuse_while_fixing(session_id)
+    plan = _loop_plan_of(s, payload)
+    ops = plan["operations"]
+    if not ops:
+        raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan["notes"]) or "no loop could be built"))
+    out = _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True)))
+    out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
+    return out
 
 
 @app.get("/api/sessions/{session_id}/cells")

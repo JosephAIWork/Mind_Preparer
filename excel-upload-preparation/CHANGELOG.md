@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.10.0
+
+**Mind loop: the macro's run loop written as Mind formulas.** The Model map
+says which cell the macro sets on every pass, from what, between which
+bounds, and where each pass's results go. The new module `app/loop_builder.py`
+turns that into the construct that runs through the same values in Mind
+without the macro, and the **Model map** screen shows it under **Mind loop**:
+
+- every driver cell gets `=MM_LOOP("Name", range)`: Horizon's `CALCUL!A2:NI2`
+  takes, cell by cell, its own column of `BASE Polices` rows 1 to 6 (the 42
+  columns the table fills; the empty ones the macro copies are left out). A
+  list the macro walks with `Offset` (CNHI's scenarios `E8:R8`, clusters
+  `B7:B26`) becomes `MM_LOOP` over that stretch; a counter driver (Palermo's
+  `Projection!C3` from `Macro!B1` to `B2`) becomes `MM_LOOP` over the cell
+  that holds the count; a driver computed from the counter (CNHI's year,
+  `proj_year + i - 1`) keeps its expression with `MM_LOOP` in the counter's
+  place;
+- the block the macro writes on every pass gets `=MM_RESULT(source, "Name",
+  k)` row by row: Horizon's `OUTPUT!A1:J6` reads `CALCUL!AY35:BH35` for loop
+  values 1 to 6 (60 formulas);
+- the areas the macro clears before a run are listed with what an earlier
+  run left there, and emptied only when asked.
+
+The loop name is the driver's defined name, else the source sheet's name,
+and the bounds come from the bound cells (a formula's stored value counts);
+name, first and last can be changed on the screen and the plan is previewed
+before anything is written. **Write it into a new version** writes the
+formulas through Excel as a version of source `loop` and re-analyses.
+
+Nothing is guessed: what MM_LOOP / MM_RESULT cannot say, the plan says it
+cannot build and why -- a block placed by a counter the macro keeps
+(Palermo's tariff offset), a block that depends on several nested loops
+(CNHI's 30 paste blocks: read the source block with one MM_RESULT per
+loop), a counted loop with no cell holding the count (CNHI's year: name a
+cell and the plan writes the count there).
+
+Checked in Excel against the macro: `scripts/check_loop_plan.py <workbook>
+--macro Name` runs the macro on a copy, writes the plan into another copy
+through the app's own Apply, plays every loop value into the driver cells
+and compares the source cells of every MM_RESULT block with the macro's
+block. Horizon: 60 of 60 cells the same for the 6 values. The run in Mind
+itself is the other half (the saved sign-in had expired at the time).
+
+Also: a recalculation with no Mind add-in no longer counts a cell that
+reads an MM_ cell as a genuine error (it shows `#NAME?` for the same
+reason; it is the add-in gap); `GET /api/sessions/{id}` returns a
+session's state so `?session=<id>` on the web app opens it again;
+`GET /api/sessions/{id}/mind-loop-plan` and `POST .../mind-loop-plan/apply`.
+
 ## 1.9.0
 
 **Model map: where the inputs, the loop, the run settings and the outputs
