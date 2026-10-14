@@ -3,7 +3,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular
 import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
-import { LoopChoices, LoopPlan } from "../../core/models";
+import { LoopChoices, LoopPlan, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** The Mind loop with its choices: name, first, last, count cell, clearing; preview, then write. */
@@ -84,12 +84,16 @@ export class LoopPanel implements OnInit, OnDestroy {
     try {
       const out = await this.api.applyMindLoopPlan(id, this.choices());
       this.stop?.();
-      this.store.applyAnalysis({ ...out, version: out.version });
-      this.plan.set(out.plan);
+      const { plan: loopPlan, ...analysis } = out; // `plan` here is the LOOP plan, not the Prep actions
+      this.store.applyAnalysis({ ...analysis, version: out.version });
+      this.plan.set(loopPlan);
+      void this.api.resume(id).then((s) => this.store.applyAnalysis({ summary: s.summary, report: s.report, plan: s.plan, readiness: s.readiness, prep_progress: s.prep_progress, versions: s.versions })).catch(() => {});
       const r = out.result;
-      this.tone.set(r.failed ? "warn" : "ok");
-      this.line.set(r.failed ? `${r.applied} written, ${r.failed} refused` : `${r.applied} loop formulas written`);
-      this.detail.set([out.version?.label ?? "", out.plan.how_it_runs ?? ""].filter(Boolean).join(" · "));
+      const done = appliedCount(r);
+      const refused = failedCount(r);
+      this.tone.set(refused ? "warn" : "ok");
+      this.line.set(refused ? `${done} written, ${refused} refused` : `${done} loop formulas written`);
+      this.detail.set([out.version?.label ?? "", out.plan.how_it_runs ?? "", failedText(r)].filter(Boolean).join(" · "));
     } catch (e) {
       this.stop?.();
       this.tone.set("error");

@@ -3,7 +3,7 @@ import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
-import { ChatMessage, FixTarget, Proposal } from "../../core/models";
+import { ChatMessage, FixTarget, Proposal, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** The assistant: questions about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
@@ -110,8 +110,10 @@ export class AssistantPanel implements OnDestroy {
       this.stop?.();
       this.store.applyAnalysis({ ...out, version: out.version });
       const r = out.result;
-      const line = r.failed ? `${r.applied} changed, ${r.failed} refused` : `${r.applied} changes applied`;
-      this.store.chatHistory.update((h) => [...h, { role: "assistant", content: `${line} · ${out.version?.label ?? ""}`, note: true, tone: r.failed ? "warning" : "success" }]);
+      const done = appliedCount(r);
+      const refused = failedCount(r);
+      const line = refused ? `${done} changed, ${refused} refused (${failedText(r)})` : `${done} changes applied`;
+      this.store.chatHistory.update((h) => [...h, { role: "assistant", content: `${line} · ${out.version?.label ?? ""}`, note: true, tone: refused ? "warning" : "success" }]);
       this.proposal.set(null);
       this.applyLine.set("");
     } catch (e) {

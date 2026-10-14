@@ -3,7 +3,7 @@ import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule, TagModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
-import { Operation, PrepAction } from "../../core/models";
+import { Operation, PrepAction, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** The Prep actions one by one: tick what to apply, see the changes, apply through Excel. */
@@ -100,9 +100,11 @@ export class PrepPanel implements OnDestroy {
       this.stop?.();
       this.store.applyAnalysis({ ...out, version: out.version });
       const r = out.result;
-      this.tone.set(r.failed ? "warn" : "ok");
-      this.line.set(r.failed ? `${r.applied} applied, ${r.failed} refused` : `${r.applied} changes applied`);
-      this.detail.set([out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", r.message ?? ""].filter(Boolean).join(" · "));
+      const done = appliedCount(r);
+      const refused = failedCount(r);
+      this.tone.set(refused ? "warn" : "ok");
+      this.line.set(refused ? `${done} applied, ${refused} refused` : `${done} changes applied`);
+      this.detail.set([out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", failedText(r)].filter(Boolean).join(" · "));
     } catch (e) {
       this.stop?.();
       this.tone.set("error");

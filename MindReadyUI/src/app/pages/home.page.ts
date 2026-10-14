@@ -1,9 +1,9 @@
 import { CommonModule } from "@angular/common";
-import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
+import { Component, OnDestroy, computed, effect, inject, signal } from "@angular/core";
 import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
-import { FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, isPending } from "../core/models";
+import { FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, appliedCount, failedCount, failedText, isPending } from "../core/models";
 import { SessionStore } from "../core/session.store";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
@@ -68,10 +68,19 @@ export class HomePage implements OnDestroy {
   private timers: ReturnType<typeof setTimeout>[] = [];
 
   constructor() {
-    if (this.store.loaded()) {
-      this.phase.set("loaded");
-      void this.loadLoopPlan();
-    }
+    // The session may arrive after this page is built (a `?session=<id>` link is resumed by the
+    // shell asynchronously): follow the store rather than reading it once.
+    effect(() => {
+      const loaded = this.store.loaded();
+      const phase = this.phase();
+      if (loaded && phase === "idle") {
+        this.phase.set("loaded");
+        void this.loadLoopPlan();
+      } else if (!loaded && phase === "loaded") {
+        this.phase.set("idle");
+        this.loopPlan.set(null);
+      }
+    });
   }
 
   ngOnDestroy(): void {
@@ -277,13 +286,14 @@ export class HomePage implements OnDestroy {
       stop();
       this.store.applyAnalysis({ ...out, version: out.version });
       const r = out.result;
-      const tone = r.failed ? "warn" : "ok";
+      const done = appliedCount(r);
+      const refused = failedCount(r);
       this.fixFormulas.set({
         running: false,
         fraction: null,
-        line: r.failed ? `${r.applied} changed, ${r.failed} refused` : `${r.applied} formulas changed`,
-        detail: [out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", r.message ?? ""].filter(Boolean).join(" · "),
-        tone,
+        line: refused ? `${done} changed, ${refused} refused` : `${done} formulas changed`,
+        detail: [out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", failedText(r)].filter(Boolean).join(" · "),
+        tone: refused ? "warn" : "ok",
       });
     } catch (e) {
       stop();
@@ -343,15 +353,19 @@ export class HomePage implements OnDestroy {
     try {
       const out = await this.api.applyMindLoopPlan(id, {});
       stop();
-      this.store.applyAnalysis({ ...out, version: out.version });
-      this.loopPlan.set(out.plan);
+      const { plan: loopPlan, ...analysis } = out; // `plan` here is the LOOP plan, not the Prep actions
+      this.store.applyAnalysis({ ...analysis, version: out.version });
+      this.loopPlan.set(loopPlan);
+      void this.api.resume(id).then((s) => this.store.applyAnalysis({ summary: s.summary, report: s.report, plan: s.plan, readiness: s.readiness, prep_progress: s.prep_progress, versions: s.versions })).catch(() => {});
       const r = out.result;
+      const done = appliedCount(r);
+      const refused = failedCount(r);
       this.loop.set({
         running: false,
         fraction: null,
-        line: r.failed ? `${r.applied} written, ${r.failed} refused` : `${r.applied} loop formulas written`,
-        detail: [out.version?.label ?? "", out.plan.how_it_runs ?? ""].filter(Boolean).join(" · "),
-        tone: r.failed ? "warn" : "ok",
+        line: refused ? `${done} written, ${refused} refused` : `${done} loop formulas written`,
+        detail: [out.version?.label ?? "", out.plan.how_it_runs ?? "", failedText(r)].filter(Boolean).join(" · "),
+        tone: refused ? "warn" : "ok",
       });
     } catch (e) {
       stop();

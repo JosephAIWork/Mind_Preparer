@@ -57,7 +57,7 @@ export class SessionStore {
   applyAnalysis(a: Partial<SessionStart> & { version?: Version | null }): void {
     if (a.summary) this.summary.set(a.summary);
     if (a.report) this.report.set(a.report);
-    if (a.plan) this.plan.set(a.plan);
+    if (Array.isArray(a.plan)) this.plan.set(a.plan); // the loop-apply response names ITS plan `plan` too: never that one
     if (a.versions) this.versions.set(a.versions);
     if (a.version) this.addVersion(a.version);
     if (a.readiness) this.readiness.set(a.readiness);

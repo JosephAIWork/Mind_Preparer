@@ -142,11 +142,31 @@ export interface ApplyResult {
   status: string;
   method?: string;
   output_name?: string;
-  applied: number;
-  failed: number;
-  verified_opens_in_excel?: boolean;
+  /** The operations written (the backend sends the list; some routes send a count). */
+  applied: Operation[] | number;
+  /** The operations Excel refused, each with its `error`. */
+  failed: (Operation & { error?: string })[] | number;
+  verified_opens_in_excel?: boolean | null;
   warnings?: string[];
   message?: string;
+}
+
+export function appliedCount(r: ApplyResult | null | undefined): number {
+  const a = r?.applied;
+  return Array.isArray(a) ? a.length : Number(a) || 0;
+}
+
+export function failedCount(r: ApplyResult | null | undefined): number {
+  const f = r?.failed;
+  return Array.isArray(f) ? f.length : Number(f) || 0;
+}
+
+/** The first refusals, as "Sheet!A1: reason". */
+export function failedText(r: ApplyResult | null | undefined, max = 3): string {
+  const f = r?.failed;
+  if (!Array.isArray(f) || !f.length) return "";
+  const parts = f.slice(0, max).map((o) => `${o.sheet}!${o["cell"] ?? ""}${o.error ? ": " + String(o.error).slice(0, 80) : ""}`);
+  return parts.join("; ") + (f.length > max ? `; … ${f.length - max} more` : "");
 }
 
 export interface ApplyOutcome {

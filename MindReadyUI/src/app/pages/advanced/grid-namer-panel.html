@@ -80,7 +80,7 @@
     }
 
     @if (outcome(); as o) {
-      <div class="result" [class.result--ok]="o.result.failed === 0" [class.result--warn]="o.result.failed > 0">
+      <div class="result" [class.result--ok]="failedCount(o.result) === 0" [class.result--warn]="failedCount(o.result) > 0">
         <strong>{{ o.named.length }} named{{ o.skipped.length ? ", " + o.skipped.length + " skipped" : "" }}</strong>
         <span>{{ o.version.label }}{{ o.auto_ops ? " · " + o.auto_ops + " named by the conventions" : "" }}</span>
         @if (o.skipped.length) {

@@ -2,7 +2,7 @@ import { CommonModule } from "@angular/common";
 import { Component, HostListener, OnInit, computed, effect, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
-import { Grid, GridNamerOutcome, GridNamesResult, MindFlag, SheetCells } from "../../core/models";
+import { Grid, GridNamerOutcome, GridNamesResult, MindFlag, SheetCells, failedCount } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 interface Rect {
@@ -341,4 +341,6 @@ export class GridNamerPanel implements OnInit {
   value(event: Event): string {
     return (event.target as HTMLInputElement).value;
   }
+
+  failedCount = failedCount;
 }
