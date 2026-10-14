@@ -1,0 +1,142 @@
+"""Run the main screen's "Do everything" chain through the app's API, headless, and keep the result.
+
+    python scripts/night_chain.py <workbook> <out dir> [--port 8600] [--first 2] [--skip-autofix]
+
+upload -> Fix all issues (auto-fix, polled) -> Fix the formulas (the formula Prep actions) -> Build the
+Mind loop (first value as given, else the plan's) -> Recalculate -> download the final version and write
+chain.json (every step's result) into <out dir>. Mirrors MindReadyUI/src/app/pages/home.page.ts runAll().
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import requests
+
+FORMULA_ACTION_IDS = {
+    "fix_broken_refs", "fix_broken_refs_whole", "expand_3d_references", "freeze_external_links", "direct_references",
+    "freeze_spill_refs", "guard_blank_arithmetic", "freeze_environment_formulas", "line_breaks_as_char", "keep_error_cells", "empty_cells_as_zero",
+}
+
+
+def say(*a) -> None:
+    print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("workbook")
+    ap.add_argument("out")
+    ap.add_argument("--port", type=int, default=8600)
+    ap.add_argument("--first", default=None)
+    ap.add_argument("--skip-autofix", action="store_true")
+    a = ap.parse_args()
+    B = f"http://127.0.0.1:{a.port}/api"
+    wb = Path(a.workbook)
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    chain: dict = {"workbook": str(wb), "steps": {}}
+    t0 = time.time()
+
+    say("upload", wb.name)
+    with open(wb, "rb") as fh:
+        r = requests.post(f"{B}/sessions", files={"file": (wb.name, fh)}, data={"mode": "plan"}, timeout=3600)
+    r.raise_for_status()
+    sid = r.json()["sessionId"]
+    chain["session"] = sid
+    say("session", sid, f"({time.time() - t0:.0f}s)", "findings", r.json()["report"].get("counts"))
+
+    def state():
+        return requests.get(f"{B}/sessions/{sid}", timeout=300).json()
+
+    if not a.skip_autofix:
+        say("fix all issues: start")
+        r = requests.post(f"{B}/sessions/{sid}/auto-fix", json={"use_assistant": True, "keep_good_values": True}, timeout=300)
+        if r.status_code != 200:
+            say("auto-fix refused:", r.text[:300])
+            chain["steps"]["fixAll"] = {"ok": False, "detail": r.text[:300]}
+        else:
+            last = ""
+            while True:
+                time.sleep(10)
+                s = requests.get(f"{B}/sessions/{sid}/auto-fix", timeout=120).json()
+                line = f"{s.get('title')} · {s.get('message')} · pass {s.get('pass_no')} · errors {s.get('errors_before')} -> {s.get('errors')}"
+                if line != last:
+                    say("  ", line[:160])
+                    last = line
+                if s.get("state") != "running":
+                    break
+            full = requests.get(f"{B}/sessions/{sid}/auto-fix", params={"full": "1"}, timeout=300).json()
+            res = full.get("result") or {}
+            left = res.get("left") or []
+            ok = res.get("status") == "clean" or (res.get("status") == "partial" and not left and (res.get("errors_after") or 0) == 0)
+            chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
+            say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])
+
+    st = state()
+    ops = [o for act in st["plan"] if act["id"] in FORMULA_ACTION_IDS for o in act["operations"]]
+    say("fix the formulas:", len(ops), "operations")
+    if ops:
+        errors_before = sum(1 for f in st["report"]["findings"] if f["status"] == "ERROR")
+        r = requests.post(f"{B}/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True, "versionStep": "major"}, timeout=7200)
+        r.raise_for_status()
+        o = r.json()
+        res = o["result"]
+        applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied")
+        failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed")
+        errors_after = sum(1 for f in (o.get("report") or {}).get("findings", []) if f["status"] == "ERROR")
+        chain["steps"]["fixFormulas"] = {"ok": not failed and errors_after <= errors_before, "applied": applied, "failed": failed, "errors_before": errors_before, "errors_after": errors_after, "version": o["version"]["label"]}
+    else:
+        chain["steps"]["fixFormulas"] = {"ok": True, "applied": 0, "note": "nothing to change"}
+    say("fix the formulas:", json.dumps(chain["steps"]["fixFormulas"])[:300])
+
+    plan = requests.get(f"{B}/sessions/{sid}/mind-loop-plan", timeout=1800).json()["plan"]
+    (out / "loop_plan.json").write_text(json.dumps(plan, indent=1, ensure_ascii=False), encoding="utf-8")
+    ready = [l for l in plan.get("loops", []) if l["status"] == "ready"]
+    header = any(l.get("first") == 1 and any("header" in (n or "").lower() for n in l.get("notes", [])) for l in plan.get("loops", []))
+    first = a.first or ("2" if header else None)
+    say("loop plan: found", plan.get("found"), "| ready", [l["name"] for l in ready], "| ops", plan.get("operation_count"), "| first", first)
+    if plan.get("found") and ready and plan.get("operation_count"):
+        body = {"reanalyze": True}
+        if first:
+            body["first"] = first
+        r = requests.post(f"{B}/sessions/{sid}/mind-loop-plan/apply", json=body, timeout=7200)
+        if r.status_code != 200:
+            chain["steps"]["loop"] = {"ok": False, "detail": r.text[:300]}
+        else:
+            o = r.json()
+            res = o["result"]
+            applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied")
+            failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed")
+            chain["steps"]["loop"] = {"ok": not failed, "applied": applied, "failed": failed, "version": o["version"]["label"], "how": o["plan"].get("how_it_runs")}
+    else:
+        chain["steps"]["loop"] = {"ok": None, "skipped": "no ready loop"}
+    say("loop:", json.dumps(chain["steps"]["loop"])[:300])
+
+    say("recalculate")
+    r = requests.post(f"{B}/sessions/{sid}/recalculate", timeout=7200)
+    r.raise_for_status()
+    rc = r.json()
+    chain["steps"]["recalc"] = {"ok": rc["status"] == "PASS" or (rc.get("new_errors") == 0), "status": rc["status"], "message": rc["message"][:200], "formula_errors": len(rc.get("formula_errors", [])), "new_errors": rc.get("new_errors"), "preexisting_errors": rc.get("preexisting_errors"), "addin_gap": len(rc.get("addin_gap_errors", []))}
+    say("recalc:", json.dumps(chain["steps"]["recalc"])[:300])
+
+    st = state()
+    v = st["version"]
+    chain["final_version"] = v
+    chain["readiness"] = st.get("readiness")
+    r = requests.get(f"{B}/sessions/{sid}/files/{requests.utils.quote(v['file_name'])}", timeout=3600)
+    r.raise_for_status()
+    final = out / v["file_name"]
+    final.write_bytes(r.content)
+    chain["final_file"] = str(final)
+    chain["seconds"] = round(time.time() - t0)
+    (out / "chain.json").write_text(json.dumps(chain, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    say("final:", v["label"], "->", final, f"({chain['seconds']} s)")
+    return 0 if all((s.get("ok") in (True, None)) for s in chain["steps"].values()) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
