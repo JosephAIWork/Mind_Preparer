@@ -72,7 +72,7 @@
 
 .actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   gap: $spacing-05;
   margin-top: $spacing-06;
 }
@@ -174,4 +174,41 @@
     height: 100%;
     background: theme.$interactive;
   }
+}
+
+.action__done {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  margin-top: $spacing-03;
+  @include type.type-style("body-compact-01");
+}
+
+.dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: theme.$border-subtle-01;
+
+  &--ok {
+    background: theme.$support-success;
+  }
+
+  &--warn {
+    background: theme.$support-warning;
+  }
+
+  &--error {
+    background: theme.$support-error;
+  }
+}
+
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: theme.$link-primary;
+  cursor: pointer;
+  font: inherit;
+  @include type.type-style("body-compact-01");
 }

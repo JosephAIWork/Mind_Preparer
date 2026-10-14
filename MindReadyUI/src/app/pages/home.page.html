@@ -80,7 +80,7 @@
             <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
           }
         </div>
-        <ng-container *ngTemplateOutlet="result; context: { s: fixAll() }"></ng-container>
+        <ng-container *ngTemplateOutlet="result; context: { s: fixAll(), which: 'fixAll' }"></ng-container>
       </cds-tile>
 
       <!-- Fix the formulas -->
@@ -91,7 +91,7 @@
         <div class="action__row">
           <button cdsButton="primary" size="lg" (click)="runFixFormulas()" [disabled]="busy()">Fix the formulas</button>
         </div>
-        <ng-container *ngTemplateOutlet="result; context: { s: fixFormulas() }"></ng-container>
+        <ng-container *ngTemplateOutlet="result; context: { s: fixFormulas(), which: 'fixFormulas' }"></ng-container>
       </cds-tile>
 
       <!-- Build the Mind loop -->
@@ -102,7 +102,18 @@
         <div class="action__row">
           <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()">Build the Mind loop</button>
         </div>
-        <ng-container *ngTemplateOutlet="result; context: { s: loop() }"></ng-container>
+        <ng-container *ngTemplateOutlet="result; context: { s: loop(), which: 'loop' }"></ng-container>
+      </cds-tile>
+
+      <!-- Recalculate -->
+      <cds-tile class="action">
+        <h2 class="action__title">Recalculate</h2>
+        <p class="action__text">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call the file ready.</p>
+        <p class="action__fact">{{ recalcFact() }}</p>
+        <div class="action__row">
+          <button cdsButton="primary" size="lg" (click)="runRecalc()" [disabled]="busy()">Recalculate</button>
+        </div>
+        <ng-container *ngTemplateOutlet="result; context: { s: recalc(), which: 'recalc' }"></ng-container>
       </cds-tile>
     </div>
 
@@ -112,17 +123,23 @@
   }
 </section>
 
-<ng-template #result let-s="s">
+<ng-template #result let-s="s" let-which="which">
   @if (s.running) {
     <div class="action__progress">
       <cds-progress-bar [label]="s.line" [helperText]="s.detail" [value]="s.fraction === null ? undefined : s.fraction * 100" [max]="100"></cds-progress-bar>
     </div>
   } @else if (s.line) {
-    <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
-      <strong>{{ s.line }}</strong>
-      @if (s.detail) {
-        <span>{{ s.detail }}</span>
-      }
+    <div class="action__done">
+      <span class="dot" [class.dot--ok]="s.tone === 'ok'" [class.dot--warn]="s.tone === 'warn'" [class.dot--error]="s.tone === 'error'"></span>
+      <button class="link" (click)="toggle(which)">{{ s.open ? "Hide details" : "View details" }}</button>
     </div>
+    @if (s.open) {
+      <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
+        <strong>{{ s.line }}</strong>
+        @if (s.detail) {
+          <span>{{ s.detail }}</span>
+        }
+      </div>
+    }
   }
 </ng-template>

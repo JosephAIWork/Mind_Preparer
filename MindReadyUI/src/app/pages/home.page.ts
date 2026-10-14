@@ -13,6 +13,8 @@ interface ActionState {
   line: string;
   detail: string;
   tone: "idle" | "ok" | "warn" | "error";
+  /** the result text is shown only on "View details" */
+  open?: boolean;
 }
 
 const idle = (): ActionState => ({ running: false, fraction: null, line: "", detail: "", tone: "idle" });
@@ -39,8 +41,16 @@ export class HomePage implements OnDestroy {
   readonly fixAll = signal<ActionState>(idle());
   readonly fixFormulas = signal<ActionState>(idle());
   readonly loop = signal<ActionState>(idle());
+  readonly recalc = signal<ActionState>(idle());
   readonly loopPlan = signal<LoopPlan | null>(null);
-  readonly busy = computed(() => this.fixAll().running || this.fixFormulas().running || this.loop().running);
+  readonly busy = computed(() => this.fixAll().running || this.fixFormulas().running || this.loop().running || this.recalc().running);
+  readonly recalcFact = computed(() => {
+    const rc = this.store.readiness()?.recalc;
+    if (!rc?.ran) return "Not recalculated yet";
+    const current = this.store.currentVersion()?.id;
+    const stale = rc.version_id && current && rc.version_id !== current ? " (an earlier version)" : "";
+    return (rc.clean ? "Last recalculation clean" : `${rc.formula_errors ?? "?"} error cells at the last recalculation`) + stale;
+  });
 
   readonly readinessKind = computed(() => {
     const r = this.store.readiness();
@@ -158,6 +168,7 @@ export class HomePage implements OnDestroy {
     this.fixAll.set(idle());
     this.fixFormulas.set(idle());
     this.loop.set(idle());
+    this.recalc.set(idle());
     void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
     void this.loadLoopPlan();
   }
@@ -371,6 +382,28 @@ export class HomePage implements OnDestroy {
       stop();
       this.loop.set({ running: false, fraction: null, line: "Could not write the loop", detail: errorText(e), tone: "error" });
     }
+  }
+
+  // ---- recalculate ------------------------------------------------------------------------------
+  async runRecalc(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || this.busy()) return;
+    this.recalc.set({ running: true, fraction: null, line: "Recalculating in Excel…", detail: "Tens of seconds to a few minutes.", tone: "idle" });
+    try {
+      const out = await this.api.recalculate(id);
+      this.store.recalc.set(out);
+      this.store.applyAnalysis({ report: out.report, plan: out.plan, readiness: out.readiness, version: out.version ?? undefined });
+      const tone = out.status === "PASS" ? "ok" : out.status === "ERROR" ? "warn" : "warn";
+      const line = out.status === "PASS" ? "Recalculated, no formula errors" : `Recalculated, ${out.formula_errors.length} formula errors`;
+      const detail = [out.message, out.new_errors != null ? `${out.new_errors} new since the original` : "", out.preexisting_errors != null ? `${out.preexisting_errors} already in the original` : "", out.addin_gap_errors.length ? `${out.addin_gap_errors.length} add-in gap` : "", "The list is under Advanced › Recalculate."].filter(Boolean).join(" · ");
+      this.recalc.set({ running: false, fraction: null, line, detail, tone });
+    } catch (e) {
+      this.recalc.set({ running: false, fraction: null, line: "Could not recalculate", detail: errorText(e), tone: "error" });
+    }
+  }
+
+  toggle(which: "fixAll" | "fixFormulas" | "loop" | "recalc"): void {
+    this[which].update((s) => ({ ...s, open: !s.open }));
   }
 
   private sleep(ms: number): Promise<void> {
