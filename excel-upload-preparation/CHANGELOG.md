@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.10.1
+
+**MM for Excel in the app's own Excel.** Excel started by automation never loads
+the add-ins of the user's startup list, so the app's hidden Excel showed
+`#NAME?` on every `MM_` call even on a machine with the add-in installed.
+`excel_session` now registers the machine's MM for Excel XLL into that Excel
+(`Application.RegisterXLL`; the path comes from Excel's own startup list, else
+the default install folder; `MINDREADY_MM_XLL` names another path or turns it
+off). With it, `MM_LOOP` / `MM_RESULT` / `MM_DIMSIZE` evaluate locally as in the
+user's Excel -- one pass, the first loop value; the loop itself still runs in
+Mind -- so a recalculation of a Mind-loop version is a plain PASS with values
+instead of an add-in gap. The recalculation message says when the add-in was
+loaded, and what to install when it was not.
+
 ## 1.10.0
 
 **Mind loop: the macro's run loop written as Mind formulas.** The Model map

@@ -128,7 +128,7 @@ export default function MindLoopSection({ sessionId }: { sessionId: string }) {
             )}
             {done && (
               <div className="text-[12px] text-[#0F6E3A] bg-[#DFF5E6] border border-[#0F6E3A]/20 rounded-lg px-3 py-2">
-                {done} Excel here has no Mind add-in, so MM_ cells show #NAME? locally and Recalculate reports them as the add-in gap, not as errors. Upload the new version to Mind to see the values.
+                {done} Recalculate shows Excel's values for the first loop value (MM for Excel evaluates one pass; without the add-in, MM_ cells show #NAME? and are reported as the add-in gap, not as errors). Upload the new version to Mind to run the whole loop.
               </div>
             )}
           </>

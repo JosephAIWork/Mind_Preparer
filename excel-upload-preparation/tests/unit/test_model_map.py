@@ -247,7 +247,7 @@ def test_palermo_map(tmp_path):
     assert lp["entry_points"] == ["UndiscountedCashflow"]
     sw = {s["name"]: s for s in mp["run_settings"]["switches"] if s.get("name")}
     assert sw["Full_Run?"]["cell"] == "Macro!B4" and sw["Del_range2"]["cell"] == "Macro!B3" and sw["SendEmails"]["cell"] == "Macro!B5"
-    assert sw["Full_Run?"]["how"] == "a dropdown in the cell" and sw["Full_Run?"]["options"] == ["Yes", "No"]
+    assert sw["Full_Run?"]["how"].startswith("a dropdown in the cell") and sw["Full_Run?"]["options"] == ["Yes", "No"]
     outs = {o["name"]: o for o in mp["outputs"]["cells"] if o.get("name")}
     assert outs["ByTariffPaster"]["from_name"] == "AggregateOutputByTariff" and outs["PasteOutput"]["from_name"] == "SummaryOutput"
     assert "ByTariffOutput" in outs

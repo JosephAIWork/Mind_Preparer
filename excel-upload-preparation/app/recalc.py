@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place
+from .excel_com import MM_XLL_ENV, close_quietly, com_available, excel_session, mm_addin_loaded, open_for_write, save_in_place
 from .formula_utils import called_functions, mask_strings, ref_text
 
 # Excel COM's Range.Value returns error cells as these negative integer xlErr*
@@ -42,12 +42,14 @@ ADDIN_NAME_MARKERS = ("mmforexcel", "milliman", "mind")
 
 
 def _mmforexcel_loaded(excel) -> bool:
-    """Best-effort check for a loaded Mind/MMForExcel add-in. Checked
-    empirically on this machine: no such add-in is registered at all (only
-    stock Office add-ins show up in COMAddIns/AddIns), which is exactly the
-    gap this function exists to detect -- MM_ functions genuinely can't be
-    evaluated by Excel without it, so a #NAME? on an MM_ call is not the
-    same kind of finding as one on a native formula."""
+    """Is a Mind / MM for Excel add-in loaded in this Excel instance? 1.10.1: `excel_session`
+    registers the machine's MM for Excel XLL into its background Excel (automation never
+    loads the user's startup add-ins by itself), and XLLs show up in `AddIns2` -- checked
+    first. The COMAddIns / AddIns checks stay for an add-in installed another way. Without
+    any of them, MM_ functions genuinely can't be evaluated by Excel, so a #NAME? on an MM_
+    call is not the same kind of finding as one on a native formula."""
+    if mm_addin_loaded(excel):
+        return True
     try:
         for i in range(1, excel.COMAddIns.Count + 1):
             addin = excel.COMAddIns.Item(i)
@@ -186,16 +188,19 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
     elif addin_gap_errors:
         status = "NOT_SUPPORTED"
         direct = len(addin_gap_errors) - downstream
-        message = (
-            f"Recalculated, but {direct} MM_ function call(s)" + (f" and {downstream} cell(s) that read them" if downstream else "") + " show #NAME? because "
-            "the MMForExcel add-in is not installed/loaded on this Excel automation instance "
-            "(checked COMAddIns/AddIns; none found) -- Mind's own MM_001 rule expects this add-in "
-            "whenever MM functions exist. This is not a workbook defect; it can't be verified as "
-            "PASS or ERROR without MMForExcel installed here."
+        why = (
+            "the MM for Excel add-in is loaded but did not evaluate them (check the add-in's version against Mind's function list)"
+            if mmforexcel_loaded
+            else (
+                "the MM for Excel add-in is not installed on this machine (the app loads it into its own Excel when it is; "
+                f"install 'MM for Excel' from Milliman, or point {MM_XLL_ENV} at the XLL) -- Mind's own MM_001 rule expects "
+                "this add-in whenever MM functions exist. This is not a workbook defect; it can't be verified as PASS or ERROR without it."
+            )
         )
+        message = f"Recalculated, but {direct} MM_ function call(s)" + (f" and {downstream} cell(s) that read them" if downstream else "") + f" show #NAME? because {why}"
     else:
         status = "PASS"
-        message = "Recalculated successfully; no formula errors found."
+        message = "Recalculated successfully; no formula errors found." + (" MM for Excel was loaded: MM_ cells hold the first loop value (the loop itself runs in Mind)." if mmforexcel_loaded else "")
     return {
         "status": status,
         "message": message,

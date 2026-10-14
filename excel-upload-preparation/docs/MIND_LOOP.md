@@ -52,6 +52,7 @@ stored value counts). All three can be changed before writing.
 
 runs the macro in Excel on a copy (macros allowed for that copy only), writes the plan into
 another copy through the app's own Apply, plays every loop value into the driver cells and
-compares the source cells of every `MM_RESULT` block with the macro's block. Excel here has
-no Mind add-in, so `MM_LOOP` itself is not evaluated locally: the check proves the wiring
-(which column, which row, which loop value); the run in Mind proves Mind.
+compares the source cells of every `MM_RESULT` block with the macro's block. MM for Excel
+(loaded into the app's Excel since 1.10.1) evaluates one pass only -- `MM_LOOP` gives the
+first loop value, `MM_DIMSIZE` says 1 -- so the check plays the values itself: it proves
+the wiring (which column, which row, which loop value); the run in Mind proves Mind.

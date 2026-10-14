@@ -22,7 +22,7 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.10.0)
+## Current status (1.10.1)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
@@ -209,11 +209,13 @@ the two honest cases below.
   (Summary + Findings) is always produced as well. JSON
   (`scripts/validate_workbook.py`) is still available for scripting.
 - **Recalculation** (real): `scripts/recalculate_workbook.py` / `app/recalc.py`
-  drives your installed Excel via COM. **On a machine without the
-  MMForExcel add-in installed, every `MM_` function call will show
-  `#NAME?`** -- the adapter detects this and reports `NOT_SUPPORTED` with an
-  explanation rather than a false `ERROR`. It's a deliberate, separate step
-  (not run automatically during analysis).
+  drives your installed Excel via COM, with the MM for Excel add-in loaded
+  into it (1.10.1: automation-started Excel never loads startup add-ins by
+  itself, so the app registers the XLL; `MINDREADY_MM_XLL` overrides the
+  path or turns it off). **On a machine without the add-in, every `MM_`
+  function call shows `#NAME?`** -- the adapter detects this and reports
+  `NOT_SUPPORTED` with an explanation rather than a false `ERROR`. It's a
+  deliberate, separate step (not run automatically during analysis).
 - **Auto-fix** (narrow, real): `app/change_apply.py` -- `.xlsb`/format
   conversion and loop-name case normalization (LOOP-002), both written by
   Excel and verified to open; everything else the rules flag needs a human

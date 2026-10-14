@@ -12,17 +12,98 @@ available; the openpyxl path is kept only as an explicitly-labelled
 reduced-fidelity fallback.
 
 Every session: hidden, alerts off, macros force-disabled
-(`AutomationSecurity = 3`), links never updated, events off.
+(`AutomationSecurity = 3`), links never updated, events off, and (1.10.1) the
+MM for Excel add-in loaded when the machine has it (`mm_for_excel_xll`).
 """
 from __future__ import annotations
 
 import contextlib
 import gc
+import os
+import re
+import sys
 from pathlib import Path
 from typing import Any, Iterator
 
 FILE_FORMAT_CODES = {"xlsx": 51, "xlsm": 52, "xlsb": 50}  # xlOpenXMLWorkbook / MacroEnabled / Binary
 XL_CELL_TYPE_FORMULAS = -4123
+
+# 1.10.1 -- the MM for Excel add-in (Milliman Mind's Excel add-in, an XLL). Excel started by
+# automation never loads the add-ins of the user's startup list (the `OPEN` values under
+# HKCU\...\Excel\Options), so a background Excel shows #NAME? on every MM_ call unless the
+# XLL is registered into that instance explicitly (`Application.RegisterXLL`). With it loaded,
+# MM_LOOP / MM_RESULT evaluate as in the user's own Excel: one pass (the first loop value);
+# the loop itself runs in Mind.
+MM_XLL_DEFAULT = r"C:\Program Files (x86)\Milliman\MM for Excel\XLLDistributions-AddIn64-packed.xll"
+MM_XLL_ENV = "MINDREADY_MM_XLL"  # a path, or 0 / off to leave the add-in out
+MM_ADDIN_MARKERS = ("xlldistributions", "mm for excel", "mmforexcel")
+
+
+def mm_for_excel_xll() -> Path | None:
+    """The MM for Excel XLL on this machine (the one Excel's own startup list names, else the
+    default install path), or None. `MINDREADY_MM_XLL` overrides: a path, or `0` / `off`."""
+    env = os.environ.get(MM_XLL_ENV)
+    if env is not None:
+        if env.strip().lower() in ("", "0", "off", "no", "none", "false"):
+            return None
+        path = Path(env.strip().strip('"'))
+        return path if path.is_file() else None
+    candidates: list[Path] = []
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            for version in ("16.0", "15.0"):
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\Office\{version}\Excel\Options") as key:
+                        index = 0
+                        while True:
+                            try:
+                                name, value, _ = winreg.EnumValue(key, index)
+                            except OSError:
+                                break
+                            index += 1
+                            if name.upper().startswith("OPEN") and isinstance(value, str):
+                                found = re.search(r'"([^"]+\.xll)"', value, re.I)
+                                if found:
+                                    candidates.append(Path(found.group(1)))
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+    candidates.append(Path(MM_XLL_DEFAULT))
+    for path in candidates:
+        if any(marker in str(path).lower() for marker in MM_ADDIN_MARKERS) and path.is_file():
+            return path
+    return None
+
+
+def load_mm_addin(excel: Any) -> Path | None:
+    """Registers the MM for Excel XLL into `excel` (an automation instance). Returns the path
+    loaded, or None when the machine has no add-in or Excel refused it."""
+    xll = mm_for_excel_xll()
+    if xll is None:
+        return None
+    try:
+        return xll if excel.RegisterXLL(str(xll)) else None
+    except Exception:
+        return None
+
+
+def mm_addin_loaded(excel: Any) -> bool:
+    """True when an MM for Excel add-in is open in `excel` (XLLs show up in `AddIns2`)."""
+    try:
+        for i in range(1, excel.AddIns2.Count + 1):
+            addin = excel.AddIns2.Item(i)
+            try:
+                text = f"{addin.Name} {addin.FullName}".lower()
+                if addin.IsOpen and any(marker in text for marker in MM_ADDIN_MARKERS):
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
 
 
 def com_available() -> bool:
@@ -35,7 +116,9 @@ def com_available() -> bool:
 
 
 @contextlib.contextmanager
-def excel_session() -> Iterator[Any]:
+def excel_session(mm_addin: bool = True) -> Iterator[Any]:
+    """A hidden Excel of its own. `mm_addin` (1.10.1): load the MM for Excel add-in into it when
+    the machine has one, so MM_ functions evaluate instead of showing #NAME?."""
     import pythoncom
     import win32com.client
 
@@ -51,6 +134,8 @@ def excel_session() -> Iterator[Any]:
             excel.EnableEvents = False
         except Exception:
             pass
+        if mm_addin:
+            load_mm_addin(excel)
         yield excel
     finally:
         # Release every COM proxy the caller created *before* Excel goes away:
