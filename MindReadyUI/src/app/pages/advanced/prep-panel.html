@@ -1,0 +1,75 @@
+<div class="panel">
+  <p class="hint">Tick the actions to apply, then write them through Excel as a new version. The main screen's buttons apply these on their own.</p>
+
+  @if (byHand().length) {
+    <h3 class="panel__h">By hand ({{ byHand().length }})</h3>
+    <ul class="plain">
+      @for (b of byHand(); track $index) {
+        <li><span class="mono">{{ b.rule_id }}</span> {{ b.message }}</li>
+      }
+    </ul>
+  }
+
+  <h3 class="panel__h">Blocking ({{ blocking().length }})</h3>
+  <ng-container *ngTemplateOutlet="actions; context: { list: blocking() }"></ng-container>
+
+  <h3 class="panel__h">Optional ({{ optional().length }})</h3>
+  <ng-container *ngTemplateOutlet="actions; context: { list: optional() }"></ng-container>
+
+  @if (emptyCount()) {
+    <button class="link" (click)="showEmpty.set(!showEmpty())">{{ showEmpty() ? "Hide" : "Show" }} the {{ emptyCount() }} actions with nothing to change</button>
+  }
+
+  <div class="bar">
+    <button cdsButton="primary" size="md" (click)="apply()" [disabled]="running() || !selectedOps().length">Apply {{ selectedOps().length }} changes</button>
+    @if (running()) {
+      <div class="bar__progress">
+        <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+      </div>
+    } @else if (line()) {
+      <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
+        <strong>{{ line() }}</strong>
+        @if (detail()) {
+          <span>{{ detail() }}</span>
+        }
+      </div>
+    }
+  </div>
+</div>
+
+<ng-template #actions let-list="list">
+  @if (!list.length) {
+    <p class="hint">Nothing to change.</p>
+  }
+  @for (a of list; track a.id) {
+    <div class="card" [class.card--off]="!a.count">
+      <label class="card__head">
+        <input type="checkbox" [checked]="isOn(a.id)" (change)="toggle(a.id)" [disabled]="!a.count || running()" />
+        <span class="card__title">{{ a.title }}</span>
+        <span class="card__count">{{ a.count }} change{{ a.count === 1 ? "" : "s" }}</span>
+      </label>
+      <div class="card__meta">
+        <span class="mono">{{ a.rule_ids.join(", ") }}</span>
+        @if (a.level_note) {
+          <span>{{ a.level_note }}</span>
+        }
+      </div>
+      @if (a.caution) {
+        <p class="card__caution">{{ a.caution }}</p>
+      }
+      @if (a.count) {
+        <button class="link" (click)="toggleOpen(a.id)">{{ isOpen(a.id) ? "Hide the changes" : "Show the changes" }}</button>
+        @if (isOpen(a.id)) {
+          <ul class="ops mono">
+            @for (o of a.operations.slice(0, 80); track $index) {
+              <li>{{ opText(o) }}</li>
+            }
+            @if (a.operations.length > 80) {
+              <li>… {{ a.operations.length - 80 }} more</li>
+            }
+          </ul>
+        }
+      }
+    </div>
+  }
+</ng-template>

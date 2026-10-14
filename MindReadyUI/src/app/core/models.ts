@@ -193,7 +193,10 @@ export interface RecalcResult {
 export interface LoopPlanLoop {
   name: string;
   driver?: string;
+  driver_name?: string;
   label?: string;
+  macro?: string;
+  source?: string;
   first?: number;
   last?: number;
   count?: number;
@@ -204,15 +207,54 @@ export interface LoopPlanLoop {
   why?: string;
 }
 
+export interface LoopPlanOutput {
+  target?: string;
+  from?: string;
+  written_by?: string;
+  when?: string;
+  status: "ready" | "not_built" | "nothing_to_do" | string;
+  cells?: number;
+  items?: number;
+  example?: string;
+  loop?: string;
+  why?: string;
+}
+
+export interface LoopPlanClear {
+  target?: string;
+  resolved?: string;
+  cells?: number;
+  included?: boolean;
+  why?: string;
+}
+
+export interface LoopPlanOperation {
+  op?: string;
+  sheet: string;
+  cell?: string;
+  before?: unknown;
+  after?: unknown;
+  note?: string;
+}
+
 export interface LoopPlan {
   found: boolean;
   loops: LoopPlanLoop[];
-  outputs: { target?: string; status: string; cells?: number; why?: string }[];
-  clears: unknown[];
+  outputs: LoopPlanOutput[];
+  clears: LoopPlanClear[];
+  operations?: LoopPlanOperation[];
   operation_count: number;
   notes?: string[];
-  counts?: { loop_cells?: number; result_cells?: number; cleared?: number };
+  counts?: { loop_cells?: number; result_cells?: number; cleared?: number; extra?: number };
   how_it_runs?: string;
+}
+
+export interface LoopChoices {
+  name?: string;
+  first?: string;
+  last?: string;
+  count_cell?: string;
+  clear_old?: boolean;
 }
 
 export interface AppHealth {

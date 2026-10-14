@@ -1,0 +1,87 @@
+<div class="panel">
+  <p class="hint">The macro's run loop as MM_LOOP in the driver cells and MM_RESULT in the block each pass writes. Change the choices, preview, then write.</p>
+
+  <div class="row">
+    <label class="field">Loop name <input type="text" [value]="name()" (input)="name.set(value($event))" placeholder="from the model" /></label>
+    <label class="field">First value <input type="text" [value]="first()" (input)="first.set(value($event))" placeholder="from the model" /></label>
+    <label class="field">Last value <input type="text" [value]="last()" (input)="last.set(value($event))" placeholder="from the model" /></label>
+    @if (needsCount()) {
+      <label class="field">Cell to hold the count <input type="text" [value]="countCell()" (input)="countCell.set(value($event))" placeholder="Sheet!A1" /></label>
+    }
+    <label class="check"><input type="checkbox" [checked]="clearOld()" (change)="clearOld.set(!clearOld())" /> Also empty the areas the macro clears</label>
+    <button cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
+  </div>
+
+  @if (loading()) {
+    <cds-inline-loading [state]="'active'" loadingText="Reading the model map…"></cds-inline-loading>
+  }
+
+  @if (plan(); as p) {
+    @if (!p.found) {
+      <p class="hint">No run loop in this workbook: nothing to build.</p>
+    } @else {
+      @for (l of p.loops; track l.name + $index) {
+        <div class="card">
+          <div class="card__head">
+            <span class="card__title">{{ l.name }} <span [class]="chipClass(l.status)">{{ statusText(l.status) }}</span></span>
+            <span class="card__count">{{ l.cells.length }} cells · values {{ l.first }} to {{ l.last }}</span>
+          </div>
+          <div class="card__meta">
+            @if (l.driver) { <span class="mono">driver {{ l.driver }}</span> }
+            @if (l.source) { <span class="mono">from {{ l.source }}</span> }
+            @if (l.macro) { <span>macro {{ l.macro }}</span> }
+          </div>
+          @if (l.label) { <p class="card__caution">{{ l.label }}</p> }
+          @for (n of l.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
+          @if (l.why) { <p class="card__caution">{{ l.why }}</p> }
+        </div>
+      }
+      @for (o of p.outputs; track $index) {
+        <div class="card" [class.card--off]="o.status !== 'ready'">
+          <div class="card__head">
+            <span class="card__title">Output {{ o.target }} <span [class]="chipClass(o.status)">{{ statusText(o.status) }}</span></span>
+            <span class="card__count">{{ o.cells ?? 0 }} cells</span>
+          </div>
+          <div class="card__meta">
+            @if (o.from) { <span class="mono">from {{ o.from }}</span> }
+            @if (o.when) { <span>{{ o.when }}</span> }
+            @if (o.example) { <span class="mono">{{ o.example }}</span> }
+          </div>
+          @if (o.why) { <p class="card__caution">{{ o.why }}</p> }
+        </div>
+      }
+      @if (p.clears.length) {
+        <p class="hint">
+          Cleared before a run:
+          @for (c of p.clears; track $index) { {{ c.target }} ({{ c.cells ?? 0 }} filled cells{{ c.included ? ", emptied" : ", left" }}) }
+        </p>
+      }
+      @if (p.how_it_runs) { <p class="hint">{{ p.how_it_runs }}</p> }
+
+      <div class="bar">
+        <div class="row">
+          <button cdsButton="primary" size="md" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Write it into a new version ({{ p.operation_count }} formulas)</button>
+          <button class="link" (click)="showOps.set(!showOps())">{{ showOps() ? "Hide the formulas" : "Show the formulas" }}</button>
+        </div>
+        @if (writing()) {
+          <div class="bar__progress"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
+        } @else if (line()) {
+          <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
+            <strong>{{ line() }}</strong>
+            @if (detail()) { <span>{{ detail() }}</span> }
+          </div>
+        }
+        @if (showOps()) {
+          <ul class="ops mono">
+            @for (op of p.operations ?? []; track $index) {
+              <li>{{ op.sheet }}!{{ op.cell }} {{ op.after ?? "(cleared)" }}</li>
+            }
+            @if (p.operation_count > (p.operations?.length ?? 0)) { <li>… {{ p.operation_count - (p.operations?.length ?? 0) }} more</li> }
+          </ul>
+        }
+      </div>
+    }
+  } @else if (line()) {
+    <div class="result result--error"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
+  }
+</div>

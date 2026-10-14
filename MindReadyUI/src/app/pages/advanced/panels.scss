@@ -1,0 +1,219 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+.panel {
+  padding: $spacing-05 0;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-04;
+
+  &__h {
+    @include type.type-style("heading-compact-02");
+    margin-top: $spacing-04;
+  }
+}
+
+.hint {
+  @include type.type-style("helper-text-01");
+  color: theme.$text-helper;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+}
+
+.plain {
+  margin: 0;
+  padding-left: $spacing-05;
+  @include type.type-style("body-compact-01");
+
+  li {
+    margin-bottom: $spacing-02;
+  }
+}
+
+.card {
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$border-interactive;
+  padding: $spacing-04 $spacing-05;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-02;
+
+  &--off {
+    opacity: 0.55;
+    border-left-color: theme.$border-subtle-01;
+  }
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: $spacing-03;
+    cursor: pointer;
+  }
+
+  &__title {
+    @include type.type-style("heading-compact-01");
+    flex: 1;
+  }
+
+  &__count {
+    @include type.type-style("label-01");
+    color: theme.$text-secondary;
+  }
+
+  &__meta {
+    display: flex;
+    gap: $spacing-04;
+    @include type.type-style("label-01");
+    color: theme.$text-helper;
+  }
+
+  &__caution {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+  }
+}
+
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: theme.$link-primary;
+  cursor: pointer;
+  font: inherit;
+  @include type.type-style("body-compact-01");
+  align-self: flex-start;
+}
+
+.ops {
+  margin: 0;
+  padding-left: $spacing-05;
+  max-height: 16rem;
+  overflow: auto;
+
+  li {
+    white-space: nowrap;
+  }
+}
+
+.bar {
+  position: sticky;
+  bottom: 0;
+  background: theme.$background;
+  padding: $spacing-04 0;
+  border-top: 1px solid theme.$border-subtle-01;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+
+  &__progress {
+    max-width: 40rem;
+  }
+}
+
+.result {
+  padding: $spacing-03 $spacing-04;
+  border-left: 3px solid theme.$border-subtle-01;
+  background: theme.$layer-01;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-01;
+  max-width: 40rem;
+  @include type.type-style("body-compact-01");
+
+  &--ok {
+    border-left-color: theme.$support-success;
+  }
+
+  &--warn {
+    border-left-color: theme.$support-warning;
+  }
+
+  &--error {
+    border-left-color: theme.$support-error;
+  }
+
+  span {
+    color: theme.$text-secondary;
+  }
+}
+
+.row {
+  display: flex;
+  gap: $spacing-05;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-02;
+  @include type.type-style("label-01");
+  color: theme.$text-secondary;
+
+  input[type="text"] {
+    font: inherit;
+    font-size: 0.875rem;
+    color: theme.$text-primary;
+    background: theme.$field-01;
+    border: 0;
+    border-bottom: 1px solid theme.$border-strong-01;
+    padding: $spacing-03 $spacing-04;
+    width: 12rem;
+  }
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-03;
+  @include type.type-style("body-compact-01");
+}
+
+.list {
+  width: 100%;
+  border-collapse: collapse;
+  background: theme.$layer-01;
+  @include type.type-style("body-compact-01");
+
+  th,
+  td {
+    text-align: left;
+    vertical-align: top;
+    padding: $spacing-03 $spacing-04;
+    border-bottom: 1px solid theme.$border-subtle-01;
+  }
+
+  th {
+    @include type.type-style("heading-compact-01");
+    background: theme.$layer-accent-01;
+  }
+}
+
+.chip {
+  display: inline-block;
+  padding: 0 $spacing-03;
+  border-radius: 1rem;
+  @include type.type-style("label-01");
+  background: theme.$layer-accent-01;
+  color: theme.$text-secondary;
+
+  &--ok {
+    background: theme.$support-success;
+    color: theme.$text-on-color;
+  }
+
+  &--warn {
+    background: theme.$support-warning;
+    color: theme.$text-primary;
+  }
+
+  &--error {
+    background: theme.$support-error;
+    color: theme.$text-on-color;
+  }
+}

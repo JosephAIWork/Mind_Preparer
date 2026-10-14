@@ -14,6 +14,8 @@
     <div class="switch">
       <button class="switch__item" [class.switch__item--on]="tab() === 'findings'" (click)="tab.set('findings')">Findings ({{ findings().length }})</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'prep'" (click)="tab.set('prep')">Prep actions ({{ manualActions().length }})</button>
+      <button class="switch__item" [class.switch__item--on]="tab() === 'recalc'" (click)="tab.set('recalc')">Recalculate</button>
+      <button class="switch__item" [class.switch__item--on]="tab() === 'loop'" (click)="tab.set('loop')">Mind loop</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'versions'" (click)="tab.set('versions')">Versions ({{ store.versions().length }})</button>
     </div>
 
@@ -47,34 +49,13 @@
         </div>
       }
       @case ("prep") {
-<div class="tab-body">
-          <p class="hint">What the main screen's buttons apply, one action at a time. Applying single actions by hand comes in the next chunk.</p>
-          <table class="list">
-            <thead>
-              <tr>
-                <th>Action</th>
-                <th>Level</th>
-                <th>Rules</th>
-                <th>Changes</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (a of manualActions(); track a.id) {
-                <tr>
-                  <td>
-                    <strong>{{ a.title }}</strong>
-                    @if (a.caution) {
-                      <div class="hint">{{ a.caution }}</div>
-                    }
-                  </td>
-                  <td>{{ a.level }}</td>
-                  <td class="mono">{{ a.rule_ids.join(", ") }}</td>
-                  <td>{{ a.count }}</td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </div>
+        <mr-prep-panel></mr-prep-panel>
+      }
+      @case ("recalc") {
+        <mr-recalc-panel></mr-recalc-panel>
+      }
+      @case ("loop") {
+        <mr-loop-panel></mr-loop-panel>
       }
       @case ("versions") {
 <div class="tab-body">

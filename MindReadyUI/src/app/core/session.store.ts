@@ -1,5 +1,5 @@
 import { Injectable, computed, signal } from "@angular/core";
-import { PrepAction, PrepProgress, Readiness, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+import { PrepAction, PrepProgress, Readiness, RecalcResult, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
@@ -12,6 +12,7 @@ export class SessionStore {
   readonly currentVersion = signal<Version | null>(null);
   readonly readiness = signal<Readiness | null>(null);
   readonly prepProgress = signal<PrepProgress | null>(null);
+  readonly recalc = signal<RecalcResult | null>(null); // the last recalculation shown on the Advanced page
 
   readonly loaded = computed(() => this.sessionId() !== null && this.report() !== null);
   readonly findings = computed(() => this.report()?.findings ?? []);
@@ -30,6 +31,7 @@ export class SessionStore {
     this.currentVersion.set(start.version);
     this.readiness.set(start.readiness ?? null);
     this.prepProgress.set(start.prep_progress ?? null);
+    this.recalc.set(null);
   }
 
   /** Merge what a re-analysis, an Apply or an auto-fix sent back (only the fields present). */
@@ -58,5 +60,6 @@ export class SessionStore {
     this.currentVersion.set(null);
     this.readiness.set(null);
     this.prepProgress.set(null);
+    this.recalc.set(null);
   }
 }

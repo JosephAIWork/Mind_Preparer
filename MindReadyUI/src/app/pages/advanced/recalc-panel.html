@@ -1,0 +1,59 @@
+<div class="panel">
+  <p class="hint">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call a file ready.</p>
+  <div class="row">
+    <button cdsButton="primary" size="md" (click)="run()" [disabled]="running()">{{ result() ? "Recalculate again" : "Recalculate in Excel" }}</button>
+    @if (running()) {
+      <cds-inline-loading [state]="'active'" loadingText="Recalculating… tens of seconds to a few minutes"></cds-inline-loading>
+    }
+  </div>
+  @if (error()) {
+    <div class="result result--error"><strong>Could not recalculate</strong><span>{{ error() }}</span></div>
+  }
+
+  @if (result(); as r) {
+    <div class="result" [class.result--ok]="r.status === 'PASS'" [class.result--error]="r.status === 'ERROR'" [class.result--warn]="r.status !== 'PASS' && r.status !== 'ERROR'">
+      <strong><span [class]="chip()">{{ r.status }}</span> &nbsp;{{ r.message }}</strong>
+      <span>
+        @if (r.new_errors !== undefined) { {{ r.new_errors }} new since the original · }
+        @if (r.preexisting_errors !== undefined) { {{ r.preexisting_errors }} already in the original · }
+        {{ r.addin_gap_errors.length }} add-in gap
+        @if (stale()) { · from an earlier version ({{ r.version_id }}); recalculate again for the current one }
+      </span>
+    </div>
+
+    @if (r.formula_errors.length) {
+      <h3 class="panel__h">Formula errors ({{ r.formula_errors.length }})</h3>
+      <table class="list">
+        <thead>
+          <tr>
+            <th>Cell</th>
+            <th>Error</th>
+            <th>Formula</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (e of errors(); track $index) {
+            <tr>
+              <td class="mono">{{ e.sheet }}!{{ e.cell }}</td>
+              <td class="mono">{{ e.error }}</td>
+              <td class="mono">{{ e.formula }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+      @if (!showAll() && r.formula_errors.length > 200) {
+        <button class="link" (click)="showAll.set(true)">Show all {{ r.formula_errors.length }}</button>
+      }
+    }
+
+    @if (r.addin_gap_errors.length) {
+      <h3 class="panel__h">Add-in gap ({{ r.addin_gap_errors.length }})</h3>
+      <p class="hint">#NAME? on MM_ functions, or on cells that read them: Excel here could not evaluate them. Not a defect of the workbook.</p>
+      <ul class="plain mono">
+        @for (e of r.addin_gap_errors.slice(0, 50); track $index) {
+          <li>{{ e.sheet }}!{{ e.cell }} {{ e.formula }}</li>
+        }
+      </ul>
+    }
+  }
+</div>

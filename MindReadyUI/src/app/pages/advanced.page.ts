@@ -5,6 +5,9 @@ import { ButtonModule, ContentSwitcherModule, TagModule } from "carbon-component
 import { ApiService, errorText } from "../core/api.service";
 import { Finding, Status } from "../core/models";
 import { SessionStore } from "../core/session.store";
+import { LoopPanel } from "./advanced/loop-panel";
+import { PrepPanel } from "./advanced/prep-panel";
+import { RecalcPanel } from "./advanced/recalc-panel";
 
 const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" | "cyan" | "teal" | "green" | "gray" | "cool-gray" | "warm-gray" | "high-contrast" | "outline"; label: string }> = {
   ERROR: { type: "red", label: "Error" },
@@ -18,7 +21,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, PrepPanel, RecalcPanel, LoopPanel],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
@@ -26,7 +29,7 @@ export class AdvancedPage {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
   readonly onlyOpen = signal(true);
-  readonly tab = signal<"findings" | "prep" | "versions">("findings");
+  readonly tab = signal<"findings" | "prep" | "recalc" | "loop" | "versions">("findings");
   readonly restoreLine = signal("");
 
   readonly findings = computed<Finding[]>(() => {
