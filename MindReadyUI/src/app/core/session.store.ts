@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from "@angular/core";
 
 export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
-import { ChatMessage, FixTarget, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+import { ChatMessage, Delta, FixTarget, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
@@ -14,6 +14,7 @@ export class SessionStore {
   readonly currentVersion = signal<Version | null>(null);
   readonly readiness = signal<Readiness | null>(null);
   readonly prepProgress = signal<PrepProgress | null>(null);
+  readonly delta = signal<Delta | null>(null); // what changed since the previous analysis
   readonly recalc = signal<RecalcResult | null>(null); // the last recalculation shown on the Advanced page
   readonly chatHistory = signal<ChatMessage[]>([]);
   readonly fixTarget = signal<FixTarget | null>(null); // what the Assistant tab is asked about
@@ -44,6 +45,7 @@ export class SessionStore {
     this.currentVersion.set(start.version);
     this.readiness.set(start.readiness ?? null);
     this.prepProgress.set(start.prep_progress ?? null);
+    this.delta.set(start.delta ?? null);
     this.recalc.set(null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);
@@ -60,6 +62,7 @@ export class SessionStore {
     if (a.version) this.addVersion(a.version);
     if (a.readiness) this.readiness.set(a.readiness);
     if (a.prep_progress) this.prepProgress.set(a.prep_progress);
+    if (a.delta !== undefined) this.delta.set(a.delta ?? null);
   }
 
   addVersion(v: Version): void {
@@ -77,6 +80,7 @@ export class SessionStore {
     this.currentVersion.set(null);
     this.readiness.set(null);
     this.prepProgress.set(null);
+    this.delta.set(null);
     this.recalc.set(null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);

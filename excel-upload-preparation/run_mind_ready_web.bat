@@ -1,7 +1,7 @@
 @echo off
 rem Mind Ready -- FastAPI backend + the Figma-built React front-end, one URL.
 rem Build the front-end first (once, or after UI changes):
-rem     cd "..\FigmaOutput" && npm install && npm run build
+rem     cd "..\MindReadyUI" && npm install && npx ng build --configuration production
 cd /d "%~dp0"
 set MIND_READY_PORT=8600
 set PY=python

@@ -11,6 +11,10 @@
       <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }">Back to the main screen</a>
     </header>
 
+    @if (store.readiness(); as r) {
+      <cds-inline-notification [notificationObj]="{ type: readinessKind(), title: r.headline, message: readinessDetail(), lowContrast: true, showClose: false }"></cds-inline-notification>
+    }
+
     <div class="switch">
       <button class="switch__item" [class.switch__item--on]="tab() === 'findings'" (click)="tab.set('findings')">Findings ({{ findings().length }})</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'prep'" (click)="tab.set('prep')">Prep actions ({{ manualActions().length }})</button>
@@ -27,10 +31,44 @@
     @switch (tab()) {
       @case ("findings") {
 <div class="tab-body">
-          <label class="check">
-            <input type="checkbox" [checked]="onlyOpen()" (change)="onlyOpen.set(!onlyOpen())" />
-            Hide the rules that pass
-          </label>
+          @if (delta(); as d) {
+            <div class="delta">
+              <strong>Since the previous analysis ({{ d.previous_version_id }} → {{ d.version_id }}):</strong>
+              @if (d.fixed.length) { <span class="delta__ok">{{ d.fixed.length }} fixed: {{ ruleList(d.fixed) }}</span> }
+              @if (d.improved.length) { <span class="delta__ok">{{ d.improved.length }} improved: {{ ruleList(d.improved) }}</span> }
+              @if (d.regressed.length) { <span class="delta__bad">{{ d.regressed.length }} regressed: {{ ruleList(d.regressed) }}</span> }
+              @if (d.fixed.length) { <label class="check"><input type="checkbox" [checked]="showFixed()" (change)="showFixed.set(!showFixed())" /> show the fixed rows</label> }
+            </div>
+          }
+          <div class="row">
+            <label class="check">
+              <input type="checkbox" [checked]="onlyOpen()" (change)="onlyOpen.set(!onlyOpen())" />
+              Hide the rules that pass
+            </label>
+            <span class="switch switch--small">
+              <button class="switch__item" [class.switch__item--on]="view() === 'table'" (click)="view.set('table')">Table</button>
+              <button class="switch__item" [class.switch__item--on]="view() === 'map'" (click)="view.set('map')">Workbook map</button>
+            </span>
+          </div>
+          @if (view() === "map") {
+            <div class="map">
+              @for (sh of sheetMap(); track sh.name) {
+                <div class="map__sheet">
+                  <h4 class="map__name">{{ sh.name }}@if (sh.state !== "visible") { <span class="dim"> ({{ sh.state }})</span> } <span class="dim">{{ sh.grids.length }} grids{{ sh.loose ? " · " + sh.loose + " loose findings" : "" }}</span></h4>
+                  @for (g of sh.grids; track g.grid.ref) {
+                    <div class="gcard" [class.gcard--untitled]="!g.grid.name" [class.gcard--flagged]="g.findings.length">
+                      <div class="gcard__head"><span class="gcard__title">{{ g.grid.name ? "#" + g.grid.name : "untitled" }}</span><span class="mono dim">{{ g.grid.ref }}</span></div>
+                      @if (g.findings.length) {
+                        <div class="gcard__chips">
+                          @for (f of g.findings; track $index) { <button class="chip chip--button" [title]="f.message" (click)="askAbout(f)">{{ f.rule_id }}</button> }
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          } @else {
           <table class="list">
             <thead>
               <tr>
@@ -53,6 +91,7 @@
               }
             </tbody>
           </table>
+          }
         </div>
       }
       @case ("prep") {

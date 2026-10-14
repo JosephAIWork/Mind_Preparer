@@ -304,5 +304,5 @@ every sandbox project is deletable and nothing is left behind.
 | Safety rules in the planner | `app/prep.py` — `reference_index`, `referenced_by`, `whole_reference_to` |
 | CLI | `scripts/run_in_mind.py` |
 | API | `POST` / `GET /api/sessions/{id}/mind-loop` |
-| UI | **Mind** screen (`FigmaOutput/src/screens/MindScreen.tsx`) |
+| UI | **Advanced › Run in Mind** (`MindReadyUI/src/app/pages/advanced/mind-run-panel.ts`) |
 | Tests | `tests/unit/test_mind_loop.py`, `test_mind_loop_review.py`, `test_prep_reference_safety.py` |

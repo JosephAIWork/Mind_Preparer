@@ -124,6 +124,7 @@ export interface SessionStart {
   scan?: ScanStatus;
   readiness?: Readiness;
   prep_progress?: PrepProgress;
+  delta?: Delta | null;
   mode?: Mode;
 }
 
@@ -172,7 +173,7 @@ export interface AutoFixStatus {
   error?: string | null;
   elapsed_s?: number;
   version?: Version | null;
-  result?: { status: string; summary?: string; errors_before?: number; errors_after?: number; cells_fixed?: number } | null;
+  result?: { status: string; summary?: string; errors_before?: number; errors_after?: number; cells_fixed?: number; left?: AutoFixLeft[] } | null;
   analysis?: Partial<SessionStart> | null;
 }
 
@@ -584,4 +585,32 @@ export interface GridNamesResult {
   applied: boolean;
   plan?: PrepAction[] | null;
   readiness?: Readiness | null;
+}
+
+// ---- final chunk ------------------------------------------------------------------------------
+export interface DeltaEntry {
+  rule_id: string;
+  from: Status;
+  to: Status;
+  note?: string;
+}
+
+export interface Delta {
+  version_id: string;
+  previous_version_id: string | null;
+  fixed: DeltaEntry[];
+  improved: DeltaEntry[];
+  regressed: DeltaEntry[];
+  previous_counts: Partial<Record<Status, number>>;
+  counts: Partial<Record<Status, number>>;
+}
+
+export interface AutoFixLeft {
+  sheet: string;
+  cell: string;
+  error: string;
+  formula: string;
+  count: number;
+  why: string;
+  tried: boolean;
 }

@@ -14,10 +14,11 @@ loop.
 | Folder | What it is |
 |---|---|
 | `excel-upload-preparation/` | The app: FastAPI backend, rules, validators, prep engine, Excel/Mind automation, tests, docs. **Start here.** |
-| `FigmaOutput/` | The React front-end (Vite + Tailwind). Its built `dist/` is committed, so you do not need Node to run the app. |
+| `MindReadyUI/` | The Angular + Carbon front-end (1.11.0). Its built `dist/` is committed, so you do not need Node to run the app. |
+| `FigmaOutput/` | The retired React front-end, kept for reference (`MIND_READY_DIST` can still serve its `dist/`). |
 | `0*_*.md` | The Mind knowledge-base documents the rules were mined from. Reference only — the app does not read them at runtime. |
 
-The backend serves the front-end from `../FigmaOutput/dist`, which is why the
+The backend serves the front-end from `../MindReadyUI/dist/mind-ready-ui/browser`, which is why the
 two folders ship together.
 
 ## Run it (Windows)
@@ -44,8 +45,8 @@ That opens <http://localhost:8600>. Check <http://localhost:8600/api/health>:
   and reports but will not write workbooks (a pure-Python save corrupts real
   models, so it refuses rather than guesses).
 - `frontend:true` — the built UI was found. If it says `false`, set
-  `MIND_READY_DIST` to the path of `FigmaOutput/dist`, or rebuild it with
-  `cd FigmaOutput && npm install && npm run build`.
+  `MIND_READY_DIST` to the path of the build, or rebuild it with
+  `cd MindReadyUI && npm install && npx ng build --configuration production`.
 - `assistant:false` — expected on a fresh machine; see the next section.
 
 Then: **Workbook** → upload → **Findings** → **Prep** (tick what you approve,

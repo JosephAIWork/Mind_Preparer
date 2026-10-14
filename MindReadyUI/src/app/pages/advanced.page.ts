@@ -1,9 +1,9 @@
 import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
-import { ButtonModule, ContentSwitcherModule, TagModule } from "carbon-components-angular";
+import { ButtonModule, ContentSwitcherModule, NotificationModule, TagModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
-import { Finding, Status } from "../core/models";
+import { Finding, Grid, Status } from "../core/models";
 import { SessionStore } from "../core/session.store";
 import { AssistantPanel } from "./advanced/assistant-panel";
 import { DeliverPanel } from "./advanced/deliver-panel";
@@ -26,7 +26,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
@@ -36,11 +36,58 @@ export class AdvancedPage {
   readonly onlyOpen = signal(true);
   readonly tab = this.store.advancedTab;
   readonly openChanges = signal<Set<string>>(new Set());
+  readonly view = signal<"table" | "map">("table");
+  readonly showFixed = signal(false);
+
+  readonly readinessKind = computed(() => {
+    const r = this.store.readiness();
+    return !r ? "info" : r.state === "ready" ? "success" : r.state === "unverified" ? "warning" : "error";
+  });
+  readonly readinessDetail = computed(() => {
+    const r = this.store.readiness();
+    if (!r) return "";
+    const n = r.next_step;
+    return [n ? [n.label, n.detail].filter(Boolean).join(": ") : "", r.blocking_count ? `${r.blocking_count} blocking` : "", r.optional_count ? `${r.optional_count} optional` : ""].filter(Boolean).join(" · ");
+  });
+  readonly delta = computed(() => {
+    const d = this.store.delta();
+    return d && d.previous_version_id && (d.fixed.length || d.improved.length || d.regressed.length) ? d : null;
+  });
+  /** The workbook map: every sheet with its grids and the findings that point at each grid. */
+  readonly sheetMap = computed(() => {
+    const sheets = this.store.summary()?.sheets ?? [];
+    const findings = this.store.findings().filter((f) => f.status !== "PASS");
+    return sheets.map((sh) => ({
+      name: sh.name,
+      state: sh.state,
+      grids: sh.grids.map((g) => ({ grid: g, findings: findings.filter((f) => this.pointsAt(f, g)) })),
+      loose: findings.filter((f) => {
+        const loc = (f.location ?? {}) as { sheet?: string };
+        return loc.sheet === sh.name && !sh.grids.some((g) => this.pointsAt(f, g));
+      }).length,
+    }));
+  });
+
+  private pointsAt(f: Finding, g: Grid): boolean {
+    const loc = (f.location ?? {}) as { sheet?: string; cell?: string; ref?: string; grid?: string };
+    if (loc.sheet !== g.sheet) return false;
+    if (loc.grid && (loc.grid === g.display_name || loc.grid === g.name)) return true;
+    if (loc.ref && loc.ref === g.ref) return true;
+    const cell = loc.cell ?? (loc.ref && !loc.ref.includes(":") ? loc.ref : undefined);
+    if (!cell) return false;
+    const m = /^\$?([A-Z]{1,3})\$?(\d+)$/i.exec(cell);
+    if (!m) return false;
+    let c = 0;
+    for (const ch of m[1].toUpperCase()) c = c * 26 + (ch.charCodeAt(0) - 64);
+    const r = parseInt(m[2], 10);
+    return g.first_row <= r && r <= g.last_row && g.first_col <= c && c <= g.last_col;
+  }
   readonly restoreLine = signal("");
 
   readonly findings = computed<Finding[]>(() => {
     const all = this.store.findings();
-    const list = this.onlyOpen() ? all.filter((f) => f.status !== "PASS") : all;
+    const fixed = this.showFixed() ? new Set((this.delta()?.fixed ?? []).map((d) => d.rule_id)) : new Set<string>();
+    const list = this.onlyOpen() ? all.filter((f) => f.status !== "PASS" || fixed.has(f.rule_id)) : all;
     const rank: Record<string, number> = { ERROR: 0, REQUIRES_USER_INPUT: 1, NOT_SUPPORTED: 2, WARNING: 3, PASS: 4 };
     return [...list].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.rule_id.localeCompare(b.rule_id));
   });
@@ -55,6 +102,11 @@ export class AdvancedPage {
     const loc = (f.location ?? {}) as { sheet?: string; cell?: string; ref?: string };
     if (!loc.sheet && !loc.cell && !loc.ref) return "";
     return [loc.sheet, loc.cell ?? loc.ref].filter(Boolean).join("!");
+  }
+
+  ruleList(list: { rule_id: string }[]): string {
+    const ids = list.map((d) => d.rule_id);
+    return ids.length > 8 ? ids.slice(0, 8).join(", ") + ` and ${ids.length - 8} more` : ids.join(", ");
   }
 
   askAbout(f: Finding): void {

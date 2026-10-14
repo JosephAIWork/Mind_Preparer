@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.11.0
+
+**The front end rewritten in Angular with Carbon, Mind's own design system**
+(`MindReadyUI/`; the React app in `FigmaOutput/` is retired and kept only in
+git). The look is Mind's: Carbon Gray 10 content, the dark Gray 100 header,
+IBM Plex. The focus is what the app does on its own:
+
+- **Main screen**: drop a workbook, then three buttons with a one-line result
+  each -- **Fix all issues** (the auto-fix loop, with progress and a stop),
+  **Fix the formulas** (the formula Prep actions, FRM-* / REF-*, through
+  Excel), **Build the Mind loop** (the loop plan written with the default
+  choices) -- and a download of the current version. A big upload offers a
+  sheet chooser before the scan. `?session=<id>` reopens a session.
+- **Advanced**: Findings (table or workbook map, "since the previous
+  analysis", Ask the assistant per row), Prep actions (tick / untick, show
+  the changes, apply with progress; the zero-count actions behind one line),
+  Recalculate (status, new vs already-there, the error table, the add-in
+  gap), Mind loop (name / first / last / count cell / clear, preview, write),
+  Model map (with a cell peek), Grid Namer (drag, name, flags, submit),
+  Assistant (streamed answers, proposals applied through Excel), Run in Mind
+  (the autonomous loop with gate chips and a live log), Deliver (reports and
+  the numbers check), Versions (download, make current, show the changes).
+
+The server serves `MindReadyUI/dist/mind-ready-ui/browser` (committed);
+`MIND_READY_DIST` still overrides the path. `MIND_READY_PORT` runs a second
+server (8601 was used alongside 8600).
+
 ## 1.10.2
 
 **LOOP-003 no longer blocks a loop on a sheet with a space in its name.** `range_length`

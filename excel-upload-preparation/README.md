@@ -22,11 +22,16 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.10.2)
+## Current status (1.11.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Carbon front end** (1.11.0): the web app rewritten in Angular with
+  Carbon, Mind's design system. Main screen = one workbook, three buttons
+  that do the work on their own, one download; lists and manual work under
+  Advanced. See `MindReadyUI/`.
 
 - **Mind loop** (1.10.0): on the Model map screen, the macro's run loop as
   Mind formulas -- `MM_LOOP` in every driver cell over its column of the
@@ -242,14 +247,15 @@ the two honest cases below.
   continues on the changed workbook. Needs the shared gateway key
   (secret.key / config.enc).
 - **Web app** (1.6.0): the Figma-built React front-end in
-  `../FigmaOutput` served by `app/web/server.py` (FastAPI) --
-  `run_mind_ready_web.bat` -> http://localhost:8600. Same engine, same
-  guarantees, plus a per-session version lineage (every apply is a new
-  Excel-verified file with its change log), a "since the previous
-  analysis" delta after every apply, and a Fix panel on every finding and on every
-  recalculation error (quick fixes + focused mini chat, recalculate to
-  confirm; errors sharing one root cause are fixed together). Build the front-end once with
-  `npm install && npm run build` in `FigmaOutput`.
+  `../MindReadyUI` served by `app/web/server.py` (FastAPI) -- an Angular 22 +
+  Carbon app with Mind's own look (1.11.0; the React app in `FigmaOutput` is
+  retired, `MIND_READY_DIST` can still point at its `dist`). The main screen
+  is three one-click buttons (Fix all issues, Fix the formulas, Build the
+  Mind loop) and a download; everything else -- findings, Prep actions,
+  Recalculate, Mind loop choices, Model map, Grid Namer, Assistant, Run in
+  Mind, Deliver, Versions -- is under **Advanced**. The built `dist` is
+  committed; rebuild with `npm install && npx ng build --configuration
+  production` in `MindReadyUI`.
 - **UI**: `run_excel_upload_prep.bat` launches `app/ui/streamlit_app.py`:
   sidebar (upload, mode, run, current-file card) and sections Findings /
   Prep workbook / Ask the assistant / Recalculate / Reports (report

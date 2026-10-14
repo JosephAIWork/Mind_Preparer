@@ -1,5 +1,5 @@
 """FastAPI backend for the Figma-built "Mind Ready" front-end
-(`Mind Copilot Skill/FigmaOutput`, React + Vite).
+(`Mind Copilot Skill/MindReadyUI`, Angular + Carbon; 1.11.0).
 
 One endpoint per function of the front-end's `src/services/api.ts`, on top of
 the same engine the Streamlit UI uses (app/modes, app/prep, app/chat_context,
@@ -71,10 +71,9 @@ MODE_MAP = {
     "structure_fix": ("Structure Fix", structure_fix),
 }
 ALLOWED_SUFFIXES = {".xlsx", ".xlsm", ".xlsb"}
-# 1.11.0: the Angular front end (MindReadyUI, Carbon) when it is built, else the React one (FigmaOutput).
-ANGULAR_DIST = PACKAGE_ROOT.parent / "MindReadyUI" / "dist" / "mind-ready-ui" / "browser"
-REACT_DIST = PACKAGE_ROOT.parent / "FigmaOutput" / "dist"
-DEFAULT_DIST = ANGULAR_DIST if (ANGULAR_DIST / "index.html").is_file() else REACT_DIST
+# 1.11.0: the front end is the Angular + Carbon app in MindReadyUI (its build is committed). The
+# retired React app (FigmaOutput) can still be served with MIND_READY_DIST=<path to FigmaOutput/dist>.
+DEFAULT_DIST = PACKAGE_ROOT.parent / "MindReadyUI" / "dist" / "mind-ready-ui" / "browser"
 DIST_DIR = Path(os.environ.get("MIND_READY_DIST", str(DEFAULT_DIST)))
 GRID_FIELDS = (
     "sheet", "title_cell", "title", "name", "display_name", "flags", "flag_names", "anchor", "ref",
@@ -104,6 +103,7 @@ class Session:
     current_version_id: str = ""
     result: dict[str, Any] | None = None
     plan: list[dict[str, Any]] = field(default_factory=list)
+    last_delta: dict[str, Any] | None = None  # 1.11.0: what the last analysis changed vs the previous one
     recalc: dict[str, Any] | None = None  # last real recalculation of the current version
     recalc_version_id: str | None = None
     recalc_path: Path | None = None  # the recalculated copy: freshest cell values for the workbook view
@@ -481,6 +481,7 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     s.result = result
     _sync_recalc_finding(s)  # a re-analysis of a version already recalculated keeps that result
     delta = _delta(previous, report, s.current_version_id)
+    s.last_delta = delta  # 1.11.0: shown again when the page reopens the session
     summary = _summary(result["workbook_analysis"])
     summary["size"] = s.size
     # 1.7.2: the verdict and the Prep gauge travel with every analysis
@@ -687,6 +688,7 @@ def session_state(session_id: str) -> dict[str, Any]:
         "summary": _summary(s.result["workbook_analysis"]),
         "report": {k: v for k, v in s.result["validation_report"].items() if k != "_version_id"},
         "plan": s.plan,
+        "delta": s.last_delta,
         "version": current,
         "versions": s.versions,
         "size": s.size,
@@ -1594,7 +1596,7 @@ else:
 
     @app.get("/", include_in_schema=False)
     def no_frontend():
-        return JSONResponse({"detail": f"front-end build not found at {DIST_DIR}; run `npm run build` in FigmaOutput or set MIND_READY_DIST"}, status_code=404)
+        return JSONResponse({"detail": f"front-end build not found at {DIST_DIR}; run `npx ng build --configuration production` in MindReadyUI or set MIND_READY_DIST"}, status_code=404)
 
 
 def _answers_as_mind_ready(port: int, timeout: float = 20) -> bool:

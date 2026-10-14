@@ -252,7 +252,9 @@ export class HomePage implements OnDestroy {
         const after = r?.errors_after ?? full.errors;
         const tone = r?.status === "clean" ? "ok" : "warn";
         const line = r?.status === "clean" ? "Every formula error is fixed" : r?.status === "unchanged" ? "Nothing could be changed" : `Fixed what it could (${r?.status ?? "partial"})`;
-        const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : ""].filter(Boolean).join(" · ");
+        const left = r?.left ?? [];
+        const leftText = left.length ? `${left.length} left for a person: ` + left.slice(0, 3).map((l) => `${l.sheet}!${l.cell} ${l.error}`).join(", ") + (left.length > 3 ? ", …" : "") + " (Advanced › Recalculate)" : "";
+        const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText].filter(Boolean).join(" · ");
         this.fixAll.set({ running: false, fraction: null, line, detail, tone });
       }
       return;
