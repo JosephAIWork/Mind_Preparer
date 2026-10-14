@@ -3,23 +3,64 @@ import { Component, OnDestroy, computed, effect, inject, signal } from "@angular
 import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
-import { FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, appliedCount, failedCount, failedText, isPending } from "../core/models";
+import { FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, ScanStatus, appliedCount, failedCount, failedText, isPending } from "../core/models";
 import { SessionStore } from "../core/session.store";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
+type Tone = "idle" | "ok" | "warn" | "error";
 interface ActionState {
   running: boolean;
   fraction: number | null;
   line: string;
   detail: string;
-  tone: "idle" | "ok" | "warn" | "error";
+  tone: Tone;
   /** the result text is shown only on "View details" */
   open?: boolean;
+  /** set after Stop: the fixer finishes the round it is in */
+  stopping?: boolean;
 }
 
 const idle = (): ActionState => ({ running: false, fraction: null, line: "", detail: "", tone: "idle" });
 
-/** The main screen: one workbook, three buttons that do the work on their own, one download. */
+/** The scan's stages, in order, as the backend names them (app/progress.py). */
+const SCAN_STAGES: { id: string; title: string }[] = [
+  { id: "convert", title: "Converting .xlsb through Excel" },
+  { id: "copy", title: "Copying the workbook" },
+  { id: "load", title: "Reading the workbook" },
+  { id: "inventory", title: "Scanning cells and grids" },
+  { id: "names", title: "Reading defined names" },
+  { id: "rules", title: "Checking the rules" },
+  { id: "report", title: "Building the report" },
+  { id: "plan", title: "Planning the fixes" },
+];
+
+interface ScanRow {
+  id: string;
+  title: string;
+  state: "done" | "current" | "waiting";
+  seconds?: number;
+  message?: string;
+}
+
+type StepId = "fixAll" | "fixFormulas" | "loop" | "recalc";
+interface Step {
+  id: StepId;
+  label: string;
+  check: string;
+  state: "waiting" | "running" | "done" | "failed" | "skipped";
+  line: string;
+  detail: string;
+  open?: boolean;
+}
+
+const STEPS: { id: StepId; label: string; check: string }[] = [
+  { id: "fixAll", label: "Fix all issues", check: "the fixer ends clean and nothing blocks the file" },
+  { id: "fixFormulas", label: "Fix the formulas", check: "nothing refused, no new error finding" },
+  { id: "loop", label: "Build the Mind loop", check: "nothing refused (skipped when the model has no loop)" },
+  { id: "recalc", label: "Recalculate", check: "no formula error that was not already in the original" },
+];
+
+/** The main screen: one workbook, the buttons that do the work on their own, one download. */
 @Component({
   selector: "mr-home",
   standalone: true,
@@ -33,7 +74,7 @@ export class HomePage implements OnDestroy {
   readonly store = inject(SessionStore);
 
   readonly phase = signal<Phase>("idle");
-  readonly scanLine = signal("");
+  readonly scan = signal<ScanStatus | null>(null);
   readonly uploadError = signal("");
   readonly dragOver = signal(false);
   readonly pending = signal<PendingUpload | null>(null);
@@ -43,13 +84,18 @@ export class HomePage implements OnDestroy {
   readonly loop = signal<ActionState>(idle());
   readonly recalc = signal<ActionState>(idle());
   readonly loopPlan = signal<LoopPlan | null>(null);
-  readonly busy = computed(() => this.fixAll().running || this.fixFormulas().running || this.loop().running || this.recalc().running);
-  readonly recalcFact = computed(() => {
-    const rc = this.store.readiness()?.recalc;
-    if (!rc?.ran) return "Not recalculated yet";
-    const current = this.store.currentVersion()?.id;
-    const stale = rc.version_id && current && rc.version_id !== current ? " (an earlier version)" : "";
-    return (rc.clean ? "Last recalculation clean" : `${rc.formula_errors ?? "?"} error cells at the last recalculation`) + stale;
+  readonly steps = signal<Step[]>([]);
+  readonly chainRunning = signal(false);
+  readonly chainLine = signal("");
+  readonly busy = computed(() => this.chainRunning() || this.fixAll().running || this.fixFormulas().running || this.loop().running || this.recalc().running);
+  /** Which step holds the buttons, for the hint on a disabled button. */
+  readonly busyHint = computed(() => {
+    if (this.chainRunning()) return "Do everything is running";
+    if (this.fixAll().running) return this.fixAll().stopping ? "Fix all issues is stopping after its round" : "Fix all issues is running";
+    if (this.fixFormulas().running) return "Fix the formulas is running";
+    if (this.loop().running) return "Build the Mind loop is running";
+    if (this.recalc().running) return "Recalculate is running";
+    return "";
   });
 
   readonly readinessKind = computed(() => {
@@ -69,13 +115,41 @@ export class HomePage implements OnDestroy {
   readonly formulaOps = computed<Operation[]>(() => this.store.plan().filter((a) => FORMULA_ACTION_IDS.has(a.id)).flatMap((a) => a.operations));
   readonly formulaCells = computed(() => this.store.plan().filter((a) => FORMULA_ACTION_IDS.has(a.id)).reduce((n, a) => n + a.count, 0));
   readonly errorCount = computed(() => this.store.statusCounts()["ERROR"] ?? 0);
+  readonly recalcFact = computed(() => {
+    const rc = this.store.readiness()?.recalc;
+    if (!rc?.ran) return "Not recalculated yet";
+    const current = this.store.currentVersion()?.id;
+    const stale = rc.version_id && current && rc.version_id !== current ? " (an earlier version)" : "";
+    return (rc.clean ? "Last recalculation clean" : `${rc.formula_errors ?? "?"} error cells at the last recalculation`) + stale;
+  });
   readonly downloadUrl = computed(() => {
     const id = this.store.sessionId();
     const v = this.store.currentVersion();
     return id && v ? this.api.downloadUrl(id, v.file_name) : null;
   });
 
+  // ---- the scan, as rows -------------------------------------------------------------------------
+  readonly scanRows = computed<ScanRow[]>(() => {
+    const s = this.scan();
+    const done = new Map((s?.stages ?? []).map((x) => [x.stage, x.seconds]));
+    const current = s?.stage ?? null;
+    const needsConvert = (s?.stages ?? []).some((x) => x.stage === "convert") || current === "convert";
+    return SCAN_STAGES.filter((st) => st.id !== "convert" || needsConvert).map((st) => ({
+      id: st.id,
+      title: st.title,
+      state: done.has(st.id) ? "done" : st.id === current ? "current" : "waiting",
+      seconds: done.get(st.id),
+      message: st.id === current ? s?.message || undefined : undefined,
+    }));
+  });
+  readonly scanPercent = computed(() => Math.round(Math.max(0, Math.min(1, this.scan()?.overall ?? 0)) * 100));
+  readonly scanElapsed = computed(() => {
+    const e = this.scan()?.elapsed_s ?? 0;
+    return e >= 60 ? `${Math.floor(e / 60)} min ${Math.round(e % 60)} s` : `${Math.round(e)} s`;
+  });
+
   private timers: ReturnType<typeof setTimeout>[] = [];
+  private fixAllFollowing = false;
 
   constructor() {
     // The session may arrive after this page is built (a `?session=<id>` link is resumed by the
@@ -86,6 +160,7 @@ export class HomePage implements OnDestroy {
       if (loaded && phase === "idle") {
         this.phase.set("loaded");
         void this.loadLoopPlan();
+        void this.resumeFixer();
       } else if (!loaded && phase === "loaded") {
         this.phase.set("idle");
         this.loopPlan.set(null);
@@ -95,6 +170,7 @@ export class HomePage implements OnDestroy {
 
   ngOnDestroy(): void {
     this.timers.forEach(clearTimeout);
+    this.fixAllFollowing = false;
   }
 
   // ---- upload -----------------------------------------------------------------------------
@@ -124,7 +200,7 @@ export class HomePage implements OnDestroy {
     }
     this.uploadError.set("");
     this.phase.set("uploading");
-    this.scanLine.set("Uploading…");
+    this.scan.set(null);
     try {
       const started = await this.api.upload(file, "plan", true);
       if (isPending(started)) {
@@ -135,7 +211,7 @@ export class HomePage implements OnDestroy {
           this.phase.set("choose");
           return;
         }
-        await this.scan(started.sessionId, []);
+        await this.scanSession(started.sessionId, []);
       } else {
         this.store.setSession(started);
         this.afterLoad();
@@ -146,9 +222,8 @@ export class HomePage implements OnDestroy {
     }
   }
 
-  async scan(id: string, ignoreSheets: string[]): Promise<void> {
+  async scanSession(id: string, ignoreSheets: string[]): Promise<void> {
     this.phase.set("scanning");
-    this.scanLine.set("Reading the workbook…");
     const poll = this.pollScan(id);
     try {
       const full = await this.api.analyze(id, ignoreSheets);
@@ -169,8 +244,26 @@ export class HomePage implements OnDestroy {
     this.fixFormulas.set(idle());
     this.loop.set(idle());
     this.recalc.set(idle());
+    this.steps.set([]);
+    this.chainLine.set("");
     void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
     void this.loadLoopPlan();
+  }
+
+  private pollScan(id: string): { stop: () => void } {
+    let live = true;
+    const tick = async () => {
+      if (!live) return;
+      try {
+        const s = await this.api.scanStatus(id);
+        if (live) this.scan.set(s);
+      } catch {
+        /* keep the last status */
+      }
+      if (live) this.timers.push(setTimeout(tick, 700));
+    };
+    void tick();
+    return { stop: () => (live = false) };
   }
 
   toggleSkip(name: string): void {
@@ -189,23 +282,6 @@ export class HomePage implements OnDestroy {
     this.phase.set("idle");
   }
 
-  private pollScan(id: string): { stop: () => void } {
-    let live = true;
-    const tick = async () => {
-      if (!live) return;
-      try {
-        const s = await this.api.scanStatus(id);
-        const stage = s.stages?.find((x) => x.state === "running" || x.state === "current");
-        if (live) this.scanLine.set(stage ? `Reading the workbook: ${stage.label}` : s.overall || "Reading the workbook…");
-      } catch {
-        /* keep the last line */
-      }
-      if (live) this.timers.push(setTimeout(tick, 700));
-    };
-    void tick();
-    return { stop: () => (live = false) };
-  }
-
   loadAnother(): void {
     if (this.busy()) return;
     this.store.reset();
@@ -215,16 +291,38 @@ export class HomePage implements OnDestroy {
   }
 
   // ---- fix all issues -------------------------------------------------------------------------
-  async runFixAll(): Promise<void> {
+  /** A fixer may still be running from before a reload or a visit to Advanced: pick it up. */
+  private async resumeFixer(): Promise<void> {
     const id = this.store.sessionId();
-    if (!id || this.busy()) return;
+    if (!id || this.fixAllFollowing) return;
+    try {
+      const s = await this.api.autoFixStatus(id, false);
+      if (s.state === "running") {
+        this.showAutoFix(s);
+        await this.followAutoFix(id);
+      }
+    } catch {
+      /* no fixer, nothing to resume */
+    }
+  }
+
+  async runFixAll(): Promise<boolean> {
+    const id = this.store.sessionId();
+    if (!id || this.fixAll().running) return false;
     this.fixAll.set({ running: true, fraction: 0, line: "Starting…", detail: "", tone: "idle" });
     try {
       const status = await this.api.startAutoFix(id, { use_assistant: true, keep_good_values: true });
       this.showAutoFix(status);
-      await this.followAutoFix(id);
+      return await this.followAutoFix(id);
     } catch (e) {
-      this.fixAll.set({ running: false, fraction: null, line: "Could not start", detail: errorText(e), tone: "error" });
+      // The backend says why in one sentence (already running, a recalculation runs, being analysed).
+      const why = errorText(e);
+      if (/already running/i.test(why)) {
+        this.fixAll.set({ running: true, fraction: null, line: "Still running from before", detail: why, tone: "idle" });
+        return await this.followAutoFix(id);
+      }
+      this.fixAll.set({ running: false, fraction: null, line: "Not started", detail: why, tone: "error" });
+      return false;
     }
   }
 
@@ -233,65 +331,74 @@ export class HomePage implements OnDestroy {
     if (!id) return;
     try {
       await this.api.stopAutoFix(id);
-      this.fixAll.update((s) => ({ ...s, line: "Stopping after the current round…" }));
+      this.fixAll.update((s) => ({ ...s, stopping: true, line: "Stopping after this round…" }));
     } catch (e) {
       this.fixAll.update((s) => ({ ...s, detail: errorText(e) }));
     }
   }
 
   private showAutoFix(s: { stage?: string; title?: string; message?: string; fraction?: number; pass_no?: number; errors?: number; errors_before?: number }): void {
-    const line = s.title || s.stage || "Working…";
+    const stopping = this.fixAll().stopping;
+    const line = stopping ? "Stopping after this round…" : s.title || s.stage || "Working…";
     const detail = [s.pass_no ? `pass ${s.pass_no}` : "", s.errors_before != null && s.errors != null ? `${s.errors_before} → ${s.errors} error cells` : "", s.message || ""]
       .filter(Boolean)
       .join(" · ");
-    this.fixAll.set({ running: true, fraction: s.fraction ?? null, line, detail, tone: "idle" });
+    this.fixAll.set({ running: true, fraction: s.fraction ?? null, line, detail, tone: "idle", stopping });
   }
 
-  private async followAutoFix(id: string): Promise<void> {
-    for (;;) {
-      await this.sleep(1500);
-      let s;
-      try {
-        s = await this.api.autoFixStatus(id, false);
-      } catch (e) {
-        this.fixAll.set({ running: false, fraction: null, line: "Lost the fixer", detail: errorText(e), tone: "error" });
-        return;
-      }
-      if (s.state === "running") {
-        this.showAutoFix(s);
-        continue;
-      }
-      const full = await this.api.autoFixStatus(id, true).catch(() => s);
-      if (full.analysis) this.store.applyAnalysis({ ...full.analysis, version: full.version ?? undefined });
-      else if (full.version) this.store.addVersion(full.version);
-      const r = full.result;
-      if (s.state === "error" || r?.status === "error") {
-        this.fixAll.set({ running: false, fraction: null, line: "Stopped with an error", detail: full.error || r?.summary || "", tone: "error" });
-      } else {
+  /** Follows the fixer to its end. Returns true when it ended clean. */
+  private async followAutoFix(id: string): Promise<boolean> {
+    if (this.fixAllFollowing) return false;
+    this.fixAllFollowing = true;
+    try {
+      for (;;) {
+        await this.sleep(1500);
+        let s;
+        try {
+          s = await this.api.autoFixStatus(id, false);
+        } catch (e) {
+          this.fixAll.set({ running: false, fraction: null, line: "Lost the fixer", detail: errorText(e), tone: "error" });
+          return false;
+        }
+        if (s.state === "running") {
+          this.showAutoFix(s);
+          continue;
+        }
+        const full = await this.api.autoFixStatus(id, true).catch(() => s);
+        if (full.analysis) this.store.applyAnalysis({ ...full.analysis, version: full.version ?? undefined });
+        else if (full.version) this.store.addVersion(full.version);
+        const r = full.result;
+        if (s.state === "error" || r?.status === "error") {
+          this.fixAll.set({ running: false, fraction: null, line: "Stopped with an error", detail: full.error || r?.summary || "", tone: "error" });
+          return false;
+        }
         const before = r?.errors_before ?? full.errors_before;
         const after = r?.errors_after ?? full.errors;
-        const tone = r?.status === "clean" ? "ok" : "warn";
-        const line = r?.status === "clean" ? "Every formula error is fixed" : r?.status === "unchanged" ? "Nothing could be changed" : `Fixed what it could (${r?.status ?? "partial"})`;
         const left = r?.left ?? [];
+        const clean = r?.status === "clean" || (r?.status === "partial" && left.length === 0 && (after ?? 0) === 0);
+        const line = r?.status === "clean" ? "Every formula error is fixed" : r?.status === "unchanged" ? "Nothing could be changed" : `Fixed what it could (${r?.status ?? "partial"})`;
         const leftText = left.length ? `${left.length} left for a person: ` + left.slice(0, 3).map((l) => `${l.sheet}!${l.cell} ${l.error}`).join(", ") + (left.length > 3 ? ", …" : "") + " (Advanced › Recalculate)" : "";
         const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText].filter(Boolean).join(" · ");
-        this.fixAll.set({ running: false, fraction: null, line, detail, tone });
+        this.fixAll.set({ running: false, fraction: null, line, detail, tone: clean ? "ok" : "warn" });
+        return clean;
       }
-      return;
+    } finally {
+      this.fixAllFollowing = false;
     }
   }
 
   // ---- fix the formulas ----------------------------------------------------------------------
-  async runFixFormulas(): Promise<void> {
+  async runFixFormulas(): Promise<boolean> {
     const id = this.store.sessionId();
     const ops = this.formulaOps();
-    if (!id || this.busy()) return;
+    if (!id || this.fixFormulas().running) return false;
     if (!ops.length) {
       this.fixFormulas.set({ running: false, fraction: null, line: "No formula to change", detail: "The current version has no formula the Mind rules would rewrite.", tone: "ok" });
-      return;
+      return true;
     }
     this.fixFormulas.set({ running: true, fraction: null, line: `Writing ${ops.length} changes through Excel…`, detail: "", tone: "idle" });
     const stop = this.pollApply(id, this.fixFormulas);
+    const errorsBefore = this.errorCount();
     try {
       const out = await this.api.apply(id, ops, "major");
       stop();
@@ -299,16 +406,20 @@ export class HomePage implements OnDestroy {
       const r = out.result;
       const done = appliedCount(r);
       const refused = failedCount(r);
+      const newErrors = Math.max(0, this.errorCount() - errorsBefore);
+      const ok = refused === 0 && newErrors === 0;
       this.fixFormulas.set({
         running: false,
         fraction: null,
         line: refused ? `${done} changed, ${refused} refused` : `${done} formulas changed`,
-        detail: [out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", failedText(r)].filter(Boolean).join(" · "),
-        tone: refused ? "warn" : "ok",
+        detail: [out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", failedText(r), newErrors ? `${newErrors} new error findings` : ""].filter(Boolean).join(" · "),
+        tone: ok ? "ok" : "warn",
       });
+      return ok;
     } catch (e) {
       stop();
       this.fixFormulas.set({ running: false, fraction: null, line: "Could not write the changes", detail: errorText(e), tone: "error" });
+      return false;
     }
   }
 
@@ -348,7 +459,13 @@ export class HomePage implements OnDestroy {
     const ready = p.loops.filter((l) => l.status === "ready");
     const parts = ready.map((l) => `${l.name} (${l.first} to ${l.last})`);
     const open = p.loops.filter((l) => l.status !== "ready").length;
-    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (see Advanced)` : ""].filter(Boolean).join(" · ");
+    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (see Advanced)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
+  }
+
+  /** The plan says the first row of the table is a header row: the loop then starts at 2. */
+  private headerRow(): boolean {
+    const p = this.loopPlan();
+    return !!p && p.loops.some((l) => l.first === 1 && (l.notes ?? []).some((n) => /header/i.test(n)));
   }
 
   canBuildLoop(): boolean {
@@ -356,13 +473,13 @@ export class HomePage implements OnDestroy {
     return !!p && p.found && p.operation_count > 0 && p.loops.some((l) => l.status === "ready");
   }
 
-  async runLoop(): Promise<void> {
+  async runLoop(): Promise<boolean> {
     const id = this.store.sessionId();
-    if (!id || this.busy() || !this.canBuildLoop()) return;
+    if (!id || this.loop().running || !this.canBuildLoop()) return false;
     this.loop.set({ running: true, fraction: null, line: "Writing the loop through Excel…", detail: "", tone: "idle" });
     const stop = this.pollApply(id, this.loop);
     try {
-      const out = await this.api.applyMindLoopPlan(id, {});
+      const out = await this.api.applyMindLoopPlan(id, this.headerRow() ? { first: "2" } : {});
       stop();
       const { plan: loopPlan, ...analysis } = out; // `plan` here is the LOOP plan, not the Prep actions
       this.store.applyAnalysis({ ...analysis, version: out.version });
@@ -375,34 +492,96 @@ export class HomePage implements OnDestroy {
         running: false,
         fraction: null,
         line: refused ? `${done} written, ${refused} refused` : `${done} loop formulas written`,
-        detail: [out.version?.label ?? "", out.plan.how_it_runs ?? "", failedText(r)].filter(Boolean).join(" · "),
+        detail: [out.version?.label ?? "", loopPlan.how_it_runs ?? "", failedText(r)].filter(Boolean).join(" · "),
         tone: refused ? "warn" : "ok",
       });
+      return refused === 0;
     } catch (e) {
       stop();
       this.loop.set({ running: false, fraction: null, line: "Could not write the loop", detail: errorText(e), tone: "error" });
+      return false;
     }
   }
 
   // ---- recalculate ------------------------------------------------------------------------------
-  async runRecalc(): Promise<void> {
+  async runRecalc(): Promise<boolean> {
     const id = this.store.sessionId();
-    if (!id || this.busy()) return;
+    if (!id || this.recalc().running) return false;
     this.recalc.set({ running: true, fraction: null, line: "Recalculating in Excel…", detail: "Tens of seconds to a few minutes.", tone: "idle" });
     try {
       const out = await this.api.recalculate(id);
       this.store.recalc.set(out);
       this.store.applyAnalysis({ report: out.report, plan: out.plan, readiness: out.readiness, version: out.version ?? undefined });
-      const tone = out.status === "PASS" ? "ok" : out.status === "ERROR" ? "warn" : "warn";
+      const newErrors = out.new_errors ?? out.formula_errors.length;
+      const ok = out.status === "PASS" || newErrors === 0;
       const line = out.status === "PASS" ? "Recalculated, no formula errors" : `Recalculated, ${out.formula_errors.length} formula errors`;
       const detail = [out.message, out.new_errors != null ? `${out.new_errors} new since the original` : "", out.preexisting_errors != null ? `${out.preexisting_errors} already in the original` : "", out.addin_gap_errors.length ? `${out.addin_gap_errors.length} add-in gap` : "", "The list is under Advanced › Recalculate."].filter(Boolean).join(" · ");
-      this.recalc.set({ running: false, fraction: null, line, detail, tone });
+      this.recalc.set({ running: false, fraction: null, line, detail, tone: ok ? "ok" : "warn" });
+      return ok;
     } catch (e) {
       this.recalc.set({ running: false, fraction: null, line: "Could not recalculate", detail: errorText(e), tone: "error" });
+      return false;
     }
   }
 
-  toggle(which: "fixAll" | "fixFormulas" | "loop" | "recalc"): void {
+  // ---- do everything --------------------------------------------------------------------------
+  /** The whole chain, each step followed by its check, stopping at the first failed check. */
+  async runAll(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || this.busy()) return;
+    this.chainRunning.set(true);
+    this.chainLine.set("");
+    this.steps.set(STEPS.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
+    const runners: Record<StepId, () => Promise<boolean>> = {
+      fixAll: () => this.runFixAll(),
+      fixFormulas: () => this.runFixFormulas(),
+      loop: () => this.runLoop(),
+      recalc: () => this.runRecalc(),
+    };
+    const states: Record<StepId, typeof this.fixAll> = { fixAll: this.fixAll, fixFormulas: this.fixFormulas, loop: this.loop, recalc: this.recalc };
+    try {
+      for (const step of STEPS) {
+        if (step.id === "loop" && !this.canBuildLoop()) {
+          this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs a decision first (Advanced › Mind loop)" : "No run loop in this workbook" });
+          continue;
+        }
+        this.setStep(step.id, { state: "running" });
+        let ok = false;
+        try {
+          ok = await runners[step.id]();
+        } catch (e) {
+          states[step.id].set({ running: false, fraction: null, line: "Failed", detail: errorText(e), tone: "error" });
+        }
+        const r = states[step.id]();
+        this.setStep(step.id, { state: ok ? "done" : "failed", line: r.line, detail: r.detail });
+        if (!ok) {
+          this.chainLine.set(`Stopped at "${step.label}": ${r.line}. Fix that under Advanced, then press Do everything again.`);
+          return;
+        }
+      }
+      this.chainLine.set("Everything ran and every check passed.");
+    } finally {
+      this.chainRunning.set(false);
+    }
+  }
+
+  private setStep(id: StepId, patch: Partial<Step>): void {
+    this.steps.update((list) => list.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }
+
+  toggleStep(id: StepId): void {
+    this.setStep(id, { open: !this.steps().find((s) => s.id === id)?.open });
+  }
+
+  chainStep(): Step | null {
+    return this.steps().find((s) => s.state === "running") ?? null;
+  }
+
+  stateOf(id: StepId): ActionState {
+    return this[id]();
+  }
+
+  toggle(which: StepId): void {
     this[which].update((s) => ({ ...s, open: !s.open }));
   }
 

@@ -106,10 +106,17 @@ export interface PrepProgress {
 
 export interface ScanStatus {
   state: "pending" | "idle" | "running" | "ready" | "error";
-  overall?: string;
-  stages?: { id: string; label: string; state: string; detail?: string }[];
+  /** the stage running now (app/progress.py: convert, copy, load, inventory, names, rules, report, plan) */
+  stage?: string | null;
+  title?: string | null;
+  message?: string | null;
+  fraction?: number | null;
+  /** 0..1 over the whole scan */
+  overall?: number;
+  /** the stages already finished, with their seconds */
+  stages?: { stage: string; seconds: number }[];
   elapsed_s?: number;
-  error?: string;
+  error?: string | null;
   apply?: { state: string; stage?: string; title?: string; message?: string; fraction?: number; done?: number; total?: number };
 }
 

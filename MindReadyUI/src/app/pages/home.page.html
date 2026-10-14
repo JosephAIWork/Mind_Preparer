@@ -37,14 +37,29 @@
       </tbody>
     </table>
     <div class="file__actions">
-      <button cdsButton="primary" size="md" (click)="scan(p.sessionId, [...skip()])" [disabled]="!skip().size">Scan without {{ skip().size }} sheet{{ skip().size === 1 ? "" : "s" }}</button>
-      <button cdsButton="secondary" size="md" (click)="scan(p.sessionId, [])">Scan everything</button>
+      <button cdsButton="primary" size="md" (click)="scanSession(p.sessionId, [...skip()])" [disabled]="!skip().size">Scan without {{ skip().size }} sheet{{ skip().size === 1 ? "" : "s" }}</button>
+      <button cdsButton="secondary" size="md" (click)="scanSession(p.sessionId, [])">Scan everything</button>
       <button cdsButton="ghost" size="md" (click)="cancelChoose()">Choose another file</button>
     </div>
-  } @else if (phase() === "uploading" || phase() === "scanning") {
+  } @else if (phase() === "uploading") {
+    <h1 class="page-title">Uploading the workbook</h1>
+    <cds-inline-loading [state]="'active'" loadingText="Sending the file to the app…"></cds-inline-loading>
+  } @else if (phase() === "scanning") {
     <h1 class="page-title">Reading the workbook</h1>
-    <cds-inline-loading [state]="'active'" loadingText="{{ scanLine() }}"></cds-inline-loading>
-    <cds-progress-bar [label]="scanLine()" [helperText]="'A large model takes a minute or two.'" [value]="undefined" [max]="100"></cds-progress-bar>
+    <div class="scan">
+      <cds-progress-bar [label]="scanPercent() + '% · ' + scanElapsed()" [value]="scanPercent()" [max]="100"></cds-progress-bar>
+      <ul class="scan__rows">
+        @for (r of scanRows(); track r.id) {
+          <li class="scan__row" [class.scan__row--done]="r.state === 'done'" [class.scan__row--current]="r.state === 'current'">
+            <span class="scan__mark">{{ r.state === "done" ? "✓" : r.state === "current" ? "›" : "·" }}</span>
+            <span>{{ r.title }}</span>
+            @if (r.state === "done" && r.seconds !== undefined) { <span class="scan__secs">{{ r.seconds < 1 ? "<1 s" : r.seconds.toFixed(0) + " s" }}</span> }
+            @if (r.message) { <span class="scan__msg">{{ r.message }}</span> }
+          </li>
+        }
+      </ul>
+      <p class="trust">A large model takes a minute or two.</p>
+    </div>
   } @else {
     <header class="file">
       <div>
@@ -57,7 +72,7 @@
         @if (downloadUrl(); as url) {
           <a cdsButton="tertiary" size="md" [href]="url">Download this version</a>
         }
-        <button cdsButton="ghost" size="md" (click)="loadAnother()" [disabled]="busy()">Load another</button>
+        <button cdsButton="ghost" size="md" (click)="loadAnother()" [disabled]="busy()" [title]="busyHint()">Load another</button>
       </div>
     </header>
 
@@ -67,6 +82,46 @@
       ></cds-inline-notification>
     }
 
+    <!-- Do everything -->
+    <div class="chain">
+      <div class="chain__head">
+        <div>
+          <h2 class="chain__title">Do everything</h2>
+          <p class="chain__text">Fix all issues, fix the formulas, build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
+        </div>
+        @if (!chainRunning()) {
+          <button cdsButton="primary" size="lg" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
+        } @else if (chainStep()?.id === "fixAll" && !fixAll().stopping) {
+          <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
+        } @else {
+          <button cdsButton="primary" size="lg" disabled>Running…</button>
+        }
+      </div>
+      @if (steps().length) {
+        <ol class="chain__steps">
+          @for (s of steps(); track s.id) {
+            <li class="chain__step" [class.chain__step--running]="s.state === 'running'" [class.chain__step--done]="s.state === 'done'" [class.chain__step--failed]="s.state === 'failed'" [class.chain__step--skipped]="s.state === 'skipped'">
+              <div class="chain__label">
+                <span class="dot" [class.dot--ok]="s.state === 'done'" [class.dot--error]="s.state === 'failed'" [class.dot--warn]="s.state === 'skipped'"></span>
+                {{ s.label }}
+                <span class="chain__check">check: {{ s.check }}</span>
+              </div>
+              @if (s.state === "running") {
+                <ng-container *ngTemplateOutlet="result; context: { s: stateOf(s.id), which: s.id, bare: true }"></ng-container>
+              } @else if (s.line) {
+                <div class="chain__line">
+                  {{ s.line }}
+                  @if (s.detail) { <button class="link" (click)="toggleStep(s.id)">{{ s.open ? "Hide details" : "View details" }}</button> }
+                </div>
+                @if (s.open && s.detail) { <div class="action__result"><span>{{ s.detail }}</span></div> }
+              }
+            </li>
+          }
+        </ol>
+      }
+      @if (chainLine()) { <p class="chain__text"><strong>{{ chainLine() }}</strong></p> }
+    </div>
+
     <div class="actions">
       <!-- Fix all issues -->
       <cds-tile class="action">
@@ -75,9 +130,11 @@
         <p class="action__fact">{{ errorCount() }} error findings now</p>
         <div class="action__row">
           @if (!fixAll().running) {
-            <button cdsButton="primary" size="lg" (click)="runFixAll()" [disabled]="busy()">Fix all issues</button>
-          } @else {
+            <button cdsButton="primary" size="lg" (click)="runFixAll()" [disabled]="busy()" [title]="busyHint()">Fix all issues</button>
+          } @else if (!fixAll().stopping) {
             <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
+          } @else {
+            <button cdsButton="danger--tertiary" size="lg" disabled>Stopping after this round…</button>
           }
         </div>
         <ng-container *ngTemplateOutlet="result; context: { s: fixAll(), which: 'fixAll' }"></ng-container>
@@ -89,7 +146,7 @@
         <p class="action__text">Only the formula rewrites: broken references, blank cells in arithmetic, external links, spills, line breaks, error cells. Written through Excel as a new version.</p>
         <p class="action__fact">{{ formulaCells() }} formulas to change</p>
         <div class="action__row">
-          <button cdsButton="primary" size="lg" (click)="runFixFormulas()" [disabled]="busy()">Fix the formulas</button>
+          <button cdsButton="primary" size="lg" (click)="runFixFormulas()" [disabled]="busy()" [title]="busyHint()">Fix the formulas</button>
         </div>
         <ng-container *ngTemplateOutlet="result; context: { s: fixFormulas(), which: 'fixFormulas' }"></ng-container>
       </cds-tile>
@@ -100,7 +157,7 @@
         <p class="action__text">Writes the macro's run loop as MM_LOOP and MM_RESULT formulas, from the model map, with the default choices.</p>
         <p class="action__fact">{{ loopSummary() }}</p>
         <div class="action__row">
-          <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()">Build the Mind loop</button>
+          <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()" [title]="busyHint()">Build the Mind loop</button>
         </div>
         <ng-container *ngTemplateOutlet="result; context: { s: loop(), which: 'loop' }"></ng-container>
       </cds-tile>
@@ -111,7 +168,7 @@
         <p class="action__text">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call the file ready.</p>
         <p class="action__fact">{{ recalcFact() }}</p>
         <div class="action__row">
-          <button cdsButton="primary" size="lg" (click)="runRecalc()" [disabled]="busy()">Recalculate</button>
+          <button cdsButton="primary" size="lg" (click)="runRecalc()" [disabled]="busy()" [title]="busyHint()">Recalculate</button>
         </div>
         <ng-container *ngTemplateOutlet="result; context: { s: recalc(), which: 'recalc' }"></ng-container>
       </cds-tile>
@@ -123,12 +180,12 @@
   }
 </section>
 
-<ng-template #result let-s="s" let-which="which">
+<ng-template #result let-s="s" let-which="which" let-bare="bare">
   @if (s.running) {
     <div class="action__progress">
       <cds-progress-bar [label]="s.line" [helperText]="s.detail" [value]="s.fraction === null ? undefined : s.fraction * 100" [max]="100"></cds-progress-bar>
     </div>
-  } @else if (s.line) {
+  } @else if (s.line && !bare) {
     <div class="action__done">
       <span class="dot" [class.dot--ok]="s.tone === 'ok'" [class.dot--warn]="s.tone === 'warn'" [class.dot--error]="s.tone === 'error'"></span>
       <button class="link" (click)="toggle(which)">{{ s.open ? "Hide details" : "View details" }}</button>

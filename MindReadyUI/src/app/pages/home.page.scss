@@ -212,3 +212,131 @@
   font: inherit;
   @include type.type-style("body-compact-01");
 }
+
+.scan {
+  max-width: 36rem;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+
+  &__rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-02;
+  }
+
+  &__row {
+    display: flex;
+    gap: $spacing-04;
+    align-items: baseline;
+    @include type.type-style("body-compact-01");
+    color: theme.$text-helper;
+
+    &--done {
+      color: theme.$text-secondary;
+    }
+
+    &--current {
+      color: theme.$text-primary;
+      font-weight: 600;
+    }
+  }
+
+  &__mark {
+    width: 1.1rem;
+    flex-shrink: 0;
+    text-align: center;
+  }
+
+  &__secs {
+    @include type.type-style("label-01");
+    color: theme.$text-helper;
+    font-weight: 400;
+  }
+
+  &__msg {
+    @include type.type-style("label-01");
+    color: theme.$text-secondary;
+    font-weight: 400;
+  }
+}
+
+.chain {
+  background: theme.$layer-01;
+  padding: $spacing-05;
+  margin-top: $spacing-06;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-04;
+
+  &__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: $spacing-05;
+    flex-wrap: wrap;
+  }
+
+  &__title {
+    @include type.type-style("heading-03");
+  }
+
+  &__text {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+  }
+
+  &__steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-03;
+  }
+
+  &__step {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-02;
+    padding-left: $spacing-05;
+    border-left: 3px solid theme.$border-subtle-01;
+    @include type.type-style("body-compact-01");
+
+    &--running {
+      border-left-color: theme.$interactive;
+    }
+
+    &--done {
+      border-left-color: theme.$support-success;
+    }
+
+    &--failed {
+      border-left-color: theme.$support-error;
+    }
+
+    &--skipped {
+      border-left-color: theme.$border-subtle-01;
+      color: theme.$text-helper;
+    }
+  }
+
+  &__label {
+    display: flex;
+    gap: $spacing-03;
+    align-items: center;
+    font-weight: 600;
+  }
+
+  &__check {
+    @include type.type-style("label-01");
+    color: theme.$text-helper;
+  }
+
+  &__line {
+    color: theme.$text-secondary;
+  }
+}
