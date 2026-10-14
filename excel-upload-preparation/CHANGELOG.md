@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.2
+
+**LOOP-003 no longer blocks a loop on a sheet with a space in its name.** `range_length`
+stripped the quotes off `'BASE Polices'!A2:A6` before parsing, so every repeated `MM_LOOP`
+definition on such a sheet counted as "unresolvable" and the finding asked for a decision
+nobody could give (it named no cell). The quotes are part of the reference; the 42 Horizon
+loop cells now resolve to the same length and the rule passes.
+
 ## 1.10.1
 
 **MM for Excel in the app's own Excel.** Excel started by automation never loads

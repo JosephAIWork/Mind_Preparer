@@ -300,9 +300,14 @@ def cell_refs_in_formula(formula: str) -> list[dict]:
 
 
 def range_length(ref: str) -> int | None:
-    """Cell count of a simple A1 / A1:A10 / Sheet!A1:B2 reference. None if
-    unparseable (e.g. a defined name or an expression rather than a literal range)."""
-    parsed = parse_ref(ref.strip().strip("'\"") if ref else ref)
+    """Cell count of a simple A1 / A1:A10 / Sheet!A1:B2 / 'My Sheet'!A1:B2 reference. None if
+    unparseable (e.g. a defined name or an expression rather than a literal range).
+    1.10.2: the quotes of a quoted sheet name are part of the reference -- stripping them
+    made every loop range on a sheet with a space in its name "unresolvable" (LOOP-003)."""
+    text = (ref or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1].strip()
+    parsed = parse_ref(text) if text else None
     return parsed["cells"] if parsed else None
 
 
