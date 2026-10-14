@@ -2,7 +2,7 @@ import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import {
-  ApplyOutcome, AppHealth, AutoFixStatus, CellWindow, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, LoopPlan, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AutoFixStatus, CellWindow, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -147,6 +147,24 @@ export class ApiService {
     if (buffer.trim()) handle(buffer);
     if (!reply) throw new Error("the assistant sent no answer");
     return reply;
+  }
+
+  sheetCells(id: string, sheet: string, maxRows = 400, maxCols = 60): Promise<SheetCells> {
+    const params = new HttpParams().set("sheet", sheet).set("max_rows", String(maxRows)).set("max_cols", String(maxCols));
+    return firstValueFrom(this.http.get<SheetCells>(`${this.s(id)}/sheet-cells`, { params }));
+  }
+
+  async mindFlags(): Promise<MindFlag[]> {
+    const out = await firstValueFrom(this.http.get<{ flags: MindFlag[] }>(`${this.base}/mind-flags`));
+    return out.flags ?? [];
+  }
+
+  suggestGridNames(id: string, apply = true): Promise<GridNamesResult> {
+    return firstValueFrom(this.http.post<GridNamesResult>(`${this.s(id)}/grid-names`, { apply }));
+  }
+
+  applyNamedAreas(id: string, areas: NamedArea[], nameRest: boolean): Promise<GridNamerOutcome> {
+    return firstValueFrom(this.http.post<GridNamerOutcome>(`${this.s(id)}/grid-namer`, { areas, nameRest, reanalyze: true }));
   }
 
   downloadUrl(id: string, fileName: string): string {

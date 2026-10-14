@@ -17,6 +17,7 @@
       <button class="switch__item" [class.switch__item--on]="tab() === 'recalc'" (click)="tab.set('recalc')">Recalculate</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'loop'" (click)="tab.set('loop')">Mind loop</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'map'" (click)="tab.set('map')">Model map</button>
+      <button class="switch__item" [class.switch__item--on]="tab() === 'namer'" (click)="tab.set('namer')">Grid Namer</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'assistant'" (click)="tab.set('assistant')">Assistant</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'mind'" (click)="tab.set('mind')">Run in Mind</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'deliver'" (click)="tab.set('deliver')">Deliver</button>
@@ -65,6 +66,9 @@
       }
       @case ("map") {
         <mr-map-panel></mr-map-panel>
+      }
+      @case ("namer") {
+        <mr-grid-namer-panel></mr-grid-namer-panel>
       }
       @case ("assistant") {
         <mr-assistant-panel></mr-assistant-panel>

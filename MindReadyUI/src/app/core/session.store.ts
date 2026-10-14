@@ -1,6 +1,6 @@
 import { Injectable, computed, signal } from "@angular/core";
 
-export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "assistant" | "mind" | "deliver" | "versions";
+export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
 import { ChatMessage, FixTarget, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */

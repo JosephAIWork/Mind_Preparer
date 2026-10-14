@@ -33,6 +33,7 @@ export interface WorkbookSummary {
   formula_count: number;
   has_vba?: boolean;
   mm_functions_used?: Record<string, number>;
+  sheets?: SheetSummary[];
   [k: string]: unknown;
 }
 
@@ -491,4 +492,96 @@ export interface SizeInfo {
   message: string;
   sheets: SheetPart[];
   warnings: string[];
+}
+
+// ---- Grid Namer ------------------------------------------------------------------------------
+export interface GridFlag {
+  raw: string;
+  name: string;
+  args: string[];
+}
+
+export interface Grid {
+  sheet: string;
+  title_cell: string | null;
+  title: string | null;
+  name: string | null;
+  display_name: string;
+  flags: GridFlag[];
+  flag_names?: string[];
+  anchor: string;
+  ref: string;
+  first_row: number;
+  last_row: number;
+  first_col: number;
+  last_col: number;
+  n_rows: number;
+  n_cols: number;
+  header_values: unknown[];
+  formula_count?: number;
+}
+
+export interface SheetSummary {
+  name: string;
+  state: "visible" | "hidden" | "veryHidden" | string;
+  dimensions?: string | null;
+  grids: Grid[];
+}
+
+export interface SheetCells {
+  sheet: string;
+  rows: unknown[][];
+  n_rows: number;
+  n_cols: number;
+  total_rows: number;
+  total_cols: number;
+  truncated: boolean;
+  values_from?: string;
+}
+
+export interface MindFlag {
+  name: string;
+  meaning: string;
+}
+
+export interface NamedArea {
+  sheet: string;
+  ref: string;
+  name: string;
+  flags: string[];
+}
+
+export interface GridNamerOutcome {
+  result: ApplyResult;
+  version: Version;
+  summary?: WorkbookSummary;
+  report?: ValidationReport;
+  plan?: PrepAction[];
+  versions?: Version[];
+  readiness?: Readiness;
+  prep_progress?: PrepProgress;
+  named: string[];
+  skipped: string[];
+  manual_ops: number;
+  auto_ops: number;
+}
+
+export interface GridNameSuggestion {
+  grid: string;
+  sheet: string;
+  ref: string;
+  size: string;
+  current: string | null;
+  deterministic: string;
+  deterministic_source: string;
+  suggested: string | null;
+}
+
+export interface GridNamesResult {
+  available: boolean;
+  names: GridNameSuggestion[];
+  message: string | null;
+  applied: boolean;
+  plan?: PrepAction[] | null;
+  readiness?: Readiness | null;
 }

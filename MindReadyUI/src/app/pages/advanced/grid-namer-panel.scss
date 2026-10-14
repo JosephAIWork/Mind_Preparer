@@ -1,0 +1,171 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+@use "./panels";
+
+.namer {
+  display: flex;
+  gap: $spacing-05;
+  padding: $spacing-05 0;
+  align-items: flex-start;
+
+  &__sheet {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-03;
+  }
+
+  &__panel {
+    width: 20rem;
+    flex-shrink: 0;
+    background: theme.$layer-01;
+    padding: $spacing-05;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-04;
+    position: sticky;
+    top: 4rem;
+
+    .field input {
+      width: 100%;
+    }
+  }
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-02;
+
+  &__item {
+    font: inherit;
+    font-size: 0.75rem;
+    border: 0;
+    background: theme.$layer-accent-01;
+    color: theme.$text-secondary;
+    padding: $spacing-02 $spacing-04;
+    cursor: pointer;
+
+    &--on {
+      background: theme.$layer-selected-inverse;
+      color: theme.$text-inverse;
+    }
+  }
+}
+
+.dim {
+  opacity: 0.6;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: $spacing-03;
+  @include type.type-style("label-01");
+  color: theme.$text-secondary;
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 1px solid theme.$border-subtle-01;
+
+  &--title {
+    background: #dff5e6;
+  }
+
+  &--named {
+    background: #eef2ff;
+  }
+
+  &--untitled {
+    background: #fff7e6;
+  }
+
+  &--pending {
+    background: #fdf4ff;
+  }
+}
+
+.grid-wrap {
+  overflow: auto;
+  max-height: 34rem;
+  border: 1px solid theme.$border-subtle-01;
+  background: theme.$layer-01;
+  user-select: none;
+}
+
+.grid {
+  border-collapse: collapse;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+
+  th {
+    position: sticky;
+    background: theme.$layer-accent-01;
+    color: theme.$text-secondary;
+    font-weight: 400;
+    padding: 0 $spacing-02;
+    z-index: 1;
+  }
+
+  &__corner,
+  &__col {
+    top: 0;
+  }
+
+  &__row,
+  &__corner {
+    left: 0;
+    text-align: right;
+    min-width: 2.5rem;
+  }
+
+  &__corner {
+    z-index: 2;
+  }
+
+  td.cell {
+    border: 1px solid theme.$border-subtle-00;
+    min-width: 5rem;
+    max-width: 10rem;
+    height: 1.35rem;
+    padding: 0 $spacing-02;
+    white-space: nowrap;
+    overflow: hidden;
+    cursor: crosshair;
+  }
+
+  .cell--named {
+    background: #eef2ff;
+  }
+
+  .cell--untitled {
+    background: #fff7e6;
+  }
+
+  .cell--title {
+    background: #dff5e6;
+    font-weight: 600;
+  }
+
+  .cell--pending {
+    background: #fdf4ff;
+  }
+
+  .cell--sel {
+    outline: 2px solid theme.$interactive;
+    outline-offset: -2px;
+    background: theme.$layer-selected-01;
+  }
+}
+
+.flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-03 $spacing-05;
+}

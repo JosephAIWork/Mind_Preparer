@@ -1,0 +1,105 @@
+<div class="namer">
+  <div class="namer__sheet">
+    <p class="hint">Drag over an area of the sheet and give it a name and flags. Submit writes the <span class="mono">#Name /Flags</span> titles into a new verified version; every grid you did not touch is named by the usual conventions.</p>
+    <div class="tabs">
+      @for (s of sheets(); track s.name) {
+        <button class="tabs__item" [class.tabs__item--on]="s.name === active()" (click)="active.set(s.name)">
+          {{ s.name }}@if (s.state !== "visible") { <span class="dim"> (hidden)</span> } <span class="mono dim">{{ s.grids.length }}</span>
+        </button>
+      }
+    </div>
+    <div class="legend">
+      <span class="swatch swatch--title"></span> title cell <span class="swatch swatch--named"></span> named grid <span class="swatch swatch--untitled"></span> untitled grid <span class="swatch swatch--pending"></span> to be named
+      @if (cells()?.truncated) {
+        <button class="link" (click)="big.set(!big())">{{ big() ? "Show fewer cells" : "Load more cells" }}</button>
+      }
+    </div>
+    @if (loading()) {
+      <cds-inline-loading [state]="'active'" loadingText="Loading {{ active() }}…"></cds-inline-loading>
+    }
+    @if (cells(); as c) {
+      <div class="grid-wrap" (mouseleave)="dragging.set(false)">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th class="grid__corner"></th>
+              @for (col of columns(); track col) { <th class="grid__col">{{ col }}</th> }
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of c.rows; track $index; let ri = $index) {
+              <tr>
+                <th class="grid__row">{{ ri + 1 }}</th>
+                @for (col of columns(); track $index; let ci = $index) {
+                  <td [class]="cellClass(ri + 1, ci + 1)" (mousedown)="down(ri + 1, ci + 1, $event)" (mouseenter)="enter(ri + 1, ci + 1)" [title]="text(row[ci])">{{ text(row[ci]) }}</td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">{{ c.n_rows }} × {{ c.n_cols }} of {{ c.total_rows }} × {{ c.total_cols }} cells{{ c.values_from ? " · values from " + c.values_from : "" }}</p>
+    }
+  </div>
+
+  <aside class="namer__panel">
+    <h3 class="panel__h">Name an area</h3>
+    @if (sel()) {
+      <p class="mono">{{ active() }}!{{ selRef() }}</p>
+      <p class="hint">{{ targetText() }}</p>
+    } @else {
+      <p class="hint">Select cells on the sheet.</p>
+    }
+    <label class="field">Name (after #) <input type="text" [value]="name()" (input)="name.set(value($event))" placeholder="MyGrid" [disabled]="!targetGrid()" /></label>
+    @if (flagList().length) {
+      <div class="flags">
+        @for (f of shownFlags(); track f.name) {
+          <label class="check" [title]="f.meaning"><input type="checkbox" [checked]="flagOn(f.name)" (change)="toggleFlag(f.name)" [disabled]="!targetGrid()" /> /{{ f.name }}</label>
+        }
+      </div>
+      @if (flagList().length > 8) {
+        <button class="link" (click)="allFlags.set(!allFlags())">{{ allFlags() ? "Fewer flags" : "All " + flagList().length + " flags" }}</button>
+      }
+    }
+    <label class="field">Flags with arguments <input type="text" [value]="extraFlags()" (input)="extraFlags.set(value($event))" placeholder="/Resize.A /Group.(G).0.1" [disabled]="!targetGrid()" /></label>
+    <button cdsButton="secondary" size="md" (click)="addArea()" [disabled]="!targetGrid() || !name().trim()">Add named area</button>
+
+    @if (pending().length) {
+      <h3 class="panel__h">To be named ({{ pending().length }})</h3>
+      <ul class="plain">
+        @for (p of pending(); track p.sheet + p.gridRef) {
+          <li><span class="mono">{{ p.sheet }}!{{ p.ref }}</span> → #{{ p.name }}{{ p.flags.length ? " /" + p.flags.join(" /") : "" }}{{ p.wasNamed ? " (was #" + p.wasNamed + ")" : "" }} <button class="link" (click)="remove(p)">✕</button></li>
+        }
+      </ul>
+    }
+    <label class="check"><input type="checkbox" [checked]="nameRest()" (change)="nameRest.set(!nameRest())" /> Name every other untitled grid by the conventions</label>
+    <button cdsButton="primary" size="md" (click)="submit()" [disabled]="submitting() || !pending().length">{{ submitting() ? "Writing…" : "Submit " + pending().length + " area" + (pending().length === 1 ? "" : "s") }}</button>
+    @if (submitting()) { <cds-inline-loading [state]="'active'" loadingText="Writing the titles through Excel…"></cds-inline-loading> }
+    @if (error()) {
+      <div class="result result--error"><strong>Not written</strong><span>{{ error() }}</span></div>
+    }
+
+    @if (outcome(); as o) {
+      <div class="result" [class.result--ok]="o.result.failed === 0" [class.result--warn]="o.result.failed > 0">
+        <strong>{{ o.named.length }} named{{ o.skipped.length ? ", " + o.skipped.length + " skipped" : "" }}</strong>
+        <span>{{ o.version.label }}{{ o.auto_ops ? " · " + o.auto_ops + " named by the conventions" : "" }}</span>
+        @if (o.skipped.length) {
+          <button class="link" (click)="showSkipped.set(!showSkipped())">{{ showSkipped() ? "Hide" : "Why skipped" }}</button>
+          @if (showSkipped()) { <ul class="plain">@for (s of o.skipped; track $index) { <li>{{ s }}</li> }</ul> }
+        }
+      </div>
+    }
+
+    <h3 class="panel__h">Or let the assistant name them</h3>
+    <p class="hint">Names every untitled grid from the captions, labels and headers around it, through the assistant.</p>
+    <button cdsButton="tertiary" size="md" (click)="suggest()" [disabled]="suggesting()">{{ suggesting() ? "Naming…" : "Suggest names" }}</button>
+    @if (suggestions(); as sg) {
+      <p class="hint">{{ sg.message || (sg.names.length + " suggestions" + (sg.applied ? ", added to the Prep plan" : "")) }}</p>
+      @if (sg.names.length) {
+        <ul class="plain">
+          @for (n of sg.names.slice(0, 40); track n.grid) { <li><span class="mono">{{ n.grid }}</span> → #{{ n.suggested || n.deterministic }}</li> }
+        </ul>
+      }
+    }
+  </aside>
+</div>
