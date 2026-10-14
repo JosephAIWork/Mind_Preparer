@@ -347,8 +347,8 @@ def _complete_header(analysis: dict[str, Any], t_sheet: str, t_cells: list[tuple
         held = _held(analysis, t_sheet, tc, top - 1)
         if isinstance(held, str) and held.startswith("="):
             continue  # a formula: not ours to touch
-        if isinstance(held, str) and held.strip():
-            continue  # a text header already
+        if isinstance(held, str) and held.strip() and not re.match(r"^\d{4}-\d{2}-\d{2}", held.strip()):
+            continue  # a text header already (a date, read as text, is not a caption)
         caption: Any = _held(analysis, from_sheet, sc, src_top - 1) if src_top > 1 else None
         if not (isinstance(caption, str) and caption.strip() and not caption.startswith("=")):
             caption = f"{from_sheet}!{num_to_col(sc)}{src_top}"

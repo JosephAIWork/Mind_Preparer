@@ -56,3 +56,32 @@ compares the source cells of every `MM_RESULT` block with the macro's block. MM 
 (loaded into the app's Excel since 1.10.1) evaluates one pass only -- `MM_LOOP` gives the
 first loop value, `MM_DIMSIZE` says 1 -- so the check plays the values itself: it proves
 the wiring (which column, which row, which loop value); the run in Mind proves Mind.
+
+## Verified in real Mind (2026-10-15)
+
+Horizon, the Do-everything version (Fix all issues, Fix the formulas, the loop over rows 2 to 6,
+recalculated clean), in a sandbox project:
+
+- Upload / Convert / Test complete in about 90 s; the Test step counts Stochastic 0, Deterministic
+  22,212 cells with 0 differences, Assumptions 163,741. The Deterministic test evaluates ONE loop
+  instance (the workbook's cached values are the first pass, so they agree), so the Deterministic
+  Differences log never shows the other passes: the loop is checked after the run, not there.
+- Add template, Run: completed in 1.8 s, consistent with the audit trail.
+- How to see a loop in Mind: the template selector in the project bar (the workbook's name) lists the
+  sheets; a sheet lists its grids `Untitled(row,col)`; a grid opens a panel. The panel's play icon
+  (top left, "Partial run") recomputes that grid; the panel then shows the dimension name
+  (`BASE_Polices`), a "Display all dimensions" control and one row per loop instance.
+- Every OUTPUT cell matched the macro run in Excel on the same version: 10 columns x 5 passes, pass k =
+  loop value k + 1. Mind's own AI Assistant, asked in the project, answered "Defined loop BASE_Polices,
+  size 5 ... read by 50 MM_RESULT cells".
+- Mind reads a grid's first row as its header. Where the row above the block had empty cells, Mind
+  split the block into four grids and showed pass 1 as the header of two of them (values right,
+  display wrong). The loop builder now completes that header row from the source block's own
+  captions (`_complete_header`).
+- The loop written on the untouched original is refused by Mind: 15 formula compilation errors, all
+  `SUMIFS('BASE Polices'!#REF!, ...)` on sheet C20, the broken references the app's REF-001 fix
+  repairs. The loop needs the fixed workbook, which is what the main screen's buttons produce.
+
+Scripts: `scripts/mind_loop_probe.py` (upload, logs, run, parts), `scripts/mind_loop_compare.py`
+(Mind's rows vs the macro's values), `scripts/mind_ask.py` (Mind's AI Assistant),
+`scripts/night_chain.py` (the Do-everything chain through the API).
