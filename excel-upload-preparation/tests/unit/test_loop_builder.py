@@ -138,7 +138,8 @@ def test_bounds_name_and_clearing_can_be_chosen(tmp_path, monkeypatch):
     assert lp["status"] == "ready" and lp["name"] == "Policy" and (lp["first"], lp["last"], lp["count"]) == (2, 4, 3) and lp["last_from"]["kind"] == "cell"
     assert lp["cells"][0]["formula"] == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:A4)" and not any("header" in n for n in lp["notes"])
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
-    assert ops[("OUTPUT", "A2")]["after"] == '=MM_RESULT(CALCUL!$E$10,"Policy",1)' and ("OUTPUT", "A1") not in ops
+    assert ops[("OUTPUT", "A2")]["after"] == '=MM_RESULT(CALCUL!$E$10,"Policy",1)'
+    assert ops[("OUTPUT", "A1")]["op"] == "set_value"  # the header row above the block, completed for Mind (no MM_RESULT there)
     # the macro clears from the first value's row on (A2:B100000): row 5 is emptied, row 1 is
     # outside that area and the written rows are left
     cleared = sorted(c for (sh, c), o in ops.items() if o["op"] == "clear_cell")
@@ -242,3 +243,18 @@ def test_horizon_plan(tmp_path):
     out = plan["outputs"][0]
     assert out["status"] == "ready" and out["items"] == 6 and out["cells"] == 60 and out["example"] == 'OUTPUT!A1 =MM_RESULT(CALCUL!$AY$35,"BASE_Polices",1)'
     assert len(plan["operations"]) == 102
+
+
+def test_the_header_row_above_an_output_block_is_completed_for_mind(tmp_path, monkeypatch):
+    """Seen in real Mind: a grid's first row is its header, an empty cell there splits the block and the
+    first pass shows as a header. With first = 2 the block starts on row 2 and row 1 holds the macro's
+    header-row pass (numbers here): every such cell gets the source's caption, else the source address."""
+    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=2, last=4)
+    out = plan["outputs"][0]
+    assert out["status"] == "ready" and out["items"] == 3 and out["header_cells"] == ["OUTPUT!A1", "OUTPUT!B1"]
+    heads = {o["cell"]: o for o in plan["operations"] if o["op"] == "set_value" and o["sheet"] == "OUTPUT"}
+    assert set(heads) == {"A1", "B1"} and heads["A1"]["before"] == 1 and heads["A1"]["after"] and heads["A1"]["rule_id"] == "LOOP-001"
+    assert plan["counts"]["extra"] == 2 and any("header row 1 above the block is completed" in n for n in plan["notes"])
+    # a block that starts on row 1 has no header row: said, nothing written
+    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4)
+    assert "header_cells" not in plan["outputs"][0] and plan["counts"]["extra"] == 0 and any("no header row above it" in n for n in plan["notes"])

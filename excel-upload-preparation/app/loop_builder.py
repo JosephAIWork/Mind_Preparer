@@ -326,6 +326,40 @@ def _derived_loop(analysis: dict[str, Any], d: dict[str, Any], names: Any, name:
 
 
 # --- the plan --------------------------------------------------------------------------------------
+
+def _complete_header(analysis: dict[str, Any], t_sheet: str, t_cells: list[tuple[int, int]], from_sheet: str, src_cells: list[tuple[int, int]], loop_name: str) -> tuple[list[dict[str, Any]], str | None]:
+    """The row above an MM_RESULT block, completed so Mind reads the block as ONE grid.
+
+    Seen in real Mind (2026-10-15): a grid's first row is its header; an empty cell in that row
+    splits the block into several grids, and a grid that then starts on the block's first row shows
+    the first loop pass as its header. Every header cell that is empty, a number or a date gets the
+    caption the source block carries above it (the row above the source), else the source cell's
+    address. Text headers and formulas are left alone. Returns (operations, note)."""
+    if not t_cells or not src_cells or len(t_cells) != len(src_cells):
+        return [], None
+    top = min(r for _, r in t_cells)
+    if top <= 1:
+        return [], f"the block starts on row 1: no header row above it, so Mind takes its first row (loop value 1) as the header"
+    src_top = min(r for _, r in src_cells)
+    pairs = sorted({(tc, sc) for (sc, sr), (tc, tr) in zip(src_cells, t_cells) if tr == top and sr == src_top})
+    ops: list[dict[str, Any]] = []
+    for tc, sc in pairs:
+        held = _held(analysis, t_sheet, tc, top - 1)
+        if isinstance(held, str) and held.startswith("="):
+            continue  # a formula: not ours to touch
+        if isinstance(held, str) and held.strip():
+            continue  # a text header already
+        caption: Any = _held(analysis, from_sheet, sc, src_top - 1) if src_top > 1 else None
+        if not (isinstance(caption, str) and caption.strip() and not caption.startswith("=")):
+            caption = f"{from_sheet}!{num_to_col(sc)}{src_top}"
+        ops.append({"op": "set_value", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": t_sheet, "cell": f"{num_to_col(tc)}{top - 1}", "before": held, "after": caption.strip(),
+                    "note": f"header of the {loop_name} block for Mind (a grid's first row is its header; an empty cell there splits the block)"})
+    if not ops:
+        return [], None
+    cells = ", ".join(o["cell"] for o in ops)
+    return ops, f"the header row {top - 1} above the block is completed in {cells} (Mind reads a grid's first row as its header; an empty cell there splits the block into several grids)"
+
+
 def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, names: dict[str, str] | None = None, name: str | None = None,
                     first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, max_result_cells: int = MAX_RESULT_CELLS) -> dict[str, Any]:
     """The Mind loop for the map's run loop: what goes where, with the operations that write it.
@@ -465,6 +499,8 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             continue
         written = 0
         first_cell = None
+        first_block: list[tuple[int, int]] = []
+        first_block_sheet = ""
         for k in range(1, count + 1):
             value = le["first"] + k - 1
             tgt = sub.replace(f"<{lv}>", str(value))
@@ -474,6 +510,8 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 entry_o.update(status="not_built", why=f"the block {tgt} and its source {o['from']} are not the same shape")
                 written = -1
                 break
+            if k == 1:
+                first_block, first_block_sheet = t_cells, t_sheet
             for (sc, sr), (tc, tr) in zip(src_cells, t_cells):
                 formula = f'=MM_RESULT({_qs(from_sheet)}!${num_to_col(sc)}${sr},"{le["name"]}",{k})'
                 before = _held(analysis, t_sheet, tc, tr)
@@ -487,6 +525,14 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             continue
         entry_o.update(items=count, cells=written, example=first_cell, loop=le["name"])
         plan["counts"]["result_cells"] += written
+        header_ops, header_note = _complete_header(analysis, first_block_sheet, first_block, from_sheet, src_cells, le["name"])
+        if header_ops:
+            ops.extend(header_ops)
+            plan["counts"]["extra"] += len(header_ops)
+            entry_o["header_cells"] = [f"{o['sheet']}!{o['cell']}" for o in header_ops]
+        if header_note:
+            entry_o["note"] = header_note
+            plan["notes"].append(f"{target}: {header_note}")
         plan["outputs"].append(entry_o)
 
     # --- the cleared areas: drop what an earlier run left outside the rows the plan writes ---------
