@@ -71,7 +71,10 @@ MODE_MAP = {
     "structure_fix": ("Structure Fix", structure_fix),
 }
 ALLOWED_SUFFIXES = {".xlsx", ".xlsm", ".xlsb"}
-DEFAULT_DIST = PACKAGE_ROOT.parent / "FigmaOutput" / "dist"
+# 1.11.0: the Angular front end (MindReadyUI, Carbon) when it is built, else the React one (FigmaOutput).
+ANGULAR_DIST = PACKAGE_ROOT.parent / "MindReadyUI" / "dist" / "mind-ready-ui" / "browser"
+REACT_DIST = PACKAGE_ROOT.parent / "FigmaOutput" / "dist"
+DEFAULT_DIST = ANGULAR_DIST if (ANGULAR_DIST / "index.html").is_file() else REACT_DIST
 DIST_DIR = Path(os.environ.get("MIND_READY_DIST", str(DEFAULT_DIST)))
 GRID_FIELDS = (
     "sheet", "title_cell", "title", "name", "display_name", "flags", "flag_names", "anchor", "ref",

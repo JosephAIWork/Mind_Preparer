@@ -1,0 +1,141 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+.page {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: $spacing-07 $spacing-05 $spacing-09;
+}
+
+.page-title {
+  @include type.type-style("heading-04");
+  margin-bottom: $spacing-03;
+}
+
+.page-lead {
+  @include type.type-style("body-02");
+  color: theme.$text-secondary;
+  margin-bottom: $spacing-07;
+}
+
+.drop {
+  border: 1px dashed theme.$border-strong-01;
+  background: theme.$layer-01;
+  padding: $spacing-09 $spacing-07;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $spacing-05;
+  margin-bottom: $spacing-05;
+
+  &--over {
+    border-color: theme.$interactive;
+    background: theme.$layer-hover-01;
+  }
+
+  &__text {
+    @include type.type-style("body-02");
+    color: theme.$text-secondary;
+  }
+
+  &__button {
+    cursor: pointer;
+  }
+}
+
+.trust {
+  @include type.type-style("helper-text-01");
+  color: theme.$text-helper;
+  margin-top: $spacing-05;
+}
+
+.file {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: $spacing-05;
+  margin-bottom: $spacing-05;
+
+  &__meta {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+  }
+
+  &__actions {
+    display: flex;
+    gap: $spacing-03;
+    flex-shrink: 0;
+  }
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: $spacing-05;
+  margin-top: $spacing-06;
+}
+
+.action {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+  min-height: 16rem;
+
+  &__title {
+    @include type.type-style("heading-03");
+  }
+
+  &__text {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+    flex: 1;
+  }
+
+  &__fact {
+    @include type.type-style("label-01");
+    color: theme.$text-helper;
+  }
+
+  &__row {
+    margin-top: $spacing-02;
+  }
+
+  &__progress {
+    margin-top: $spacing-03;
+  }
+
+  &__result {
+    margin-top: $spacing-03;
+    padding: $spacing-03 $spacing-04;
+    border-left: 3px solid theme.$border-subtle-01;
+    background: theme.$layer-02;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-01;
+    @include type.type-style("body-compact-01");
+
+    &--ok {
+      border-left-color: theme.$support-success;
+    }
+
+    &--warn {
+      border-left-color: theme.$support-warning;
+    }
+
+    &--error {
+      border-left-color: theme.$support-error;
+    }
+
+    span {
+      color: theme.$text-secondary;
+    }
+  }
+}
+
+.advanced-link {
+  @include type.type-style("body-compact-01");
+  color: theme.$text-secondary;
+  margin-top: $spacing-07;
+}

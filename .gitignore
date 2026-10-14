@@ -37,3 +37,6 @@ FigmaOutput/.vite/
 
 # --- logs ---
 *.log
+
+# Angular front end (MindReadyUI): the build cache
+MindReadyUI/.angular/

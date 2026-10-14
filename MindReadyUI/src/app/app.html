@@ -1,0 +1,18 @@
+<cds-header name="Mind Ready" [brand]="brand">
+  <cds-header-navigation>
+    <cds-header-item routerLink="/" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current" [routerLinkActiveOptions]="{ exact: true }">Main</cds-header-item>
+    <cds-header-item routerLink="/advanced" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current">Advanced</cds-header-item>
+  </cds-header-navigation>
+  <cds-header-global>
+    <span class="shell__version">{{ version() ? "v" + version() : "" }}{{ rules() ? " · " + rules() + " rules" : "" }}</span>
+  </cds-header-global>
+</cds-header>
+<ng-template #brand>
+  <a class="cds--header__name" routerLink="/" [queryParams]="sessionQuery()">
+    <span class="cds--header__name--prefix">Milliman&nbsp;</span>Mind Ready
+  </a>
+</ng-template>
+
+<main class="shell__content">
+  <router-outlet></router-outlet>
+</main>

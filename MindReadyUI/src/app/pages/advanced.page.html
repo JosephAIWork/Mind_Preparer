@@ -1,0 +1,115 @@
+<section class="page">
+  @if (!store.loaded()) {
+    <h1 class="page-title">Advanced</h1>
+    <p class="page-lead">No workbook is loaded. <a routerLink="/">Load one on the main screen.</a></p>
+  } @else {
+    <header class="head">
+      <div>
+        <h1 class="page-title">Advanced</h1>
+        <p class="page-lead">{{ store.summary()?.file_name }} · {{ store.currentVersion()?.label }}</p>
+      </div>
+      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }">Back to the main screen</a>
+    </header>
+
+    <div class="switch">
+      <button class="switch__item" [class.switch__item--on]="tab() === 'findings'" (click)="tab.set('findings')">Findings ({{ findings().length }})</button>
+      <button class="switch__item" [class.switch__item--on]="tab() === 'prep'" (click)="tab.set('prep')">Prep actions ({{ manualActions().length }})</button>
+      <button class="switch__item" [class.switch__item--on]="tab() === 'versions'" (click)="tab.set('versions')">Versions ({{ store.versions().length }})</button>
+    </div>
+
+    @switch (tab()) {
+      @case ("findings") {
+<div class="tab-body">
+          <label class="check">
+            <input type="checkbox" [checked]="onlyOpen()" (change)="onlyOpen.set(!onlyOpen())" />
+            Hide the rules that pass
+          </label>
+          <table class="list">
+            <thead>
+              <tr>
+                <th>Rule</th>
+                <th>Status</th>
+                <th>Where</th>
+                <th>Finding</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (f of findings(); track $index) {
+                <tr>
+                  <td class="mono">{{ f.rule_id }}</td>
+                  <td><cds-tag [type]="tag(f.status).type" size="sm">{{ tag(f.status).label }}</cds-tag></td>
+                  <td class="mono">{{ where(f) }}</td>
+                  <td>{{ f.message }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+      @case ("prep") {
+<div class="tab-body">
+          <p class="hint">What the main screen's buttons apply, one action at a time. Applying single actions by hand comes in the next chunk.</p>
+          <table class="list">
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Level</th>
+                <th>Rules</th>
+                <th>Changes</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (a of manualActions(); track a.id) {
+                <tr>
+                  <td>
+                    <strong>{{ a.title }}</strong>
+                    @if (a.caution) {
+                      <div class="hint">{{ a.caution }}</div>
+                    }
+                  </td>
+                  <td>{{ a.level }}</td>
+                  <td class="mono">{{ a.rule_ids.join(", ") }}</td>
+                  <td>{{ a.count }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+      @case ("versions") {
+<div class="tab-body">
+          @if (restoreLine()) {
+            <p class="hint">{{ restoreLine() }}</p>
+          }
+          <table class="list">
+            <thead>
+              <tr>
+                <th>Version</th>
+                <th>Source</th>
+                <th>Verified</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (v of versionsNewestFirst(); track v.id) {
+                <tr [class.current]="v.id === store.currentVersion()?.id">
+                  <td>{{ v.label }}</td>
+                  <td class="mono">{{ v.source }}</td>
+                  <td>{{ v.verified_opens_in_excel ? "opens in Excel" : "" }}</td>
+                  <td class="row-actions">
+                    @if (downloadUrl(v.file_name); as url) {
+                      <a cdsButton="ghost" size="sm" [href]="url">Download</a>
+                    }
+                    @if (v.id !== store.currentVersion()?.id) {
+                      <button cdsButton="ghost" size="sm" (click)="restore(v.id)">Make current</button>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    }
+  }
+</section>

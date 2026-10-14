@@ -1,0 +1,107 @@
+<section class="page">
+  @if (phase() === "idle") {
+    <h1 class="page-title">Make a workbook Mind ready</h1>
+    <p class="page-lead">Drop the Excel model here. The app reads it, then fixes what it can on its own.</p>
+
+    <div
+      class="drop"
+      [class.drop--over]="dragOver()"
+      (dragover)="onDragOver($event)"
+      (dragleave)="dragOver.set(false)"
+      (drop)="onDrop($event)"
+    >
+      <p class="drop__text">Drag an .xlsx or .xlsm workbook here</p>
+      <label class="cds--btn cds--btn--primary drop__button">
+        Choose a workbook
+        <input type="file" accept=".xlsx,.xlsm,.xlsb" (change)="onFileInput($event)" hidden />
+      </label>
+    </div>
+    @if (uploadError()) {
+      <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
+    }
+    <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+  } @else if (phase() === "uploading" || phase() === "scanning") {
+    <h1 class="page-title">Reading the workbook</h1>
+    <cds-inline-loading [state]="'active'" loadingText="{{ scanLine() }}"></cds-inline-loading>
+    <cds-progress-bar [label]="scanLine()" [helperText]="'A large model takes a minute or two.'" [value]="undefined" [max]="100"></cds-progress-bar>
+  } @else {
+    <header class="file">
+      <div>
+        <h1 class="page-title">{{ store.summary()?.file_name }}</h1>
+        <p class="file__meta">
+          {{ store.summary()?.sheet_count }} sheets · {{ store.summary()?.formula_count | number }} formulas · version {{ store.currentVersion()?.label }}
+        </p>
+      </div>
+      <div class="file__actions">
+        @if (downloadUrl(); as url) {
+          <a cdsButton="tertiary" size="md" [href]="url">Download this version</a>
+        }
+        <button cdsButton="ghost" size="md" (click)="loadAnother()" [disabled]="busy()">Load another</button>
+      </div>
+    </header>
+
+    @if (store.readiness(); as r) {
+      <cds-inline-notification
+        [notificationObj]="{ type: readinessKind(), title: readinessTitle(), message: readinessDetail(), lowContrast: true, showClose: false }"
+      ></cds-inline-notification>
+    }
+
+    <div class="actions">
+      <!-- Fix all issues -->
+      <cds-tile class="action">
+        <h2 class="action__title">Fix all issues</h2>
+        <p class="action__text">Prepares the workbook, fixes the formulas Mind would read differently, recalculates, and repeats until the recalculation is clean. Runs in the background; minutes to an hour.</p>
+        <p class="action__fact">{{ errorCount() }} error findings now</p>
+        <div class="action__row">
+          @if (!fixAll().running) {
+            <button cdsButton="primary" size="lg" (click)="runFixAll()" [disabled]="busy()">Fix all issues</button>
+          } @else {
+            <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
+          }
+        </div>
+        <ng-container *ngTemplateOutlet="result; context: { s: fixAll() }"></ng-container>
+      </cds-tile>
+
+      <!-- Fix the formulas -->
+      <cds-tile class="action">
+        <h2 class="action__title">Fix the formulas</h2>
+        <p class="action__text">Only the formula rewrites: broken references, blank cells in arithmetic, external links, spills, line breaks, error cells. Written through Excel as a new version.</p>
+        <p class="action__fact">{{ formulaCells() }} formulas to change</p>
+        <div class="action__row">
+          <button cdsButton="primary" size="lg" (click)="runFixFormulas()" [disabled]="busy()">Fix the formulas</button>
+        </div>
+        <ng-container *ngTemplateOutlet="result; context: { s: fixFormulas() }"></ng-container>
+      </cds-tile>
+
+      <!-- Build the Mind loop -->
+      <cds-tile class="action">
+        <h2 class="action__title">Build the Mind loop</h2>
+        <p class="action__text">Writes the macro's run loop as MM_LOOP and MM_RESULT formulas, from the model map, with the default choices.</p>
+        <p class="action__fact">{{ loopSummary() }}</p>
+        <div class="action__row">
+          <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()">Build the Mind loop</button>
+        </div>
+        <ng-container *ngTemplateOutlet="result; context: { s: loop() }"></ng-container>
+      </cds-tile>
+    </div>
+
+    <p class="advanced-link">
+      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }">Advanced</a>.
+    </p>
+  }
+</section>
+
+<ng-template #result let-s="s">
+  @if (s.running) {
+    <div class="action__progress">
+      <cds-progress-bar [label]="s.line" [helperText]="s.detail" [value]="s.fraction === null ? undefined : s.fraction * 100" [max]="100"></cds-progress-bar>
+    </div>
+  } @else if (s.line) {
+    <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
+      <strong>{{ s.line }}</strong>
+      @if (s.detail) {
+        <span>{{ s.detail }}</span>
+      }
+    </div>
+  }
+</ng-template>

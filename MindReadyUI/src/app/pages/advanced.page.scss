@@ -1,0 +1,105 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+.page {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: $spacing-07 $spacing-05 $spacing-09;
+}
+
+.page-title {
+  @include type.type-style("heading-04");
+  margin-bottom: $spacing-02;
+}
+
+.page-lead {
+  @include type.type-style("body-compact-01");
+  color: theme.$text-secondary;
+  margin-bottom: $spacing-06;
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: $spacing-05;
+}
+
+.tab-body {
+  padding: $spacing-05 0;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-03;
+  margin-bottom: $spacing-04;
+  @include type.type-style("body-compact-01");
+}
+
+.hint {
+  @include type.type-style("helper-text-01");
+  color: theme.$text-helper;
+  margin-bottom: $spacing-04;
+}
+
+.list {
+  width: 100%;
+  border-collapse: collapse;
+  background: theme.$layer-01;
+  @include type.type-style("body-compact-01");
+
+  th,
+  td {
+    text-align: left;
+    vertical-align: top;
+    padding: $spacing-03 $spacing-04;
+    border-bottom: 1px solid theme.$border-subtle-01;
+  }
+
+  th {
+    @include type.type-style("heading-compact-01");
+    background: theme.$layer-accent-01;
+  }
+
+  tr.current td {
+    background: theme.$layer-selected-01;
+  }
+}
+
+.mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.row-actions {
+  white-space: nowrap;
+}
+
+.switch {
+  display: inline-flex;
+  border: 1px solid theme.$border-subtle-01;
+  margin-bottom: $spacing-03;
+
+  &__item {
+    @include type.type-style("body-compact-01");
+    font-family: inherit;
+    background: theme.$layer-01;
+    color: theme.$text-secondary;
+    border: 0;
+    border-right: 1px solid theme.$border-subtle-01;
+    padding: $spacing-04 $spacing-05;
+    cursor: pointer;
+
+    &:last-child {
+      border-right: 0;
+    }
+
+    &--on {
+      background: theme.$layer-selected-inverse;
+      color: theme.$text-inverse;
+    }
+  }
+}
