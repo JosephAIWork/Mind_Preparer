@@ -1,0 +1,42 @@
+<div class="panel">
+  <h3 class="panel__h">Reports</h3>
+  <p class="hint">A standalone report workbook (Summary + Findings) and a copy of the current version with the report sheets added, both written by Excel.</p>
+  <div class="row">
+    <button cdsButton="primary" size="md" (click)="build()" [disabled]="building()">{{ reports() ? "Generate again" : "Generate reports" }}</button>
+    @if (building()) { <cds-inline-loading [state]="'active'" loadingText="Writing the reports in Excel…"></cds-inline-loading> }
+  </div>
+  @if (reports(); as r) {
+    <div class="row">
+      @if (url(r.standalone_name); as u) { <a cdsButton="tertiary" size="md" [href]="u">Download the report</a> }
+      @if (url(r.workbook_name); as u) { <a cdsButton="tertiary" size="md" [href]="u">Download the workbook with report sheets</a> }
+    </div>
+    <p class="hint">{{ r.method === "excel_com" ? "Written by Excel" : "Written without Excel (reduced fidelity)" }}{{ r.verified_opens_in_excel ? " · opens in Excel" : "" }}</p>
+    @for (w of r.warnings; track $index) { <p class="card__caution">{{ w }}</p> }
+  }
+
+  <h3 class="panel__h">Did the numbers change?</h3>
+  <p class="hint">Recalculates the original and the current version in Excel and compares every cell through the row-insert map. Content writes are skipped; formula rewrites must keep the value.</p>
+  <div class="row">
+    <button cdsButton="secondary" size="md" (click)="check()" [disabled]="checking()">{{ numbers() ? "Check again" : "Check the numbers" }}</button>
+    @if (checking()) { <cds-inline-loading [state]="'active'" loadingText="Comparing… a few minutes for a large model"></cds-inline-loading> }
+  </div>
+  @if (error()) { <div class="result result--error"><strong>Failed</strong><span>{{ error() }}</span></div> }
+  @if (numbers(); as n) {
+    <div class="result" [class.result--ok]="n.clean === true" [class.result--error]="n.clean === false" [class.result--warn]="n.clean === null">
+      <strong>{{ n.verdict }}</strong>
+      <span>
+        @for (c of countRows(); track c[0]) { {{ c[0] }} {{ c[1] }} · }
+        @if (n.regressions) { {{ n.regressions }} regressions · }
+        @if (numbersStale()) { from an earlier version ({{ n.version_id }}) }
+      </span>
+    </div>
+    @if (sampleRows().length) {
+      <table class="list">
+        <thead><tr><th>Kind</th><th>Original</th><th>Now</th><th>Was</th><th>Is</th></tr></thead>
+        <tbody>
+          @for (s of sampleRows(); track $index) { <tr><td>{{ s.kind }}</td><td class="mono">{{ s.original }}</td><td class="mono">{{ s.now }}</td><td class="mono">{{ s.was }}</td><td class="mono">{{ s.is }}</td></tr> }
+        </tbody>
+      </table>
+    }
+  }
+</div>

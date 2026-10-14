@@ -2,7 +2,7 @@ import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import {
-  ApplyOutcome, AppHealth, AutoFixStatus, LoopPlan, Mode, Operation, PendingUpload, ScanStatus, SessionStart, Version, Readiness, PrepProgress, RecalcResult,
+  ApplyOutcome, AppHealth, AutoFixStatus, CellWindow, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, LoopPlan, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -80,6 +80,73 @@ export class ApiService {
 
   reanalyze(id: string, versionId: string): Promise<Partial<SessionStart>> {
     return firstValueFrom(this.http.post<Partial<SessionStart>>(`${this.s(id)}/reanalyze`, { versionId }));
+  }
+
+  modelMap(id: string, refresh = false): Promise<{ version_id: string; map: ModelMap }> {
+    const params = refresh ? new HttpParams().set("refresh", "true") : new HttpParams();
+    return firstValueFrom(this.http.get<{ version_id: string; map: ModelMap }>(`${this.s(id)}/model-map`, { params }));
+  }
+
+  cellWindow(id: string, sheet: string, cell: string, rows = 3, cols = 3): Promise<CellWindow> {
+    const params = new HttpParams().set("sheet", sheet).set("cell", cell).set("rows", String(rows)).set("cols", String(cols));
+    return firstValueFrom(this.http.get<CellWindow>(`${this.s(id)}/cells`, { params }));
+  }
+
+  numbersCheck(id: string): Promise<NumbersCheck> {
+    return firstValueFrom(this.http.post<NumbersCheck>(`${this.s(id)}/numbers-check`, {}));
+  }
+
+  generateReports(id: string): Promise<ReportBuild> {
+    return firstValueFrom(this.http.post<ReportBuild>(`${this.s(id)}/reports`, {}));
+  }
+
+  startMindLoop(id: string, opts: MindLoopOptions): Promise<{ state: string; work_dir?: string }> {
+    return firstValueFrom(this.http.post<{ state: string; work_dir?: string }>(`${this.s(id)}/mind-loop`, opts));
+  }
+
+  mindLoopStatus(id: string, after = 0): Promise<MindLoopStatus> {
+    const params = new HttpParams().set("after", String(after));
+    return firstValueFrom(this.http.get<MindLoopStatus>(`${this.s(id)}/mind-loop`, { params }));
+  }
+
+  /** The assistant's streamed answer (NDJSON over a POST body): `onEvent` gets phases and text deltas, the promise the whole reply. */
+  async chatStream(id: string, history: ChatMessage[], question: string, focus: FixTarget | undefined, onEvent: (ev: ChatStreamEvent) => void): Promise<ChatReply> {
+    const body = {
+      history: history.map((m) => ({ role: m.role, content: m.content, note: m.note ?? false })),
+      question,
+      focus: focus
+        ? { kind: focus.kind ?? "finding", rule_id: focus.rule_id, sheet: focus.sheet, cell: focus.cell, error: focus.error, formula: focus.formula, addin_gap: focus.addin_gap ?? false, cells: focus.cells, cause: focus.cause }
+        : undefined,
+    };
+    const res = await fetch(`${this.s(id)}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok || !res.body) {
+      const err = await res.json().catch(() => null);
+      throw new Error(typeof err?.detail === "string" ? err.detail : `${res.status} ${res.statusText}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let reply: ChatReply | null = null;
+    const handle = (line: string) => {
+      if (!line.trim()) return;
+      const ev = JSON.parse(line);
+      if (ev.type === "done") reply = { text: ev.text, proposal: ev.proposal ?? null, provenance: ev.provenance };
+      else if (ev.type === "error") throw new Error(ev.detail || "the assistant failed");
+      else if (ev.type === "phase" || ev.type === "delta") onEvent(ev as ChatStreamEvent);
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        handle(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    if (buffer.trim()) handle(buffer);
+    if (!reply) throw new Error("the assistant sent no answer");
+    return reply;
   }
 
   downloadUrl(id: string, fileName: string): string {

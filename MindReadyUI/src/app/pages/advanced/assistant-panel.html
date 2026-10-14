@@ -1,0 +1,53 @@
+<div class="panel chat">
+  @if (target(); as t) {
+    <div class="chat__target">
+      <span>Asking about <strong>{{ targetText(t) }}</strong></span>
+      @if (t.formula) { <span class="mono">{{ t.formula }}</span> }
+      <button class="link" (click)="clearTarget()">Ask about the whole workbook instead</button>
+    </div>
+  } @else {
+    <p class="hint">Ask about the workbook, or press "Ask the assistant" on a finding or a recalculation error to point it at one cell.</p>
+  }
+
+  <div class="chat__log">
+    @for (m of store.chatHistory(); track trackMsg($index, m)) {
+      <div class="bubble" [class.bubble--user]="m.role === 'user'" [class.bubble--note]="m.note" [class.bubble--ok]="m.tone === 'success'" [class.bubble--warn]="m.tone === 'warning'">{{ m.content }}</div>
+    }
+    @if (streaming()) {
+      <div class="bubble bubble--draft">
+        @if (partial()) { {{ partial() }} } @else { <span class="hint">{{ phase() }}</span> }
+      </div>
+    }
+  </div>
+
+  @if (error()) {
+    <div class="result result--error"><strong>The assistant failed</strong><span>{{ error() }}</span></div>
+  }
+
+  @if (proposal(); as p) {
+    <div class="card">
+      <div class="card__head"><span class="card__title">Proposed: {{ p.summary || p.operations.length + " changes" }}</span><span class="card__count">{{ p.operations.length }} changes</span></div>
+      <ul class="ops mono">
+        @for (o of p.operations.slice(0, 40); track $index) { <li>{{ opText(o) }}</li> }
+        @if (p.operations.length > 40) { <li>… {{ p.operations.length - 40 }} more</li> }
+      </ul>
+      @for (e of p.errors; track $index) { <p class="card__caution">{{ e }}</p> }
+      <div class="row">
+        <button cdsButton="primary" size="sm" (click)="apply()" [disabled]="applying()">Apply {{ p.operations.length }} changes</button>
+        <button cdsButton="ghost" size="sm" (click)="discard()" [disabled]="applying()">Discard</button>
+      </div>
+      @if (applying()) {
+        <cds-progress-bar [label]="applyLine()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+      }
+    </div>
+  }
+
+  <div class="chat__prompts">
+    @for (q of prompts(); track q) { <button class="chip chip--button" (click)="send(q)" [disabled]="streaming()">{{ q }}</button> }
+  </div>
+  <div class="chat__input">
+    <textarea rows="2" [value]="draft()" (input)="draft.set(value($event))" (keydown)="onKey($event)" placeholder="Ask… (Enter sends, Shift+Enter for a new line)" [disabled]="streaming()"></textarea>
+    <button cdsButton="primary" size="md" (click)="send(draft())" [disabled]="streaming() || !draft().trim()">Send</button>
+    @if (store.chatHistory().length) { <button cdsButton="ghost" size="md" (click)="clear()" [disabled]="streaming()">Clear</button> }
+  </div>
+</div>

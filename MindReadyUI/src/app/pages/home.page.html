@@ -20,6 +20,27 @@
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
     <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+  } @else if (phase() === "choose" && pending(); as p) {
+    <h1 class="page-title">A big workbook</h1>
+    <p class="page-lead">{{ p.size.message }} Leaving sheets out makes the scan shorter; {{ p.size.estimate_text ? "the whole file takes about " + p.size.estimate_text + "." : "" }}</p>
+    <table class="sheets">
+      <thead><tr><th>Skip</th><th>Sheet</th><th>Unpacked</th><th>Share</th></tr></thead>
+      <tbody>
+        @for (s of p.size.sheets; track s.name) {
+          <tr>
+            <td><input type="checkbox" [checked]="skip().has(s.name)" (change)="toggleSkip(s.name)" /></td>
+            <td>{{ s.name }}{{ s.state !== "visible" ? " (" + s.state + ")" : "" }}</td>
+            <td class="mono">{{ mb(s.bytes) }}</td>
+            <td><div class="share"><div class="share__bar" [style.width.%]="s.share * 100"></div></div></td>
+          </tr>
+        }
+      </tbody>
+    </table>
+    <div class="file__actions">
+      <button cdsButton="primary" size="md" (click)="scan(p.sessionId, [...skip()])" [disabled]="!skip().size">Scan without {{ skip().size }} sheet{{ skip().size === 1 ? "" : "s" }}</button>
+      <button cdsButton="secondary" size="md" (click)="scan(p.sessionId, [])">Scan everything</button>
+      <button cdsButton="ghost" size="md" (click)="cancelChoose()">Choose another file</button>
+    </div>
   } @else if (phase() === "uploading" || phase() === "scanning") {
     <h1 class="page-title">Reading the workbook</h1>
     <cds-inline-loading [state]="'active'" loadingText="{{ scanLine() }}"></cds-inline-loading>

@@ -29,6 +29,7 @@
             <th>Cell</th>
             <th>Error</th>
             <th>Formula</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -37,6 +38,7 @@
               <td class="mono">{{ e.sheet }}!{{ e.cell }}</td>
               <td class="mono">{{ e.error }}</td>
               <td class="mono">{{ e.formula }}</td>
+              <td class="ask"><button cdsButton="ghost" size="sm" (click)="ask(e)">Ask the assistant</button></td>
             </tr>
           }
         </tbody>

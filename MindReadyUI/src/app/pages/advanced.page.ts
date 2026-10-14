@@ -5,7 +5,11 @@ import { ButtonModule, ContentSwitcherModule, TagModule } from "carbon-component
 import { ApiService, errorText } from "../core/api.service";
 import { Finding, Status } from "../core/models";
 import { SessionStore } from "../core/session.store";
+import { AssistantPanel } from "./advanced/assistant-panel";
+import { DeliverPanel } from "./advanced/deliver-panel";
 import { LoopPanel } from "./advanced/loop-panel";
+import { MapPanel } from "./advanced/map-panel";
+import { MindRunPanel } from "./advanced/mind-run-panel";
 import { PrepPanel } from "./advanced/prep-panel";
 import { RecalcPanel } from "./advanced/recalc-panel";
 
@@ -21,7 +25,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, PrepPanel, RecalcPanel, LoopPanel],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
@@ -29,7 +33,8 @@ export class AdvancedPage {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
   readonly onlyOpen = signal(true);
-  readonly tab = signal<"findings" | "prep" | "recalc" | "loop" | "versions">("findings");
+  readonly tab = this.store.advancedTab;
+  readonly openChanges = signal<Set<string>>(new Set());
   readonly restoreLine = signal("");
 
   readonly findings = computed<Finding[]>(() => {
@@ -49,6 +54,27 @@ export class AdvancedPage {
     const loc = (f.location ?? {}) as { sheet?: string; cell?: string; ref?: string };
     if (!loc.sheet && !loc.cell && !loc.ref) return "";
     return [loc.sheet, loc.cell ?? loc.ref].filter(Boolean).join("!");
+  }
+
+  askAbout(f: Finding): void {
+    const loc = (f.location ?? {}) as { sheet?: string; cell?: string; ref?: string };
+    this.store.ask({ kind: "finding", rule_id: f.rule_id, sheet: loc.sheet, cell: loc.cell ?? loc.ref });
+  }
+
+  changesOpen(id: string): boolean {
+    return this.openChanges().has(id);
+  }
+
+  toggleChanges(id: string): void {
+    const next = new Set(this.openChanges());
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    this.openChanges.set(next);
+  }
+
+  changeText(c: { op?: string; sheet?: string; cell?: string; after?: unknown; note?: string }): string {
+    const after = c.after === undefined || c.after === null || c.after === "" ? "" : " → " + String(c.after).slice(0, 80);
+    return `${c.op ?? ""} ${c.sheet ?? ""}!${c.cell ?? ""}${after}${c.note ? " (" + String(c.note).slice(0, 60) + ")" : ""}`;
   }
 
   downloadUrl(fileName: string): string | null {

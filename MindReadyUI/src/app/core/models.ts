@@ -68,7 +68,7 @@ export interface Version {
   sha256?: string;
   created_at?: string;
   source: string;
-  change_log?: unknown[];
+  change_log?: { op?: string; sheet?: string; cell?: string; before?: unknown; after?: unknown; note?: string; action_id?: string; rule_id?: string }[];
   verified_opens_in_excel?: boolean;
 }
 
@@ -130,7 +130,7 @@ export interface PendingUpload {
   pending: true;
   sessionId: string;
   mode: Mode;
-  size: unknown;
+  size: SizeInfo;
   version: Version;
   versions: Version[];
   scan: ScanStatus;
@@ -283,3 +283,212 @@ export const FORMULA_ACTION_IDS = new Set([
   "keep_error_cells",
   "empty_cells_as_zero",
 ]);
+
+// ---- chunks 3 + 4 --------------------------------------------------------------------------
+export interface MapCell {
+  cell: string | null;
+  name?: string | null;
+  label?: string | null;
+  value?: unknown;
+  evidence?: string;
+  how?: string;
+}
+
+export interface ModelMap {
+  workbook: string;
+  has_macros: boolean;
+  notes: string[];
+  sheets: { name: string; role: string; dims: string | null; state: string | null; grids: number }[];
+  loop: {
+    found: boolean;
+    how_to_run: string | null;
+    drivers: (MapCell & { macro: string; loop_var: string; set_from?: string | null; set_from_name?: string | null; nested_depth: number })[];
+    bounds: (MapCell & { role: "first" | "last"; formula?: string | null; macro: string })[];
+    item_cells: (MapCell & { macro: string; template_sheet: string | null; template_present: boolean })[];
+    key_cells: (MapCell & { readers: number; cells: number })[];
+    entry_points: string[];
+    macros: { procedure: string; module: string | null; var: string; from: string; to: string; depth: number; drivers: string[]; outputs: number }[];
+  };
+  inputs: {
+    per_item: { cell: string; what: string; macro: string }[];
+    sheets: { sheet: string; formulas: number; state: string | null; why: string }[];
+    tables: { name: string; cell: string; readers: number; role: string }[];
+  };
+  run_settings: {
+    switches: (MapCell & { options: string[]; how: string })[];
+    named_settings: (MapCell & { readers: number; switch_like: boolean })[];
+    labelled: { sheet: string; cell: string; label: string; value: unknown }[];
+    status: (MapCell & { written_in: string[] })[];
+    tables: { name: string; cell: string; readers: number; role: string }[];
+  };
+  outputs: {
+    cells: (MapCell & { from: string | null; from_name: string | null; written_by: string; when: string })[];
+    sheets: { sheet: string; formulas: number; why: string }[];
+    saves: { in: string; path_from: string | null; name: string | null }[];
+  };
+  macros: { procedures: { name: string; module: string | null; statements: number; calls: string[] }[]; entry_points: string[] };
+}
+
+export interface WindowCell {
+  ref: string;
+  value: unknown;
+  formula: string | null;
+  array: string | null;
+  error: boolean;
+  focus: boolean;
+}
+
+export interface CellWindow {
+  sheet: string;
+  focus: string;
+  range?: string;
+  columns: string[];
+  rows: { row: number; cells: WindowCell[] }[];
+  values_from?: string;
+  error?: string;
+}
+
+export interface RecalcCell {
+  sheet: string;
+  cell: string;
+  formula: string;
+  error: string;
+  array?: string;
+  preexisting?: boolean;
+}
+
+/** What the assistant is asked about: a finding, or one recalculation error. */
+export interface FixTarget {
+  kind?: "finding" | "recalc" | "recalc-group";
+  rule_id: string;
+  sheet?: string;
+  cell?: string;
+  error?: string;
+  formula?: string;
+  addin_gap?: boolean;
+  cells?: RecalcCell[];
+  cause?: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  note?: boolean;
+  tone?: "success" | "warning";
+}
+
+export interface Proposal {
+  summary: string | null;
+  operations: Operation[];
+  errors: string[];
+}
+
+export interface ChatReply {
+  text: string;
+  proposal: Proposal | null;
+  provenance?: { context_chars: number; detail_chars: number; lookups: number };
+}
+
+export type ChatStreamEvent = { type: "phase"; phase: string; n?: number } | { type: "delta"; text: string };
+
+export interface MindLoopOptions {
+  maxIterations?: number;
+  useAssistant?: boolean;
+  runModel?: boolean;
+  checkNumbers?: boolean;
+  skipMind?: boolean;
+  enable?: string[];
+  disable?: string[];
+}
+
+export interface MindLoopEvent {
+  t: number;
+  event: string;
+  message?: string;
+  n?: number;
+  verdict?: string;
+}
+
+export interface MindLoopIteration {
+  n: number;
+  enabled: string[];
+  disabled: string[];
+  actions: { id: string; count: number }[];
+  apply?: { status: string; applied: number; failed: number; verified: boolean | null; message: string; output: string };
+  names?: { grids: number; baseline_grids: number; fragmented: boolean; unnamed: number; ok: boolean };
+  numbers?: { ran: boolean; match?: boolean; compared?: number; differences?: number; message?: string };
+  mind?: {
+    skipped: boolean;
+    reason?: string;
+    error?: string;
+    convert?: { success: boolean; steps: Record<string, string>; errors: string[] };
+    counts?: { mind_untitled: number | null; app_untitled: number };
+    run?: { completed: boolean; audit_consistent: boolean; seconds: number | null };
+  };
+  decision?: { verdict: "converged" | "retry" | "stuck"; reason: string; enable: string[]; disable: string[] };
+}
+
+export interface MindLoopReport {
+  source: string;
+  started: string;
+  finished?: string;
+  iterations: MindLoopIteration[];
+  projects: { name: string; status: string; ran: boolean; delete?: string }[];
+  verdict: "converged" | "stuck" | "exhausted" | null;
+  reason: string | null;
+  final_workbook?: string;
+  leftover_projects?: string[];
+}
+
+export interface MindLoopStatus {
+  state: "idle" | "running" | "done" | "error";
+  events: MindLoopEvent[];
+  next: number;
+  report: MindLoopReport | null;
+  error?: string | null;
+  summary?: string | null;
+  work_dir?: string;
+}
+
+export interface NumbersCheck {
+  ran: boolean;
+  clean: boolean | null;
+  verdict: string;
+  version_id?: string;
+  counts: Record<string, number>;
+  by_sheet?: Record<string, Record<string, number>>;
+  samples?: Record<string, { original: string; now: string; was: string; is?: string }[]>;
+  moves?: { row_inserts: number; column_inserts: number; sheet_renames: number };
+  regressions?: number;
+}
+
+export interface ReportBuild {
+  standalone_name: string;
+  workbook_name: string;
+  method: "excel_com" | "openpyxl";
+  verified_opens_in_excel: boolean | null;
+  warnings: string[];
+}
+
+export interface SheetPart {
+  name: string;
+  state: "visible" | "hidden" | "veryHidden";
+  index: number;
+  bytes: number;
+  compressed_bytes: number;
+  share: number;
+}
+
+export interface SizeInfo {
+  format: string;
+  file_bytes: number;
+  decompressed_bytes: number;
+  file_mb: number;
+  decompressed_mb: number;
+  threshold_mb: number;
+  above_threshold: boolean;
+  estimate_text?: string;
+  message: string;
+  sheets: SheetPart[];
+  warnings: string[];
+}

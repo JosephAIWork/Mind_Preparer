@@ -217,3 +217,131 @@
     color: theme.$text-on-color;
   }
 }
+
+.peek-row {
+  padding: 0 !important;
+  border-bottom: 0 !important;
+}
+
+.peek {
+  padding: $spacing-03 $spacing-05 $spacing-04;
+  background: theme.$layer-02;
+
+  table {
+    width: auto;
+    background: theme.$layer-01;
+  }
+
+  &__focus {
+    outline: 2px solid theme.$interactive;
+    outline-offset: -2px;
+  }
+
+  &__error {
+    color: theme.$text-error;
+  }
+}
+
+.chat {
+  &__target {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $spacing-04;
+    align-items: center;
+    padding: $spacing-03 $spacing-04;
+    background: theme.$layer-01;
+    border-left: 3px solid theme.$border-interactive;
+    @include type.type-style("body-compact-01");
+  }
+
+  &__log {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-03;
+    max-height: 32rem;
+    overflow: auto;
+    padding: $spacing-02 0;
+  }
+
+  &__prompts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $spacing-03;
+  }
+
+  &__input {
+    display: flex;
+    gap: $spacing-03;
+    align-items: flex-start;
+
+    textarea {
+      flex: 1;
+      font: inherit;
+      font-size: 0.875rem;
+      color: theme.$text-primary;
+      background: theme.$field-01;
+      border: 0;
+      border-bottom: 1px solid theme.$border-strong-01;
+      padding: $spacing-03 $spacing-04;
+      resize: vertical;
+    }
+  }
+}
+
+.bubble {
+  max-width: 48rem;
+  padding: $spacing-03 $spacing-05;
+  background: theme.$layer-01;
+  white-space: pre-wrap;
+  @include type.type-style("body-01");
+
+  &--user {
+    align-self: flex-end;
+    background: theme.$layer-selected-inverse;
+    color: theme.$text-inverse;
+  }
+
+  &--draft {
+    color: theme.$text-secondary;
+  }
+
+  &--note {
+    @include type.type-style("label-01");
+    border-left: 3px solid theme.$border-subtle-01;
+  }
+
+  &--ok {
+    border-left-color: theme.$support-success;
+  }
+
+  &--warn {
+    border-left-color: theme.$support-warning;
+  }
+}
+
+.chip--button {
+  border: 1px solid theme.$border-subtle-01;
+  background: theme.$layer-01;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: $spacing-02 $spacing-04;
+
+  &:hover {
+    background: theme.$layer-hover-01;
+  }
+}
+
+.log {
+  background: #161616;
+  color: #c6c6c6;
+  padding: $spacing-04 $spacing-05;
+  max-height: 20rem;
+  overflow: auto;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.ask {
+  white-space: nowrap;
+}

@@ -3,10 +3,10 @@ import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
 import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
-import { FORMULA_ACTION_IDS, LoopPlan, Operation, isPending } from "../core/models";
+import { FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, isPending } from "../core/models";
 import { SessionStore } from "../core/session.store";
 
-type Phase = "idle" | "uploading" | "scanning" | "loaded";
+type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
 interface ActionState {
   running: boolean;
   fraction: number | null;
@@ -34,6 +34,8 @@ export class HomePage implements OnDestroy {
   readonly scanLine = signal("");
   readonly uploadError = signal("");
   readonly dragOver = signal(false);
+  readonly pending = signal<PendingUpload | null>(null);
+  readonly skip = signal<Set<string>>(new Set());
   readonly fixAll = signal<ActionState>(idle());
   readonly fixFormulas = signal<ActionState>(idle());
   readonly loop = signal<ActionState>(idle());
@@ -107,25 +109,64 @@ export class HomePage implements OnDestroy {
     try {
       const started = await this.api.upload(file, "plan", true);
       if (isPending(started)) {
-        this.phase.set("scanning");
-        const id = started.sessionId;
-        const poll = this.pollScan(id);
-        const full = await this.api.analyze(id, []);
-        poll.stop();
-        this.store.setSession(full);
+        // A big workbook with several sheets: let the user leave sheets out before the scan.
+        if (started.size?.above_threshold && started.size.sheets?.length > 1) {
+          this.pending.set(started);
+          this.skip.set(new Set());
+          this.phase.set("choose");
+          return;
+        }
+        await this.scan(started.sessionId, []);
       } else {
         this.store.setSession(started);
+        this.afterLoad();
       }
-      this.phase.set("loaded");
-      this.fixAll.set(idle());
-      this.fixFormulas.set(idle());
-      this.loop.set(idle());
-      void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
-      void this.loadLoopPlan();
     } catch (e) {
       this.uploadError.set(errorText(e));
       this.phase.set("idle");
     }
+  }
+
+  async scan(id: string, ignoreSheets: string[]): Promise<void> {
+    this.phase.set("scanning");
+    this.scanLine.set("Reading the workbook…");
+    const poll = this.pollScan(id);
+    try {
+      const full = await this.api.analyze(id, ignoreSheets);
+      this.store.setSession(full);
+      this.afterLoad();
+    } catch (e) {
+      this.uploadError.set(errorText(e));
+      this.phase.set("idle");
+    } finally {
+      poll.stop();
+    }
+  }
+
+  private afterLoad(): void {
+    this.phase.set("loaded");
+    this.pending.set(null);
+    this.fixAll.set(idle());
+    this.fixFormulas.set(idle());
+    this.loop.set(idle());
+    void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
+    void this.loadLoopPlan();
+  }
+
+  toggleSkip(name: string): void {
+    const next = new Set(this.skip());
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    this.skip.set(next);
+  }
+
+  mb(bytes: number): string {
+    return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  cancelChoose(): void {
+    this.pending.set(null);
+    this.phase.set("idle");
   }
 
   private pollScan(id: string): { stop: () => void } {

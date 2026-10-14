@@ -139,3 +139,39 @@
   color: theme.$text-secondary;
   margin-top: $spacing-07;
 }
+
+.sheets {
+  width: 100%;
+  border-collapse: collapse;
+  background: theme.$layer-01;
+  margin-bottom: $spacing-05;
+  @include type.type-style("body-compact-01");
+
+  th,
+  td {
+    text-align: left;
+    padding: $spacing-03 $spacing-04;
+    border-bottom: 1px solid theme.$border-subtle-01;
+  }
+
+  th {
+    @include type.type-style("heading-compact-01");
+    background: theme.$layer-accent-01;
+  }
+}
+
+.mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+}
+
+.share {
+  width: 8rem;
+  height: 0.5rem;
+  background: theme.$layer-accent-01;
+
+  &__bar {
+    height: 100%;
+    background: theme.$interactive;
+  }
+}

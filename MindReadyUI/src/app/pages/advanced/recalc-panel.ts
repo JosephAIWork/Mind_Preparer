@@ -34,6 +34,10 @@ export class RecalcPanel {
     return s === "PASS" ? "chip chip--ok" : s === "ERROR" ? "chip chip--error" : s ? "chip chip--warn" : "chip";
   });
 
+  ask(e: { sheet: string; cell: string; error: string; formula?: string }, addinGap = false): void {
+    this.store.ask({ kind: "recalc", rule_id: "RECALC", sheet: e.sheet, cell: e.cell, error: e.error, formula: e.formula, addin_gap: addinGap });
+  }
+
   async run(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.running()) return;

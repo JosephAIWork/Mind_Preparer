@@ -1,0 +1,180 @@
+<div class="panel">
+  <div class="row">
+    <p class="hint">Where the model's inputs, loop driver, run settings and outputs are, read from the VBA, the defined names, the dropdowns and the formulas. Deterministic only.</p>
+    <button cdsButton="ghost" size="sm" (click)="load(true)" [disabled]="loading()">Read again</button>
+  </div>
+  @if (loading()) {
+    <cds-inline-loading [state]="'active'" loadingText="Reading the model…"></cds-inline-loading>
+  }
+  @if (error()) {
+    <div class="result result--error"><strong>Could not read the model map</strong><span>{{ error() }}</span></div>
+  }
+
+  <ng-template #peekBox let-ref="ref">
+    @if (peek(); as pk) {
+      @if (pk.key === ref) {
+        <div class="peek">
+          @if (pk.error) {
+            <span class="hint">{{ pk.error }}</span>
+          } @else if (!pk.window) {
+            <span class="hint">Reading…</span>
+          } @else {
+            <table class="list mono">
+              <thead>
+                <tr>
+                  <th></th>
+                  @for (c of pk.window.columns; track c) { <th>{{ c }}</th> }
+                </tr>
+              </thead>
+              <tbody>
+                @for (r of pk.window.rows; track r.row) {
+                  <tr>
+                    <th>{{ r.row }}</th>
+                    @for (c of r.cells; track c.ref) {
+                      <td [class.peek__focus]="c.focus" [class.peek__error]="c.error" [title]="c.formula ?? ''">{{ text(c.value) }}</td>
+                    }
+                  </tr>
+                }
+              </tbody>
+            </table>
+            @if (pk.window.values_from) { <span class="hint">values from {{ pk.window.values_from }}</span> }
+          }
+        </div>
+      }
+    }
+  </ng-template>
+
+  @if (map(); as m) {
+    @for (n of m.notes; track $index) { <p class="hint">{{ n }}</p> }
+
+    <h3 class="panel__h">The loop</h3>
+    @if (!m.loop.found) {
+      <p class="hint">No run loop found.</p>
+    } @else {
+      @if (m.loop.how_to_run) { <p class="card__caution">{{ m.loop.how_to_run }}</p> }
+      <table class="list">
+        <thead><tr><th>Driver cell</th><th>Set from</th><th>Macro</th><th>How</th><th></th></tr></thead>
+        <tbody>
+          @for (d of m.loop.drivers; track $index) {
+            <tr>
+              <td class="mono">{{ d.cell }}{{ d.name ? " (" + d.name + ")" : "" }}</td>
+              <td class="mono">{{ d.set_from_name || d.set_from || "" }}</td>
+              <td>{{ d.macro }} · {{ d.loop_var }}</td>
+              <td>{{ d.how }}</td>
+              <td><button class="link" (click)="show(d.cell ?? '')">Show</button></td>
+            </tr>
+            <tr><td colspan="5" class="peek-row"><ng-container *ngTemplateOutlet="peekBox; context: { ref: d.cell }"></ng-container></td></tr>
+          }
+          @for (b of m.loop.bounds; track $index) {
+            <tr>
+              <td class="mono">{{ b.cell }}{{ b.name ? " (" + b.name + ")" : "" }}</td>
+              <td>{{ b.role }} value{{ b.value !== undefined && b.value !== null ? ": " + text(b.value) : "" }}{{ b.formula ? " = " + b.formula : "" }}</td>
+              <td>{{ b.macro }}</td>
+              <td>{{ b.evidence }}</td>
+              <td><button class="link" (click)="show(b.cell ?? '')">Show</button></td>
+            </tr>
+            <tr><td colspan="5" class="peek-row"><ng-container *ngTemplateOutlet="peekBox; context: { ref: b.cell }"></ng-container></td></tr>
+          }
+        </tbody>
+      </table>
+    }
+
+    <h3 class="panel__h">Inputs</h3>
+    @if (m.inputs.sheets.length) {
+      <table class="list">
+        <thead><tr><th>Sheet</th><th>Formulas</th><th>Why</th></tr></thead>
+        <tbody>
+          @for (s of m.inputs.sheets; track s.sheet) { <tr><td>{{ s.sheet }}</td><td>{{ s.formulas }}</td><td>{{ s.why }}</td></tr> }
+        </tbody>
+      </table>
+    }
+    @if (m.inputs.per_item.length) {
+      <p class="hint">Per loop item: @for (i of m.inputs.per_item; track $index) { <span class="mono">{{ i.cell }}</span> {{ i.what }} ({{ i.macro }}) }</p>
+    }
+
+    <h3 class="panel__h">Run settings</h3>
+    @if (m.run_settings.switches.length || m.run_settings.status.length) {
+      <table class="list">
+        <thead><tr><th>Cell</th><th>Name</th><th>Value</th><th>How</th><th></th></tr></thead>
+        <tbody>
+          @for (s of m.run_settings.switches; track $index) {
+            <tr>
+              <td class="mono">{{ s.cell }}</td><td>{{ s.name || s.label }}</td><td class="mono">{{ text(s.value) }}</td><td>{{ s.how }}{{ s.options?.length ? " · " + s.options.join(" / ") : "" }}</td>
+              <td><button class="link" (click)="show(s.cell ?? '')">Show</button></td>
+            </tr>
+            <tr><td colspan="5" class="peek-row"><ng-container *ngTemplateOutlet="peekBox; context: { ref: s.cell }"></ng-container></td></tr>
+          }
+          @for (s of m.run_settings.status; track $index) {
+            <tr><td class="mono">{{ s.cell }}</td><td>{{ s.name || s.label }}</td><td class="mono">{{ text(s.value) }}</td><td>status, written in {{ s.written_in.join(", ") }}</td><td></td></tr>
+          }
+        </tbody>
+      </table>
+    }
+    @if (m.run_settings.named_settings.length || m.run_settings.labelled.length) {
+      <table class="list">
+        <thead><tr><th>Cell</th><th>Name / label</th><th>Value</th><th>Readers</th></tr></thead>
+        <tbody>
+          @for (s of limit(m.run_settings.named_settings, "named"); track $index) {
+            <tr><td class="mono">{{ s.cell }}</td><td>{{ s.name }}</td><td class="mono">{{ text(s.value) }}</td><td>{{ s.readers }}</td></tr>
+          }
+          @for (l of limit(m.run_settings.labelled, "labelled"); track $index) {
+            <tr><td class="mono">{{ l.sheet }}!{{ l.cell }}</td><td>{{ l.label }}</td><td class="mono">{{ text(l.value) }}</td><td></td></tr>
+          }
+        </tbody>
+      </table>
+      @if (m.run_settings.named_settings.length > 12 || m.run_settings.labelled.length > 12) {
+        <button class="link" (click)="toggleMore('named'); toggleMore('labelled')">{{ more("named") ? "Show fewer" : "Show all" }}</button>
+      }
+    }
+    @if (m.run_settings.tables.length) {
+      <p class="hint">Assumption tables: @for (t of m.run_settings.tables; track t.name) { <span class="mono">{{ t.name }}</span> ({{ t.cell }}, {{ t.readers }} readers) }</p>
+    }
+
+    <h3 class="panel__h">Outputs</h3>
+    @if (m.outputs.cells.length) {
+      <table class="list">
+        <thead><tr><th>Target</th><th>From</th><th>Written by</th><th>When</th><th></th></tr></thead>
+        <tbody>
+          @for (o of limit(m.outputs.cells, "outputs"); track $index) {
+            <tr>
+              <td class="mono">{{ o.cell }}</td><td class="mono">{{ o.from_name || o.from || "" }}</td><td>{{ o.written_by }}</td><td>{{ o.when }}</td>
+              <td><button class="link" (click)="show(o.cell ?? '')">Show</button></td>
+            </tr>
+            <tr><td colspan="5" class="peek-row"><ng-container *ngTemplateOutlet="peekBox; context: { ref: o.cell }"></ng-container></td></tr>
+          }
+        </tbody>
+      </table>
+      @if (m.outputs.cells.length > 12) { <button class="link" (click)="toggleMore('outputs')">{{ more("outputs") ? "Show fewer" : "Show all " + m.outputs.cells.length }}</button> }
+    }
+    @if (m.outputs.sheets.length) {
+      <p class="hint">Output sheets: @for (s of m.outputs.sheets; track s.sheet) { <span>{{ s.sheet }} ({{ s.why }})</span> }</p>
+    }
+    @if (m.outputs.saves.length) {
+      <p class="hint">Saves: @for (s of m.outputs.saves; track $index) { <span>{{ s.in }} → {{ s.name || s.path_from || "?" }}</span> }</p>
+    }
+
+    <h3 class="panel__h">Macros</h3>
+    @if (!m.has_macros) {
+      <p class="hint">No VBA.</p>
+    } @else {
+      <p class="hint">Entry points: {{ m.macros.entry_points.join(", ") || "none found" }}</p>
+      <table class="list">
+        <thead><tr><th>Procedure</th><th>Module</th><th>Statements</th><th>Calls</th></tr></thead>
+        <tbody>
+          @for (p of limit(m.macros.procedures, "macros"); track $index) {
+            <tr><td class="mono">{{ p.name }}</td><td class="mono">{{ p.module }}</td><td>{{ p.statements }}</td><td class="mono">{{ p.calls.join(", ") }}</td></tr>
+          }
+        </tbody>
+      </table>
+      @if (m.macros.procedures.length > 12) { <button class="link" (click)="toggleMore('macros')">{{ more("macros") ? "Show fewer" : "Show all " + m.macros.procedures.length }}</button> }
+    }
+
+    <h3 class="panel__h">Sheets</h3>
+    <table class="list">
+      <thead><tr><th>Sheet</th><th>Role</th><th>Size</th><th>Grids</th></tr></thead>
+      <tbody>
+        @for (s of m.sheets; track s.name) { <tr><td>{{ s.name }}{{ s.state && s.state !== "visible" ? " (" + s.state + ")" : "" }}</td><td>{{ s.role }}</td><td class="mono">{{ s.dims }}</td><td>{{ s.grids }}</td></tr> }
+      </tbody>
+    </table>
+  }
+</div>

@@ -1,5 +1,7 @@
 import { Injectable, computed, signal } from "@angular/core";
-import { PrepAction, PrepProgress, Readiness, RecalcResult, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+
+export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "assistant" | "mind" | "deliver" | "versions";
+import { ChatMessage, FixTarget, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
@@ -13,6 +15,17 @@ export class SessionStore {
   readonly readiness = signal<Readiness | null>(null);
   readonly prepProgress = signal<PrepProgress | null>(null);
   readonly recalc = signal<RecalcResult | null>(null); // the last recalculation shown on the Advanced page
+  readonly chatHistory = signal<ChatMessage[]>([]);
+  readonly fixTarget = signal<FixTarget | null>(null); // what the Assistant tab is asked about
+  readonly numbers = signal<NumbersCheck | null>(null);
+  readonly reports = signal<ReportBuild | null>(null);
+  readonly advancedTab = signal<AdvancedTab>("findings");
+
+  /** Point the Assistant at a finding or an error and open its tab. */
+  ask(target: FixTarget): void {
+    this.fixTarget.set(target);
+    this.advancedTab.set("assistant");
+  }
 
   readonly loaded = computed(() => this.sessionId() !== null && this.report() !== null);
   readonly findings = computed(() => this.report()?.findings ?? []);
@@ -32,6 +45,10 @@ export class SessionStore {
     this.readiness.set(start.readiness ?? null);
     this.prepProgress.set(start.prep_progress ?? null);
     this.recalc.set(null);
+    this.chatHistory.set([]);
+    this.fixTarget.set(null);
+    this.numbers.set(null);
+    this.reports.set(null);
   }
 
   /** Merge what a re-analysis, an Apply or an auto-fix sent back (only the fields present). */
@@ -61,5 +78,9 @@ export class SessionStore {
     this.readiness.set(null);
     this.prepProgress.set(null);
     this.recalc.set(null);
+    this.chatHistory.set([]);
+    this.fixTarget.set(null);
+    this.numbers.set(null);
+    this.reports.set(null);
   }
 }

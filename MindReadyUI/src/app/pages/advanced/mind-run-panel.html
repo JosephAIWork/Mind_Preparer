@@ -1,0 +1,49 @@
+<div class="panel">
+  <p class="hint">The app runs itself against real Mind: prepare a copy, check the numbers and the structure, upload, convert, run, then decide what to change and try again. Needs a Mind sign-in (<span class="mono">python -m app.mind_client check</span>). One run at a time; a run takes minutes per iteration.</p>
+
+  <div class="row">
+    <label class="field">Max iterations <input type="text" [value]="maxIterations()" (input)="maxIterations.set(num($event))" style="width: 4rem" /></label>
+    <label class="check"><input type="checkbox" [checked]="runModel()" (change)="runModel.set(!runModel())" /> Run the model after converting</label>
+    <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set(!useAssistant())" /> Let the assistant name grids</label>
+    <button cdsButton="primary" size="md" (click)="start()" [disabled]="state() === 'running'">{{ state() === "running" ? "Running in Mind…" : report() ? "Run again" : "Run in Mind" }}</button>
+  </div>
+
+  @if (error()) {
+    <div class="result result--error"><strong>Mind run</strong><span>{{ error() }}</span></div>
+  }
+
+  @if (report(); as r) {
+    <div class="result" [class.result--ok]="r.verdict === 'converged'" [class.result--warn]="r.verdict === 'stuck' || r.verdict === 'exhausted'">
+      <strong><span [class]="verdictClass()">{{ r.verdict || state() }}</span> &nbsp;{{ r.reason || summary() }}</strong>
+      @if (r.final_workbook) { <span class="mono">{{ r.final_workbook }}</span> }
+      @if (r.leftover_projects?.length) { <span>Projects to delete by hand in Mind: {{ r.leftover_projects!.join(", ") }}</span> }
+    </div>
+  }
+
+  @for (it of iterations(); track it.n) {
+    <div class="card">
+      <div class="card__head">
+        <span class="card__title">Iteration {{ it.n }}</span>
+        @if (it.decision) { <span class="card__count">{{ it.decision.verdict }}: {{ it.decision.reason }}</span> }
+      </div>
+      <div class="row">
+        @for (g of ["apply", "numbers", "names", "convert", "run"]; track g) {
+          <span [class]="gate(it, $any(g)).cls">{{ gate(it, $any(g)).label }}</span>
+        }
+      </div>
+      @if (it.actions.length) { <p class="hint">{{ it.actions.length }} actions: @for (a of it.actions; track a.id) { <span class="mono">{{ a.id }} ({{ a.count }})</span> } </p> }
+      @if (it.mind?.convert?.errors?.length) {
+        <ul class="plain">@for (e of it.mind!.convert!.errors.slice(0, 8); track $index) { <li>{{ e }}</li> }</ul>
+      }
+      @if (it.mind?.reason) { <p class="card__caution">{{ it.mind!.reason }}</p> }
+      @if (it.mind?.error) { <p class="card__caution">{{ it.mind!.error }}</p> }
+    </div>
+  }
+
+  @if (events().length) {
+    <h3 class="panel__h">Live log</h3>
+    <div class="log mono">
+      @for (e of events(); track $index) { <div>{{ when(e.t) }} {{ e.event }}{{ e.n ? " #" + e.n : "" }} {{ e.message || "" }}{{ e.verdict ? " → " + e.verdict : "" }}</div> }
+    </div>
+  }
+</div>
