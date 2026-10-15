@@ -110,28 +110,29 @@ def test_a_row_per_record_loop_becomes_mm_loop_per_column_and_mm_result_per_row(
     # with the last value given, everything is placed
     plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4)
     lp = plan["loops"][0]
-    assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and lp["kind"] == "row_of_table" and (lp["first"], lp["last"], lp["count"]) == (1, 4, 4)
+    assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and lp["kind"] == "row_of_table" and (lp["first"], lp["last"], lp["count"]) == (2, 4, 3) and lp["header_skipped"] == 1
     assert lp["first_from"] == {"kind": "cell", "cell": "CALCUL!T5", "name": None, "value": 1, "formula": None} and lp["last_from"]["kind"] == "chosen"
-    assert [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}1:INDEX('BASE Polices'!{col}:{col},MM_LASTROW('BASE Polices'!A1)))" for col in "ABC"]  # follows the table in Mind
-    assert [c["range_fixed"] for c in lp["cells"]] == [f"'BASE Polices'!{col}1:{col}4" for col in "ABC"] and lp["dynamic"] is True
+    assert [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}2:INDEX('BASE Polices'!{col}:{col},MM_LASTROW('BASE Polices'!A2)))" for col in "ABC"]  # follows the table in Mind
+    assert [c["range_fixed"] for c in lp["cells"]] == [f"'BASE Polices'!{col}2:{col}4" for col in "ABC"] and lp["dynamic"] is True
     assert any("ranges follow the table" in n for n in lp["notes"])
     assert [c["cell"] for c in lp["cells"]] == ["CALCUL!A2", "CALCUL!B2", "CALCUL!C2"]
-    assert any("header row" in n for n in lp["notes"])  # row 1 is the table's header: said, not decided
+    assert any("the table's header: the loop starts at 2" in n for n in lp["notes"])  # row 1 is the header: skipped by default, said
+    assert any("Excel behaviour may differ from Mind behaviour" in n for n in lp["notes"]) and any("Input Manager only reach a grid flagged /Input" in n for n in lp["notes"])
     out = plan["outputs"][0]
-    assert out["status"] == "ready" and out["items"] == 4 and out["cells"] == 8 and out["loop"] == "BASE_Polices"
-    assert out["example"] == 'OUTPUT!A1 =MM_RESULT(CALCUL!$E$10,"BASE_Polices",1)'
+    assert out["status"] == "ready" and out["items"] == 3 and out["cells"] == 6 and out["loop"] == "BASE_Polices" and "written for the 3 loop values present now" in out["rows_note"]
+    assert out["example"] == 'OUTPUT!A2 =MM_RESULT(CALCUL!$E$10,"BASE_Polices",1)'
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
-    assert ops[("OUTPUT", "B4")]["after"] == '=MM_RESULT(CALCUL!$F$10,"BASE_Polices",4)' and ops[("OUTPUT", "B4")]["before"] == 4
+    assert ops[("OUTPUT", "B4")]["after"] == '=MM_RESULT(CALCUL!$F$10,"BASE_Polices",3)' and ops[("OUTPUT", "B4")]["before"] == 4
     assert ops[("CALCUL", "A2")]["before"] == 103 and ops[("CALCUL", "A2")]["op"] == "set_formula"
     assert all(o["action_id"] == "mind_loop" and o["rule_id"] == "LOOP-001" for o in plan["operations"])
     # the cleared area is listed with what an earlier run left there, but not emptied unless asked
     cl = plan["clears"][0]
-    assert cl["resolved"] == "OUTPUT!A1:B100000" and cl["cells"] == 1 and cl["included"] is False and plan["counts"]["cleared"] == 0
-    assert len(plan["operations"]) == 3 + 8 and plan["counts"] == {"loop_cells": 3, "result_cells": 8, "cleared": 0, "extra": 0}
-    assert "BASE_Polices is a loop of 4 values" in plan["how_it_runs"] and "Run_All is not needed" in plan["how_it_runs"]
+    assert cl["resolved"] == "OUTPUT!A2:B100000" and cl["cells"] == 1 and cl["included"] is False and plan["counts"]["cleared"] == 0
+    assert len(plan["operations"]) == 3 + 6 + 2 and plan["counts"] == {"loop_cells": 3, "result_cells": 6, "cleared": 0, "extra": 2}  # + the 2 header captions
+    assert "BASE_Polices is a loop of 3 values" in plan["how_it_runs"] and "Run_All is not needed" in plan["how_it_runs"]
     json.dumps(plan, default=str)
     text = describe(plan)
-    assert "loop BASE_Polices  driver CALCUL!A2:C2  1 -> 4  [ready]" in text and "operations: 11" in text
+    assert "loop BASE_Polices  driver CALCUL!A2:C2  2 -> 4  [ready]" in text and "operations: 11" in text
 
 
 def test_bounds_name_and_clearing_can_be_chosen(tmp_path, monkeypatch):
@@ -234,19 +235,20 @@ def test_without_a_loop_there_is_nothing_to_build(tmp_path):
 
 
 def test_horizon_plan(tmp_path):
-    """The real Horizon copy, when it is here: 42 MM_LOOP cells (the table's used columns) and 60 MM_RESULT cells."""
+    """The real Horizon copy, when it is here: the macro starts on the header row, the loop on row 2; 39 MM_LOOP cells
+    (the table's columns filled in rows 2..6), 50 MM_RESULT cells, 6 header captions above the block."""
     p = USECASES / "horizon.xlsm"
     if not p.is_file():
         pytest.skip(f"{p} not here")
     analysis = build_analysis(p, tmp_path / "w", "horizon")
     plan = build_loop_plan(analysis, build_model_map(analysis))
     lp = plan["loops"][0]
-    assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and (lp["first"], lp["last"]) == (1, 6) and lp["last_from"]["formula"] == "=N5"
-    # 40 columns, not 42: D and G of the table hold nothing in rows 1..6, so no loop is written for them
-    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A1:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A1)))" and lp["cells"][0]["range_fixed"] == "'BASE Polices'!A1:A6" and len(lp["cells"]) == 40
+    assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and (lp["first"], lp["last"]) == (2, 6) and lp["header_skipped"] == 1 and lp["last_from"]["formula"] == "=N5"
+    # 39 columns: D, G and AK of the table hold nothing in rows 2..6, so no loop is written for them
+    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A2:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A2)))" and lp["cells"][0]["range_fixed"] == "'BASE Polices'!A2:A6" and len(lp["cells"]) == 39
     out = plan["outputs"][0]
-    assert out["status"] == "ready" and out["items"] == 6 and out["cells"] == 60 and out["example"] == 'OUTPUT!A1 =MM_RESULT(CALCUL!$AY$35,"BASE_Polices",1)'
-    assert len(plan["operations"]) == 100  # 40 loop cells + 60 result cells
+    assert out["status"] == "ready" and out["items"] == 5 and out["cells"] == 50 and out["example"] == 'OUTPUT!A2 =MM_RESULT(CALCUL!$AY$35,"BASE_Polices",1)'
+    assert len(plan["operations"]) == 95 and plan["counts"]["extra"] == 6  # 39 loop cells + 50 result cells + 6 header captions
 
 
 def test_the_header_row_above_an_output_block_is_completed_for_mind(tmp_path, monkeypatch):
@@ -260,7 +262,7 @@ def test_the_header_row_above_an_output_block_is_completed_for_mind(tmp_path, mo
     assert set(heads) == {"A1", "B1"} and heads["A1"]["before"] == 1 and heads["A1"]["after"] and heads["A1"]["rule_id"] == "LOOP-001"
     assert plan["counts"]["extra"] == 2 and any("header row 1 above the block is completed" in n for n in plan["notes"])
     # a block that starts on row 1 has no header row: said, nothing written
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4)
+    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=1, last=4)
     assert "header_cells" not in plan["outputs"][0] and plan["counts"]["extra"] == 0 and any("no header row above it" in n for n in plan["notes"])
 
 
@@ -268,7 +270,7 @@ def test_fixed_ranges_can_be_asked_for(tmp_path, monkeypatch):
     """`dynamic=False` (the API's fixed_ranges, the CLI's --fixed-ranges) writes the old X2:X6 ranges."""
     plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4, dynamic=False)
     lp = plan["loops"][0]
-    assert lp["dynamic"] is False and [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}1:{col}4)" for col in "ABC"]
+    assert lp["dynamic"] is False and [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}2:{col}4)" for col in "ABC"]
     assert not any("follow the table" in n for n in lp["notes"])
 
 
@@ -289,3 +291,14 @@ def test_a_stale_loop_in_a_skipped_driver_cell_is_cleared(tmp_path, monkeypatch)
     assert [c["ref"] for c in lp["cells"]] == ["A2", "B2"] and any("hold nothing" in n for n in lp["notes"])
     clears = [o for o in plan["operations"] if o["op"] == "clear_cell"]
     assert len(clears) == 1 and clears[0]["sheet"] == "CALCUL" and clears[0]["cell"] == "C2" and "MM_LOOP" in clears[0]["before"]
+
+
+def test_the_header_pass_is_kept_when_first_is_chosen_and_a_cut_short_loop_keeps_fixed_ranges(tmp_path, monkeypatch):
+    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=1, last=4)
+    lp = plan["loops"][0]
+    assert lp["first"] == 1 and "header_skipped" not in lp and any("its header row" in n for n in lp["notes"])
+    # the table runs to row 4: stopping at 3 keeps the rows of today only
+    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=2, last=3)
+    lp = plan["loops"][0]
+    assert lp["dynamic"] is False and lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A2:A3)"
+    assert any("before the end of the table (row 4)" in n for n in lp["notes"]) and "rows_note" not in plan["outputs"][0]

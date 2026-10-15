@@ -685,7 +685,8 @@ def test_mind_loop_plan_route_previews_and_writes_the_loop(client, tmp_path, mon
     body = client.get(f"/api/sessions/{sid}/mind-loop-plan").json()
     plan = body["plan"]
     assert plan["found"] and plan["loops"][0]["status"] == "ready" and plan["operation_count"] == 11 and len(plan["operations"]) == 11
-    assert plan["outputs"][0]["cells"] == 8 and plan["clears"][0]["included"] is False
+    # the table's header row is skipped by default: 3 loop values, 6 result cells, 2 header captions above the block
+    assert plan["loops"][0]["first"] == 2 and plan["outputs"][0]["cells"] == 6 and plan["clears"][0]["included"] is False
     chosen = client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"name": "Policy", "first": "2", "clear_old": "true"}).json()["plan"]
     assert chosen["loops"][0]["name"] == "Policy" and chosen["loops"][0]["first"] == 2 and chosen["operation_count"] == 3 + 6 + 1 + 2  # + the one cell an earlier run left + the 2 header captions
     versions_before = len(client.get(f"/api/sessions/{sid}/versions").json())

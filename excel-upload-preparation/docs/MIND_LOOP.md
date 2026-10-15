@@ -120,3 +120,13 @@ definition of a loop must keep the same length, so a new row should fill every p
 a table into grids at empty columns). `--fixed-ranges` on the command line, `fixed_ranges` on the API and
 the box on the Advanced loop panel give the old `X2:X6` form. LOOP-003 treats table-following definitions
 as equal by construction and flags a mix with fixed ones.
+
+## Defaults and notes (1.11.1, after the design review)
+
+- When the macro starts on the table's text header row, the loop starts one row (column) further: in Mind
+  the header would be instance 1. Choosing first = the header row keeps the macro's header pass.
+- A loop cut short (last before the end of the table) keeps fixed ranges: rows added later do not join it.
+- Every table-following loop says that Excel may differ from Mind (the add-in stops at the key column's
+  first empty cell), which growth reaches it (a new upload always; Mind's Input Manager only imports into a
+  grid titled with /Input), and that the result block is written for the loop values present now: Mind
+  computes every instance, the block lists those of today.

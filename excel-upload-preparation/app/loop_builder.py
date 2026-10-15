@@ -193,6 +193,39 @@ def _clear_stale_loop(analysis: dict[str, Any], drv_sheet: str, drv_cell: tuple[
                           "note": f"loop {name}: this column of the table holds nothing, the loop written here earlier is removed"})
 
 
+
+def _growth_note(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str:
+    """Which ways of adding rows reach the loop: a new upload always; Mind's Input Manager only imports into
+    grids flagged /Input."""
+    from .grids import all_grids, grid_containing
+
+    try:
+        g = grid_containing([x for x in all_grids(analysis) if x.get("sheet") == sheet], row, col)
+    except Exception:
+        g = None
+    if g and "input" in (g.get("flag_names") or []):
+        return "rows join the loop when a workbook with more rows is uploaded, and when the Input Manager imports into this /Input grid"
+    return f"rows join the loop when a workbook with more rows is uploaded; rows imported through Mind's Input Manager only reach a grid flagged /Input, and this table in {_qs(sheet)} has no such title"
+
+
+def _text_header_at(analysis: dict[str, Any], d: dict[str, Any], first: int, last: int) -> bool:
+    """Is the loop's first value the table's header row (column), text above numbers? Only for table loops."""
+    src_sheet, src_ref = _split(str(d.get("set_from") or ""))
+    if not src_sheet or last <= first:
+        return False
+    var = re.escape(f"<{d['loop_var']}>")
+    if re.search(rf"[A-Za-z]{var}", src_ref):  # a row per loop value
+        head = [_held(analysis, src_sheet, c, first) for c in range(1, 6)]
+        below = [_held(analysis, src_sheet, c, first + 1) for c in range(1, 6)]
+    elif re.search(rf"{var}\d", src_ref):  # a column per loop value
+        head = [_held(analysis, src_sheet, first, r) for r in range(1, 6)]
+        below = [_held(analysis, src_sheet, first + 1, r) for r in range(1, 6)]
+    else:
+        return False
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)  # noqa: E731
+    return any(isinstance(v, str) and v.strip() for v in head) and any(num(v) for v in below) and not any(num(v) for v in head)
+
+
 def _dynamic_ok(analysis: dict[str, Any], sheet: str, cells: list[tuple[int, int]]) -> bool:
     """Does the column (row) hold any value in the loop's cells? A column the table leaves empty
     gets no loop (the macro copies nothing there, and MM_COLUMN of an empty column is no range)."""
@@ -232,6 +265,7 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
     empty_cols: list[str] = []
     extra_ops: list[dict[str, Any]] = []
     key_col = key_row = None
+    cut_note = ""
     if dynamic and r1 == ph and r2 == ph and ph not in (c1, c2):
         for col in range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1):
             if all(_held(analysis, src_sheet, col, r) not in (None, "") for r in range(first, last + 1)):
@@ -239,6 +273,14 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
                 break
         if key_col is None:
             dynamic = False  # no column of the table is filled on every loop row: nothing to anchor the length to
+        else:
+            kc = col_to_num(key_col)
+            end = last
+            while end + 1 <= max_row and _held(analysis, src_sheet, kc, end + 1) not in (None, ""):
+                end += 1
+            if end > last:
+                dynamic = False
+                cut_note = f"the loop stops at row {last}, before the end of the table (row {end}): the ranges stay fixed, rows added later do not join the loop"
     elif dynamic and c1 == ph and c2 == ph and ph not in (r1, r2):
         for row in range(int(r1), int(r2) + 1):
             if all(_held(analysis, src_sheet, c, row) not in (None, "") for c in range(first, last + 1)):
@@ -246,6 +288,13 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
                 break
         if key_row is None:
             dynamic = False
+        else:
+            end = last
+            while end + 1 <= max_col and _held(analysis, src_sheet, end + 1, key_row) not in (None, ""):
+                end += 1
+            if end > last:
+                dynamic = False
+                cut_note = f"the loop stops at column {num_to_col(last)}, before the end of the table (column {num_to_col(end)}): the ranges stay fixed, columns added later do not join the loop"
     if r1 == ph and r2 == ph and ph not in (c1, c2):
         # a row per loop value: the loop value is the row number; one range per column
         cols = list(range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1))
@@ -292,9 +341,13 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
         notes.append(f"{skipped} {axis} of the source past the sheet's used range hold nothing: no loop written for them (the macro copies them empty)")
     if empty_cols:
         notes.append(f"{len(empty_cols)} {axis} of the table hold nothing in {unit}s {first} to {last} ({', '.join(empty_cols[:8])}{', …' if len(empty_cols) > 8 else ''}): no loop written for them (MM_COLUMN of an empty column is no range; the macro copies nothing there)")
+    if cut_note:
+        notes.append(cut_note)
     if dynamic:
         key = f"column {key_col}" if unit == "row" else f"row {key_row}"
-        notes.append(f"the ranges follow the table: every range runs from {unit} {first} to the last {unit} of {key} of {_qs(src_sheet)} (MM_LASTROW / MM_LASTCOLUMN, which Mind reads from the table's grid), so {unit}s added to the table join the loop; in Excel the add-in stops at the first empty cell of {key}, which today gives {unit}s {first} to {last}")
+        notes.append(f"the ranges follow the table: every range runs from {unit} {first} to the last {unit} of {key} of {_qs(src_sheet)} (MM_LASTROW / MM_LASTCOLUMN, which Mind reads from the table's grid), so {unit}s added to the table join the loop")
+        notes.append(f"Excel behaviour may differ from Mind behaviour for these formulas: in Excel the add-in stops at the first empty cell of {key}, which today gives {unit}s {first} to {last}; Mind reads the table's grid")
+        notes.append(_growth_note(analysis, src_sheet, first if unit == "row" else (key_row or first), col_to_num(key_col) if (unit == "row" and key_col) else first))
     elif not dynamic and (key_col is None and key_row is None) and unit:
         pass
     if extra_ops:
@@ -492,6 +545,13 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             entry.update(status="needs_decision", why=f"the last value ({last_n}) is before the first ({first_n}): the macro would do nothing")
             plan["loops"].append(entry)
             continue
+        set_from0 = str(d.get("set_from") or "")
+        if first_src.get("kind") != "chosen" and set_from0 and f"<{d['loop_var']}>" in set_from0 and _text_header_at(analysis, d, first_n, last_n):
+            # the macro starts on the table's header row (it runs it too); Mind would make the header instance 1
+            entry["notes"].append(f"the macro starts at {first_n}, the table's header: the loop starts at {first_n + 1} (choose first = {first_n} to keep the header pass)")
+            entry["header_skipped"] = first_n
+            first_n += 1
+            entry["first"] = first_n
         entry["count"] = last_n - first_n + 1
         for b, v in ((d.get("from") or {}, first_n), (d.get("to") or {}, last_n)):
             bv = _bound_var(b)
@@ -509,7 +569,9 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             res = _derived_loop(analysis, d, nm, loop_name, first_n, last_n, last_src, count_cell)
         else:
             res = {"status": "not_built", "why": f"the macro sets the driver in a way the plan cannot write as MM_LOOP: {d.get('statement')}"}
+        pre_notes = list(entry["notes"])
         entry.update({k: v for k, v in res.items() if k != "extra_ops"})
+        entry["notes"] = pre_notes + list(entry.get("notes") or [])
         if res.get("status") == "ready":
             if entry["kind"] in ("row_of_table", "column_of_table") and first_n >= 1:
                 # the first value is the table's header row? (text in the first filled cells, numbers below)
@@ -618,6 +680,10 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             plan["outputs"].append(entry_o)
             continue
         entry_o.update(items=count, cells=written, example=first_cell, loop=le["name"])
+        if le.get("dynamic"):
+            entry_o["rows_note"] = (f"written for the {count} loop values present now: Mind computes every instance the table gets (open the source grid, Partial run, "
+                                    f"the {le['name']} box), but rows added later have no row in this block")
+            plan["notes"].append(f"{target}: {entry_o['rows_note']}")
         plan["counts"]["result_cells"] += written
         header_ops, header_note = _complete_header(analysis, first_block_sheet, first_block, from_sheet, src_cells, le["name"])
         if header_ops:
