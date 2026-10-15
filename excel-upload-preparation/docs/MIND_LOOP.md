@@ -97,3 +97,26 @@ Scripts: `scripts/mind_loop_probe.py` (upload, logs, run, parts), `scripts/mind_
   index past the loop gives 0, not an error.
 - `MM_RESULT` needs a cell as its first argument: with an expression (`$B$4*10`) Mind's test step fails at
   runtime with "trying to access null reference". The builder always passes a cell.
+
+## The ranges follow the input table (1.11.1)
+
+A table loop is written as `'Table'!X<first>:INDEX('Table'!X:X, MM_LASTROW('Table'!<key><first>))` in every
+driver cell, the key column being the first column of the table filled on every loop row. Mind reads
+`MM_LASTROW` from the table's grid, so a row added to the table (Input Manager, a new upload) joins the
+loop; Excel's add-in stops at the key column's first empty cell, so the local values are today's rows.
+Verified in Mind on Horizon (2026-10-15): the dimension spinner on an OUTPUT grid runs 1..5, and 1..6 after
+a seventh policy row was appended through `scripts/add_policy_row.py`; Mind's test counts 0 deterministic
+differences; the Excel check gives 50 of 50 cells against the macro.
+
+Why not `MM_COLUMN(X2)` alone: in Excel it stops at the first empty cell of X, and when a column has an
+empty cell inside the loop rows (Horizon's Q, Z, AA, AD) it collapses to one cell, which `MM_LOOP` then
+reads as a count: wrong local values and an error text, and 895 deterministic differences in Mind's test
+(Mind itself computed the right values). A list the macro walks to its last item is written with
+`MM_COLUMN` / `MM_ROW` from its first item (lists have no gaps).
+
+A column of the table that holds nothing in the loop rows gets no loop, and a loop written there by an
+earlier build is cleared (it would be a definition with another length once the table grows). Every
+definition of a loop must keep the same length, so a new row should fill every part of the table (Mind cuts
+a table into grids at empty columns). `--fixed-ranges` on the command line, `fixed_ranges` on the API and
+the box on the Advanced loop panel give the old `X2:X6` form. LOOP-003 treats table-following definitions
+as equal by construction and flags a mix with fixed ones.
