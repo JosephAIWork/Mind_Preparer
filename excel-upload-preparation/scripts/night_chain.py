@@ -2,7 +2,8 @@
 
     python scripts/night_chain.py <workbook> <out dir> [--port 8600] [--first 2] [--skip-autofix]
 
-upload -> Fix all issues (auto-fix, polled) -> Fix the formulas (the formula Prep actions) -> Build the
+upload -> Fix all issues (auto-fix, polled) -> Fix the formulas and the structure (every blocking Prep action on by
+default, in rounds) -> Build the
 Mind loop (first value as given, else the plan's) -> Recalculate -> download the final version and write
 chain.json (every step's result) into <out dir>. Mirrors MindReadyUI/src/app/pages/home.page.ts runAll().
 """
@@ -76,22 +77,38 @@ def main() -> int:
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])
 
-    st = state()
-    ops = [o for act in st["plan"] if act["id"] in FORMULA_ACTION_IDS for o in act["operations"]]
-    say("fix the formulas:", len(ops), "operations")
-    if ops:
+    # Fix the formulas and the structure: every blocking Prep action that is on by default, in rounds
+    # (an applied action can surface another one), until none is left or 3 rounds ran.
+    step: dict = {"ok": True, "rounds": [], "applied": 0, "failed": 0}
+    for round_no in range(1, 4):
+        st = state()
+        acts = [a for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
+        ops = [o for a in acts for o in a["operations"]]
+        say(f"prepare round {round_no}: {[(a['id'], a['count']) for a in acts]} -> {len(ops)} operations")
+        if not ops:
+            break
         errors_before = sum(1 for f in st["report"]["findings"] if f["status"] == "ERROR")
         r = requests.post(f"{B}/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True, "versionStep": "major"}, timeout=7200)
         r.raise_for_status()
         o = r.json()
         res = o["result"]
-        applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied")
-        failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed")
+        applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied") or 0
+        failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed") or 0
         errors_after = sum(1 for f in (o.get("report") or {}).get("findings", []) if f["status"] == "ERROR")
-        chain["steps"]["fixFormulas"] = {"ok": not failed and errors_after <= errors_before, "applied": applied, "failed": failed, "errors_before": errors_before, "errors_after": errors_after, "version": o["version"]["label"]}
-    else:
-        chain["steps"]["fixFormulas"] = {"ok": True, "applied": 0, "note": "nothing to change"}
-    say("fix the formulas:", json.dumps(chain["steps"]["fixFormulas"])[:300])
+        step["rounds"].append({"actions": [a["id"] for a in acts], "applied": applied, "failed": failed, "errors_before": errors_before, "errors_after": errors_after, "version": o["version"]["label"]})
+        step["applied"] += applied
+        step["failed"] += failed
+        step["version"] = o["version"]["label"]
+        if failed:
+            step["ok"] = False
+            break
+    st = state()
+    left = [a["id"] for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
+    step["left"] = left
+    if left:
+        step["ok"] = False
+    chain["steps"]["prepare"] = step
+    say("prepare:", json.dumps(step)[:400])
 
     plan = requests.get(f"{B}/sessions/{sid}/mind-loop-plan", timeout=1800).json()["plan"]
     (out / "loop_plan.json").write_text(json.dumps(plan, indent=1, ensure_ascii=False), encoding="utf-8")

@@ -87,7 +87,7 @@
       <div class="chain__head">
         <div>
           <h2 class="chain__title">Do everything</h2>
-          <p class="chain__text">Fix all issues, fix the formulas, build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
+          <p class="chain__text">Fix all issues, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
         </div>
         @if (!chainRunning()) {
           <button cdsButton="primary" size="lg" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>

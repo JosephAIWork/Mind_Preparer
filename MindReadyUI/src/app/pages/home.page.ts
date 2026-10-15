@@ -42,7 +42,7 @@ interface ScanRow {
   message?: string;
 }
 
-type StepId = "fixAll" | "fixFormulas" | "loop" | "recalc";
+type StepId = "fixAll" | "prepare" | "loop" | "recalc";
 interface Step {
   id: StepId;
   label: string;
@@ -55,7 +55,7 @@ interface Step {
 
 const STEPS: { id: StepId; label: string; check: string }[] = [
   { id: "fixAll", label: "Fix all issues", check: "the fixer ends clean and nothing blocks the file" },
-  { id: "fixFormulas", label: "Fix the formulas", check: "nothing refused, no new error finding" },
+  { id: "prepare", label: "Fix the formulas and the structure", check: "every blocking action applied, nothing refused, none left" },
   { id: "loop", label: "Build the Mind loop", check: "nothing refused (skipped when the model has no loop)" },
   { id: "recalc", label: "Recalculate", check: "no formula error that was not already in the original" },
 ];
@@ -83,16 +83,18 @@ export class HomePage implements OnDestroy {
   readonly fixFormulas = signal<ActionState>(idle());
   readonly loop = signal<ActionState>(idle());
   readonly recalc = signal<ActionState>(idle());
+  readonly prepare = signal<ActionState>(idle());
   readonly loopPlan = signal<LoopPlan | null>(null);
   readonly steps = signal<Step[]>([]);
   readonly chainRunning = signal(false);
   readonly chainLine = signal("");
-  readonly busy = computed(() => this.chainRunning() || this.fixAll().running || this.fixFormulas().running || this.loop().running || this.recalc().running);
+  readonly busy = computed(() => this.chainRunning() || this.fixAll().running || this.fixFormulas().running || this.prepare().running || this.loop().running || this.recalc().running);
   /** Which step holds the buttons, for the hint on a disabled button. */
   readonly busyHint = computed(() => {
     if (this.chainRunning()) return "Do everything is running";
     if (this.fixAll().running) return this.fixAll().stopping ? "Fix all issues is stopping after its round" : "Fix all issues is running";
     if (this.fixFormulas().running) return "Fix the formulas is running";
+    if (this.prepare().running) return "Fix the formulas and the structure is running";
     if (this.loop().running) return "Build the Mind loop is running";
     if (this.recalc().running) return "Recalculate is running";
     return "";
@@ -244,6 +246,7 @@ export class HomePage implements OnDestroy {
     this.fixFormulas.set(idle());
     this.loop.set(idle());
     this.recalc.set(idle());
+    this.prepare.set(idle());
     this.steps.set([]);
     this.chainLine.set("");
     void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
@@ -423,6 +426,53 @@ export class HomePage implements OnDestroy {
     }
   }
 
+  // ---- fix the formulas and the structure (the chain's second step) --------------------------------
+  /** Every blocking Prep action that is on by default, in rounds until none is left (3 at most). */
+  async runPrepare(): Promise<boolean> {
+    const id = this.store.sessionId();
+    if (!id || this.prepare().running) return false;
+    this.prepare.set({ running: true, fraction: null, line: "Looking at what blocks the file…", detail: "", tone: "idle" });
+    let applied = 0;
+    let refused = 0;
+    const names: string[] = [];
+    try {
+      for (let round = 1; round <= 3; round++) {
+        const acts = this.store.plan().filter((a) => a.level === "blocking" && a.default_on && a.count > 0);
+        const ops = acts.flatMap((a) => a.operations);
+        if (!ops.length) break;
+        names.push(...acts.map((a) => a.title));
+        this.prepare.update((s) => ({ ...s, line: `Round ${round}: writing ${ops.length} changes through Excel…`, detail: acts.map((a) => a.title).join(", ") }));
+        const stop = this.pollApply(id, this.prepare);
+        let out;
+        try {
+          out = await this.api.apply(id, ops, "major");
+        } finally {
+          stop();
+        }
+        this.store.applyAnalysis({ ...out, version: out.version });
+        applied += appliedCount(out.result);
+        refused += failedCount(out.result);
+        if (failedCount(out.result)) {
+          this.prepare.set({ running: false, fraction: null, line: `${applied} changed, ${refused} refused`, detail: [out.version?.label ?? "", failedText(out.result)].filter(Boolean).join(" · "), tone: "warn" });
+          return false;
+        }
+      }
+      const left = this.store.plan().filter((a) => a.level === "blocking" && a.default_on && a.count > 0);
+      const ok = left.length === 0;
+      this.prepare.set({
+        running: false,
+        fraction: null,
+        line: applied ? `${applied} changes applied` : "Nothing blocked the file",
+        detail: [this.store.currentVersion()?.label ?? "", names.length ? [...new Set(names)].join(", ") : "", left.length ? `still blocking: ${left.map((a) => a.title).join(", ")}` : ""].filter(Boolean).join(" · "),
+        tone: ok ? "ok" : "warn",
+      });
+      return ok;
+    } catch (e) {
+      this.prepare.set({ running: false, fraction: null, line: "Could not write the changes", detail: errorText(e), tone: "error" });
+      return false;
+    }
+  }
+
   private pollApply(id: string, target: typeof this.fixFormulas): () => void {
     let live = true;
     const tick = async () => {
@@ -534,11 +584,11 @@ export class HomePage implements OnDestroy {
     this.steps.set(STEPS.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
     const runners: Record<StepId, () => Promise<boolean>> = {
       fixAll: () => this.runFixAll(),
-      fixFormulas: () => this.runFixFormulas(),
+      prepare: () => this.runPrepare(),
       loop: () => this.runLoop(),
       recalc: () => this.runRecalc(),
     };
-    const states: Record<StepId, typeof this.fixAll> = { fixAll: this.fixAll, fixFormulas: this.fixFormulas, loop: this.loop, recalc: this.recalc };
+    const states: Record<StepId, typeof this.fixAll> = { fixAll: this.fixAll, prepare: this.prepare, loop: this.loop, recalc: this.recalc };
     try {
       for (const step of STEPS) {
         if (step.id === "loop" && !this.canBuildLoop()) {
@@ -581,7 +631,7 @@ export class HomePage implements OnDestroy {
     return this[id]();
   }
 
-  toggle(which: StepId): void {
+  toggle(which: StepId | "fixFormulas"): void {
     this[which].update((s) => ({ ...s, open: !s.open }));
   }
 
