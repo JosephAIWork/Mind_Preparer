@@ -252,6 +252,9 @@ def cell_instances(mcp: MindMcp, sheet: str, address: str, loop: str | None = No
     if field(r, "OutOfGrids"):
         return {"cell": f"{sheet}!{address}", "out_of_grids": True, "values": {}}
     g, row, col = field(r, "GridIndex"), field(r, "Row"), field(r, "Col")
+    if field(r, "IsHeaderRow") or not isinstance(row, int) or row < 1:
+        # a grid's header row (Mind's row 0): the cell-values tool reads data rows only
+        return {"cell": f"{sheet}!{address}", "grid": field(r, "GridName"), "header_row": True, "dimensioned": False, "scalar": None, "values": {}}
     v = mcp.call("get_cell_values", modelIndex=mi, instanceId=inst, gridIndex=g, row=row, col=col)
     vals: dict[int, Any] = {}
     recs = values(v)
