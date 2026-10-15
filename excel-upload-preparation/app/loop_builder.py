@@ -182,6 +182,17 @@ def _anchored_row(sheet: str, row: int, first: int, key_row: int | None) -> str:
     return f"{q}!{c}{row}:INDEX({q}!{row}:{row},MM_LASTCOLUMN({q}!{c}{key_row}))"
 
 
+
+def _clear_stale_loop(analysis: dict[str, Any], drv_sheet: str, drv_cell: tuple[int, int], name: str, extra_ops: list[dict[str, Any]]) -> None:
+    """A driver cell the plan leaves out must not keep an MM_LOOP of this loop from an earlier build
+    (it would be a definition with another length): clear it."""
+    dc, dr = drv_cell
+    held = _held(analysis, drv_sheet, dc, dr)
+    if isinstance(held, str) and re.search(rf'MM_LOOP\s*\(\s*"{re.escape(name)}"', held, re.I):
+        extra_ops.append({"op": "clear_cell", "sheet": drv_sheet, "cell": f"{num_to_col(dc)}{dr}", "before": held, "after": None,
+                          "note": f"loop {name}: this column of the table holds nothing, the loop written here earlier is removed"})
+
+
 def _dynamic_ok(analysis: dict[str, Any], sheet: str, cells: list[tuple[int, int]]) -> bool:
     """Does the column (row) hold any value in the loop's cells? A column the table leaves empty
     gets no loop (the macro copies nothing there, and MM_COLUMN of an empty column is no range)."""
@@ -219,6 +230,7 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
     cells: list[dict[str, Any]] = []
     skipped = 0
     empty_cols: list[str] = []
+    extra_ops: list[dict[str, Any]] = []
     key_col = key_row = None
     if dynamic and r1 == ph and r2 == ph and ph not in (c1, c2):
         for col in range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1):
@@ -246,6 +258,7 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
             fixed = f"{_qs(src_sheet)}!{num_to_col(col)}{first}:{num_to_col(col)}{last}"
             if dynamic and not _dynamic_ok(analysis, src_sheet, [(col, r) for r in range(first, last + 1)]):
                 empty_cols.append(num_to_col(col))
+                _clear_stale_loop(analysis, drv_sheet, drv_cells[i], name, extra_ops)
                 continue
             rng = _anchored_column(src_sheet, num_to_col(col), first, key_col) if dynamic else fixed
             dc, dr = drv_cells[i]
@@ -265,6 +278,7 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
             fixed = f"{_qs(src_sheet)}!{num_to_col(first)}{row}:{num_to_col(last)}{row}"
             if dynamic and not _dynamic_ok(analysis, src_sheet, [(c, row) for c in range(first, last + 1)]):
                 empty_cols.append(str(row))
+                _clear_stale_loop(analysis, drv_sheet, drv_cells[i], name, extra_ops)
                 continue
             rng = _anchored_row(src_sheet, row, first, key_row) if dynamic else fixed
             dc, dr = drv_cells[i]
@@ -283,7 +297,9 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
         notes.append(f"the ranges follow the table: every range runs from {unit} {first} to the last {unit} of {key} of {_qs(src_sheet)} (MM_LASTROW / MM_LASTCOLUMN, which Mind reads from the table's grid), so {unit}s added to the table join the loop; in Excel the add-in stops at the first empty cell of {key}, which today gives {unit}s {first} to {last}")
     elif not dynamic and (key_col is None and key_row is None) and unit:
         pass
-    return {"kind": f"{unit}_of_table", "status": "ready" if cells else "not_built", "cells": cells, "source_sheet": src_sheet, "unit": unit, "example_range": example_range, "notes": notes, "dynamic": dynamic,
+    if extra_ops:
+        notes.append(f"{len(extra_ops)} driver cell(s) kept a loop from an earlier build over an empty column: cleared ({', '.join(o['cell'] for o in extra_ops[:6])})")
+    return {"kind": f"{unit}_of_table", "status": "ready" if cells else "not_built", "cells": cells, "source_sheet": src_sheet, "unit": unit, "example_range": example_range, "notes": notes, "dynamic": dynamic, "extra_ops": extra_ops,
             "how": f"{d['cell']} takes {unit} <k> of {_qs(src_sheet)} ({unit}s {first} to {last}" + (", and every further one the table gets" if dynamic else "") + f"): each cell its own column of the table, through MM_LOOP"}
 
 

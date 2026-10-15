@@ -270,3 +270,22 @@ def test_fixed_ranges_can_be_asked_for(tmp_path, monkeypatch):
     lp = plan["loops"][0]
     assert lp["dynamic"] is False and [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}1:{col}4)" for col in "ABC"]
     assert not any("follow the table" in n for n in lp["notes"])
+
+
+def test_a_stale_loop_in_a_skipped_driver_cell_is_cleared(tmp_path, monkeypatch):
+    """A column of the table that holds nothing gets no loop; a loop written there by an earlier build
+    (another length once the table grows) is cleared."""
+    import openpyxl
+
+    p = _horizon_book(tmp_path)
+    wb = openpyxl.load_workbook(p)
+    for r in range(2, 5):
+        wb["BASE Polices"].cell(r, 3).value = None  # column C of the table: empty in the loop rows
+    wb["CALCUL"]["C2"] = "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!C2:C4)"  # left by an earlier build
+    wb.save(p)
+    wb.close()
+    plan = _plan_for(p, tmp_path, HORIZON_STYLE, monkeypatch, first=2, last=4)
+    lp = plan["loops"][0]
+    assert [c["ref"] for c in lp["cells"]] == ["A2", "B2"] and any("hold nothing" in n for n in lp["notes"])
+    clears = [o for o in plan["operations"] if o["op"] == "clear_cell"]
+    assert len(clears) == 1 and clears[0]["sheet"] == "CALCUL" and clears[0]["cell"] == "C2" and "MM_LOOP" in clears[0]["before"]
