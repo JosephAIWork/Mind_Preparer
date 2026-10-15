@@ -165,9 +165,43 @@ def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any)
 
 
 # --- the loops -------------------------------------------------------------------------------------
-def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int) -> dict[str, Any]:
+
+def _anchored_column(sheet: str, col: str, first: int, key_col: str | None) -> str:
+    """'Sheet'!X<first>:INDEX('Sheet'!X:X, MM_LASTROW('Sheet'!<key><first>)): the column from the loop's
+    first row to the last row of the table, as Mind sizes it (the key column's grid), and as Excel sees
+    it today (the key column's last filled row). MM_COLUMN(X2) alone collapses to one cell in Excel when
+    X has an empty cell inside the loop rows, and MM_LOOP then reads that single cell as a count."""
+    q = _qs(sheet)
+    return f"{q}!{col}{first}:INDEX({q}!{col}:{col},MM_LASTROW({q}!{key_col}{first}))"
+
+
+def _anchored_row(sheet: str, row: int, first: int, key_row: int | None) -> str:
+    """The row counterpart: 'Sheet'!<first col><row>:INDEX('Sheet'!<row>:<row>, MM_LASTCOLUMN('Sheet'!<first col><key row>))."""
+    q = _qs(sheet)
+    c = num_to_col(first)
+    return f"{q}!{c}{row}:INDEX({q}!{row}:{row},MM_LASTCOLUMN({q}!{c}{key_row}))"
+
+
+def _dynamic_ok(analysis: dict[str, Any], sheet: str, cells: list[tuple[int, int]]) -> bool:
+    """Does the column (row) hold any value in the loop's cells? A column the table leaves empty
+    gets no loop (the macro copies nothing there, and MM_COLUMN of an empty column is no range)."""
+    for col, row in cells:
+        v = _held(analysis, sheet, col, row)
+        if v is not None and v != "":
+            return True
+    return False
+
+
+def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, dynamic: bool = True) -> dict[str, Any]:
     """The macro copies one row (or column) of a table into a driver row (or column): every
-    driver cell takes its own column (row) of the table as an MM_LOOP range."""
+    driver cell takes its own column (row) of the table as an MM_LOOP range.
+
+    `dynamic` (default): the range is MM_COLUMN(first cell) / MM_ROW(first cell), the form the
+    Formula Generation Guide shows (=MM_LOOP("...", MM_COLUMN(A2))): Mind reads the column to the
+    last row of the table's grid, so rows added to the table (Input Manager, a new upload) join the
+    loop. The fixed range stays in `range_fixed` for the Excel check and the plan's counts. A
+    column with no value in the loop's rows gets no loop: MM_COLUMN of an empty column is no range,
+    and the macro copies nothing there."""
     var = d["loop_var"]
     src_sheet, src_ref = _split(d["set_from"])
     drv_sheet, drv_ref = _split(d["cell"])
@@ -184,6 +218,22 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
     max_col, max_row = _sheet_max(analysis, src_sheet)
     cells: list[dict[str, Any]] = []
     skipped = 0
+    empty_cols: list[str] = []
+    key_col = key_row = None
+    if dynamic and r1 == ph and r2 == ph and ph not in (c1, c2):
+        for col in range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1):
+            if all(_held(analysis, src_sheet, col, r) not in (None, "") for r in range(first, last + 1)):
+                key_col = num_to_col(col)
+                break
+        if key_col is None:
+            dynamic = False  # no column of the table is filled on every loop row: nothing to anchor the length to
+    elif dynamic and c1 == ph and c2 == ph and ph not in (r1, r2):
+        for row in range(int(r1), int(r2) + 1):
+            if all(_held(analysis, src_sheet, c, row) not in (None, "") for c in range(first, last + 1)):
+                key_row = row
+                break
+        if key_row is None:
+            dynamic = False
     if r1 == ph and r2 == ph and ph not in (c1, c2):
         # a row per loop value: the loop value is the row number; one range per column
         cols = list(range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1))
@@ -193,12 +243,16 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
             if col > max_col:
                 skipped += 1
                 continue
-            rng = f"{_qs(src_sheet)}!{num_to_col(col)}{first}:{num_to_col(col)}{last}"
+            fixed = f"{_qs(src_sheet)}!{num_to_col(col)}{first}:{num_to_col(col)}{last}"
+            if dynamic and not _dynamic_ok(analysis, src_sheet, [(col, r) for r in range(first, last + 1)]):
+                empty_cols.append(num_to_col(col))
+                continue
+            rng = _anchored_column(src_sheet, num_to_col(col), first, key_col) if dynamic else fixed
             dc, dr = drv_cells[i]
-            cells.append({"cell": f"{_qs(drv_sheet)}!{num_to_col(dc)}{dr}", "sheet": drv_sheet, "ref": f"{num_to_col(dc)}{dr}", "range": rng, "formula": f'=MM_LOOP("{name}",{rng})',
+            cells.append({"cell": f"{_qs(drv_sheet)}!{num_to_col(dc)}{dr}", "sheet": drv_sheet, "ref": f"{num_to_col(dc)}{dr}", "range": rng, "range_fixed": fixed, "formula": f'=MM_LOOP("{name}",{rng})',
                           "header": _held(analysis, src_sheet, col, 1) if first > 1 else None})
         unit, axis = "row", "columns"
-        example_range = f"{_qs(src_sheet)}!{c1}{first}:{c1}{last}"
+        example_range = _anchored_column(src_sheet, c1.upper(), first, key_col) if dynamic else f"{_qs(src_sheet)}!{c1}{first}:{c1}{last}"
     elif c1 == ph and c2 == ph and ph not in (r1, r2):
         # a column per loop value: the loop value is the column number; one range per row
         rows = list(range(int(r1), int(r2) + 1))
@@ -208,23 +262,36 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
             if row > max_row:
                 skipped += 1
                 continue
-            rng = f"{_qs(src_sheet)}!{num_to_col(first)}{row}:{num_to_col(last)}{row}"
+            fixed = f"{_qs(src_sheet)}!{num_to_col(first)}{row}:{num_to_col(last)}{row}"
+            if dynamic and not _dynamic_ok(analysis, src_sheet, [(c, row) for c in range(first, last + 1)]):
+                empty_cols.append(str(row))
+                continue
+            rng = _anchored_row(src_sheet, row, first, key_row) if dynamic else fixed
             dc, dr = drv_cells[i]
-            cells.append({"cell": f"{_qs(drv_sheet)}!{num_to_col(dc)}{dr}", "sheet": drv_sheet, "ref": f"{num_to_col(dc)}{dr}", "range": rng, "formula": f'=MM_LOOP("{name}",{rng})', "header": None})
+            cells.append({"cell": f"{_qs(drv_sheet)}!{num_to_col(dc)}{dr}", "sheet": drv_sheet, "ref": f"{num_to_col(dc)}{dr}", "range": rng, "range_fixed": fixed, "formula": f'=MM_LOOP("{name}",{rng})', "header": None})
         unit, axis = "column", "rows"
-        example_range = f"{_qs(src_sheet)}!{num_to_col(first)}{r1}:{num_to_col(last)}{r1}"
+        example_range = _anchored_row(src_sheet, int(r1), first, key_row) if dynamic else f"{_qs(src_sheet)}!{num_to_col(first)}{r1}:{num_to_col(last)}{r1}"
     else:
         return {"status": "not_built", "why": f"the loop value is not a plain row or column number in {d['set_from']}"}
     notes = []
     if skipped:
         notes.append(f"{skipped} {axis} of the source past the sheet's used range hold nothing: no loop written for them (the macro copies them empty)")
-    return {"kind": f"{unit}_of_table", "status": "ready" if cells else "not_built", "cells": cells, "source_sheet": src_sheet, "unit": unit, "example_range": example_range, "notes": notes,
-            "how": f"{d['cell']} takes {unit} <k> of {_qs(src_sheet)} ({unit}s {first} to {last}): each cell its own column of the table, through MM_LOOP"}
+    if empty_cols:
+        notes.append(f"{len(empty_cols)} {axis} of the table hold nothing in {unit}s {first} to {last} ({', '.join(empty_cols[:8])}{', …' if len(empty_cols) > 8 else ''}): no loop written for them (MM_COLUMN of an empty column is no range; the macro copies nothing there)")
+    if dynamic:
+        key = f"column {key_col}" if unit == "row" else f"row {key_row}"
+        notes.append(f"the ranges follow the table: every range runs from {unit} {first} to the last {unit} of {key} of {_qs(src_sheet)} (MM_LASTROW / MM_LASTCOLUMN, which Mind reads from the table's grid), so {unit}s added to the table join the loop; in Excel the add-in stops at the first empty cell of {key}, which today gives {unit}s {first} to {last}")
+    elif not dynamic and (key_col is None and key_row is None) and unit:
+        pass
+    return {"kind": f"{unit}_of_table", "status": "ready" if cells else "not_built", "cells": cells, "source_sheet": src_sheet, "unit": unit, "example_range": example_range, "notes": notes, "dynamic": dynamic,
+            "how": f"{d['cell']} takes {unit} <k> of {_qs(src_sheet)} ({unit}s {first} to {last}" + (", and every further one the table gets" if dynamic else "") + f"): each cell its own column of the table, through MM_LOOP"}
 
 
-def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int) -> dict[str, Any]:
+def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, dynamic: bool = True) -> dict[str, Any]:
     """The macro walks a list with Range("start").Offset(0, i - 1) (or Offset(i - 1, 0)):
-    the driver cell gets MM_LOOP over the stretch of the list the loop covers."""
+    the driver cell gets MM_LOOP over the stretch of the list the loop covers. `dynamic`: when the
+    stretch reaches the last filled cell of the list, MM_ROW / MM_COLUMN from its first cell, so
+    items added to the list join the loop in Mind."""
     var = d["loop_var"]
     m = _OFFSET_RE.search(str(d.get("statement") or ""))
     src_sheet, src_ref = _split(d["set_from"])
@@ -237,14 +304,25 @@ def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: in
     s_first, s_last = _eval_shift(expr, var, first), _eval_shift(expr, var, last)
     if s_first is None or s_last is None:
         return {"status": "not_built", "why": f"cannot evaluate the offset {expr!r} at {var} = {first} and {last}"}
+    notes: list[str] = []
     if along_rows:
-        rng = f"{_qs(src_sheet)}!{num_to_col(r['c1'])}{r['r1'] + s_first}:{num_to_col(r['c1'])}{r['r1'] + s_last}"
+        fixed = f"{_qs(src_sheet)}!{num_to_col(r['c1'])}{r['r1'] + s_first}:{num_to_col(r['c1'])}{r['r1'] + s_last}"
+        beyond = _held(analysis, src_sheet, r["c1"], r["r1"] + s_last + 1)
+        dyn = f"MM_COLUMN({_qs(src_sheet)}!{num_to_col(r['c1'])}{r['r1'] + s_first})"
     else:
-        rng = f"{_qs(src_sheet)}!{num_to_col(r['c1'] + s_first)}{r['r1']}:{num_to_col(r['c1'] + s_last)}{r['r1']}"
+        fixed = f"{_qs(src_sheet)}!{num_to_col(r['c1'] + s_first)}{r['r1']}:{num_to_col(r['c1'] + s_last)}{r['r1']}"
+        beyond = _held(analysis, src_sheet, r["c1"] + s_last + 1, r["r1"])
+        dyn = f"MM_ROW({_qs(src_sheet)}!{num_to_col(r['c1'] + s_first)}{r['r1']})"
+    use_dynamic = dynamic and (beyond is None or beyond == "")
+    rng = dyn if use_dynamic else fixed
+    if dynamic and not use_dynamic:
+        notes.append(f"the macro stops before the end of the list ({fixed}; the list goes on): the range stays fixed, items added to the list do not join the loop")
+    elif use_dynamic:
+        notes.append(f"the range follows the list: {dyn} reads to the end of the list's grid in Mind, so items added to it join the loop")
     drv_sheet, drv_ref = _split(d["cell"])
-    cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": rng, "formula": f'=MM_LOOP("{name}",{rng})', "header": None}
-    return {"kind": "list", "status": "ready", "cells": [cell], "source_sheet": src_sheet, "unit": "item", "example_range": rng, "notes": [],
-            "how": f"{d['cell']} takes each item of {rng} in turn, through MM_LOOP"}
+    cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": rng, "range_fixed": fixed, "formula": f'=MM_LOOP("{name}",{rng})', "header": None}
+    return {"kind": "list", "status": "ready", "cells": [cell], "source_sheet": src_sheet, "unit": "item", "example_range": rng, "notes": notes, "dynamic": use_dynamic,
+            "how": f"{d['cell']} takes each item of {fixed}" + (" and every item added after it" if use_dynamic else "") + " in turn, through MM_LOOP"}
 
 
 def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, first_src: dict[str, Any], last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
@@ -361,7 +439,7 @@ def _complete_header(analysis: dict[str, Any], t_sheet: str, t_cells: list[tuple
 
 
 def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, names: dict[str, str] | None = None, name: str | None = None,
-                    first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, max_result_cells: int = MAX_RESULT_CELLS) -> dict[str, Any]:
+                    first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, dynamic: bool = True, max_result_cells: int = MAX_RESULT_CELLS) -> dict[str, Any]:
     """The Mind loop for the map's run loop: what goes where, with the operations that write it.
 
     `names` maps a driver cell to the loop name wanted; `name` is the shorthand for the first
@@ -406,11 +484,11 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         set_from = str(d.get("set_from") or "")
         how = str(d.get("how") or "")
         if set_from and f"<{d['loop_var']}>" in set_from:
-            res = _table_loop(analysis, d, loop_name, first_n, last_n)
+            res = _table_loop(analysis, d, loop_name, first_n, last_n, dynamic=dynamic)
         elif how == "the loop value itself":
             res = _counter_loop(analysis, d, loop_name, first_n, last_n, first_src, last_src, count_cell)
         elif set_from and _OFFSET_RE.search(str(d.get("statement") or "")):
-            res = _list_loop(analysis, d, loop_name, first_n, last_n)
+            res = _list_loop(analysis, d, loop_name, first_n, last_n, dynamic=dynamic)
         elif set_from and "through" in how:
             res = _derived_loop(analysis, d, nm, loop_name, first_n, last_n, last_src, count_cell)
         else:
@@ -633,11 +711,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--last", default=None)
     ap.add_argument("--count-cell", default=None, help="Sheet!Cell to hold the count of a counted loop that has none")
     ap.add_argument("--clear-old", action="store_true", help="also empty the areas the macro clears before a run")
+    ap.add_argument("--fixed-ranges", action="store_true", help="fixed ranges (X2:X6) instead of MM_COLUMN / MM_ROW that follow the table")
     ap.add_argument("--work", default=None)
     a = ap.parse_args(argv)
     work = Path(a.work) if a.work else Path(tempfile.mkdtemp(prefix="mind_loop_"))
     analysis = build_analysis(Path(a.workbook), work, Path(a.workbook).stem)
-    plan = build_loop_plan(analysis, build_model_map(analysis), name=a.name, first=a.first, last=a.last, count_cell=a.count_cell, clear_old=a.clear_old)
+    plan = build_loop_plan(analysis, build_model_map(analysis), name=a.name, first=a.first, last=a.last, count_cell=a.count_cell, clear_old=a.clear_old, dynamic=not a.fixed_ranges)
     out = sys.__stdout__
     try:
         out.reconfigure(encoding="utf-8", errors="replace")

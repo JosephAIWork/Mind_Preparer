@@ -122,7 +122,7 @@ def play_passes(path: Path, plan: dict[str, Any]) -> dict[int, dict[str, list[An
                 for c in lp["cells"]:
                     ws = wb.Worksheets(c["sheet"])
                     if lp["kind"] in ("row_of_table", "column_of_table", "list"):
-                        r = parse_ref(c["range"])
+                        r = parse_ref(c.get("range_fixed") or c["range"])
                         src = wb.Worksheets(r["sheet"])
                         cells = [(col, row) for row in range(r["r1"], r["r2"] + 1) for col in range(r["c1"], r["c2"] + 1)]
                         col, row = cells[k - 1]

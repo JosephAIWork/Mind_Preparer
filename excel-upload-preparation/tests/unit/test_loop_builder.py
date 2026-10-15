@@ -112,7 +112,9 @@ def test_a_row_per_record_loop_becomes_mm_loop_per_column_and_mm_result_per_row(
     lp = plan["loops"][0]
     assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and lp["kind"] == "row_of_table" and (lp["first"], lp["last"], lp["count"]) == (1, 4, 4)
     assert lp["first_from"] == {"kind": "cell", "cell": "CALCUL!T5", "name": None, "value": 1, "formula": None} and lp["last_from"]["kind"] == "chosen"
-    assert [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}1:{col}4)" for col in "ABC"]
+    assert [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}1:INDEX('BASE Polices'!{col}:{col},MM_LASTROW('BASE Polices'!A1)))" for col in "ABC"]  # follows the table in Mind
+    assert [c["range_fixed"] for c in lp["cells"]] == [f"'BASE Polices'!{col}1:{col}4" for col in "ABC"] and lp["dynamic"] is True
+    assert any("ranges follow the table" in n for n in lp["notes"])
     assert [c["cell"] for c in lp["cells"]] == ["CALCUL!A2", "CALCUL!B2", "CALCUL!C2"]
     assert any("header row" in n for n in lp["notes"])  # row 1 is the table's header: said, not decided
     out = plan["outputs"][0]
@@ -136,7 +138,7 @@ def test_bounds_name_and_clearing_can_be_chosen(tmp_path, monkeypatch):
     plan = _plan_for(_horizon_book(tmp_path, last_as_formula=False), tmp_path, HORIZON_STYLE, monkeypatch, name="Policy", first=2, clear_old=True)
     lp = plan["loops"][0]
     assert lp["status"] == "ready" and lp["name"] == "Policy" and (lp["first"], lp["last"], lp["count"]) == (2, 4, 3) and lp["last_from"]["kind"] == "cell"
-    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:A4)" and not any("header" in n for n in lp["notes"])
+    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A2)))" and not any("header" in n for n in lp["notes"])
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
     assert ops[("OUTPUT", "A2")]["after"] == '=MM_RESULT(CALCUL!$E$10,"Policy",1)'
     assert ops[("OUTPUT", "A1")]["op"] == "set_value"  # the header row above the block, completed for Mind (no MM_RESULT there)
@@ -212,8 +214,9 @@ def test_nested_list_loops_and_a_block_placed_by_one_of_them(tmp_path, monkeypat
     plan = _plan_for(p, tmp_path, CNHI_STYLE, monkeypatch)
     loops = {l["driver"]: l for l in plan["loops"]}
     sc, cl = loops["'Model Inputs'!C8"], loops["'Model Inputs'!C9"]
-    assert sc["status"] == "ready" and sc["kind"] == "list" and sc["cells"][0]["formula"] == "=MM_LOOP(\"active_scenario\",'Model Inputs'!E8:G8)"
-    assert cl["status"] == "ready" and cl["kind"] == "list" and cl["cells"][0]["formula"] == "=MM_LOOP(\"active_cluster\",'Validation list'!B7:B8)"
+    # the two lists run to their last item: the ranges follow the lists (MM_ROW along a row, MM_COLUMN down a column)
+    assert sc["status"] == "ready" and sc["kind"] == "list" and sc["cells"][0]["formula"] == "=MM_LOOP(\"active_scenario\",MM_ROW('Model Inputs'!E8))" and sc["cells"][0]["range_fixed"] == "'Model Inputs'!E8:G8"
+    assert cl["status"] == "ready" and cl["kind"] == "list" and cl["cells"][0]["formula"] == "=MM_LOOP(\"active_cluster\",MM_COLUMN('Validation list'!B7))" and cl["cells"][0]["range_fixed"] == "'Validation list'!B7:B8"
     out = plan["outputs"][0]
     assert out["status"] == "not_built" and "2 nested loops" in out["why"] and '"active_scenario",k1,"active_cluster",k2' in out["why"]
     assert plan["counts"]["loop_cells"] == 2 and plan["counts"]["result_cells"] == 0
@@ -239,10 +242,11 @@ def test_horizon_plan(tmp_path):
     plan = build_loop_plan(analysis, build_model_map(analysis))
     lp = plan["loops"][0]
     assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and (lp["first"], lp["last"]) == (1, 6) and lp["last_from"]["formula"] == "=N5"
-    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A1:A6)" and len(lp["cells"]) == 42
+    # 40 columns, not 42: D and G of the table hold nothing in rows 1..6, so no loop is written for them
+    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A1:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A1)))" and lp["cells"][0]["range_fixed"] == "'BASE Polices'!A1:A6" and len(lp["cells"]) == 40
     out = plan["outputs"][0]
     assert out["status"] == "ready" and out["items"] == 6 and out["cells"] == 60 and out["example"] == 'OUTPUT!A1 =MM_RESULT(CALCUL!$AY$35,"BASE_Polices",1)'
-    assert len(plan["operations"]) == 102
+    assert len(plan["operations"]) == 100  # 40 loop cells + 60 result cells
 
 
 def test_the_header_row_above_an_output_block_is_completed_for_mind(tmp_path, monkeypatch):
@@ -258,3 +262,11 @@ def test_the_header_row_above_an_output_block_is_completed_for_mind(tmp_path, mo
     # a block that starts on row 1 has no header row: said, nothing written
     plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4)
     assert "header_cells" not in plan["outputs"][0] and plan["counts"]["extra"] == 0 and any("no header row above it" in n for n in plan["notes"])
+
+
+def test_fixed_ranges_can_be_asked_for(tmp_path, monkeypatch):
+    """`dynamic=False` (the API's fixed_ranges, the CLI's --fixed-ranges) writes the old X2:X6 ranges."""
+    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4, dynamic=False)
+    lp = plan["loops"][0]
+    assert lp["dynamic"] is False and [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}1:{col}4)" for col in "ABC"]
+    assert not any("follow the table" in n for n in lp["notes"])

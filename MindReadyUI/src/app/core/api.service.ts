@@ -64,13 +64,13 @@ export class ApiService {
     return firstValueFrom(this.http.post<AutoFixStatus>(`${this.s(id)}/auto-fix/stop`, {}));
   }
 
-  mindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean } = {}): Promise<{ version_id: string; plan: LoopPlan }> {
+  mindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean; fixed_ranges?: boolean } = {}): Promise<{ version_id: string; plan: LoopPlan }> {
     let params = new HttpParams();
     for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "" && v !== false) params = params.set(k, String(v));
     return firstValueFrom(this.http.get<{ version_id: string; plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan`, { params }));
   }
 
-  applyMindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean } = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
+  applyMindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean; fixed_ranges?: boolean } = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
     return firstValueFrom(this.http.post<ApplyOutcome & { plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan/apply`, { ...o, reanalyze: true }));
   }
 

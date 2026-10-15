@@ -9,6 +9,7 @@
       <label class="field">Cell to hold the count <input type="text" [value]="countCell()" (input)="countCell.set(value($event))" placeholder="Sheet!A1" /></label>
     }
     <label class="check"><input type="checkbox" [checked]="clearOld()" (change)="clearOld.set(!clearOld())" /> Also empty the areas the macro clears</label>
+    <label class="check" title="By default the ranges follow the table (MM_COLUMN / MM_ROW): rows added to the input table join the loop in Mind."><input type="checkbox" [checked]="fixedRanges()" (change)="fixedRanges.set(!fixedRanges())" /> Fixed ranges (the rows of today only)</label>
     <button cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
   </div>
 

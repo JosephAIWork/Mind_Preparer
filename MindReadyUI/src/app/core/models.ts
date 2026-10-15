@@ -284,6 +284,8 @@ export interface LoopChoices {
   last?: string;
   count_cell?: string;
   clear_old?: boolean;
+  /** the old X2:X6 ranges instead of MM_COLUMN / MM_ROW that follow the table */
+  fixed_ranges?: boolean;
 }
 
 export interface AppHealth {

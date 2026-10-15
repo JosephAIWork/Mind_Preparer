@@ -704,6 +704,8 @@ def loop_definitions(analysis: dict[str, Any]) -> dict[str, list[dict[str, Any]]
                 "formula": call["formula"],
                 "range_arg": range_arg,
                 "range_length": range_length(range_arg) if range_arg else None,
+                # 1.11.1: MM_COLUMN(cell) / MM_ROW(cell) / MM_TABLE(cell): the range follows the table's grid in Mind
+                "dynamic": bool(range_arg and re.search(r"\bMM_(COLUMN|ROW|TABLE|LASTROW|LASTROWCELL|LASTCOLUMN|LASTCOLUMNCELL)\s*\(", range_arg, re.I)),
                 "literal_name": args[0].strip().startswith('"'),
             }
         )

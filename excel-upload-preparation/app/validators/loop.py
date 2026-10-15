@@ -55,8 +55,18 @@ def repeated_definition_range_lengths(rule, analysis: dict[str, Any], config: di
     defs = loop_definitions(analysis)
     mismatched = {}
     unresolvable = []
+    dynamic_names = []
     for name, sites in defs.items():
         if len(sites) < 2:
+            continue
+        dyn = [s for s in sites if s.get("dynamic")]
+        if dyn and len(dyn) == len(sites):
+            # every definition reads its range from the table (MM_COLUMN / MM_ROW / MM_TABLE): Mind sizes them
+            # from the same grid, so they stay equal, and they grow together when rows are added (1.11.1)
+            dynamic_names.append(name)
+            continue
+        if dyn:
+            mismatched[name] = [{"cell": f"{s['sheet']}!{s['cell']}", "range_length": s["range_length"], "dynamic": bool(s.get("dynamic"))} for s in sites]
             continue
         lengths = {s["range_length"] for s in sites}
         if None in lengths:
@@ -64,16 +74,17 @@ def repeated_definition_range_lengths(rule, analysis: dict[str, Any], config: di
         elif len(lengths) > 1:
             mismatched[name] = [{"cell": f"{s['sheet']}!{s['cell']}", "range_length": s["range_length"]} for s in sites]
     status = "ERROR" if mismatched else ("REQUIRES_USER_INPUT" if unresolvable else "PASS")
+    mixed = [n for n, sites in mismatched.items() if any(x.get("dynamic") for x in sites)]
     return finding(
         status,
-        f"Repeated MM_LOOP definitions with unequal range lengths: {sorted(mismatched)}."
+        (f"Repeated MM_LOOP definitions that mix table-following ranges (MM_COLUMN / MM_ROW) with fixed ranges: {sorted(mixed)}; make them all follow the table or all fixed." if mixed else f"Repeated MM_LOOP definitions with unequal range lengths: {sorted(mismatched)}.")
         if mismatched
         else (
             f"Could not resolve range length for repeated definitions of: {unresolvable} (likely a defined name or expression rather than a literal range)."
             if unresolvable
-            else "All repeated MM_LOOP definitions use equal range lengths."
+            else ("All repeated MM_LOOP definitions use equal range lengths." + (f" {sorted(dynamic_names)} follow their table (MM_COLUMN / MM_ROW): Mind sizes every definition from the same grid." if dynamic_names else ""))
         ),
-        {"mismatched": mismatched, "unresolvable_range_refs": unresolvable},
+        {"mismatched": mismatched, "unresolvable_range_refs": unresolvable, "table_following": sorted(dynamic_names)},
     )
 
 

@@ -23,6 +23,7 @@ export class LoopPanel implements OnInit, OnDestroy {
   readonly last = signal("");
   readonly countCell = signal("");
   readonly clearOld = signal(false);
+  readonly fixedRanges = signal(false);
   readonly plan = signal<LoopPlan | null>(null);
   readonly loading = signal(false);
   readonly writing = signal(false);
@@ -48,7 +49,7 @@ export class LoopPanel implements OnInit, OnDestroy {
   }
 
   private choices(): LoopChoices {
-    return { name: this.name() || undefined, first: this.first() || undefined, last: this.last() || undefined, count_cell: this.countCell() || undefined, clear_old: this.clearOld() || undefined };
+    return { name: this.name() || undefined, first: this.first() || undefined, last: this.last() || undefined, count_cell: this.countCell() || undefined, clear_old: this.clearOld() || undefined, fixed_ranges: this.fixedRanges() || undefined };
   }
 
   async preview(): Promise<void> {

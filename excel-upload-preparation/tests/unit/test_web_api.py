@@ -698,7 +698,7 @@ def test_mind_loop_plan_route_previews_and_writes_the_loop(client, tmp_path, mon
     # 1.10.1: saved with the MM for Excel add-in loaded, the file stores the call as `_xll.MM_LOOP(` (Excel's storage prefix, stripped on read)
     from app.formula_utils import STORAGE_PREFIX_RE
 
-    assert STORAGE_PREFIX_RE.sub("", written["CALCUL"]["A2"].value) == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:A4)"
+    assert STORAGE_PREFIX_RE.sub("", written["CALCUL"]["A2"].value) == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A2)))"
     assert STORAGE_PREFIX_RE.sub("", written["OUTPUT"]["A2"].value) == '=MM_RESULT(CALCUL!$E$10,"Policy",1)'
     written.close()
     assert client.get("/api/sessions/nope/mind-loop-plan").status_code == 404

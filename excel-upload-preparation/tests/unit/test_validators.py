@@ -539,3 +539,41 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     assert sites["B3"]["suggested_formula"] is None and "cannot be worked out" in sites["B3"]["issue"]
     assert f["observed"]["with_proposal"] == 2 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
     assert "AMReference" in f["message"] and "writes the proposals" in f["message"]
+
+
+def test_loop_003_accepts_definitions_that_follow_their_table(tmp_path):
+    """1.11.1: MM_LOOP over MM_COLUMN(cell) in every definition: Mind sizes them from the same grid, so
+    the rule passes and says so; a mix of table-following and fixed ranges is an ERROR."""
+    import openpyxl
+
+    from app.inventory import build_analysis, loop_definitions
+    from app.validators.loop import repeated_definition_range_lengths
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "T"
+    for r in range(1, 5):
+        ws.cell(r, 1, f"p{r}")
+        ws.cell(r, 2, r * 10)
+    ws["D1"] = '=MM_LOOP("Pol",MM_COLUMN(A1))'
+    ws["E1"] = '=MM_LOOP("Pol",MM_COLUMN(B1))'
+    ws["D3"] = '=MM_LOOP("Mix",MM_COLUMN(A1))'
+    ws["E3"] = '=MM_LOOP("Mix",B1:B4)'
+    p = tmp_path / "dyn.xlsx"
+    wb.save(p)
+    wb.close()
+    analysis = build_analysis(p, tmp_path / "w", "dyn")
+    defs = loop_definitions(analysis)
+    assert all(d["dynamic"] for d in defs["Pol"]) and [d["dynamic"] for d in defs["Mix"]] == [True, False]
+    out = repeated_definition_range_lengths(None, analysis, {})
+    assert out["status"] == "ERROR" and "Mix" in out["message"] and "mix table-following" in out["message"]
+    assert out["observed"]["table_following"] == ["Pol"] if "observed" in out else True
+    ws = openpyxl.load_workbook(p)["T"]
+    ws["D3"] = None
+    ws["E3"] = None
+    wb2 = ws.parent
+    wb2.save(p)
+    wb2.close()
+    analysis = build_analysis(p, tmp_path / "w2", "dyn2")
+    out = repeated_definition_range_lengths(None, analysis, {})
+    assert out["status"] == "PASS" and "follow their table" in out["message"]

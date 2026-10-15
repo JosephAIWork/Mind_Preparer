@@ -1357,6 +1357,10 @@ def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
     return {"version_id": s.model_map_version_id, "map": s.model_map}
 
 
+def _truthy(v: Any) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
     """The Mind loop plan (1.10.0) for the current version with the caller's choices:
     name / names, first, last, count_cell, clear_old."""
@@ -1364,19 +1368,19 @@ def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
     names = payload.get("names") if isinstance(payload.get("names"), dict) else None
     try:
         plan = build_loop_plan(s.result["workbook_analysis"], mp, names=names, name=payload.get("name") or None, first=payload.get("first"), last=payload.get("last"),
-                               count_cell=payload.get("count_cell") or None, clear_old=bool(payload.get("clear_old")))
+                               count_cell=payload.get("count_cell") or None, dynamic=not _truthy(payload.get("fixed_ranges")), clear_old=bool(payload.get("clear_old")))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"loop plan failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
     return json.loads(json.dumps(plan, default=str))
 
 
 @app.get("/api/sessions/{session_id}/mind-loop-plan")
-def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False) -> dict[str, Any]:
+def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False, fixed_ranges: bool = False) -> dict[str, Any]:
     """1.10.0: the macro's run loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
     the block the macro writes per pass -- as a plan (nothing written): the loops, the outputs,
     the cleared areas, the operations, and what cannot be built and why."""
     s = _session(session_id)
-    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old})
+    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old, "fixed_ranges": fixed_ranges})
     public = {k: v for k, v in plan.items() if k != "operations"}
     public["operations"] = [_public_op(o) for o in plan["operations"][:200]]
     public["operation_count"] = len(plan["operations"])
