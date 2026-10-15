@@ -277,7 +277,7 @@ def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first:
         else:
             f_text = str(first)
         formula = f'=MM_LOOP("{name}",{n_text},{first},{f_text},{n_text})'
-        notes.append(f"the run starts at {first}, not 1: the IndexStart / IndexEnd arguments of MM_LOOP say so (documented syntax, check it on the first run in Mind)")
+        notes.append(f"the run starts at {first}, not 1: the IndexStart / IndexEnd arguments of MM_LOOP say so (verified in Mind: the loop then has {last - first + 1} instances, {first} to {last}, and MM_RESULT counts them from 1)")
     cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": n_text, "formula": formula, "header": None}
     return {"kind": "counter", "status": "ready", "cells": [cell], "source_sheet": None, "unit": "value", "example_range": n_text, "notes": notes, "extra_ops": ops_extra,
             "how": f"{d['cell']} counts from {first} to {last} ({n_text} holds the count), through MM_LOOP"}

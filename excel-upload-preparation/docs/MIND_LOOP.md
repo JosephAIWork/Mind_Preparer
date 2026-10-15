@@ -11,7 +11,7 @@ section of the Model map screen, `python -m app.loop_builder <workbook> [--json]
 |---|---|
 | copies row *n* of a table into a driver row, *n* from a first cell to a last cell (Horizon) | every driver cell: `=MM_LOOP("Name", 'Table'!Xfirst:Xlast)`, its own column of the table |
 | walks a list with `Range("start").Offset(0, i - 1)` (CNHI's scenarios, clusters) | the driver cell: `=MM_LOOP("Name", the stretch of the list)` |
-| sets the driver to the counter itself, from a first cell to a last cell (Palermo) | `=MM_LOOP("Name", LastCell)` when the first value is 1; `=MM_LOOP("Name", LastCell, first, first, LastCell)` otherwise (the documented IndexStart / IndexEnd form, to be checked on the first run) |
+| sets the driver to the counter itself, from a first cell to a last cell (Palermo) | `=MM_LOOP("Name", LastCell)` when the first value is 1; `=MM_LOOP("Name", LastCell, first, first, LastCell)` otherwise (the IndexStart / IndexEnd form; verified in Mind: instances first..last, MM_RESULT index 1 = the first) |
 | computes the driver from the counter: `proj_year + i - 1` (CNHI's year) | the same expression with `MM_LOOP("Name", CountCell)` in the counter's place; the count cell is named by the user when the workbook has none |
 | writes a source block into `Target!A<n>:J<n>` on every pass (Horizon) | row by row: `=MM_RESULT('Source'!$AY$35, "Name", k)` for loop value k |
 | clears a results area before a run | listed with what an earlier run left there; emptied only when asked |
@@ -85,3 +85,15 @@ recalculated clean), in a sandbox project:
 Scripts: `scripts/mind_loop_probe.py` (upload, logs, run, parts), `scripts/mind_loop_compare.py`
 (Mind's rows vs the macro's values), `scripts/mind_ask.py` (Mind's AI Assistant),
 `scripts/night_chain.py` (the Do-everything chain through the API).
+
+## The two MM_LOOP forms, verified in Mind (2026-10-15, a tiny probe workbook)
+
+`scripts/build_loop_forms_probe.py` writes a workbook with `K = MM_LOOP("K", last, 3, first, last)` (first =
+3, last = 7) and `J = MM_LOOP("J", last)`, plus `MM_RESULT(cell, "K", k)` / `("J", k)` for k = 1..7. In Mind:
+
+- `MM_DIMSIZE("K")` = 5 and `MM_DIMSIZE("J")` = 7; the first instance of K is 3, of J is 1.
+- `MM_RESULT(x10, "K", k)` = 30, 40, 50, 60, 70 for k = 1..5 (k = 1 is loop value 3) and 0 for k = 6, 7;
+  `MM_RESULT(x10, "J", k)` = 10..70. So the builder's `k = value - first + 1` is what Mind expects, and an
+  index past the loop gives 0, not an error.
+- `MM_RESULT` needs a cell as its first argument: with an expression (`$B$4*10`) Mind's test step fails at
+  runtime with "trying to access null reference". The builder always passes a cell.
