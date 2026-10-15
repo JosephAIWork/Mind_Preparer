@@ -14,6 +14,9 @@ What it records, under <workbook>_mind_probe/:
   - the Audit trail, Project Edition and Grid validation manager screens, as text + screenshot;
   - when --expected is given (scripts/check_loop_plan.py's check.json): Mind's values from the log
     compared with the macro's values, pass by pass.
+With a Mind MCP token (app/mind_mcp.py) the run and the loop reading go through MCP after the upload:
+the loop's size and every instance of --source as data, compared with --expected; the run's errors mapped
+to Excel cells. Without one (or with --browser) the browser runs the model and reads the parts as before.
 Nothing is deleted; the project stays in Mind (sandbox names only, zzz_...).
 """
 from __future__ import annotations
@@ -27,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app import mind_mcp  # noqa: E402
 from app.mind_client import (  # noqa: E402
     SANDBOX_FOLDER,
     add_template,
@@ -284,6 +288,10 @@ def main() -> int:
     ap.add_argument("--parts", default="OUTPUT,Untitled,CALCUL", help="template-selector entries to open (comma separated prefixes)")
     ap.add_argument("--no-run", action="store_true")
     ap.add_argument("--timeout", type=int, default=900)
+    ap.add_argument("--source", default=None, help="MCP: the block MM_RESULT reads (Sheet!A1:J1), read per instance")
+    ap.add_argument("--loop", default=None, help="MCP: the loop name (default: the project's loop)")
+    ap.add_argument("--expect-size", type=int, default=None, help="MCP: the loop size to expect")
+    ap.add_argument("--browser", action="store_true", help="use the browser for the run and the reading even when Mind MCP is available")
     args = ap.parse_args()
     workbook = Path(args.workbook).resolve()
     name = args.project or ("zzz_mindready_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:40])
@@ -343,44 +351,68 @@ def main() -> int:
             print("project is neither empty nor a model; stopping")
             _log(out, "result.json", result)
             return 6
-        run = run_model(page, shots=out)
-        result["run"] = {k: run.get(k) for k in run if k != "text"}
-        print("run:", json.dumps(result["run"])[:300], flush=True)
-        screenshot(page, out / "after_run.png")
-        result["after_run_text"] = body_text(page)[:3000]
+        use_mcp, mcp_why = (False, "--browser asked for") if args.browser else mind_mcp.available()
+        result["mcp"] = {"used": use_mcp, "why": mcp_why}
+        if use_mcp:
+            print("Mind MCP available: the run and the loop check go through MCP once the browser closes", flush=True)
+        else:
+            print(f"Mind MCP not used ({mcp_why}): the browser runs the model and reads the parts", flush=True)
+        if not use_mcp:
+            run = run_model(page, shots=out)
+            result["run"] = {k: run.get(k) for k in run if k != "text"}
+            print("run:", json.dumps(result["run"])[:300], flush=True)
+            screenshot(page, out / "after_run.png")
+            result["after_run_text"] = body_text(page)[:3000]
+            try:
+                result["after_run_buttons"] = [b for b in page.evaluate(BUTTONS_JS) if b["t"] or b["a"] or b["ti"]][:120]
+            except Exception:
+                result["after_run_buttons"] = []
+            stem = workbook.stem
+            try:
+                close = page.get_by_role("button", name=re.compile(r"Close modal", re.I))
+                if close.count():
+                    close.first.click(timeout=3000)
+                    _wait(page, 800)
+            except Exception:
+                pass
+            names = selector_entries(page, stem, out)
+            if not names:
+                names = template_names(page, stem)
+            result["template_entries"] = names
+            print(f"template entries ({len(names)}):", names[:40], flush=True)
+            wanted = [p.strip() for p in args.parts.split(",") if p.strip()]
+            parts = []
+            for n in names:
+                if any(n.startswith(w) for w in wanted) and len(parts) < 6:
+                    parts.append(n)
+            result["parts"] = []
+            for i, entry in enumerate(parts):
+                rec = open_part(page, stem, entry, out, f"{i}_{re.sub(r'[^A-Za-z0-9]+', '_', entry)[:24]}")
+                result["parts"].append({k: v for k, v in rec.items() if k != "buttons"})
+                _log(out, f"part_{i}.json", rec)
+                print(f"part {entry}: opened={rec.get('opened')} clicks={len(rec.get('clicks', []))}", flush=True)
+            for tag, pat in (("audit", r"Audit trail"), ("edition", r"Project Edition"), ("settings", r"Project Settings"), ("gridvalidation", r"Grid validation"), ("exports", r"^\s*Exports?\s*$")):
+                rec = open_screen(page, pat, out, tag)
+                result[f"screen_{tag}"] = {k: v for k, v in rec.items() if k not in ("buttons",)}
+                _log(out, f"screen_{tag}.json", rec)
+                print(f"screen {tag}: opened={rec.get('opened')}", flush=True)
+    if result.get("mcp", {}).get("used"):
+        expected = None
+        if args.expected and args.source:
+            expected = json.loads(Path(args.expected).read_text(encoding="utf-8"))["expected"].get(args.source)
         try:
-            result["after_run_buttons"] = [b for b in page.evaluate(BUTTONS_JS) if b["t"] or b["a"] or b["ti"]][:120]
-        except Exception:
-            result["after_run_buttons"] = []
-        stem = workbook.stem
-        try:
-            close = page.get_by_role("button", name=re.compile(r"Close modal", re.I))
-            if close.count():
-                close.first.click(timeout=3000)
-                _wait(page, 800)
-        except Exception:
-            pass
-        names = selector_entries(page, stem, out)
-        if not names:
-            names = template_names(page, stem)
-        result["template_entries"] = names
-        print(f"template entries ({len(names)}):", names[:40], flush=True)
-        wanted = [p.strip() for p in args.parts.split(",") if p.strip()]
-        parts = []
-        for n in names:
-            if any(n.startswith(w) for w in wanted) and len(parts) < 6:
-                parts.append(n)
-        result["parts"] = []
-        for i, entry in enumerate(parts):
-            rec = open_part(page, stem, entry, out, f"{i}_{re.sub(r'[^A-Za-z0-9]+', '_', entry)[:24]}")
-            result["parts"].append({k: v for k, v in rec.items() if k != "buttons"})
-            _log(out, f"part_{i}.json", rec)
-            print(f"part {entry}: opened={rec.get('opened')} clicks={len(rec.get('clicks', []))}", flush=True)
-        for tag, pat in (("audit", r"Audit trail"), ("edition", r"Project Edition"), ("settings", r"Project Settings"), ("gridvalidation", r"Grid validation"), ("exports", r"^\s*Exports?\s*$")):
-            rec = open_screen(page, pat, out, tag)
-            result[f"screen_{tag}"] = {k: v for k, v in rec.items() if k not in ("buttons",)}
-            _log(out, f"screen_{tag}.json", rec)
-            print(f"screen {tag}: opened={rec.get('opened')}", flush=True)
+            rep = mind_mcp.check_loop(result["init_url"], args.source, args.loop, expected, args.expect_size, do_run=True)
+            result["mcp_check"] = rep
+            _log(out, "mcp_check.json", rep)
+            run = rep.get("run") or {}
+            row = run.get("run") or {}
+            print(f"MCP run: {row.get('Result')} | consistency {row.get('ConsistencyStatus')} | {run.get('calculations')} calculations in {run.get('seconds')} s", flush=True)
+            for c in (run.get("errors") or {}).get("cells", [])[:20]:
+                print(f"  error cell: {c['mind']} -> {c.get('excel')}", flush=True)
+            print(f"MCP loop: {rep.get('loop')} size {rep.get('size')}" + (f" | macro comparison: {rep.get('same')} same, {rep.get('differ')} differ" if rep.get("cells") else ""), flush=True)
+        except mind_mcp.MindMcpError as exc:
+            result["mcp_check"] = {"error": str(exc)}
+            print(f"MCP check failed ({exc}); rerun with --browser to use the browser instead", flush=True)
     result["seconds"] = round(time.time() - t0)
     _log(out, "result.json", result)
     print("everything in", out, flush=True)

@@ -130,3 +130,19 @@ as equal by construction and flags a mix with fixed ones.
   first empty cell), which growth reaches it (a new upload always; Mind's Input Manager only imports into a
   grid titled with /Input), and that the result block is written for the loop values present now: Mind
   computes every instance, the block lists those of today.
+
+## Checking the loop through Mind's MCP server (optional, 1.11.2)
+
+With a Mind MCP token (env `MIND_MCP_TOKEN`, or `%LOCALAPPDATA%\MindReady\mind_mcp_token`; issued per user by
+the Mind team, 24 h) the app reads a project as data (`app/mind_mcp.py`):
+
+    python scripts/mind_mcp_loop_check.py <project link> --source "CALCUL!AY35:BH35" --check check.json --expect-size 6
+
+starts a classic run (the browser runs leave no saved results), reports it (result, consistency, and on a
+failure the log's error lines with every Mind cell mapped to its Excel address), reads the loop's size and
+every instance of the source block, and compares instance k with the macro's pass k. A cell the loop does
+not reach (a constant) holds one value, which counts for every instance. `scripts/mind_loop_probe.py` does
+the upload with the browser and then this check through MCP when a token is there, and falls back to the
+browser (`--browser` forces it) when there is none or it expired. Upload, convert, add template and delete
+have no MCP tool: they stay in the browser. Verified 2026-10-15 on Horizon with a seventh policy row: run
+Success / Consistent in 6.5 s, loop BASE_Polices size 6, 50 of 50 cells the same as the macro.

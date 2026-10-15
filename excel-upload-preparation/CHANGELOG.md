@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.11.2
+
+**Mind's MCP server, optional.** `app/mind_mcp.py` talks to Mind's MCP server with a per-user token (env
+`MIND_MCP_TOKEN` or `%LOCALAPPDATA%\MindReady\mind_mcp_token`, never in the repo): run a project
+(`run`), map the run log's Mind cells back to Excel addresses (`run_errors`), read a loop's size and every
+instance of a cell (`check_loop`). `scripts/mind_mcp_loop_check.py` runs and checks a loop against the
+macro; `scripts/mind_loop_probe.py` uses it after the browser upload when a token is there, the browser
+otherwise. Without a token nothing changes. Also in this release: loop ranges follow the input table
+(`X2:INDEX(X:X, MM_LASTROW(key2))`), a text header row is skipped by default, a cut-short loop keeps fixed
+ranges, and the notes say what Mind and Excel each do.
+
 ## 1.11.0
 
 **The front end rewritten in Angular with Carbon, Mind's own design system**
