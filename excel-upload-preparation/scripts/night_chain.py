@@ -73,7 +73,8 @@ def main() -> int:
             full = requests.get(f"{B}/sessions/{sid}/auto-fix", params={"full": "1"}, timeout=300).json()
             res = full.get("result") or {}
             left = res.get("left") or []
-            ok = res.get("status") == "clean" or (res.get("status") == "partial" and not left and (res.get("errors_after") or 0) == 0)
+            # "unchanged" with no error left is fine: the workbook already recalculated clean (CNHI)
+            ok = res.get("status") == "clean" or (res.get("status") in ("partial", "unchanged") and not left and (res.get("errors_after") or 0) == 0)
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])
 

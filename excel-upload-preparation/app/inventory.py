@@ -24,6 +24,8 @@ nothing more specific to conform to.
 """
 from __future__ import annotations
 
+import os
+
 import hashlib
 import re
 import shutil
@@ -47,7 +49,45 @@ MAX_STYLE_SAMPLES = 25
 # short strings cost a few MB at most; the public API still truncates lists.
 MAX_STYLE_CELL_REFS = 250_000
 
-_WORKBOOK_CACHE: dict[str, Any] = {}
+class _BoundedCache(dict):
+    """A dict that keeps only the `limit` most recently used entries (1.11.2).
+
+    The workbook caches below hold a whole openpyxl workbook per analysed copy. Unbounded, every
+    re-analysis of a version added one more: a 36 MB model (CNHI) took the web server past 13 GB and
+    the machine out of memory. An evicted workbook is simply read again from its copy if needed."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+
+    def get(self, key, default=None):  # type: ignore[override]
+        if key in self:
+            value = super().pop(key)
+            super().__setitem__(key, value)  # most recent last
+            return value
+        return default
+
+    def __setitem__(self, key, value) -> None:
+        if key in self:
+            super().pop(key)
+        super().__setitem__(key, value)
+        evicted = False
+        while len(self) > self.limit:
+            oldest = next(iter(self))
+            wb = super().pop(oldest)
+            try:
+                wb.close()
+            except Exception:
+                pass
+            evicted = True
+        if evicted:
+            import gc
+
+            gc.collect()
+
+
+WORKBOOK_CACHE_LIMIT = int(os.environ.get("MIND_READY_WORKBOOK_CACHE", "2"))
+_WORKBOOK_CACHE: dict[str, Any] = _BoundedCache(WORKBOOK_CACHE_LIMIT)
 
 # A progress callback: progress(stage, message, fraction_within_stage_or_None, **facts).
 # Stages, in order: copy, load, inventory, names, rules, plan (the web server
@@ -189,7 +229,7 @@ def cell_value(analysis: dict[str, Any], sheet: str, row: int, col: int) -> Any:
     return json_safe(wb[sheet].cell(row, col).value)
 
 
-_VALUES_CACHE: dict[str, Any] = {}
+_VALUES_CACHE: dict[str, Any] = _BoundedCache(max(1, WORKBOOK_CACHE_LIMIT - 1))
 
 
 def _values_workbook(path: str, ignore_sheets: Iterable[str] = ()):

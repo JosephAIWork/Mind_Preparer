@@ -57,3 +57,23 @@ def test_analysis_is_json_serializable(tmp_path, messy_workbook_xlsx):
     analysis = build_analysis(messy_workbook_xlsx, tmp_path / "work", analysis_id="a6")
     assert analysis["workbooks"][0]["sheets"][0]["tab_color"] in ("00FF0000", "FF0000")
     json.dumps(analysis)
+
+
+def test_the_workbook_caches_keep_only_the_latest_workbooks():
+    """1.11.2: an unbounded cache kept every analysed version of a 36 MB model in memory (13+ GB)."""
+    from app.inventory import _BoundedCache
+
+    closed = []
+
+    class Wb:
+        def __init__(self, n):
+            self.n = n
+
+        def close(self):
+            closed.append(self.n)
+
+    c = _BoundedCache(2)
+    c["v1"], c["v2"] = Wb(1), Wb(2)
+    assert c.get("v1").n == 1  # v1 is now the most recent
+    c["v3"] = Wb(3)
+    assert set(c) == {"v1", "v3"} and closed == [2] and c.get("v2") is None
