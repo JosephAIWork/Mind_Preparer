@@ -146,3 +146,12 @@ the upload with the browser and then this check through MCP when a token is ther
 browser (`--browser` forces it) when there is none or it expired. Upload, convert, add template and delete
 have no MCP tool: they stay in the browser. Verified 2026-10-15 on Horizon with a seventh policy row: run
 Success / Consistent in 6.5 s, loop BASE_Polices size 6, 50 of 50 cells the same as the macro.
+
+## A driver cell must not have a dropdown (1.11.3)
+
+Mind reads a cell with a list dropdown (data validation) as an input and drops its formula: an MM_LOOP
+written there is lost, and the run has no loop. Seen on CNHI (both drivers have a dropdown; Mind made
+neither loop) and confirmed with a probe workbook on 2026-10-16: the same MM_LOOP in four driver cells,
+plain, with a defined name, with a dropdown, with both; Mind made loops of the first two only, and of all
+four once the dropdowns were removed. The loop builder therefore adds a `remove_validation` operation for
+a driver cell with a dropdown (the note says why). The defined name on a driver is harmless.

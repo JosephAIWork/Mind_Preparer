@@ -80,6 +80,84 @@ def _held(analysis: dict[str, Any], sheet: str, col: int, row: int) -> Any:
         return None
 
 
+def _in_sqref(sqref: str, col: int, row: int) -> bool:
+    for part in str(sqref or "").replace("$", "").split():
+        r = parse_ref(part)
+        if r and r["c1"] <= col <= r["c2"] and r["r1"] <= row <= r["r2"]:
+            return True
+    return False
+
+
+def _x14_dropdowns(copy_path: str, sheet: str) -> list[tuple[str, str]]:
+    """(sqref, source) of the dropdowns Excel keeps in the sheet's extension block (a list taken from
+    another sheet): openpyxl does not read those."""
+    import posixpath
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(copy_path) as z:
+            wbx = z.read("xl/workbook.xml").decode("utf-8", "replace")
+            rels = z.read("xl/_rels/workbook.xml.rels").decode("utf-8", "replace")
+            rid = None
+            for m in re.finditer(r"<sheet\b[^>]*>", wbx):
+                tag = m.group(0)
+                nm = re.search(r'name="([^"]*)"', tag)
+                if nm and nm.group(1).replace("&amp;", "&").replace("&apos;", "'") == sheet:
+                    rm = re.search(r'r:id="([^"]*)"', tag)
+                    rid = rm.group(1) if rm else None
+                    break
+            if not rid:
+                return []
+            target = None
+            for m in re.finditer(r"<Relationship\b[^>]*>", rels):
+                if f'Id="{rid}"' in m.group(0):
+                    tm = re.search(r'Target="([^"]*)"', m.group(0))
+                    target = tm.group(1) if tm else None
+            if not target:
+                return []
+            path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+            xml = z.read(path).decode("utf-8", "replace")
+    except Exception:
+        return []
+    out = []
+    for m in re.finditer(r"<x14:dataValidation\b.*?</x14:dataValidation>", xml, re.S):
+        block = m.group(0)
+        if 'type="list"' not in block:
+            continue
+        sq = re.search(r"<xm:sqref>([^<]*)</xm:sqref>", block)
+        f = re.search(r"<xm:f>([^<]*)</xm:f>", block)
+        if sq:
+            out.append((sq.group(1), f.group(1) if f else ""))
+    return out
+
+
+def _dropdown_at(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
+    """1.11.3: the list dropdown (data validation) on a cell, if it has one. Mind reads a cell with a
+    dropdown as an input and drops its formula: an MM_LOOP written there is lost (seen in Mind on
+    2026-10-16 with CNHI's two drivers and a probe workbook)."""
+    from .inventory import open_cached
+
+    r = parse_ref(ref)
+    if not r:
+        return None
+    col, row = r["c1"], r["r1"]
+    try:
+        ws = open_cached(analysis)[sheet]
+        for dv in getattr(ws.data_validations, "dataValidation", None) or []:
+            if _in_sqref(str(dv.sqref), col, row):
+                return f"a dropdown list ({dv.formula1})" if dv.type == "list" else f"a data validation ({dv.type})"
+    except Exception:
+        pass
+    try:
+        copy_path = analysis["workbooks"][0]["copy_path"]
+    except Exception:
+        return None
+    for sqref, src in _x14_dropdowns(copy_path, sheet):
+        if _in_sqref(sqref, col, row):
+            return f"a dropdown list ({src})"
+    return None
+
+
 def _number_at(analysis: dict[str, Any], sheet: str, ref: str) -> tuple[Any, str | None]:
     """A cell's number: its constant, else the value Excel last stored for its formula."""
     from .inventory import values_cell
@@ -587,6 +665,12 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 if isinstance(before, str) and before.startswith("="):
                     note += " (held a formula; the macro overwrote it with values on every pass)"
                 ops.append({"op": "set_formula", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": c["ref"], "before": before, "after": c["formula"], "note": note})
+                dropdown = _dropdown_at(analysis, c["sheet"], c["ref"])
+                if dropdown:
+                    ops.append({"op": "remove_validation", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": c["ref"], "before": dropdown, "after": None,
+                                "note": f"loop {loop_name}: Mind treats a cell with a dropdown as an input and drops its formula, so the loop would be lost"})
+                    entry["notes"].append(f"{_qs(c['sheet'])}!{c['ref']} had {dropdown}: it is removed, because Mind drops the formula of a cell with a dropdown and the loop would be lost.")
+                    plan["counts"]["extra"] += 1
             for o in res.get("extra_ops") or []:
                 ops.append({"action_id": ACTION_ID, "rule_id": RULE_ID, **o})
                 plan["counts"]["extra"] += 1

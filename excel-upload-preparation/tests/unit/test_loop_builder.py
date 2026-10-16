@@ -302,3 +302,52 @@ def test_the_header_pass_is_kept_when_first_is_chosen_and_a_cut_short_loop_keeps
     lp = plan["loops"][0]
     assert lp["dynamic"] is False and lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A2:A3)"
     assert any("before the end of the table (row 4)" in n for n in lp["notes"]) and "rows_note" not in plan["outputs"][0]
+
+
+def test_a_dropdown_on_a_loop_driver_is_found_and_removed(tmp_path):
+    """1.11.3: Mind drops the formula of a cell with a dropdown, so the loop builder removes the dropdown
+    (CNHI's drivers, and a probe workbook in Mind on 2026-10-16)."""
+    import openpyxl
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    from app import loop_builder, prep
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Model Inputs"
+    for i, t in enumerate(["a", "b", "c"], start=2):
+        ws.cell(i, 5, t)
+    wb.defined_names["opts"] = DefinedName("opts", attr_text="'Model Inputs'!$E$2:$E$4")
+    dv = DataValidation(type="list", formula1="opts")
+    ws.add_data_validation(dv)
+    dv.add("B2:D4")
+    path = tmp_path / "dv.xlsx"
+    wb.save(path)
+    analysis = {"workbooks": [{"copy_path": str(path)}]}
+    assert loop_builder._dropdown_at(analysis, "Model Inputs", "C3") == "a dropdown list (opts)"
+    assert loop_builder._dropdown_at(analysis, "Model Inputs", "A1") is None
+    wb = openpyxl.load_workbook(path)
+    prep._remove_validation_openpyxl(wb["Model Inputs"], "C3")
+    left = str(wb["Model Inputs"].data_validations.dataValidation[0].sqref).split()
+    cells = {(c, r) for part in left for c in range(openpyxl.utils.cell.range_boundaries(part)[0], openpyxl.utils.cell.range_boundaries(part)[2] + 1)
+             for r in range(openpyxl.utils.cell.range_boundaries(part)[1], openpyxl.utils.cell.range_boundaries(part)[3] + 1)}
+    assert cells == {(c, r) for c in (2, 3, 4) for r in (2, 3, 4)} - {(3, 3)}
+
+
+def test_a_dropdown_kept_in_the_extension_block_is_found(tmp_path):
+    """A list taken from another sheet is kept by Excel in the sheet's extension block, which openpyxl does not read."""
+    import zipfile
+
+    from app import loop_builder
+
+    path = tmp_path / "x14.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("xl/workbook.xml", '<workbook><sheets><sheet name="Drivers" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        z.writestr("xl/_rels/workbook.xml.rels", '<Relationships><Relationship Id="rId1" Type="ws" Target="worksheets/sheet1.xml"/></Relationships>')
+        z.writestr("xl/worksheets/sheet1.xml", '<worksheet><extLst><ext><x14:dataValidations count="1"><x14:dataValidation type="list" allowBlank="1">'
+                   '<x14:formula1><xm:f>Lists!$B$2:$B$6</xm:f></x14:formula1><xm:sqref>E3 K3</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst></worksheet>')
+    assert loop_builder._x14_dropdowns(str(path), "Drivers") == [("E3 K3", "Lists!$B$2:$B$6")]
+    analysis = {"workbooks": [{"copy_path": str(path)}]}
+    assert loop_builder._dropdown_at(analysis, "Drivers", "K3") == "a dropdown list (Lists!$B$2:$B$6)"
+    assert loop_builder._dropdown_at(analysis, "Drivers", "H3") is None

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11.3
+
+**A loop driver with a dropdown loses its loop in Mind: the loop builder now removes the dropdown.**
+Mind reads a cell with a list dropdown (data validation) as an input and drops its formula, so an MM_LOOP
+written there never becomes a loop. CNHI showed it: both drivers (`'Model Inputs'!C174`, `C8`) carry a
+dropdown, and Mind made no loop of either although the file holds both formulas. A probe workbook confirmed
+it (four drivers with the same MM_LOOP: the plain one and the one with a defined name became loops, the two
+with a dropdown did not; with the dropdowns removed all four did). The plan now adds a `remove_validation`
+operation for a driver cell with a dropdown, with a note saying why; the applier deletes it in Excel
+(openpyxl fallback: the cell is taken out of the validation's ranges). Dropdowns Excel keeps in the sheet's
+extension block (a list from another sheet) are found too.
+
 ## 1.11.2
 
 **Mind's MCP server, optional.** `app/mind_mcp.py` talks to Mind's MCP server with a per-user token (env

@@ -22,6 +22,7 @@ Operation shape: {op, action_id, rule_id, sheet, before, after, note, ...}
   insert_row / insert_column             -> row / column
   set_sheet_visibility                   -> after = True|False
   unprotect_sheet, explicit_colors (cells)
+  remove_validation                      -> cell: its dropdown / data validation is deleted (1.11.3)
 Cell operations flagged `after_inserts` run after the row/column inserts
 (their coordinates are post-insert).
 """
@@ -1595,7 +1596,7 @@ def formula_replacement_op(sheet: str, cell: str, before: str, after: str, rule_
 def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cell ops on original coordinates, then inserts (bottom-up / right-to-left),
     then cell ops written for post-insert coordinates, then sheet-level ops."""
-    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "unprotect_sheet"} and not o.get("after_inserts")]
+    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "unprotect_sheet", "remove_validation"} and not o.get("after_inserts")]
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
     phase2 = [_resolve_insert_at(o, row_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
@@ -1888,6 +1889,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             record = _write_array(ws, o)
         elif o["op"] == "unprotect_sheet":
             ws.Unprotect()
+        elif o["op"] == "remove_validation":
+            ws.Range(o["cell"]).Validation.Delete()
         elif o["op"] == "set_sheet_visibility":
             ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
         elif o["op"] == "explicit_colors":
@@ -2031,6 +2034,29 @@ def _range_cells(ref_text_: str) -> list[str]:
     return [ref_text(c, r) for r in range(ref["r1"], ref["r2"] + 1) for c in range(ref["c1"], ref["c2"] + 1)]
 
 
+def _remove_validation_openpyxl(ws: Any, target: str) -> None:
+    """Take the cells of `target` out of every data validation of the sheet (a range is split around them)."""
+    from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
+
+    t = parse_ref(str(target).replace("$", ""))
+    if not t:
+        raise ValueError(f"not a cell: {target}")
+    for dv in list(ws.data_validations.dataValidation):
+        kept = []
+        for rng in dv.sqref.ranges:
+            c1, r1, c2, r2 = rng.min_col, rng.min_row, rng.max_col, rng.max_row
+            if c2 < t["c1"] or c1 > t["c2"] or r2 < t["r1"] or r1 > t["r2"]:
+                kept.append(rng.coord)
+                continue
+            pieces = [(c1, r1, c2, t["r1"] - 1), (c1, t["r2"] + 1, c2, r2),
+                      (c1, max(r1, t["r1"]), t["c1"] - 1, min(r2, t["r2"])), (t["c2"] + 1, max(r1, t["r1"]), c2, min(r2, t["r2"]))]
+            kept += [CellRange(min_col=a, min_row=b, max_col=c, max_row=d).coord for a, b, c, d in pieces if a <= c and b <= d]
+        if kept:
+            dv.sqref = MultiCellRange(" ".join(kept))
+        else:
+            ws.data_validations.dataValidation.remove(dv)
+
+
 def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None) -> tuple[list[dict], list[dict]]:
     applied, failed = [], []
     total = len(operations)
@@ -2045,6 +2071,10 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
             continue
         try:
             ws = wb[o["sheet"]]
+            if o["op"] == "remove_validation":
+                _remove_validation_openpyxl(ws, o["cell"])
+                applied.append(o)
+                continue
             for cell in _range_cells(o["cell"]):
                 ws[cell].value = None if o["op"] == "clear_cell" else o["after"]
             applied.append(o)
