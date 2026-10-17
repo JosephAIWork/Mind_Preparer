@@ -122,6 +122,9 @@ class Session:
     # 1.7.2 -- the ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
     # (computed once per session, the baseline every later recalculation is compared with)
     original_baseline: dict[str, Any] | None = None
+    # 1.11.4 -- (sheet, cell) of the original's formulas that contain #REF!, taken from its own scan
+    # (None until the original was scanned with no sheet skipped: then the baseline reads the file)
+    original_ref_formulas: set[tuple[str, str]] | None = None
     # 1.7.2 -- live status of the current/last Apply (GET /status, field "apply")
     apply_status: dict[str, Any] = field(default_factory=dict)
     # 1.9.0 -- the model map (inputs, loop driver, run settings, outputs) of the analysed version
@@ -414,12 +417,12 @@ def _apply_snapshot(s: Session) -> dict[str, Any] | None:
     return st
 
 
-def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool) -> dict[str, Any]:
+def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer_verify: bool = False) -> dict[str, Any]:
     """apply_operations on the current version, every stage and every written
     operation reported into `s.apply_status` (GET /status, field "apply")."""
     _apply_start(s, len(ops), reanalyze)
     try:
-        res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s))
+        res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
     except Exception as exc:
         _apply_finish(s, error=f"apply failed: {exc}")
         raise
@@ -480,6 +483,11 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         f["correction_available"] = f["rule_id"] in fixable
     report["_version_id"] = s.current_version_id
     s.result = result
+    if s.original_ref_formulas is None and not s.ignore_sheets and Path(path) == _original_path(s):
+        s.original_ref_formulas = {
+            (f["sheet"], f["cell"]) for f in result["workbook_analysis"]["workbooks"][0]["formulas"]
+            if not f.get("array_ref") and not f.get("data_table") and "#REF!" in str(f.get("formula") or "")
+        }
     _sync_recalc_finding(s)  # a re-analysis of a version already recalculated keeps that result
     delta = _delta(previous, report, s.current_version_id)
     s.last_delta = delta  # 1.11.0: shown again when the page reopens the session
@@ -733,16 +741,42 @@ def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: 
     """Write `ops` into a fresh copy of the current version, register the result as the next
     version, re-analyse it when asked, and report the outcome (the shape every Apply returns)."""
     before = _before_apply(s)
+    reanalyze_wanted = reanalyze
     with perf_stage("apply_operations", file=s.current_path.name, operations=len(ops), source=source):
-        res = _tracked_apply(s, ops, reanalyze)
+        # 1.11.4: with a re-analysis to run, the check that the new file opens in Excel (a second
+        # Excel, ~40 s on a 30 MB model) runs alongside it instead of before it
+        res = _tracked_apply(s, ops, reanalyze, defer_verify=reanalyze_wanted)
     output = Path(res["output_path"])
-    verified = res.get("verified_opens_in_excel")
-    label = f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
-    version = _add_version(s, output, source, label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"], minor=minor)
-    out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version}
+    finish = res.pop("finish", None)
+    checker: threading.Thread | None = None
+    if finish is not None:
+        def check() -> None:
+            try:
+                with perf_stage("verify_opens_alongside", file=output.name):
+                    finish()
+            except Exception as exc:  # the check itself failed: the version stays unverified
+                res.setdefault("warnings", []).append(f"The check that the file opens in Excel did not run: {str(exc)[:160]}")
+
+        checker = threading.Thread(target=check, name=f"verify-{s.id}", daemon=True)
+        checker.start()
+
+    def label_of() -> str:
+        verified = res.get("verified_opens_in_excel")
+        return f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
+
+    version = _add_version(s, output, source, label_of(), res.get("applied", []), res.get("verified_opens_in_excel"), res["change_log_entry"]["output_sha256"], minor=minor)
     reanalyzed = reanalyze and res["status"] in ("APPLIED", "PARTIAL")
-    if reanalyzed:
-        out.update(_run_scan(s, output))
+    scanned: dict[str, Any] = {}
+    try:
+        if reanalyzed:
+            scanned = _run_scan(s, output)
+    finally:
+        if checker is not None:
+            checker.join()
+            version["verified_opens_in_excel"] = res.get("verified_opens_in_excel")
+            version["label"] = version["label"].split(" — ")[0] + " — " + label_of()
+    out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version}
+    out.update(scanned)
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     return out
@@ -1037,6 +1071,11 @@ def chat_stream(session_id: str, payload: dict[str, Any] = Body(...)) -> Streami
     return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _original_path(s: Session) -> Path | None:
+    """The original upload as Excel-readable file: the first .xlsx / .xlsm version."""
+    return next((s.paths[v["id"]] for v in s.versions if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
+
+
 def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
     """The original upload after the same full Excel recalculation: its error
     cells (and its formulas that already contain #REF!). Computed once per
@@ -1045,12 +1084,12 @@ def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
     if s.original_baseline is None:
         copy_path, _ = make_immutable_copy(original, s.work_dir / "recalc_original")
         with perf_stage("recalc_original_baseline", file=original.name):
-            res = recalculate(copy_path)
+            res = recalculate(copy_path, save=False)  # 1.11.4: a disposable copy -- nothing reads it again
         ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED"))
         s.original_baseline = {
             "ran": ran,
             "errors": list(res.get("formula_errors") or []) + list(res.get("addin_gap_errors") or []) if ran else [],
-            "ref_formulas": formulas_with_broken_refs(original),
+            "ref_formulas": s.original_ref_formulas if s.original_ref_formulas is not None else formulas_with_broken_refs(original),
             "message": res.get("message"),
         }
     return s.original_baseline if s.original_baseline.get("ran") else None
@@ -1093,7 +1132,7 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     # 1.7.2: errors the original already had are the model's own, not the preparation's.
     # The baseline is the ORIGINAL after the same full recalculation (once per
     # session), never its cached values -- those can be stale.
-    original = next((s.paths[v["id"]] for v in s.versions if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
+    original = _original_path(s)
     if original is not None and out["formula_errors"]:
         base = _original_baseline(s, original)
         if base is not None:

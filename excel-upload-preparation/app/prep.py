@@ -2113,12 +2113,17 @@ def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]]
     return [{**o, "in_style_table": True, "note": note} if o["op"] == "explicit_colors" else o for o in operations]
 
 
-def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None) -> dict[str, Any]:
+def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None, defer_verify: bool = False) -> dict[str, Any]:
     """Apply approved operations to a fresh copy of `source_path`.
 
     `progress(stage, message, fraction, **facts)` (optional) is told every
     stage (app.progress.APPLY_STAGES) and, while writing, every operation
-    (`done` / `total`)."""
+    (`done` / `total`).
+
+    `defer_verify` (1.11.4): the check that the copy opens in Excel (a second Excel, ~40 s on a
+    30 MB model) and the change log that records its answer are left to `res["finish"]()`, which
+    the caller runs while it does something else (the web server: during the re-analysis). Until
+    then `verified_opens_in_excel` is None."""
     if not operations:
         return {"status": "NOT_APPLICABLE", "message": "No operations selected."}
     source_path = Path(source_path).resolve()
@@ -2146,9 +2151,10 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
         failed = [{**o, "error": reason} for o in applied] + failed
         applied = []
         warnings.append(f"Nothing was written: {reason}.")
+    deferred = defer_verify and com_available()
     if progress is not None:
-        progress("apply_verify", "Opening the copy in Excel to check it" if com_available() else "Excel is not available here: the copy is not verified", None, done=len(operations), total=len(operations))
-    verification = verify_opens_in_excel(copy_path) if com_available() else {"opens": None}
+        progress("apply_verify", "The check that the copy opens in Excel runs alongside the re-analysis" if deferred else "Opening the copy in Excel to check it" if com_available() else "Excel is not available here: the copy is not verified", None, done=len(operations), total=len(operations))
+    verification = {"opens": None} if deferred or not com_available() else verify_opens_in_excel(copy_path)
     entry = {
         "rule_id": sorted({o["rule_id"] for o in operations}),
         "action": "prep_apply_operations",
@@ -2163,11 +2169,8 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
         "verified_opens_in_excel": verification.get("opens"),
         "warnings": warnings,
     }
-    if progress is not None:
-        progress("apply_log", "Writing the change log", None, done=len(operations), total=len(operations))
-    append_change_log(copy_path, entry)
     status = "APPLIED" if applied and not failed else ("PARTIAL" if applied else "ERROR")
-    return {
+    res = {
         "status": status,
         "method": method,
         "output_path": copy_path,
@@ -2178,6 +2181,19 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
         "message": f"{len(applied)} operation(s) applied via {method}" + (f"; {len(failed)} failed" if failed else ""),
         "change_log_entry": entry,
     }
+    if deferred:
+        def finish() -> bool | None:
+            opens = verify_opens_in_excel(copy_path).get("opens")
+            entry["verified_opens_in_excel"] = res["verified_opens_in_excel"] = opens
+            append_change_log(copy_path, entry)
+            return opens
+
+        res["finish"] = finish
+    if progress is not None:
+        progress("apply_log", "The change log is written once the check has answered" if deferred else "Writing the change log", None, done=len(operations), total=len(operations))
+    if not deferred:
+        append_change_log(copy_path, entry)
+    return res
 
 
 def summarize_plan(actions: list[dict[str, Any]]) -> str:

@@ -19,9 +19,11 @@ run that could not happen is never mistaken for a clean one.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Any
 
+from .perf import record, stage
 from .excel_com import MM_XLL_ENV, close_quietly, com_available, excel_session, mm_addin_loaded, open_for_write, save_in_place
 from .formula_utils import called_functions, mask_strings, ref_text
 
@@ -38,6 +40,8 @@ XL_ERROR_CODES = {
     -2146826273: "#VALUE!",
 }
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+XL_CELL_TYPE_FORMULAS = -4123  # Range.SpecialCells(xlCellTypeFormulas, xlErrors)
+XL_SPECIAL_ERRORS = 16
 ADDIN_NAME_MARKERS = ("mmforexcel", "milliman", "mind")
 
 
@@ -113,45 +117,89 @@ def _array_formulas(sheet: Any, used_range: Any, cells: list[tuple[int, int, str
     return out
 
 
-def _scan(excel, copy_path: Path) -> dict[str, Any]:
-    """Open, fully rebuild, save, and scan every used range for error values.
+def _errors_in_block(rng: Any, found: list[tuple[int, int, str, str]]) -> None:
+    """The formula cells of `rng` whose value is an error, read as two arrays (values, formulas)."""
+    values = rng.Value
+    formulas = rng.Formula
+    if values is None:
+        return
+    # Excel COM returns a scalar for a 1x1 range, a tuple-of-tuples otherwise.
+    if not isinstance(values, tuple):
+        values = ((values,),)
+        formulas = ((formulas,),)
+    top_row = int(rng.Row)
+    top_col = int(rng.Column)
+    # 1.8.0: the error cells come out of the two arrays just read, and their
+    # addresses are arithmetic. Asking Excel about each one (Cells, Address,
+    # HasArray: three round trips a cell) took ten minutes for a model with
+    # 65,883 error cells -- twice, since the original is recalculated too.
+    for r_idx, row in enumerate(values):
+        for c_idx, val in enumerate(row):
+            error_text = XL_ERROR_CODES.get(val) if isinstance(val, int) else None
+            if error_text is None:
+                continue
+            formula_text = formulas[r_idx][c_idx]
+            if isinstance(formula_text, str) and formula_text.startswith("="):
+                found.append((top_row + r_idx, top_col + c_idx, error_text, formula_text))
+
+
+def _error_cells(sheet: Any, used_range: Any) -> list[tuple[int, int, str, str]]:
+    """(row, column, error, formula) of every formula cell of the sheet showing an error, row by row.
+
+    1.11.4: Excel answers first how many cells of the used range hold an error (one SUMPRODUCT,
+    computed inside Excel), and a sheet with none costs nothing more; otherwise Go To Special
+    (formulas that are errors) hands over just those cells. Reading the whole used range, values and
+    formulas, to find them took 47 s on Palermo's 5.7 million cells, at every recalculation. Whenever
+    Excel cannot answer either question the whole used range is read, as before."""
+    found: list[tuple[int, int, str, str]] = []
+    try:
+        address = str(used_range.Address)
+        count = sheet.Evaluate(f"SUMPRODUCT(--ISERROR({address}))")
+        count = int(count) if isinstance(count, (int, float)) and not isinstance(count, bool) and count >= 0 else None
+    except Exception:
+        count = None
+    if count == 0:
+        return found
+    if count is not None:
+        special = None
+        try:
+            special = used_range.SpecialCells(XL_CELL_TYPE_FORMULAS, XL_SPECIAL_ERRORS)
+            for i in range(1, int(special.Areas.Count) + 1):
+                area = special.Areas(i)
+                try:
+                    _errors_in_block(area, found)
+                finally:
+                    area = None
+            found.sort(key=lambda e: (e[0], e[1]))
+            return found
+        except Exception:  # no formula error (the errors are constants), or Excel refused: read it all
+            found = []
+        finally:
+            special = None
+    _errors_in_block(used_range, found)
+    return found
+
+
+def _scan(excel, copy_path: Path, save: bool = True) -> dict[str, Any]:
+    """Open, fully rebuild, save (unless `save` is False), and scan every used range for error values.
     Every COM proxy lives inside this function so it is released before the
     session quits Excel."""
     mmforexcel_loaded = _mmforexcel_loaded(excel)
     wb = None
     try:
         wb = open_for_write(excel, copy_path)
-        excel.CalculateFullRebuild()
-        save_in_place(wb, copy_path)
+        with stage("recalc_full_rebuild", file=copy_path.name):
+            excel.CalculateFullRebuild()
+        if save:
+            save_in_place(wb, copy_path)
 
         formula_errors: list[dict[str, Any]] = []
         addin_gap_errors: list[dict[str, Any]] = []
+        t_read = time.perf_counter()
         for sheet in wb.Worksheets:
             used_range = sheet.UsedRange
-            values = used_range.Value
-            formulas = used_range.Formula
-            if values is None:
-                continue
-            # Excel COM returns a scalar for a 1x1 range, a tuple-of-tuples otherwise.
-            if not isinstance(values, tuple):
-                values = ((values,),)
-                formulas = ((formulas,),)
-            top_row = used_range.Row
-            top_col = used_range.Column
             sheet_name = sheet.Name
-            # 1.8.0: the error cells come out of the two arrays just read, and their
-            # addresses are arithmetic. Asking Excel about each one (Cells, Address,
-            # HasArray: three round trips a cell) took ten minutes for a model with
-            # 65,883 error cells -- twice, since the original is recalculated too.
-            found: list[tuple[int, int, str, str]] = []
-            for r_idx, row in enumerate(values):
-                for c_idx, val in enumerate(row):
-                    error_text = XL_ERROR_CODES.get(val) if isinstance(val, int) else None
-                    if error_text is None:
-                        continue
-                    formula_text = formulas[r_idx][c_idx]
-                    if isinstance(formula_text, str) and formula_text.startswith("="):
-                        found.append((top_row + r_idx, top_col + c_idx, error_text, formula_text))
+            found = _error_cells(sheet, used_range)
             arrays = _array_formulas(sheet, used_range, found) if found else {}
             for row_no, col_no, error_text, formula_text in found:
                 entry = {"sheet": sheet_name, "cell": ref_text(col_no, row_no), "error": error_text, "formula": formula_text}
@@ -165,6 +213,7 @@ def _scan(excel, copy_path: Path) -> dict[str, Any]:
                     formula_errors.append(entry)
             used_range = None
             sheet = None
+        record("recalc_read_errors", time.perf_counter() - t_read, file=copy_path.name, errors=len(formula_errors) + len(addin_gap_errors))
     finally:
         close_quietly(wb)
         wb = None
@@ -243,6 +292,7 @@ def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
     from openpyxl import load_workbook
 
     out: set[tuple[str, str]] = set()
+    t = time.perf_counter()
     try:
         wb = load_workbook(original_path, data_only=False, read_only=True, keep_links=False)
         try:
@@ -256,6 +306,7 @@ def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
             wb.close()
     except Exception:
         return out
+    record("formulas_with_broken_refs", time.perf_counter() - t, file=Path(original_path).name)
     return out
 
 
@@ -361,16 +412,17 @@ def group_errors(formula_errors: list[dict[str, Any]], addin_gap_errors: list[di
     return out
 
 
-def recalculate(copy_path: Path) -> dict[str, Any]:
+def recalculate(copy_path: Path, save: bool = True) -> dict[str, Any]:
     """Recalculates `copy_path` in place (it's already a disposable copy)
-    and reports any formula-error cells found afterward."""
+    and reports any formula-error cells found afterward. `save=False` (1.11.4): the recalculated
+    values are not written back -- for a copy nothing reads again (the original's baseline)."""
     if not com_available():
         return _not_run("NOT_SUPPORTED", "pywin32 is not available in this environment; Excel COM recalculation cannot run here.")
     copy_path = Path(copy_path).resolve()
     if not copy_path.is_file():
         return _not_run("ERROR", f"file not found: {copy_path}")
     try:
-        with excel_session() as excel:
-            return _scan(excel, copy_path)
+        with stage("recalculate", file=copy_path.name), excel_session() as excel:
+            return _scan(excel, copy_path, save=save)
     except Exception as exc:  # pragma: no cover -- requires a real Excel install to exercise
         return _not_run("ERROR", f"Excel COM recalculation failed: {exc}")
