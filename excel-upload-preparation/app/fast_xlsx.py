@@ -22,6 +22,8 @@ from typing import Any, Iterable
 
 import openpyxl.reader.excel as _excel
 import openpyxl.worksheet._reader as _reader
+from openpyxl.cell import Cell
+from openpyxl.styles.cell_style import StyleArray
 from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.utils.datetime import from_excel, from_ISO8601
 
@@ -60,7 +62,10 @@ class _CachedValueParser(_reader.WorkSheetParser):
         """What openpyxl's parse_cell returns as the value with data_only=True (same branches)."""
         data_type = element.get("t", "n")
         if data_type == "inlineStr":
-            return None
+            child = element.find(_reader.INLINE_STRING)
+            if child is None:
+                return None
+            return _reader.parse_richtext_string(child) if self.rich_text else _reader.Text.from_tree(child).content
         value = element.findtext(_reader.VALUE_TAG, None) or None
         if value is None:
             return None
@@ -86,6 +91,28 @@ class _CachedValueReader(_reader.WorksheetReader):
         if not data_only:
             self.parser = _CachedValueParser(xml_source, shared_strings, data_only, ws.parent.epoch, ws.parent._date_formats, ws.parent._timedelta_formats, rich_text)
 
+    def bind_cells(self):
+        """openpyxl's bind_cells, without Cell.__init__ per cell: the same slots set to the same
+        values (a copy of the cell's style array, the parsed value and type, no comment, no link)."""
+        ws = self.ws
+        cells = ws._cells
+        styles = ws.parent._cell_styles
+        new = Cell.__new__
+        for _idx, row in self.parser.parse():
+            for cell in row:
+                c = new(Cell)
+                c.parent = ws
+                c._style = StyleArray(styles[cell["style_id"]])
+                c.row = cell["row"]
+                c.column = cell["column"]
+                c._value = cell["value"]
+                c.data_type = cell["data_type"]
+                c._hyperlink = None
+                c._comment = None
+                cells[(c.row, c.column)] = c
+        if cells:
+            ws._current_row = ws.max_row  # use cells not row dimensions
+
     def bind_all(self):
         super().bind_all()
         if isinstance(self.parser, _CachedValueParser):
@@ -95,7 +122,11 @@ class _CachedValueReader(_reader.WorksheetReader):
 def install() -> str | None:
     """Idempotent. -> the parser in use ('lxml' / 'expat'), None when turned off."""
     global _INSTALLED
-    if not ENABLED:
+    import openpyxl
+
+    # the reader overrides copy openpyxl 3.1's own parse_cell / bind_cells branches: another
+    # series keeps openpyxl exactly as shipped
+    if not ENABLED or not str(openpyxl.__version__).startswith("3.1."):
         return None
     iterparse, name = _safe_iterparse()
     if not _INSTALLED:
