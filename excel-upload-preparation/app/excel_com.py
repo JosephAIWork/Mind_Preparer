@@ -122,20 +122,23 @@ def excel_session(mm_addin: bool = True) -> Iterator[Any]:
     import pythoncom
     import win32com.client
 
+    from .perf import stage
+
     pythoncom.CoInitialize()
     excel = None
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
-        excel.AskToUpdateLinks = False
-        try:
-            excel.EnableEvents = False
-        except Exception:
-            pass
-        if mm_addin:
-            load_mm_addin(excel)
+        with stage("excel_start", mm_addin=mm_addin):
+            excel = win32com.client.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
+            excel.AskToUpdateLinks = False
+            try:
+                excel.EnableEvents = False
+            except Exception:
+                pass
+            if mm_addin:
+                load_mm_addin(excel)
         yield excel
     finally:
         # Release every COM proxy the caller created *before* Excel goes away:
@@ -159,7 +162,10 @@ def open_workbook(excel: Any, path: Path, read_only: bool = True) -> Any:
     # IgnoreReadOnlyRecommended: a workbook saved with "read-only recommended"
     # is otherwise opened read-only whenever alerts are off (the prompt's
     # default answer), whatever ReadOnly says.
-    return excel.Workbooks.Open(str(Path(path).resolve()), UpdateLinks=0, ReadOnly=read_only, IgnoreReadOnlyRecommended=True, CorruptLoad=0)
+    from .perf import stage
+
+    with stage("excel_open", file=Path(path).name, read_only=read_only):
+        return excel.Workbooks.Open(str(Path(path).resolve()), UpdateLinks=0, ReadOnly=read_only, IgnoreReadOnlyRecommended=True, CorruptLoad=0)
 
 
 class NotSavedError(RuntimeError):
@@ -193,8 +199,11 @@ def save_in_place(wb: Any, path: Path) -> None:
     """wb.Save(), then the proof that `path` itself was written: a save that
     went elsewhere (or nowhere) leaves the file's time and size as they were,
     and must never be reported as done."""
+    from .perf import stage
+
     before = _file_stamp(path)
-    wb.Save()
+    with stage("excel_save", file=Path(path).name):
+        wb.Save()
     if _file_stamp(path) == before:
         raise NotSavedError(f"Excel reported the save as done but {Path(path).name} was not written")
 
@@ -222,8 +231,10 @@ def verify_opens_in_excel(path: Path) -> dict[str, Any]:
         finally:
             close_quietly(wb)
 
+    from .perf import stage
+
     try:
-        with excel_session() as excel:
+        with stage("verify_opens", file=Path(path).name), excel_session() as excel:
             info = _probe(excel)
     except Exception as exc:  # Excel itself not installed / COM registration broken
         info = {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}

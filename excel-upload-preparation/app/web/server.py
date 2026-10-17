@@ -44,6 +44,7 @@ from app.change_apply import convert_output_format  # noqa: E402
 from app.chat_context import answer_question, recalculation_context  # noqa: E402
 from app.config import load_config  # noqa: E402
 from app.excel_com import com_available  # noqa: E402
+from app.perf import stage as perf_stage  # noqa: E402
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
@@ -536,7 +537,8 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
         try:
             if needs_convert:
                 path = _convert(s, path, progress)
-            out = _analyze(s, path, progress)
+            with perf_stage("scan", file=path.name):
+                out = _analyze(s, path, progress)
         except HTTPException as exc:
             _scan_finish(s, error=str(exc.detail))
             raise
@@ -731,7 +733,8 @@ def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: 
     """Write `ops` into a fresh copy of the current version, register the result as the next
     version, re-analyse it when asked, and report the outcome (the shape every Apply returns)."""
     before = _before_apply(s)
-    res = _tracked_apply(s, ops, reanalyze)
+    with perf_stage("apply_operations", file=s.current_path.name, operations=len(ops), source=source):
+        res = _tracked_apply(s, ops, reanalyze)
     output = Path(res["output_path"])
     verified = res.get("verified_opens_in_excel")
     label = f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
@@ -1041,7 +1044,8 @@ def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
     case the caller falls back to the original's cached values."""
     if s.original_baseline is None:
         copy_path, _ = make_immutable_copy(original, s.work_dir / "recalc_original")
-        res = recalculate(copy_path)
+        with perf_stage("recalc_original_baseline", file=original.name):
+            res = recalculate(copy_path)
         ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED"))
         s.original_baseline = {
             "ran": ran,
@@ -1060,9 +1064,11 @@ def recalc(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
     RECALCULATING.add(session_id)
     try:
-        copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
-        res = recalculate(copy_path)
-        return _recalc_out(s, res, copy_path)
+        with perf_stage("recalc_endpoint", file=s.current_path.name):
+            copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
+            res = recalculate(copy_path)
+            with perf_stage("recalc_out", file=s.current_path.name):
+                return _recalc_out(s, res, copy_path)
     finally:
         RECALCULATING.discard(session_id)
 

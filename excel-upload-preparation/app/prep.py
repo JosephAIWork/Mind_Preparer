@@ -53,6 +53,7 @@ from .formula_utils import (
 )
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
 from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
+from .perf import record as perf_record, stage as perf_stage
 from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
@@ -1848,6 +1849,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                 excel.Calculation = -4135  # xlCalculationManual
             except Exception:
                 calc_mode = None
+            t_write = time.perf_counter()
             for i, o in enumerate(ordered, start=1):
                 if progress is not None:
                     progress("apply_write", f"Change {i} of {total}: {_op_target(o)}", (i - 1) / total, done=i - 1, total=total, sheet=o["sheet"])
@@ -1869,13 +1871,15 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                     failed.append({**o, "error": _com_message(exc, o)[:300]})
                 finally:
                     ws = None
+            perf_record("apply_writes", time.perf_counter() - t_write, file=copy_path.name, operations=total)
             if progress is not None:
                 progress("apply_save", "Excel is recalculating and saving the copy", None, done=total, total=total)
             if calc_mode is not None:
-                try:
-                    excel.Calculation = calc_mode
-                except Exception:
-                    pass
+                with perf_stage("apply_restore_calc_mode", file=copy_path.name):
+                    try:
+                        excel.Calculation = calc_mode
+                    except Exception:
+                        pass
             save_in_place(wb, copy_path)
         finally:
             close_quietly(wb)

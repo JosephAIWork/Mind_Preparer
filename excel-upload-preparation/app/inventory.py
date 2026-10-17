@@ -36,10 +36,14 @@ from typing import Any, Callable, Iterable
 import openpyxl
 from openpyxl.reader.excel import ExcelReader
 from openpyxl.styles.numbers import is_date_format
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
+from . import fast_xlsx
 from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, range_length, storage_prefixes
 from .grids import detect_grids, is_occupied, json_safe, MergedInto
+
+fast_xlsx.install()  # 1.11.4: the C XML parser, and the cached values kept from the formula load
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25
@@ -148,10 +152,13 @@ def load_workbook_selective(path: str | Path, ignore_sheets: Iterable[str] = (),
     hook it is exactly openpyxl.load_workbook."""
     ignore = {str(n) for n in ignore_sheets or ()}
     if not ignore and progress is None:
-        return openpyxl.load_workbook(str(path), data_only=data_only, keep_vba=keep_vba)
-    reader = _SelectiveReader(str(path), ignore, progress, read_only=False, keep_vba=keep_vba, data_only=data_only, keep_links=True, rich_text=False)
-    reader.read()
-    return reader.wb
+        wb = openpyxl.load_workbook(str(path), data_only=data_only, keep_vba=keep_vba)
+    else:
+        reader = _SelectiveReader(str(path), ignore, progress, read_only=False, keep_vba=keep_vba, data_only=data_only, keep_links=True, rich_text=False)
+        reader.read()
+        wb = reader.wb
+    wb.mind_ready_ignore = tuple(sorted(ignore))  # which sheets this load left empty (fast_xlsx.values_view)
+    return wb
 
 
 def ignored_sheet_names(analysis: dict[str, Any], workbook_index: int = 0) -> list[str]:
@@ -240,7 +247,12 @@ def _values_workbook(path: str, ignore_sheets: Iterable[str] = ()):
     key = f"{path}|{'|'.join(ignore)}" if ignore else path
     wb = _VALUES_CACHE.get(key)
     if wb is None:
-        wb = load_workbook_selective(path, ignore, data_only=True)
+        # 1.11.4: the formula load of the same file kept every cached value -- no second parse
+        formulas = _WORKBOOK_CACHE.get(str(path))
+        if formulas is not None and getattr(formulas, "mind_ready_ignore", ()) == ignore:
+            wb = fast_xlsx.values_view(formulas)
+        if wb is None:
+            wb = load_workbook_selective(path, ignore, data_only=True)
         _VALUES_CACHE[key] = wb
     return wb
 
@@ -410,69 +422,84 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
     format_samples: list[dict[str, Any]] = []
     array_formula_count = 0
     prefix_counts: dict[str, int] = {}
+    style_info: dict[tuple[int, int, int], tuple[bool, str, bool]] = {}
+    format_category: dict[tuple[str, bool], str] = {}
 
-    for row in ws.iter_rows():
-        for cell in row:
-            value = cell.value
-            occupied_here = is_occupied(value)
+    # 1.11.4: the cells the sheet holds, row by row -- ws.iter_rows() also *creates* a blank cell for
+    # every empty position of the used rectangle (Palermo: 5.4 million of them), and a blank cell
+    # adds nothing below (no value, no style, no comment, no link)
+    for _key, cell in sorted(ws._cells.items()):
+        value = cell.value
+        occupied_here = is_occupied(value)
+        if occupied_here:
+            occupied[(cell.row, cell.column)] = value
+
+        formula_text: str | None = None
+        entry: dict[str, Any] | None = None
+        if isinstance(value, str) and value.startswith("="):
+            formula_text = value
+            entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": value}
+        elif isinstance(value, ArrayFormula):
+            formula_text = value.text if value.text.startswith("=") else "=" + value.text
+            entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": formula_text, "array_ref": value.ref}
+            array_formula_count += 1
+        elif isinstance(value, DataTableFormula):
+            entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": "=TABLE()", "data_table": True}
+            formula_text = None
+        if entry is not None:
+            if formula_text:
+                for fn in called_functions(formula_text):
+                    function_usage[fn] = function_usage.get(fn, 0) + 1
+                prefixes = storage_prefixes(formula_text)
+                if prefixes:
+                    entry["storage_prefixes"] = sorted(prefixes)
+                    for p in prefixes:
+                        prefix_counts[p] = prefix_counts.get(p, 0) + 1
+            formulas.append(entry)
+
+        # Excel locks every cell by default (an explicit lock leaves no style
+        # trace), and locking only bites on a protected sheet (KB): count
+        # occupied cells on protected sheets that are not explicitly unlocked.
+        if occupied_here and sheet_protected and (cell.protection is None or cell.protection.locked):
+            locked_cells += 1
+        if cell.has_style:
+            # 1.11.4: what a style says is worked out once per (font, fill, number format) -- reading
+            # cell.font / cell.fill / cell.number_format built three style proxies a cell (13 million
+            # on Palermo, two minutes)
+            st = cell._style
+            style_key = (st[0], st[1], st[3])  # StyleArray: fontId, fillId, borderId, numFmtId, ...
+            info = style_info.get(style_key)
+            if info is None:
+                font_color = cell.font.color if cell.font is not None else None
+                fill = cell.fill
+                fill_theme = fill is not None and fill.fill_type is not None and _color_is_theme(fill.fgColor)
+                info = style_info[style_key] = (_color_is_theme(font_color) or fill_theme, cell.number_format, fill is not None and fill.fill_type == "solid")
+            themed, number_format, solid_fill = info
             if occupied_here:
-                occupied[(cell.row, cell.column)] = value
-
-            formula_text: str | None = None
-            entry: dict[str, Any] | None = None
-            if isinstance(value, str) and value.startswith("="):
-                formula_text = value
-                entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": value}
-            elif isinstance(value, ArrayFormula):
-                formula_text = value.text if value.text.startswith("=") else "=" + value.text
-                entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": formula_text, "array_ref": value.ref}
-                array_formula_count += 1
-            elif isinstance(value, DataTableFormula):
-                entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": "=TABLE()", "data_table": True}
-                formula_text = None
-            if entry is not None:
-                if formula_text:
-                    for fn in called_functions(formula_text):
-                        function_usage[fn] = function_usage.get(fn, 0) + 1
-                    prefixes = storage_prefixes(formula_text)
-                    if prefixes:
-                        entry["storage_prefixes"] = sorted(prefixes)
-                        for p in prefixes:
-                            prefix_counts[p] = prefix_counts.get(p, 0) + 1
-                formulas.append(entry)
-
-            # Excel locks every cell by default (an explicit lock leaves no style
-            # trace), and locking only bites on a protected sheet (KB): count
-            # occupied cells on protected sheets that are not explicitly unlocked.
-            if occupied_here and sheet_protected and (cell.protection is None or cell.protection.locked):
-                locked_cells += 1
-            if cell.has_style:
-                if occupied_here:
-                    font_color = cell.font.color if cell.font is not None else None
-                    fill = cell.fill
-                    fill_theme = fill is not None and fill.fill_type is not None and _color_is_theme(fill.fgColor)
-                    if _color_is_theme(font_color) or fill_theme:
-                        theme_color_cells += 1
-                        if len(theme_color_cell_refs) < MAX_STYLE_CELL_REFS:
-                            theme_color_cell_refs.append(cell.coordinate)
-                    category = classify_number_format(cell.number_format, cell)
-                    format_categories[category] = format_categories.get(category, 0) + 1
-                    if category not in PRESERVED_FORMAT_CATEGORIES and len(format_samples) < MAX_STYLE_SAMPLES:
-                        format_samples.append({"cell": cell.coordinate, "number_format": cell.number_format, "category": category})
-                else:
-                    fill = cell.fill
-                    if fill is not None and fill.fill_type == "solid":
-                        empty_styled_cells += 1
-                        if len(empty_styled_cell_refs) < MAX_STYLE_CELL_REFS:
-                            empty_styled_cell_refs.append(cell.coordinate)
-            elif occupied_here:
-                category = "boolean" if cell.data_type == "b" else "standard"
+                if themed:
+                    theme_color_cells += 1
+                    if len(theme_color_cell_refs) < MAX_STYLE_CELL_REFS:
+                        theme_color_cell_refs.append(cell.coordinate)
+                category_key = (number_format, cell.data_type == "b")
+                category = format_category.get(category_key)
+                if category is None:
+                    category = format_category[category_key] = classify_number_format(number_format, cell)
                 format_categories[category] = format_categories.get(category, 0) + 1
+                if category not in PRESERVED_FORMAT_CATEGORIES and len(format_samples) < MAX_STYLE_SAMPLES:
+                    format_samples.append({"cell": cell.coordinate, "number_format": number_format, "category": category})
+            else:
+                if solid_fill:
+                    empty_styled_cells += 1
+                    if len(empty_styled_cell_refs) < MAX_STYLE_CELL_REFS:
+                        empty_styled_cell_refs.append(cell.coordinate)
+        elif occupied_here:
+            category = "boolean" if cell.data_type == "b" else "standard"
+            format_categories[category] = format_categories.get(category, 0) + 1
 
-            if cell.comment is not None:
-                comments.append({"cell": cell.coordinate, "author": cell.comment.author, "text": cell.comment.text})
-            if cell.hyperlink is not None:
-                hyperlinks.append({"cell": cell.coordinate, "target": cell.hyperlink.target})
+        if cell.comment is not None:
+            comments.append({"cell": cell.coordinate, "author": cell.comment.author, "text": cell.comment.text})
+        if cell.hyperlink is not None:
+            hyperlinks.append({"cell": cell.coordinate, "target": cell.hyperlink.target})
 
     # a merged range whose first cell is occupied occupies every cell it covers (see grids.MergedInto)
     for rng in ws.merged_cells.ranges:
@@ -527,7 +554,8 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
     sheet_entry = {
         "name": ws.title,
         "state": state,
-        "dimensions": ws.dimensions,
+        # as when every position from A1 was visited (ws.iter_rows() created them): A1 to the last used cell
+        "dimensions": f"A1:{get_column_letter(ws.max_column)}{ws.max_row}",
         "tab_color": tab_color,
         "protected": sheet_protected,
         "merged_cells": merged,

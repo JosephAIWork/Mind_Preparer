@@ -14,6 +14,7 @@ MMForExcel -- seen on the real test workbook). See `storage_prefixes`.
 """
 from __future__ import annotations
 
+import functools
 import re
 
 STORAGE_PREFIX_RE = re.compile(r"_xl(?:fn|ws|udf|pm|op|dlm|l)\.", re.IGNORECASE)  # _xll. = XLL add-in call (MMForExcel)
@@ -71,6 +72,15 @@ def undefined_names(formula: str, known: set[str]) -> list[str]:
 def mask_strings(formula: str, mask_sheet_quotes: bool = True) -> str:
     """Replace the *content* of "..." string literals (and optionally '...'
     quoted sheet names) with spaces, preserving length so positions line up."""
+    # 1.11.4: most formulas hold no quote at all, and the rules mask the same formula dozens of
+    # times (4.4 million calls for Palermo's 57,537 formulas): nothing to mask, nothing to copy.
+    if '"' not in formula and (not mask_sheet_quotes or "'" not in formula):
+        return formula
+    return _mask_strings(formula, mask_sheet_quotes)
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _mask_strings(formula: str, mask_sheet_quotes: bool) -> str:
     out = list(formula)
     i = 0
     n = len(formula)
