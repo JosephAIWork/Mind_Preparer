@@ -20,6 +20,12 @@ by hand.
 re-analysis, in the order added. It warns when two entries change the same cells (the later one wins)
 and when an entry was made on an earlier version.
 
+**Do everything goes on past errors the workbook already had.** When Fix all issues ends "partial" or
+"stuck" only because the errors left cannot be fixed without changing a good value, and the preparation
+caused none of them (no regression), the chain carries on to the next step; Recalculate then compares
+with the original. A Stop, a used-up time budget or a regression still stops it (Phoenix: 48 such
+errors stopped the chain although nothing blocked the file).
+
 **How long will it take.** "Do everything" shows a rough estimate before the click (low / likely / high,
 with the caveat that it depends on the errors Excel finds and on the machine) and, while it runs, the time
 so far and what is left, updated every 10 seconds and corrected with each finished step's real duration

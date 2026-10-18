@@ -61,7 +61,7 @@ interface Step {
 }
 
 const STEPS: { id: StepId; label: string; check: string }[] = [
-  { id: "fixAll", label: "Fix all issues", check: "the fixer ends clean and nothing blocks the file" },
+  { id: "fixAll", label: "Fix all issues", check: "the fixer ends clean, or every error left was already in the workbook (none caused by the preparation)" },
   { id: "prepare", label: "Fix the formulas and the structure", check: "every blocking action applied, nothing refused, none left" },
   { id: "loop", label: "Build the Mind loop", check: "nothing refused (skipped when the model has no loop)" },
   { id: "recalc", label: "Recalculate", check: "no formula error that was not already in the original" },
@@ -449,11 +449,17 @@ export class HomePage implements OnDestroy {
         const left = r?.left ?? [];
         // "unchanged" with no error left: the workbook already recalculated clean, nothing to fix
         const clean = r?.status === "clean" || ((r?.status === "partial" || r?.status === "unchanged") && left.length === 0 && (after ?? 0) === 0);
-        const line = r?.status === "clean" ? "Every formula error is fixed" : r?.status === "unchanged" ? (clean ? "No formula error to fix" : "Nothing could be changed") : `Fixed what it could (${r?.status ?? "partial"})`;
+        // 1.11.6: the errors left could not be fixed without changing a good value, and the
+        // preparation caused none of them (no regression): the workbook was already living with
+        // them, so the chain goes on (Recalculate then compares with the original). A Stop or a
+        // used-up time budget still stops it.
+        const accepted = !clean && !!r && ["partial", "stuck", "unchanged"].includes(r.status) && !r.stopped && (r.regression_cells ?? 0) === 0;
+        const kept = after ?? left.length;
+        const line = r?.status === "clean" ? "Every formula error is fixed" : accepted ? `Fixed what it could; ${kept} error${kept === 1 ? "" : "s"} the workbook already had stay, moving on` : r?.status === "unchanged" ? (clean ? "No formula error to fix" : "Nothing could be changed") : `Fixed what it could (${r?.status ?? "partial"})`;
         const leftText = left.length ? `${left.length} left for a person: ` + left.slice(0, 3).map((l) => `${l.sheet}!${l.cell} ${l.error}`).join(", ") + (left.length > 3 ? ", …" : "") + " (Advanced › Recalculate)" : "";
         const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText].filter(Boolean).join(" · ");
         this.fixAll.set({ running: false, fraction: null, line, detail, tone: clean ? "ok" : "warn" });
-        return clean;
+        return clean || accepted;
       }
     } finally {
       this.fixAllFollowing = false;
