@@ -1,6 +1,9 @@
 """Run the main screen's "Do everything" chain through the app's API, headless, and keep the result.
 
-    python scripts/night_chain.py <workbook> <out dir> [--port 8600] [--first 2] [--skip-autofix]
+    python scripts/night_chain.py <workbook> <out dir> [--port 8600] [--first 2] [--skip-autofix] [--ignore "Sheet A,Sheet B"]
+
+`--ignore`: the sheets the scan skips (what the big-file sheet chooser does: a deferred upload, then
+the scan with those sheets left out).
 
 upload -> Fix all issues (auto-fix, polled) -> Fix the formulas and the structure (every blocking Prep action on by
 default, in rounds) -> Build the
@@ -34,6 +37,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8600)
     ap.add_argument("--first", default=None)
     ap.add_argument("--skip-autofix", action="store_true")
+    ap.add_argument("--ignore", default="")
     a = ap.parse_args()
     B = f"http://127.0.0.1:{a.port}/api"
     wb = Path(a.workbook)
@@ -43,10 +47,16 @@ def main() -> int:
     t0 = time.time()
 
     say("upload", wb.name)
+    ignore = [x.strip() for x in a.ignore.split(",") if x.strip()]
     with open(wb, "rb") as fh:
-        r = requests.post(f"{B}/sessions", files={"file": (wb.name, fh)}, data={"mode": "plan"}, timeout=3600)
+        data = {"mode": "plan", **({"defer": "1"} if ignore else {})}
+        r = requests.post(f"{B}/sessions", files={"file": (wb.name, fh)}, data=data, timeout=3600)
     r.raise_for_status()
     sid = r.json()["sessionId"]
+    if ignore:
+        say("deferred upload; scanning without", ignore)
+        r = requests.post(f"{B}/sessions/{sid}/analyze", json={"ignore_sheets": ignore}, timeout=3600)
+        r.raise_for_status()
     chain["session"] = sid
     say("session", sid, f"({time.time() - t0:.0f}s)", "findings", r.json()["report"].get("counts"))
 

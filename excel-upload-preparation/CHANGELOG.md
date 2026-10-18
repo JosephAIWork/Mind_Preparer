@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.11.4
+
+**Big files: the time was never Excel's calculation; it was everything around it.** Measured on Palermo
+(27 MB, 5.7 million used cells) and CNHI (37 MB): a full rebuild in Excel takes 1.3 s, with or without the
+MM for Excel add-in. Opening the file in Excel takes ~35 s and saving ~25 s. The app's own scan (openpyxl)
+took most of the time, and it ran after every change. What changed, each checked to give identical results
+(same findings, same plan, same values):
+
+- **The scan reads the workbook once, with a C parser** (`app/fast_xlsx.py`). openpyxl used defusedxml's
+  pure-Python parser; the standard library's expat (2.4+ blocks entity bombs itself) gives the same events.
+  The values Excel stored for formula cells are kept from that same read, so FRM-008 / REP-001 no longer
+  load the whole workbook a second time (Palermo: 238 s saved). Cells are built without `Cell.__init__`.
+  `MINDREADY_FAST_XLSX=0` turns this off.
+- **The cell inventory** walks the cells that exist (not every blank position) and looks each style up
+  once; `mask_strings` returns a formula with no quote unchanged; `find_calls` skips a formula that does
+  not contain the function's name and compiles each pattern once.
+- **Recalculate** finds error cells with `SUMPRODUCT(ISERROR())` and `SpecialCells` instead of reading
+  every cell (Palermo 44 s -> 1 s, CNHI 125 s -> 3 s, same cells); the original's baseline is not saved and
+  its `#REF!` formulas come from the first scan.
+- **Apply**: the check that the new version opens in Excel runs alongside the re-analysis, not before it.
+- **A value lookup on a workbook with skipped sheets** no longer reloads the whole file with them.
+- **Stage timings** go to `%LOCALAPPDATA%\MindReady\perf\timings.jsonl` (`MINDREADY_PERF_LOG` moves it,
+  `0` turns it off). Proof and timing scripts: `scripts/perf_excel_bench.py`, `perf_scan.py`,
+  `check_fast_xlsx.py`, `scan_fingerprint.py` + `compare_fingerprints.py`, `check_recalc_errors.py`.
+
+Scan times, old and new code on the same file at the same time: CNHI without Output 1,366 s -> 955 s (peak
+memory 4.0 GB -> 0.65 GB, before the `find_calls` change); Horizon 375 s -> 140 s. Palermo's whole
+"Do everything" chain: 7,738 s -> 1,286 s. Still slow: openpyxl building the cells (~2.5 min a Palermo
+scan, one scan per change) and Excel opening and saving the file for every change.
+
 ## 1.11.3
 
 **A loop driver with a dropdown loses its loop in Mind: the loop builder now removes the dropdown.**

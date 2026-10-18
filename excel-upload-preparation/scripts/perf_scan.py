@@ -42,6 +42,7 @@ def main() -> int:
     ap.add_argument("workbook")
     ap.add_argument("--out", default=None)
     ap.add_argument("--profile", default=None)
+    ap.add_argument("--ignore", default="", help="sheets to skip, comma separated (as the server's ignore_sheets)")
     a = ap.parse_args()
     path = Path(a.workbook).resolve()
     stages: dict[str, float] = {}
@@ -65,7 +66,8 @@ def main() -> int:
     t0 = time.perf_counter()
     if prof:
         prof.enable()
-    result = plan_mode.run(path, work, load_config(), engine=engine, progress=progress)
+    ignore = [s.strip() for s in a.ignore.split(",") if s.strip()] or None
+    result = plan_mode.run(path, work, load_config(), engine=engine, ignore_sheets=ignore, progress=progress)
     progress("plan", "plan")
     plan = plan_actions(result["workbook_analysis"], result["validation_report"], None)
     progress("end", "end")
