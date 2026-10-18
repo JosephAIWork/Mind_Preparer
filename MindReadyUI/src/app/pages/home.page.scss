@@ -339,4 +339,14 @@
   &__line {
     color: theme.$text-secondary;
   }
+
+  &__estimate {
+    @include type.type-style("body-compact-01");
+    margin-top: $spacing-03;
+  }
+
+  &__caveat {
+    @include type.type-style("label-01");
+    color: theme.$text-helper;
+  }
 }

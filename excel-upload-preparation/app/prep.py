@@ -1546,6 +1546,58 @@ def _drop_merged_targets(ops: list[dict[str, Any]], skipped: list[str], merged: 
     return kept
 
 
+def pivot_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int, int, str]]]:
+    """1.11.6: per sheet, every pivot table as (r1, r2, c1, c2, its range) -- from the inventory."""
+    out: dict[str, list[tuple[int, int, int, int, str]]] = {}
+    for s in analysis["workbooks"][0].get("sheets", []):
+        for p in s.get("pivot_tables", []) or []:
+            ref = parse_ref(str(p.get("ref")))
+            if ref:
+                out.setdefault(s["name"], []).append((ref["r1"], ref["r2"], ref["c1"], ref["c2"], str(p.get("ref"))))
+    return out
+
+
+def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: dict[str, list[tuple[int, int, int, int, str]]]) -> list[dict[str, Any]]:
+    """1.11.6: Excel refuses a write into a pivot table ("We can't change this part of the
+    PivotTable") and a row or column inserted through one ("it will affect a PivotTable"): those
+    operations move to the skip list -- with the cell writes that wait for a refused insert -- so a
+    round does not plan them again and again."""
+    if not pivots:
+        return ops
+    refused_inserts: set[tuple[str, int]] = set()
+    kept = []
+    for o in ops:
+        rects = pivots.get(o["sheet"])
+        if not rects:
+            kept.append(o)
+            continue
+        if o["op"] == "insert_row":
+            row = int(o["row"])
+            hit = next((p for p in rects if p[0] <= row <= p[1]), None)
+            if hit:
+                refused_inserts.add((o["sheet"], row))
+                skipped.append(f"{o['sheet']}!{row}:{row}: inserting a row here would cut the pivot table {hit[4]} -- Excel refuses; move the pivot table (or the title) by hand")
+                continue
+        elif o["op"] == "insert_column":
+            col = col_to_num(str(o["column"]))
+            hit = next((p for p in rects if p[2] <= col <= p[3]), None)
+            if hit:
+                skipped.append(f"{o['sheet']}!{o['column']}:{o['column']}: inserting a column here would cut the pivot table {hit[4]} -- Excel refuses; move it by hand")
+                continue
+        else:
+            ref = parse_ref(str(o.get("range") or o.get("cell") or ""))
+            if ref and not ref.get("whole_column") and not ref.get("whole_row"):
+                hit = next((p for p in rects if p[0] <= ref["r2"] and ref["r1"] <= p[1] and p[2] <= ref["c2"] and ref["c1"] <= p[3]), None)
+                if hit:
+                    what = f" '{o.get('after')}'" if o.get("after") not in (None, "") else ""
+                    skipped.append(f"{o['sheet']}!{o.get('range') or o.get('cell')}: inside the pivot table {hit[4]} -- Excel does not let a cell of a pivot table be written; put{what} next to it by hand if it is needed")
+                    continue
+        kept.append(o)
+    if refused_inserts:  # a title planned for the row an insert would have made
+        kept = [o for o in kept if not (o.get("after_inserts") and o.get("insert_at") is not None and (o["sheet"], int(o["insert_at"])) in refused_inserts)]
+    return kept
+
+
 def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Every action with its planned operations and skip notes -- no file is touched.
 
@@ -1554,6 +1606,7 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
     and there only where the deterministic name would be a weak one."""
     out = []
     merged = merged_ranges(analysis)
+    pivots = pivot_ranges(analysis)
     taken: dict[tuple[str, str], str] = {}  # 1.8.3: one write per cell -- the action earlier in the table keeps it
     for a in ACTIONS:
         try:
@@ -1562,6 +1615,7 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
             else:
                 ops, skipped = a["planner"](analysis, validation_report)
             ops = _drop_merged_targets(list(ops), skipped, merged)
+            ops = _drop_pivot_targets(ops, skipped, pivots)
             kept = []
             for o in ops:
                 # two actions filling the same EMPTY cell (a header over an array, a grid title): the first keeps it.

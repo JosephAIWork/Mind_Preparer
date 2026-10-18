@@ -15,6 +15,8 @@
       <cds-inline-notification [notificationObj]="{ type: readinessKind(), title: r.headline, message: readinessDetail(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
 
+    <mr-stack-bar></mr-stack-bar>
+
     <div class="switch">
       <button class="switch__item" [class.switch__item--on]="tab() === 'findings'" (click)="tab.set('findings')">Findings ({{ findings().length }})</button>
       <button class="switch__item" [class.switch__item--on]="tab() === 'prep'" (click)="tab.set('prep')">Prep actions ({{ manualActions().length }})</button>

@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.11.6
+
+**Fix all issues also rewrites a hidden #REF! to NA().** A formula that holds `#REF!` in a branch Excel
+does not evaluate today (Phoenix: `Calc!G173`) shows no error, so no fix pass reached it and REF-001 kept
+the file blocked until someone applied it in Prep. The fixer now rewrites those formulas in the same Excel
+session (`#REF!` -> `NA()`, a call that needs a range there -> `NA()` as a whole, as Prep's
+`fix_broken_refs` does), through the same gate: the change is kept only if no value moves, the cell's own
+included (`=ERROR.TYPE(#REF!)` stays as it is). Plain cells only; an array or a spill is left to Prep.
+
+**Pivot tables are left alone.** Excel refuses to write into a pivot table and to insert a row or a column
+through one, so the same grid titles and STR-001 row inserts failed in every round (Phoenix: 15 refusals
+on Sheet1, CFs and SUMMARY). The scan now records each sheet's pivot tables (`pivot_tables`, with the
+report filters above them) and the plan moves those operations to the action's skip list, with what to do
+by hand.
+
+**Advanced: a list of approved changes, one Apply for all.** Prep actions and assistant proposals have an
+"Add to the list" button; the list at the top of Advanced writes them all in one Excel session and one
+re-analysis, in the order added. It warns when two entries change the same cells (the later one wins)
+and when an entry was made on an earlier version.
+
+**How long will it take.** "Do everything" shows a rough estimate before the click (low / likely / high,
+with the caveat that it depends on the errors Excel finds and on the machine) and, while it runs, the time
+so far and what is left, updated every 10 seconds and corrected with each finished step's real duration
+(`GET /api/sessions/{id}/estimate`, `app/estimate.py`). Fix all issues also reports progress inside a
+round: writing (n of N), recalculating, reading the values back sheet by sheet, undoing.
+
 ## 1.11.5
 
 **A workbook with a grouped pivot field could not be read** ("analysis failed: Nested.from_tree() missing 1

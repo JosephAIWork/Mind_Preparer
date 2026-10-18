@@ -13,6 +13,7 @@ import { MapPanel } from "./advanced/map-panel";
 import { MindRunPanel } from "./advanced/mind-run-panel";
 import { PrepPanel } from "./advanced/prep-panel";
 import { RecalcPanel } from "./advanced/recalc-panel";
+import { StackBar } from "./advanced/stack-bar";
 
 const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" | "cyan" | "teal" | "green" | "gray" | "cool-gray" | "warm-gray" | "high-contrast" | "outline"; label: string }> = {
   ERROR: { type: "red", label: "Error" },
@@ -26,7 +27,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })

@@ -547,6 +547,9 @@ class Unit:
         return [(si, r, c) for r in range(r1, self.r2 + 1) for c in range(c1, self.c2 + 1)]
 
 
+DORMANT_REF = "dormant #REF!"  # the group of a formula holding #REF! that shows no error (fix_dormant_refs)
+
+
 class Stop(Exception):
     """The time budget is used up, or the caller asked to stop: keep what is accepted."""
 
@@ -621,6 +624,11 @@ class _Engine:
         self.counts: dict[str, int] = defaultdict(int)
         self.formula_cells = 0
         self.passes = 0
+        # 1.11.6: the label of the round being settled ("Pass 1"), so the steps inside one round (write,
+        # recalculate, read back, undo) report progress; None outside a round
+        self._round_label: str | None = None
+        self._round_size = 0
+        self._last_step = 0.0
         self.errors_before = 0
         self.regression_cells = 0
         self.confirm_moved = 0
@@ -637,6 +645,18 @@ class _Engine:
                 self.cfg.progress(stage, message, fraction, **facts)
             except Exception:
                 pass
+
+    def step(self, message: str, fraction: float | None = None, force: bool = False) -> None:
+        """Progress inside a round (at most one update a second): a big workbook spends minutes in each
+        step of a round, which otherwise shows one unchanging line."""
+        if self._round_label is None:
+            return
+        now = time.time()
+        if not force and now - self._last_step < 1.0:
+            return
+        self._last_step = now
+        size = f" ({self._round_size:,} fix{'es' if self._round_size != 1 else ''})" if self._round_size else ""
+        self.tell("fix", f"{self._round_label}{size}: {message}", fraction, pass_no=self.passes)
 
     def check_budget(self) -> None:
         if time.time() - self.t0 > self.cfg.time_budget_s:
@@ -665,6 +685,7 @@ class _Engine:
 
     def calculate(self, full: bool = False) -> None:
         t = time.time()
+        self.step("recalculating the workbook in Excel", None, force=True)
         if full:
             _retry(lambda: self.excel.CalculateFullRebuild())
         else:
@@ -809,8 +830,12 @@ class _Engine:
         fresh: dict[tuple[int, int], tuple] = {}
         changed: list[tuple[Key, Any, Any]] = []
         tol = self.cfg.numeric_tol
+        total = sum(len(sh.vals) for sh in self.sheets) or 1
+        done = 0
         for sh in self.sheets:
             for start, old in sh.vals.items():
+                self.step(f"reading the values back: {sh.name}", done / total, force=done == 0)
+                done += 1
                 new = self._read(sh, start, "Value2")
                 if new == old:
                     continue
@@ -1293,11 +1318,14 @@ class _Engine:
         return fresh
 
     # -- writing --
-    def _write_plain(self, si: int, cells: list[tuple[int, int]], content: Any, formula: bool) -> list[tuple[int, int, str]]:
-        """Write one content into plain cells, a rectangle at a time. -> failures (row, col, message)."""
+    def _write_plain(self, si: int, cells: list[tuple[int, int]], content: Any, formula: bool, on_written: Callable[[int], None] | None = None) -> list[tuple[int, int, str]]:
+        """Write one content into plain cells, a rectangle at a time. -> failures (row, col, message).
+        `on_written(n)` hears of every rectangle written (n cells), for progress."""
         sh = self.sheets[si]
         failures: list[tuple[int, int, str]] = []
         for r1, c1, r2, c2 in rectangles(cells):
+            if on_written is not None:
+                on_written((r2 - r1 + 1) * (c2 - c1 + 1))
             try:
                 def go() -> None:
                     rng = self._range(sh, r1, c1, r2, c2)
@@ -1361,6 +1389,13 @@ class _Engine:
         refused: list[Unit] = []
         plain: dict[tuple[int, bool, str], list[Unit]] = defaultdict(list)
         contents: dict[tuple[int, bool, str], Any] = {}
+        total = len(units) or 1
+        done = [0]
+
+        def written(n: int = 1) -> None:
+            done[0] += n
+            self.step(f"writing the fixes into Excel: {min(done[0], total):,} of {total:,}", min(done[0], total) / total, force=done[0] == n)
+
         for u in units:
             fix = u.fixes[u.tries]
             if u.kind == "cell":
@@ -1368,13 +1403,14 @@ class _Engine:
                 plain[slot].append(u)
                 contents[slot] = fix["content"]
             else:
+                written()
                 msg = self._write_unit(u, fix["content"], fix["kind"] == "formula")
                 if msg:
                     u.notes.append(f"{fix['strategy']}: Excel refused it ({msg})")
                     refused.append(u)
         for slot, group in plain.items():
             si, is_formula, _ = slot
-            failed = self._write_plain(si, [(u.key[1], u.key[2]) for u in group], contents[slot], is_formula)
+            failed = self._write_plain(si, [(u.key[1], u.key[2]) for u in group], contents[slot], is_formula, written)
             if failed:
                 bad = {(r, c): m for r, c, m in failed}
                 for u in group:
@@ -1387,6 +1423,8 @@ class _Engine:
 
     def revert(self, units: list[Unit], count: bool = True) -> None:
         t = time.time()
+        if units:
+            self.step(f"undoing {len(units):,} fix{'es' if len(units) != 1 else ''} that did not pass", None, force=True)
         plain: dict[tuple[int, str], list[tuple[int, int]]] = defaultdict(list)
         for u in units:
             if u.kind == "cell":
@@ -1509,6 +1547,13 @@ class _Engine:
         if not units:
             return []
         self.tell("fix", f"{label}: writing {len(units)} fix{'es' if len(units) != 1 else ''}", None, pass_no=self.passes, writing=len(units))
+        self._round_label, self._round_size = label, len(units)
+        try:
+            return self._settle(units, label)
+        finally:
+            self._round_label, self._round_size = None, 0
+
+    def _settle(self, units: list[Unit], label: str) -> list[Unit]:
         kept, suspects = self._round(units, use_blame=True)
         if suspects:
             self.note(f"{label}: {len(kept)} kept at once, {len(suspects)} suspected of changing a good value -> tried again by halves")
@@ -1521,6 +1566,7 @@ class _Engine:
                 continue
             rounds += 1
             self.tell("fix", f"{label}: checking {len(group)} suspected fix{'es' if len(group) != 1 else ''} ({len(kept)} kept so far)", None, pass_no=self.passes, writing=len(group))
+            self._round_label, self._round_size = f"{label}, checking suspects ({len(kept):,} kept so far)", len(group)
             tried = {id(u): u.tries for u in group}
             ok, violations = self._round(group, use_blame=False)
             kept += ok
@@ -1572,6 +1618,8 @@ class _Engine:
         new_value = {k: new for k, _, new in changed}
         # a fix that leaves its own cell in error cured nothing
         useless = [u for u in units if u.kind != "const" and _is_error(new_value[u.key] if u.key in new_value else self.value_at(u.key))]
+        # a dormant #REF! (1.11.6) computed fine before: its own value must not move
+        useless += [u for u in units if u.group.startswith(DORMANT_REF) and u.key in new_value and u not in useless]
         violations = self.judge(changed, set(written))
         if not violations and not useless:
             self._accept(units, fresh, changed)
@@ -1630,7 +1678,9 @@ class _Engine:
 
     def _failed(self, unit: Unit, violations: list[tuple[Key, Any, Any]], useless: bool) -> None:
         fix = unit.fixes[unit.tries]
-        if useless:
+        if useless and unit.group.startswith(DORMANT_REF):
+            unit.notes.append(f"{fix['strategy']}: the cell's own value changed, so the #REF! stays (fix it in Prep or by hand)")
+        elif useless:
             unit.notes.append(f"{fix['strategy']}: the cell was still an error")
         else:
             sample = "; ".join(f"{self.sheets[k[0]].name}!{a1(k[1], k[2])} {_show(o)} → {_show(n)}" for k, o, n in violations[:3])
@@ -1926,6 +1976,7 @@ class _Engine:
                 self.regression_cells += 1
         if self.regression_cells:
             self.note(f"{self.regression_cells} error cell(s) computed a value in the original workbook: left as they are (the preparation broke them)")
+        self.fix_dormant_refs()
         if not self.err and not self.const_err:
             return "unchanged"
         stalled = 0
@@ -1985,6 +2036,60 @@ class _Engine:
         if left == 0:
             return "clean"
         return "partial" if self.counts["accepted"] else "stuck"
+
+    def fix_dormant_refs(self) -> list[Unit]:
+        """1.11.6: a formula that holds #REF! in a branch Excel does not evaluate today shows no
+        error, so no pass reaches it -- yet Mind cannot compile it (REF-001). Each deleted reference
+        becomes NA() (a call that needs a range there becomes NA() as a whole), as Prep's
+        fix_broken_refs does, and goes through the same gate: kept only if no value moves, the
+        cell's own included. Plain cells only; an array or a spill is left to Prep."""
+        found: dict[tuple[int, str], list[Key]] = defaultdict(list)
+        for sh in self.sheets:
+            for start, rows in sh.fml.items():
+                for i, frow in enumerate(rows):
+                    if frow is None:
+                        continue
+                    for j, text in enumerate(frow):
+                        if text and "#REF!" in text.upper():
+                            key = (sh.index, sh.r0 + start + i, sh.c0 + j)
+                            if key not in self.err and key not in self.units and key not in self.cell_unit:
+                                found[(sh.index, text)].append(key)
+        units: list[Unit] = []
+        for (si, text), keys in found.items():
+            fixed = _REF_LITERAL_RE.sub("NA()", text)
+            if "#REF!" in fixed.upper():
+                continue
+            fixed = collapse_na_reference_calls(fixed)
+            sh = self.sheets[si]
+            for r1, c1, r2, c2 in rectangles((k[1], k[2]) for k in keys):
+                try:
+                    rng = self._range(sh, r1, c1, r2, c2)
+                    try:
+                        first = rng.Cells(1, 1)
+                        try:
+                            spilled = bool(first.HasSpill)
+                        except Exception:
+                            spilled = False
+                        first = None
+                        plain = rng.HasArray is False and not spilled
+                    finally:
+                        rng = None
+                except Exception:
+                    plain = False
+                if not plain:
+                    continue
+                for r in range(r1, r2 + 1):
+                    for c in range(c1, c2 + 1):
+                        unit = Unit((si, r, c), r, c, "cell", text, "#REF!", f"{DORMANT_REF}|{sh.name}|{text}", [{
+                            "kind": "formula", "content": fixed, "strategy": "#REF! → NA()",
+                            "what": "the deleted reference now reads NA(); the cell returns what it did and Mind can compile the formula",
+                        }])
+                        self.units[unit.key] = unit
+                        units.append(unit)
+        if not units:
+            return []
+        self.note(f"{len(units)} formula cell(s) hold #REF! without showing an error: the deleted references become NA()")
+        return self.settle(units, "Broken references")
 
     def _open_units(self, cells: list[Key]) -> list[Unit]:
         seen: set[Key] = set()

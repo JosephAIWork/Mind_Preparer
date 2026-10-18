@@ -50,6 +50,7 @@ from app.inventory import cell_window, has_vba_project, make_immutable_copy  # n
 from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
+from app.estimate import estimate_chain  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.model_map import build_model_map
 from app.loop_builder import build_loop_plan  # noqa: E402
@@ -1378,6 +1379,50 @@ def readiness(session_id: str) -> dict[str, Any]:
     if r is None:
         raise HTTPException(status_code=409, detail="no analysis yet")
     return {"readiness": r, "prep_progress": prep_progress(s.plan_history, s.apply_history)}
+
+
+def _stored_errors(s: Session) -> int | None:
+    """Formula cells whose value Excel last stored is an error, from the scan's own load (still in the
+    workbook cache); None when that load is gone or kept no values."""
+    from openpyxl.cell.cell import ERROR_CODES
+
+    from app.inventory import _WORKBOOK_CACHE
+
+    try:
+        wb = _WORKBOOK_CACHE.get(str(s.result["workbook_analysis"]["workbooks"][0]["copy_path"]))
+    except (KeyError, IndexError, TypeError):
+        return None
+    if wb is None:
+        return None
+    codes = set(ERROR_CODES)
+    n = 0
+    for ws in wb.worksheets:
+        cached = getattr(ws, "mind_ready_cached", None)
+        if cached is None:
+            if getattr(ws, "mind_ready_ignored", False) or not hasattr(ws, "_cells"):
+                continue  # a skipped sheet or a chart sheet
+            return None
+        n += sum(1 for v in cached.values() if isinstance(v, str) and v in codes)
+    return n
+
+
+@app.get("/api/sessions/{session_id}/estimate")
+def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
+    """1.11.6: how long "Do everything" may take, per step (low / likely / high seconds) with the
+    caveat; `loop=false` when the chain will skip the loop. See app/estimate.py."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    try:
+        mb = Path(s.current_path).stat().st_size / 2**20
+    except OSError:
+        mb = 0.0
+    scan_s = None
+    if (s.scan or {}).get("state") == "ready":
+        scan_s = sum(float(x.get("seconds") or 0) for x in s.scan.get("stages", []) if x.get("stage") != "convert") or None
+    wb0 = s.result["workbook_analysis"]["workbooks"][0]
+    blocking = sum(int(a.get("count") or 0) for a in s.plan if a.get("level") == "blocking" and a.get("default_on"))
+    return estimate_chain(mb, scan_s, len(wb0.get("formulas", [])), _stored_errors(s), blocking, loop)
 
 
 def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:

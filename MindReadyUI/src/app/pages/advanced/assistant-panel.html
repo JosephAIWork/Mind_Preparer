@@ -34,6 +34,7 @@
       @for (e of p.errors; track $index) { <p class="card__caution">{{ e }}</p> }
       <div class="row">
         <button cdsButton="primary" size="sm" (click)="apply()" [disabled]="applying()">Apply {{ p.operations.length }} changes</button>
+        <button cdsButton="secondary" size="sm" (click)="addToList()" [disabled]="applying()">Add to the list</button>
         <button cdsButton="ghost" size="sm" (click)="discard()" [disabled]="applying()">Discard</button>
       </div>
       @if (applying()) {

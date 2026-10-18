@@ -3,6 +3,7 @@ import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule, TagModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
+import { ChangeStack } from "../../core/change-stack";
 import { Operation, PrepAction, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
@@ -17,6 +18,7 @@ import { SessionStore } from "../../core/session.store";
 export class PrepPanel implements OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
+  readonly stack = inject(ChangeStack);
 
   readonly selected = signal<Set<string>>(new Set());
   readonly open = signal<Set<string>>(new Set());
@@ -80,6 +82,17 @@ export class PrepPanel implements OnDestroy {
     const after = o["after"] ?? o["formula"] ?? o["value"] ?? o["title"] ?? "";
     const note = o["note"] ? ` (${String(o["note"]).slice(0, 60)})` : "";
     return `${o.op} ${target}${after !== "" && after !== null ? " → " + String(after).slice(0, 80) : ""}${note}`;
+  }
+
+  /** 1.11.6: put the ticked actions on the list (Apply all writes the list in one Excel session). */
+  addToList(): void {
+    const sel = this.selection();
+    const actions = this.store.plan().filter((a) => sel.has(a.id) && a.operations.length);
+    for (const a of actions) this.stack.add("prep", `Prep: ${a.title}`, a.operations);
+    const n = actions.reduce((k, a) => k + a.operations.length, 0);
+    this.tone.set("ok");
+    this.line.set(`${n} changes added to the list`);
+    this.detail.set("Apply them with the others from the list at the top of this page.");
   }
 
   async apply(): Promise<void> {

@@ -3,7 +3,7 @@ import { Component, OnDestroy, computed, effect, inject, signal } from "@angular
 import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
-import { FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, ScanStatus, appliedCount, failedCount, failedText, isPending } from "../core/models";
+import { ChainEstimate, FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, ScanStatus, appliedCount, failedCount, failedText, isPending } from "../core/models";
 import { SessionStore } from "../core/session.store";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
@@ -21,6 +21,13 @@ interface ActionState {
 }
 
 const idle = (): ActionState => ({ running: false, fraction: null, line: "", detail: "", tone: "idle" });
+
+/** "under a minute", "12 min", "1 h 25 min" */
+function minutes(seconds: number): string {
+  if (seconds < 60) return "under a minute";
+  const m = Math.round(seconds / 60);
+  return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
 
 /** The scan's stages, in order, as the backend names them (app/progress.py). */
 const SCAN_STAGES: { id: string; title: string }[] = [
@@ -88,6 +95,52 @@ export class HomePage implements OnDestroy {
   readonly steps = signal<Step[]>([]);
   readonly chainRunning = signal(false);
   readonly chainLine = signal("");
+  /** 1.11.6: the estimate for "Do everything" (shown before the click) and the countdown while it runs */
+  readonly estimate = signal<ChainEstimate | null>(null);
+  private readonly clock = signal(Date.now());
+  private chainT0 = 0;
+  private stepT0 = 0;
+  private stepSeconds: Partial<Record<StepId, number>> = {};
+  private ticker: ReturnType<typeof setInterval> | null = null;
+  readonly estimateLine = computed(() => {
+    const e = this.estimate();
+    if (!e) return "";
+    const t = e.total;
+    return `Rough estimate: about ${minutes(t.mid_s)} (between ${minutes(t.low_s)} and ${minutes(t.high_s)}).`;
+  });
+  /** Elapsed and what is left, recomputed every 10 s: each step's likely time, scaled by how the
+   *  finished steps compared with their own estimate, minus what the running step has already taken. */
+  readonly timerLine = computed(() => {
+    const now = this.clock();
+    const e = this.estimate();
+    if (!this.chainRunning() || !this.chainT0) return "";
+    const elapsed = `${minutes((now - this.chainT0) / 1000)} so far`;
+    if (!e) return elapsed;
+    const est = new Map(e.steps.map((s) => [s.id, s]));
+    let planned = 0;
+    let took = 0;
+    for (const s of this.steps()) {
+      const actual = this.stepSeconds[s.id];
+      if (s.state === "done" && actual !== undefined) {
+        planned += est.get(s.id)?.mid_s ?? 0;
+        took += actual;
+      }
+    }
+    const k = planned >= 60 ? Math.min(3, Math.max(0.5, took / planned)) : 1;
+    let left = 0;
+    let slow = false;
+    for (const s of this.steps()) {
+      const x = est.get(s.id);
+      if (!x) continue;
+      if (s.state === "waiting") left += x.mid_s * k;
+      else if (s.state === "running") {
+        const inStep = (now - this.stepT0) / 1000;
+        left += Math.max(x.mid_s * k - inStep, 0.1 * x.mid_s * k, 30);
+        slow = inStep > x.high_s * k;
+      }
+    }
+    return `${elapsed} · about ${minutes(left)} left${slow ? " · this step is taking longer than usual" : ""}`;
+  });
   readonly busy = computed(() => this.chainRunning() || this.fixAll().running || this.fixFormulas().running || this.prepare().running || this.loop().running || this.recalc().running);
   /** Which step holds the buttons, for the hint on a disabled button. */
   readonly busyHint = computed(() => {
@@ -168,10 +221,26 @@ export class HomePage implements OnDestroy {
         this.loopPlan.set(null);
       }
     });
+    // the estimate follows the analysed version and the loop plan (refreshed once a step is done)
+    effect(() => {
+      const id = this.store.sessionId();
+      const version = this.store.currentVersion()?.id;
+      this.loopPlan(); // whether the loop step runs changes the estimate
+      if (id && version && !this.chainRunning()) void this.loadEstimate(id);
+    });
+  }
+
+  private async loadEstimate(id: string): Promise<void> {
+    try {
+      this.estimate.set(await this.api.estimate(id, this.canBuildLoop()));
+    } catch {
+      this.estimate.set(null); // an older server without the estimate: nothing shown
+    }
   }
 
   ngOnDestroy(): void {
     this.timers.forEach(clearTimeout);
+    if (this.ticker) clearInterval(this.ticker);
     this.fixAllFollowing = false;
   }
 
@@ -583,6 +652,12 @@ export class HomePage implements OnDestroy {
     this.chainRunning.set(true);
     this.chainLine.set("");
     this.steps.set(STEPS.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
+    await this.loadEstimate(id);
+    this.stepSeconds = {};
+    this.chainT0 = this.stepT0 = Date.now();
+    this.clock.set(Date.now());
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = setInterval(() => this.clock.set(Date.now()), 10_000);
     const runners: Record<StepId, () => Promise<boolean>> = {
       fixAll: () => this.runFixAll(),
       prepare: () => this.runPrepare(),
@@ -596,6 +671,8 @@ export class HomePage implements OnDestroy {
           this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs a decision first (Advanced › Mind loop)" : "No run loop in this workbook" });
           continue;
         }
+        this.stepT0 = Date.now();
+        this.clock.set(this.stepT0);
         this.setStep(step.id, { state: "running" });
         let ok = false;
         try {
@@ -604,14 +681,17 @@ export class HomePage implements OnDestroy {
           states[step.id].set({ running: false, fraction: null, line: "Failed", detail: errorText(e), tone: "error" });
         }
         const r = states[step.id]();
+        this.stepSeconds[step.id] = (Date.now() - this.stepT0) / 1000;
         this.setStep(step.id, { state: ok ? "done" : "failed", line: r.line, detail: r.detail });
         if (!ok) {
           this.chainLine.set(`Stopped at "${step.label}": ${r.line}. Fix that under Advanced, then press Do everything again.`);
           return;
         }
       }
-      this.chainLine.set("Everything ran and every check passed.");
+      this.chainLine.set(`Everything ran and every check passed (${minutes((Date.now() - this.chainT0) / 1000)}).`);
     } finally {
+      if (this.ticker) clearInterval(this.ticker);
+      this.ticker = null;
       this.chainRunning.set(false);
     }
   }

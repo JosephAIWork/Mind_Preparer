@@ -22,6 +22,7 @@
 
   <div class="bar">
     <button cdsButton="primary" size="md" (click)="apply()" [disabled]="running() || !selectedOps().length">Apply {{ selectedOps().length }} changes</button>
+    <button cdsButton="secondary" size="md" (click)="addToList()" [disabled]="running() || !selectedOps().length" title="Collect changes from Prep and the assistant, then write them all at once">Add to the list</button>
     @if (running()) {
       <div class="bar__progress">
         <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>

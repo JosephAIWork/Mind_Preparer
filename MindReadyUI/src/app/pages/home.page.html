@@ -88,6 +88,13 @@
         <div>
           <h2 class="chain__title">Do everything</h2>
           <p class="chain__text">Fix all issues, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
+          @if (chainRunning() && timerLine()) {
+            <p class="chain__estimate"><strong>{{ timerLine() }}</strong></p>
+            <p class="chain__caveat">Updated every 10 seconds; a rough guess that corrects itself as each step finishes.</p>
+          } @else if (!chainRunning() && estimateLine()) {
+            <p class="chain__estimate">{{ estimateLine() }}</p>
+            <p class="chain__caveat">{{ estimate()?.caveat }}</p>
+          }
         </div>
         @if (!chainRunning()) {
           <button cdsButton="primary" size="lg" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>

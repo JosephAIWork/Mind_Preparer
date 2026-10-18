@@ -1,0 +1,46 @@
+@if (stack.entries().length || line()) {
+  <div class="card stack">
+    <div class="card__head">
+      <span class="card__title">Changes waiting to be applied</span>
+      <span class="card__count">{{ stack.operations().length }} change{{ stack.operations().length === 1 ? "" : "s" }} from {{ stack.entries().length }} source{{ stack.entries().length === 1 ? "" : "s" }}</span>
+    </div>
+
+    @for (w of stack.warnings(); track $index) {
+      <p class="card__caution">{{ w.kind === "overlap" ? "Overlap: " : "Older version: " }}{{ w.text }}</p>
+    }
+
+    @if (stack.entries().length) {
+      <button class="link" (click)="open.set(!open())">{{ open() ? "Hide the list" : "Show the list" }}</button>
+      @if (open()) {
+        <ul class="plain">
+          @for (e of stack.entries(); track e.key) {
+            <li>
+              <strong>{{ e.label }}</strong> · {{ e.operations.length }} change{{ e.operations.length === 1 ? "" : "s" }} · {{ e.source === "prep" ? "Prep" : "Assistant" }}, {{ e.versionLabel }}
+              <button class="link" (click)="stack.remove(e.key)" [disabled]="running()">Remove</button>
+            </li>
+          }
+        </ul>
+      }
+    }
+
+    <div class="bar">
+      @if (stack.entries().length) {
+        <button cdsButton="primary" size="md" (click)="applyAll()" [disabled]="running()">Apply all {{ stack.operations().length }} changes</button>
+        <button cdsButton="ghost" size="md" (click)="stack.clear()" [disabled]="running()">Empty the list</button>
+      }
+      @if (running()) {
+        <div class="bar__progress">
+          <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+        </div>
+      } @else if (line()) {
+        <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
+          <strong>{{ line() }}</strong>
+          @if (detail()) { <span>{{ detail() }}</span> }
+        </div>
+      }
+    </div>
+    @if (stack.entries().length && !running()) {
+      <p class="hint">One Excel session and one re-analysis for the whole list, in the order the changes were added.</p>
+    }
+  </div>
+}

@@ -41,7 +41,7 @@ from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 from . import fast_xlsx
 from .perf import stage as perf_stage
-from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, range_length, storage_prefixes
+from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, parse_ref, range_length, storage_prefixes
 from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
 fast_xlsx.install()  # 1.11.4: the C XML parser, and the cached values kept from the formula load
@@ -548,6 +548,20 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
     except Exception:
         pass
 
+    # 1.11.6: where the pivot tables sit -- Excel refuses to write into one or to insert a row or a
+    # column through it. The report filters sit above the body (rowPageCount rows and a blank row).
+    pivot_tables = []
+    for pv in getattr(ws, "_pivots", None) or []:
+        try:
+            loc = pv.location
+            ref = parse_ref(str(loc.ref))
+            if not ref:
+                continue
+            top = ref["r1"] - (int(loc.rowPageCount or 0) + 1 if loc.rowPageCount else 0)
+            pivot_tables.append({"name": str(pv.name), "ref": f"{get_column_letter(ref['c1'])}{max(1, top)}:{get_column_letter(ref['c2'])}{ref['r2']}"})
+        except Exception:
+            continue
+
     state = ws.sheet_state  # 'visible' | 'hidden' | 'veryHidden'
     tab_color = None
     try:
@@ -566,6 +580,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
         "protected": sheet_protected,
         "merged_cells": merged,
         "tables": tables,
+        "pivot_tables": pivot_tables,
         "locked_cell_count": locked_cells,
         "comments": comments,
         "hyperlinks": hyperlinks,

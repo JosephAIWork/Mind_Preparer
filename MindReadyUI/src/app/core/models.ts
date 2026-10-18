@@ -643,3 +643,18 @@ export interface AutoFixLeft {
   why: string;
   tried: boolean;
 }
+
+/** 1.11.6: GET .../estimate -- how long "Do everything" may take, per step (seconds). */
+export interface ChainEstimateStep {
+  id: "fixAll" | "prepare" | "loop" | "recalc";
+  low_s: number;
+  mid_s: number;
+  high_s: number;
+  why: string;
+}
+export interface ChainEstimate {
+  steps: ChainEstimateStep[];
+  total: { low_s: number; mid_s: number; high_s: number };
+  caveat: string;
+  basis: { file_mb: number; scan_s: number; scan_measured: boolean; stored_errors: number | null; blocking_ops: number };
+}

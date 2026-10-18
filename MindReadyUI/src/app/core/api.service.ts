@@ -2,7 +2,7 @@ import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import {
-  ApplyOutcome, AppHealth, AutoFixStatus, CellWindow, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -37,6 +37,11 @@ export class ApiService {
 
   scanStatus(id: string): Promise<ScanStatus> {
     return firstValueFrom(this.http.get<ScanStatus>(`${this.s(id)}/status`));
+  }
+
+  /** 1.11.6: how long "Do everything" may take (loop=false when the chain will skip the loop). */
+  estimate(id: string, loop: boolean): Promise<ChainEstimate> {
+    return firstValueFrom(this.http.get<ChainEstimate>(`${this.s(id)}/estimate`, { params: new HttpParams().set("loop", String(loop)) }));
   }
 
   readiness(id: string): Promise<{ readiness: Readiness; prep_progress: PrepProgress }> {

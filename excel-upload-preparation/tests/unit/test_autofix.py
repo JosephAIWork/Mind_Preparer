@@ -444,3 +444,22 @@ def test_a_rewrite_by_the_assistant_may_only_guard_what_the_original_already_rea
     # what the original already does stays allowed: its own lookup, its own other workbook
     assert repair_refused("=VLOOKUP(RC1,Data!C1:C2,2,FALSE)", "=IFNA(VLOOKUP(RC1,Data!C1:C2,2,FALSE),0)") is None
     assert repair_refused("='[Src.xlsx]A'!R1C1/RC[-1]", "=IF(RC[-1]=0,0,'[Src.xlsx]A'!R1C1/RC[-1])") is None
+
+
+@needs_excel
+def test_a_dormant_ref_becomes_na_without_a_trip_to_prep(tmp_path):
+    def fill(wb, ws):
+        ws["A1"] = 1
+        ws["B1"] = "=IF(A1>0,10,#REF!)"          # 10 today: the #REF! branch is never evaluated, so no error shows
+        ws["C1"] = "=B1*2"
+        ws["B2"] = "=ERROR.TYPE(#REF!)"          # 4 today; with NA() it would read 7 -> must stay as it is
+
+    src = _book(tmp_path, fill)
+    res = run_autofix(src, tmp_path / "work")
+    assert res["status"] == "clean" and res["saved"]
+    fixed = [f for f in res["fixes"] if f["strategy"] == "#REF! → NA()"]
+    assert [f["cell"] for f in fixed] == ["B1"] and fixed[0]["after"] == "=IF(A1>0,10,NA())"
+    wb = openpyxl.load_workbook(res["output_path"])
+    assert wb["Calc"]["B1"].value == "=IF(A1>0,10,NA())" and wb["Calc"]["B2"].value == "=ERROR.TYPE(#REF!)"
+    after = _values(Path(res["output_path"]))
+    assert after["Calc!B1"] == 10 and after["Calc!C1"] == 20 and after["Calc!B2"] == 4

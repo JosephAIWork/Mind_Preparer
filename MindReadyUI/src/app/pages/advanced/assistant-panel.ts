@@ -3,6 +3,7 @@ import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
+import { ChangeStack } from "../../core/change-stack";
 import { ChatMessage, FixTarget, Proposal, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
@@ -17,6 +18,7 @@ import { SessionStore } from "../../core/session.store";
 export class AssistantPanel implements OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
+  readonly stack = inject(ChangeStack);
 
   readonly draft = signal("");
   readonly streaming = signal(false);
@@ -88,6 +90,16 @@ export class AssistantPanel implements OnDestroy {
       this.phase.set("");
       this.partial.set("");
     }
+  }
+
+  /** 1.11.6: keep the proposal for the list at the top of the page instead of writing it now. */
+  addToList(): void {
+    const p = this.proposal();
+    if (!p) return;
+    const label = `Assistant: ${p.summary || p.operations.length + " changes"}`.slice(0, 120);
+    this.stack.add("assistant", label, p.operations);
+    this.store.chatHistory.update((h) => [...h, { role: "assistant", content: `${p.operations.length} changes added to the list (applied with the others from the top of the page)`, note: true, tone: "success" }]);
+    this.proposal.set(null);
   }
 
   discard(): void {
