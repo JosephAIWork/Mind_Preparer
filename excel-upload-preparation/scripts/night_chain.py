@@ -85,6 +85,8 @@ def main() -> int:
             left = res.get("left") or []
             # "unchanged" with no error left is fine: the workbook already recalculated clean (CNHI)
             ok = res.get("status") == "clean" or (res.get("status") in ("partial", "unchanged") and not left and (res.get("errors_after") or 0) == 0)
+            # 1.11.6, as the main screen: errors the workbook already had (no regression, no Stop) let the chain go on
+            ok = ok or (res.get("status") in ("partial", "stuck", "unchanged") and not res.get("stopped") and not res.get("regression_cells"))
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])
 
