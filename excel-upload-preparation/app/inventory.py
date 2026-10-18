@@ -40,6 +40,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 from . import fast_xlsx
+from .perf import stage as perf_stage
 from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, range_length, storage_prefixes
 from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
@@ -252,7 +253,8 @@ def _values_workbook(path: str, ignore_sheets: Iterable[str] = ()):
         if formulas is not None and getattr(formulas, "mind_ready_ignore", ()) == ignore:
             wb = fast_xlsx.values_view(formulas)
         if wb is None:
-            wb = load_workbook_selective(path, ignore, data_only=True)
+            with perf_stage("values_full_load", file=Path(path).name, ignored=len(ignore)):
+                wb = load_workbook_selective(path, ignore, data_only=True)
         _VALUES_CACHE[key] = wb
     return wb
 
@@ -261,8 +263,11 @@ def values_cell(analysis: dict[str, Any], sheet: str, row: int, col: int) -> Any
     """The value Excel last stored for a cell (what a formula computed), or
     None when the workbook carries no cached value for it."""
     copy_path = analysis["workbooks"][0]["copy_path"]
+    ignored = ignored_sheet_names(analysis)
     try:
-        wb = _values_workbook(str(copy_path))
+        # the sheets the scan skipped stay out of the load (1.11.4: it is then served from the scan's
+        # own load); a value on a skipped sheet still needs the full load, as before
+        wb = _values_workbook(str(copy_path), () if sheet in ignored else ignored)
     except Exception:
         return None
     if sheet not in wb.sheetnames:

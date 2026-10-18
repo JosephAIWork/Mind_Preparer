@@ -170,15 +170,24 @@ def find_calls(formula: str, function_name: str) -> list[list[str]]:
     return [c["args"] for c in find_calls_detailed(formula, function_name)]
 
 
+@functools.lru_cache(maxsize=1024)
+def _call_pattern(function_name: str) -> re.Pattern:
+    return re.compile(rf"(?<![A-Za-z0-9_])(?:_xl[a-z]+\.)?{re.escape(function_name)}\s*\(", re.IGNORECASE)
+
+
 def find_calls_detailed(formula: str, function_name: str) -> list[dict]:
     """Like find_calls but also returns each call's text span and the exact
     call text, which the resize/syntax validators need."""
     if not formula or not formula.startswith("="):
         return []
+    # 1.11.4: the rules ask every formula for one function after another (a million calls on
+    # Horizon); a formula that does not contain the name cannot call it (exact for ASCII text,
+    # where IGNORECASE is plain lower-casing)
+    if formula.isascii() and function_name.isascii() and function_name.lower() not in formula.lower():
+        return []
     masked = mask_strings(formula)
     calls = []
-    pattern = re.compile(rf"(?<![A-Za-z0-9_])(?:_xl[a-z]+\.)?{re.escape(function_name)}\s*\(", re.IGNORECASE)
-    for m in pattern.finditer(masked):
+    for m in _call_pattern(function_name).finditer(masked):
         start = m.end()
         depth = 1
         i = start
@@ -254,15 +263,19 @@ def parse_ref(text: str | None) -> dict | None:
     return _ref_dict(sheet, m.group("ref"))
 
 
+_WHOLE_COLUMNS_RE = re.compile(r"[A-Z]{1,3}:[A-Z]{1,3}")
+_WHOLE_ROWS_RE = re.compile(r"\d+:\d+")
+
+
 def _ref_dict(sheet: str | None, ref: str) -> dict:
     ref_clean = ref.replace("$", "").upper()
     whole_column = whole_row = False
-    if re.fullmatch(r"[A-Z]{1,3}:[A-Z]{1,3}", ref_clean):
+    if _WHOLE_COLUMNS_RE.fullmatch(ref_clean):
         a, b = ref_clean.split(":")
         c1, c2 = sorted((col_to_num(a), col_to_num(b)))
         r1, r2 = 1, 1048576
         whole_column = True
-    elif re.fullmatch(r"\d+:\d+", ref_clean):
+    elif _WHOLE_ROWS_RE.fullmatch(ref_clean):
         a, b = ref_clean.split(":")
         r1, r2 = sorted((int(a), int(b)))
         c1, c2 = 1, 16384
