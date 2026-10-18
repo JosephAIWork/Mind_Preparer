@@ -58,7 +58,15 @@ from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
 
-STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link"}
+STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values"}
+PIVOT_OPS = {"pivot_to_formulas", "pivot_to_values"}
+# 1.11.7: what Prep does with the pivot tables (Advanced > Prep actions; Do everything follows it)
+PIVOT_MODES = {
+    "blocking": "Leave them, turn only the blocking ones into formulas",
+    "formulas": "Turn every pivot table into formulas",
+    "values": "Turn every pivot table into plain values",
+}
+DEFAULT_PIVOT_MODE = "blocking"
 CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula"}
 HIDE_MARKER = "&&Hide"
 EXCEL_SHEET_NAME_MAX = 31
@@ -1463,7 +1471,30 @@ def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
 # a judgment about any particular workbook. Blocking actions are on by default;
 # `caution` says why a blocking action still deserves a look before Apply.
 BLOCKING, OPTIONAL = "blocking", "optional"
+def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple[list[dict], list[str]]:
+    """STR-009 (1.11.7): one operation per pivot table to convert -- the blocking ones always, the
+    others when the pivot setting says so. To formulas (each falls back to values in Excel when its
+    formulas would not give the same numbers) unless the setting is "values"."""
+    from .validators.structure import blocking_pivot
+
+    ops: list[dict] = []
+    skipped: list[str] = []
+    to = "pivot_to_values" if mode == "values" else "pivot_to_formulas"
+    for s in analysis["workbooks"][0].get("sheets", []):
+        for p in s.get("pivot_tables", []) or []:
+            why = blocking_pivot(p)
+            if not why and mode == "blocking":
+                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table (the pivot setting); Mind reads its cells as values")
+                continue
+            note = f"blocking: {why}" if why else f"the pivot setting: {PIVOT_MODES.get(mode, mode)}"
+            ops.append(_op(to, "pivot_tables", "STR-009", s["name"], cell=p["ref"].split(":")[0], range=p["ref"], pivot=p["name"],
+                           before=f"pivot table {p['name']}", after="formulas over its source" if to == "pivot_to_formulas" else "plain values", note=note))
+    return ops, skipped
+
+
 ACTIONS: list[dict[str, Any]] = [
+    {"id": "pivot_tables", "title": "Pivot tables: turn the ones Mind cannot read (or all, per the pivot setting) into formulas over their source", "rule_ids": ["STR-009"], "default_on": True, "level": BLOCKING,
+     "caution": "a pivot table becomes plain cells with formulas (SUMIFS ...) that give the same numbers -- values where they cannot; it no longer refreshes from its source as a pivot", "planner": plan_pivot_tables},
     {"id": "fix_broken_refs", "title": "Replace broken (#REF!) references with NA() so Mind can compile", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a broken reference becomes NA(); the cell already returned an error, so no valid result changes", "planner": plan_fix_broken_refs},
     {"id": "fix_broken_refs_whole", "title": "Replace formulas built on a broken range with =NA()", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
@@ -1568,7 +1599,7 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
     kept = []
     for o in ops:
         rects = pivots.get(o["sheet"])
-        if not rects:
+        if not rects or o["op"] in PIVOT_OPS:
             kept.append(o)
             continue
         if o["op"] == "insert_row":
@@ -1598,7 +1629,7 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
     return kept
 
 
-def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None = None, pivot_mode: str = DEFAULT_PIVOT_MODE) -> list[dict[str, Any]]:
     """Every action with its planned operations and skip notes -- no file is touched.
 
     `grid_names` (optional, "Sheet!Ref" -> name) comes from the assistant
@@ -1612,6 +1643,8 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
         try:
             if a["id"] == "create_grid_titles":
                 ops, skipped = a["planner"](analysis, validation_report, grid_names)
+            elif a["id"] == "pivot_tables":
+                ops, skipped = a["planner"](analysis, validation_report, pivot_mode)
             else:
                 ops, skipped = a["planner"](analysis, validation_report)
             ops = _drop_merged_targets(list(ops), skipped, merged)
@@ -1651,12 +1684,13 @@ def formula_replacement_op(sheet: str, cell: str, before: str, after: str, rule_
 def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cell ops on original coordinates, then inserts (bottom-up / right-to-left),
     then cell ops written for post-insert coordinates, then sheet-level ops."""
+    phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # 1.11.7: the pivot tables first, so their cells can be written
     phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "unprotect_sheet", "remove_validation"} and not o.get("after_inserts")]
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
     phase2 = [_resolve_insert_at(o, row_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
     sheet_level = [o for o in operations if o["op"] in ("rename_sheet", "set_sheet_visibility", "break_external_link")]
-    return phase1 + row_inserts + col_inserts + phase2 + sheet_level
+    return phase0 + phase1 + row_inserts + col_inserts + phase2 + sheet_level
 
 
 def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1958,6 +1992,11 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             ws.Rows(int(o["row"])).Insert()
         elif o["op"] == "insert_column":
             ws.Columns(col_to_num(str(o["column"]))).Insert()
+        elif o["op"] in PIVOT_OPS:
+            from .pivots import convert
+
+            done = convert(wb.Application, wb, ws, str(o["pivot"]), "formulas" if o["op"] == "pivot_to_formulas" else "values")
+            record = {**o, "result": done, "after": f"{done['formulas']} formulas" if done["to"] == "formulas" else "plain values" + (f" ({done['why_values']})" if done.get("why_values") else "")}
         elif o["op"] == "rename_sheet":
             ws.Name = o["after"]
         elif o["op"] == "break_external_link":

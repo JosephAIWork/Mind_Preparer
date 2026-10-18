@@ -57,7 +57,7 @@ from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Status, aggregate_status  # noqa: E402
 from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
-from app.prep import ASSISTANT_OPS, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
+from app.prep import ASSISTANT_OPS, DEFAULT_PIVOT_MODE, PIVOT_MODES, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
 from app.recalc import classify_against_original, classify_errors, formulas_with_broken_refs, group_errors, recalculate  # noqa: E402
 from app.prep import _cells_of as _array_cells  # noqa: E402
@@ -114,6 +114,7 @@ class Session:
     # 1.6.6 -- upload size gate + scan status
     size: dict[str, Any] | None = None  # app.sizing.size_gate of the uploaded file
     ignore_sheets: list[str] = field(default_factory=list)  # sheets the user chose not to scan
+    pivot_mode: str = DEFAULT_PIVOT_MODE  # 1.11.7: what Prep (and Do everything) does with the pivot tables
     pending: bool = False  # uploaded and inspected, not analysed yet (deferred upload)
     scan: dict[str, Any] = field(default_factory=dict)  # live status of the current/last scan
     # 1.7.2 -- one entry per analysis: how much prep work each version still needs (the Prep gauge)
@@ -476,7 +477,7 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     result = module.run(path, work, load_config(), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
     if progress is not None:
         progress("plan", "Planning the fixes", None)
-    s.plan = plan_actions(result["workbook_analysis"], result["validation_report"], s.grid_names or None)
+    s.plan = plan_actions(result["workbook_analysis"], result["validation_report"], s.grid_names or None, s.pivot_mode)
     report = result["validation_report"]
     # "Fix available" means the current prep plan has an operation for the rule.
     fixable = {rid for a in s.plan if a["count"] > 0 for rid in a["rule_ids"]} | {o["rule_id"] for a in s.plan for o in a["operations"]}
@@ -706,7 +707,24 @@ def session_state(session_id: str) -> dict[str, Any]:
         "scan": _scan_snapshot(s),
         "readiness": s.readiness(),
         "prep_progress": prep_progress(s.plan_history, s.apply_history),
+        "pivot_mode": s.pivot_mode,
+        "pivot_modes": PIVOT_MODES,
     }
+
+
+@app.post("/api/sessions/{session_id}/pivot-mode")
+def set_pivot_mode(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """1.11.7: what Prep does with the pivot tables -- "blocking" (leave them, convert only the ones
+    Mind cannot read), "formulas" or "values" -- and the plan made again with it (Do everything
+    applies the blocking actions of that plan)."""
+    s = _session(session_id)
+    mode = str(payload.get("mode") or "")
+    if mode not in PIVOT_MODES:
+        raise HTTPException(status_code=422, detail=f"mode must be one of {', '.join(PIVOT_MODES)}")
+    s.pivot_mode = mode
+    if s.result:
+        s.plan = plan_actions(s.result["workbook_analysis"], s.result["validation_report"], s.grid_names or None, s.pivot_mode)
+    return {"pivot_mode": s.pivot_mode, "plan": s.plan, "readiness": s.readiness()}
 
 
 @app.post("/api/sessions/{session_id}/analyze")
@@ -852,7 +870,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     applied = bool(payload.get("apply", True))
     if applied:
         s.grid_names.update({k: v for k, v in proposed.items() if v})
-        s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None)
+        s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
     return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
 
 

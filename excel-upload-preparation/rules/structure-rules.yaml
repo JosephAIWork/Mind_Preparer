@@ -252,3 +252,24 @@ rules:
   fail_if:
   - A formula reads a text cell that belongs to no grid and has no title above it or label beside it.
   severity_source: BLOCKER
+- id: STR-009
+  version: 1.0.0
+  status: active
+  category: structure
+  description: 'Pivot table -- Mind imports values only; its converter stopped on a pivot table with a grouped field ("The method or operation is not implemented"). A blocking pivot is turned into formulas (or values) by Prep; the others follow the pivot setting in Advanced (leave them, formulas, values).'
+  confidence: MEDIUM
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-10-18, Phoenix TVOG -- rejected with its 8 pivot tables, accepted with them as values)
+    article: STR-009
+  validation:
+    deterministic: true
+    implementation: validators.structure.pivot_tables
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - The workbook has no pivot table.
+  fail_if:
+  - A pivot table has a grouped field (blocking), or the workbook has pivot tables (a warning).
+  severity_source: BLOCKER

@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from "@angular/core";
 
 export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
-import { ChatMessage, Delta, FixTarget, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+import { ChatMessage, Delta, FixTarget, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
@@ -21,6 +21,15 @@ export class SessionStore {
   readonly numbers = signal<NumbersCheck | null>(null);
   readonly reports = signal<ReportBuild | null>(null);
   readonly advancedTab = signal<AdvancedTab>("findings");
+  /** 1.11.7: what Prep (and Do everything) does with the pivot tables */
+  readonly pivotMode = signal<PivotMode>("blocking");
+  readonly pivotModes = signal<Record<string, string>>({});
+  /** STR-009's pivots: [{sheet, name, ref, blocking}] (empty when the workbook has none) */
+  readonly pivots = computed(() => {
+    const f = this.findings().find((x) => x.rule_id === "STR-009");
+    const list = (f?.observed as { pivots?: { sheet: string; name: string; ref: string; blocking: string | null }[] } | undefined)?.pivots;
+    return list ?? [];
+  });
 
   /** Point the Assistant at a finding or an error and open its tab. */
   ask(target: FixTarget): void {
@@ -46,6 +55,8 @@ export class SessionStore {
     this.readiness.set(start.readiness ?? null);
     this.prepProgress.set(start.prep_progress ?? null);
     this.delta.set(start.delta ?? null);
+    this.pivotMode.set(start.pivot_mode ?? "blocking");
+    if (start.pivot_modes) this.pivotModes.set(start.pivot_modes);
     this.recalc.set(null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);

@@ -4,7 +4,7 @@ import { ButtonModule, ProgressBarModule, TagModule } from "carbon-components-an
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
-import { Operation, PrepAction, appliedCount, failedCount, failedText } from "../../core/models";
+import { Operation, PivotMode, PrepAction, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** The Prep actions one by one: tick what to apply, see the changes, apply through Excel. */
@@ -50,6 +50,29 @@ export class PrepPanel implements OnDestroy {
     const sel = this.selection();
     return this.store.plan().filter((a) => sel.has(a.id)).flatMap((a) => a.operations);
   });
+
+  readonly pivotSaving = signal(false);
+  readonly pivotModeList = computed(() => Object.entries(this.store.pivotModes()) as [PivotMode, string][]);
+  readonly pivotBlocking = computed(() => this.store.pivots().filter((p) => p.blocking).length);
+
+  /** 1.11.7: what Prep (and Do everything) does with the pivot tables: the plan is made again. */
+  async setPivotMode(mode: PivotMode): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || this.pivotSaving() || mode === this.store.pivotMode()) return;
+    this.pivotSaving.set(true);
+    try {
+      const out = await this.api.setPivotMode(id, mode);
+      this.store.pivotMode.set(out.pivot_mode);
+      this.store.plan.set(out.plan);
+      if (out.readiness) this.store.readiness.set(out.readiness);
+    } catch (e) {
+      this.tone.set("error");
+      this.line.set("Could not change the pivot setting");
+      this.detail.set(errorText(e));
+    } finally {
+      this.pivotSaving.set(false);
+    }
+  }
 
   ngOnDestroy(): void {
     this.stop?.();

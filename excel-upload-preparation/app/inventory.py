@@ -558,7 +558,22 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
             if not ref:
                 continue
             top = ref["r1"] - (int(loc.rowPageCount or 0) + 1 if loc.rowPageCount else 0)
-            pivot_tables.append({"name": str(pv.name), "ref": f"{get_column_letter(ref['c1'])}{max(1, top)}:{get_column_letter(ref['c2'])}{ref['r2']}"})
+            # 1.11.7: what the pivot is built from -- a grouped field is what Mind's converter could not read (Phoenix)
+            grouped, calculated, source = [], [], None
+            try:
+                cache = pv.cache
+                source = getattr(cache.cacheSource, "type", None)
+                for cf in cache.cacheFields or []:
+                    if getattr(cf, "fieldGroup", None) is not None:
+                        grouped.append(str(cf.name))
+                    if getattr(cf, "formula", None):
+                        calculated.append(str(cf.name))
+            except Exception:
+                pass
+            pivot_tables.append({
+                "name": str(pv.name), "ref": f"{get_column_letter(ref['c1'])}{max(1, top)}:{get_column_letter(ref['c2'])}{ref['r2']}",
+                "cells": (ref["r2"] - max(1, top) + 1) * (ref["c2"] - ref["c1"] + 1), "grouped_fields": grouped, "calculated_fields": calculated, "source": source,
+            })
         except Exception:
             continue
 

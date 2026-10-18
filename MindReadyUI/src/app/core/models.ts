@@ -133,7 +133,12 @@ export interface SessionStart {
   prep_progress?: PrepProgress;
   delta?: Delta | null;
   mode?: Mode;
+  /** 1.11.7: what Prep (and Do everything) does with the pivot tables, and the choices */
+  pivot_mode?: PivotMode;
+  pivot_modes?: Record<PivotMode, string>;
 }
+
+export type PivotMode = "blocking" | "formulas" | "values";
 
 export interface PendingUpload {
   pending: true;

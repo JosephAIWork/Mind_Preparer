@@ -10,6 +10,22 @@
     </ul>
   }
 
+  @if (store.pivots().length) {
+    <div class="card">
+      <div class="card__head">
+        <span class="card__title">Pivot tables ({{ store.pivots().length }}{{ pivotBlocking() ? ", " + pivotBlocking() + " blocking Mind" : "" }})</span>
+      </div>
+      <p class="hint">Mind reads a pivot table's cells as values, which do not follow their source in a Mind loop; one with a grouped field stopped Mind's converter. This choice applies here and to Do everything.</p>
+      @for (m of pivotModeList(); track m[0]) {
+        <label class="check">
+          <input type="radio" name="pivot-mode" [checked]="store.pivotMode() === m[0]" (change)="setPivotMode(m[0])" [disabled]="pivotSaving() || running()" />
+          {{ m[1] }}
+        </label>
+      }
+      <p class="card__caution">Formulas give the same numbers as the pivot (each is checked in Excel); a pivot whose formulas would not becomes plain values.</p>
+    </div>
+  }
+
   <h3 class="panel__h">Blocking ({{ blocking().length }})</h3>
   <ng-container *ngTemplateOutlet="actions; context: { list: blocking() }"></ng-container>
 

@@ -1,6 +1,6 @@
 """Turn every pivot table of a workbook into plain cells (values and formats), in a copy, through Excel.
 
-    python scripts/pivots_to_values.py <workbook> <out workbook>
+    python scripts/pivots_to_values.py <workbook> <out workbook> [--only "Sheet1!PivotTable4,CFs!PivotTable6"]
 
 Mind's converter stopped on Phoenix TVOG with "The method or operation is not implemented" -- the only
 parts no accepted workbook had were its 8 pivot tables (one with a grouped field) and a web add-in. Mind
@@ -26,7 +26,12 @@ XL_PASTE_FORMATS = -4122
 
 
 def main() -> int:
-    src, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+    args = [a for a in sys.argv[1:] if a != "--only"]
+    only = None
+    if "--only" in sys.argv:
+        only = {s.strip() for s in sys.argv[sys.argv.index("--only") + 1].split(",") if s.strip()}
+        args.remove(sys.argv[sys.argv.index("--only") + 1])
+    src, out = Path(args[0]).resolve(), Path(args[1]).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, out)
     t0 = time.time()
@@ -49,6 +54,8 @@ def main() -> int:
                 pts = ws.PivotTables()
                 for k in range(int(pts.Count), 0, -1):
                     pt = pts.Item(k)
+                    if only is not None and f"{ws.Name}!{pt.Name}" not in only:
+                        continue
                     rng = pt.TableRange2
                     address, name = str(rng.Address), str(pt.Name)
                     rows, cols = int(rng.Rows.Count), int(rng.Columns.Count)

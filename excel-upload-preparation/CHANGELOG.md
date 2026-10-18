@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.11.7
+
+**Pivot tables: a rule (STR-009), a Prep action and a setting.** Mind's converter stopped on Phoenix TVOG
+with "The method or operation is not implemented"; the same file with its 8 pivot tables as plain cells was
+accepted. The scan now records what each pivot is built from (grouped and calculated fields, source,
+size). STR-009 is blocking for a pivot with a grouped field -- the one Mind could not read -- and a warning
+for a plain pivot (Mind reads its cells as values, frozen: they do not follow their source in a Mind
+loop). The Prep action "Pivot tables" converts them through Excel (`app/pivots.py`):
+
+- **to formulas**: every value, subtotal and grand-total cell becomes SUMIFS / COUNTIFS / AVERAGEIFS /
+  MAXIFS / MINIFS over the pivot's source, with the cell's row and column items and the report filters
+  (Excel's own PivotCell) as the conditions; Excel then recalculates and every cell is compared with the
+  pivot's value -- one difference (grouped items, hidden items, a filter ...) and that pivot becomes plain
+  values instead, with the reason;
+- **to values**: the pivot's cells as plain values and formats.
+
+The setting in Advanced > Prep actions > Pivot tables -- leave them and convert only the blocking ones
+(the default), turn every pivot into formulas, or into values -- is kept per session
+(`POST /api/sessions/{id}/pivot-mode`) and Do everything follows it; the main screen says which one is on.
+`scripts/pivots_to_values.py --only "Sheet!Pivot"` makes a test copy by hand.
+
 ## 1.11.6
 
 **Fix all issues also rewrites a hidden #REF! to NA().** A formula that holds `#REF!` in a branch Excel

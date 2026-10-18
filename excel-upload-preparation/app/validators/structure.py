@@ -417,3 +417,45 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
+
+
+def blocking_pivot(p: dict[str, Any]) -> str | None:
+    """1.11.7: why Mind's converter cannot take this pivot table, or None. Phoenix TVOG: rejected
+    ("The method or operation is not implemented") with a pivot whose field is grouped; a copy without
+    its pivot tables was accepted. Only the grouped field is treated as blocking until a Mind test
+    shows plain pivot tables fail too."""
+    if p.get("grouped_fields"):
+        return f"its field {', '.join(p['grouped_fields'][:3])} is grouped"
+    return None
+
+
+def pivot_tables(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
+    """STR-009: the workbook's pivot tables. ERROR when one has what Mind's converter cannot read (a
+    grouped field); WARNING for plain ones (Mind reads their cells as values, frozen: they do not
+    follow their source in a Mind loop). The Prep action turns them into formulas or values."""
+    pivots = []
+    for s in analysis["workbooks"][0].get("sheets", []):
+        for p in s.get("pivot_tables", []) or []:
+            pivots.append({"sheet": s["name"], "name": p["name"], "ref": p["ref"], "blocking": blocking_pivot(p)})
+    observed = {"pivots": pivots, "count": len(pivots), "blocking": sum(1 for p in pivots if p["blocking"])}
+    if not pivots:
+        return finding("PASS", "The workbook has no pivot table.", observed)
+    blocking = [p for p in pivots if p["blocking"]]
+    if blocking:
+        first = blocking[0]
+        return finding(
+            "ERROR",
+            f"{len(blocking)} of the {len(pivots)} pivot table(s) hold what Mind's converter cannot read: first {first['sheet']}!{first['ref']} ({first['name']}): {first['blocking']}. "
+            "Mind stopped on such a workbook with \"The method or operation is not implemented\" (Phoenix TVOG, 2026-10-18) and took it once the pivot tables were plain cells. "
+            "The Prep action 'Pivot tables' turns them into formulas over their source (values where formulas cannot give the same numbers).",
+            observed,
+            location={"sheet": first["sheet"], "cell": first["ref"].split(":")[0]},
+        )
+    first = pivots[0]
+    return finding(
+        "WARNING",
+        f"{len(pivots)} pivot table(s), first {first['sheet']}!{first['ref']} ({first['name']}). Mind imports their cells as values: they do not follow their source "
+        "in a Mind loop. Advanced > Prep actions > Pivot tables can turn them into formulas (they then do) or plain values.",
+        observed,
+        location={"sheet": first["sheet"], "cell": first["ref"].split(":")[0]},
+    )
