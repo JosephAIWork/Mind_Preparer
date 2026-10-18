@@ -45,6 +45,7 @@ from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, rang
 from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
 fast_xlsx.install()  # 1.11.4: the C XML parser, and the cached values kept from the formula load
+fast_xlsx.patch_openpyxl()  # 1.11.5: a grouped pivot field no longer stops the load
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.5
+
+**A workbook with a grouped pivot field could not be read** ("analysis failed: Nested.from_tree() missing 1
+required positional argument: 'node'", seen on Phoenix TVOG). openpyxl 3.1.5 declares a pivot cache's
+`<discretePr>` (the items of a grouped field) with a type that cannot read an element, so the load stopped
+before the first sheet. `app/fast_xlsx.patch_openpyxl` points it at openpyxl's own `Index` (`<x v=".."/>`);
+it is always on, also with `MINDREADY_FAST_XLSX=0`.
+
 ## 1.11.4
 
 **Big files: the time was never Excel's calculation; it was everything around it.** Measured on Palermo

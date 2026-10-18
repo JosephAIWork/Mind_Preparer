@@ -137,6 +137,21 @@ def install() -> str | None:
     return name or "defusedxml"
 
 
+def patch_openpyxl() -> None:
+    """Always on (also with MINDREADY_FAST_XLSX=0): openpyxl 3.1 declares a pivot cache field group's
+    `<discretePr>` as a sequence of NestedInteger, a descriptor that cannot read an element, so any
+    workbook with a grouped pivot field failed to load ("Nested.from_tree() missing 1 required
+    positional argument: 'node'"). Its items are `<x v="..."/>`, which openpyxl reads as pivot Index."""
+    try:
+        from openpyxl.pivot.cache import FieldGroup
+        from openpyxl.pivot.fields import Index
+    except ImportError:
+        return
+    desc = FieldGroup.__dict__.get("discretePr")
+    if desc is not None and getattr(desc.expected_type, "__name__", "") == "NestedInteger":
+        desc.expected_type = Index
+
+
 # --- the data_only view -------------------------------------------------------------------------
 class _Value:
     __slots__ = ("value",)
