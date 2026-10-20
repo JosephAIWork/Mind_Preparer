@@ -38,6 +38,7 @@ def main() -> int:
     ap.add_argument("--first", default=None)
     ap.add_argument("--skip-autofix", action="store_true")
     ap.add_argument("--ignore", default="")
+    ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant's advice (deterministic, for before/after comparisons)")
     a = ap.parse_args()
     B = f"http://127.0.0.1:{a.port}/api"
     wb = Path(a.workbook)
@@ -65,7 +66,7 @@ def main() -> int:
 
     if not a.skip_autofix:
         say("fix all issues: start")
-        r = requests.post(f"{B}/sessions/{sid}/auto-fix", json={"use_assistant": True, "keep_good_values": True}, timeout=300)
+        r = requests.post(f"{B}/sessions/{sid}/auto-fix", json={"use_assistant": not a.no_assistant, "keep_good_values": True}, timeout=300)
         if r.status_code != 200:
             say("auto-fix refused:", r.text[:300])
             chain["steps"]["fixAll"] = {"ok": False, "detail": r.text[:300]}

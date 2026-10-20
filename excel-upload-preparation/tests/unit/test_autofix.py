@@ -463,3 +463,25 @@ def test_a_dormant_ref_becomes_na_without_a_trip_to_prep(tmp_path):
     assert wb["Calc"]["B1"].value == "=IF(A1>0,10,NA())" and wb["Calc"]["B2"].value == "=ERROR.TYPE(#REF!)"
     after = _values(Path(res["output_path"]))
     assert after["Calc!B1"] == 10 and after["Calc!C1"] == 20 and after["Calc!B2"] == 4
+
+
+@needs_excel
+def test_scattered_error_constants_are_cleared_in_a_few_excel_calls(tmp_path):
+    def fill(wb, ws):
+        for r in range(1, 41):
+            for c in range(1, 21):
+                if (r * 7 + c * 3) % 4 == 0:
+                    ws.cell(r, c).value = "#N/A"      # an error typed as data: 1 cell in 4, scattered
+                else:
+                    ws.cell(r, c).value = r * c
+        ws["Z1"] = "=SUM(A1:T40)"                    # #N/A today; a number once the constants are cleared
+
+    src = _book(tmp_path, fill)
+    expected = sum(r * c for r in range(1, 41) for c in range(1, 21) if (r * 7 + c * 3) % 4 != 0)
+    res = run_autofix(src, tmp_path / "work")
+    assert res["status"] == "clean"
+    assert res["by_strategy"].get("error value cleared") == 200
+    assert res["counts"]["writes"] < 60  # 200 cells in a handful of multi-area writes, not one call each
+    after = _values(Path(res["output_path"]))
+    assert after["Calc!Z1"] == expected
+    assert after.get("Calc!C1") is None and after.get("Calc!A1") == 1  # C1 held #N/A, A1 a number

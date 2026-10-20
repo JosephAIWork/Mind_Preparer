@@ -380,6 +380,26 @@ class CellIndex:
         return bool(self.cells_in(si, r1, r2, c1, c2, limit=1, exclude=exclude))
 
 
+MULTI_AREA_CHARS = 250  # Excel refuses a Range address of more than 255 characters
+
+
+def _multi_area_batches(rects: list[tuple[int, int, int, int]]) -> list[list[tuple[int, int, int, int]]]:
+    """Rectangles in groups whose joined A1 address ("A1:B3,D5,...") fits one Range call."""
+    out: list[list[tuple[int, int, int, int]]] = []
+    batch: list[tuple[int, int, int, int]] = []
+    size = 0
+    for r in rects:
+        n = len(rect_a1(*r)) + 1
+        if batch and size + n > MULTI_AREA_CHARS:
+            out.append(batch)
+            batch, size = [], 0
+        batch.append(r)
+        size += n
+    if batch:
+        out.append(batch)
+    return out
+
+
 def rectangles(cells: Iterable[tuple[int, int]]) -> list[tuple[int, int, int, int]]:
     """Cover (row, col) cells with rectangles (r1, c1, r2, c2): runs along each
     row, then identical runs on consecutive rows stacked."""
@@ -1319,11 +1339,51 @@ class _Engine:
 
     # -- writing --
     def _write_plain(self, si: int, cells: list[tuple[int, int]], content: Any, formula: bool, on_written: Callable[[int], None] | None = None) -> list[tuple[int, int, str]]:
-        """Write one content into plain cells, a rectangle at a time. -> failures (row, col, message).
-        `on_written(n)` hears of every rectangle written (n cells), for progress."""
+        """Write one content into plain cells. -> failures (row, col, message). `on_written(n)` hears
+        of every rectangle written (n cells), for progress.
+        1.11.8: many rectangles go in ONE Excel call -- a multi-area range ("A1:B3,D5,...", at most
+        MULTI_AREA_CHARS characters), which Excel writes area by area exactly as one rectangle each
+        (a relative R1C1 formula adjusts per cell). Phoenix: 10,002 error constants cleared one Excel
+        call each took most of the fixer's 977 s of writing. A batch Excel refuses is written again
+        rectangle by rectangle (and a refused rectangle cell by cell), so a refusal is found and
+        blamed on its own cell as before."""
         sh = self.sheets[si]
         failures: list[tuple[int, int, str]] = []
-        for r1, c1, r2, c2 in rectangles(cells):
+        rects = rectangles(cells)
+        if len(rects) < 2:
+            return self._write_rects(si, rects, content, formula, on_written)
+        for batch in _multi_area_batches(rects):
+            if len(batch) == 1:
+                failures.extend(self._write_rects(si, batch, content, formula, on_written))
+                continue
+            address = ",".join(rect_a1(*r) for r in batch)
+            try:
+                def go_many() -> None:
+                    rng = sh.ws.Range(address)
+                    try:
+                        if formula:
+                            rng.FormulaR1C1 = content
+                        elif content == "":
+                            rng.ClearContents()
+                        else:
+                            rng.Value2 = content
+                    finally:
+                        rng = None
+
+                _retry(go_many)
+                self.counts["writes"] += 1
+                if on_written is not None:
+                    for r1, c1, r2, c2 in batch:
+                        on_written((r2 - r1 + 1) * (c2 - c1 + 1))
+            except Exception:
+                failures.extend(self._write_rects(si, batch, content, formula, on_written))
+        return failures
+
+    def _write_rects(self, si: int, rects: list[tuple[int, int, int, int]], content: Any, formula: bool, on_written: Callable[[int], None] | None = None) -> list[tuple[int, int, str]]:
+        """One content into plain cells, a rectangle at a time (a refused rectangle cell by cell)."""
+        sh = self.sheets[si]
+        failures: list[tuple[int, int, str]] = []
+        for r1, c1, r2, c2 in rects:
             if on_written is not None:
                 on_written((r2 - r1 + 1) * (c2 - c1 + 1))
             try:
@@ -1347,7 +1407,7 @@ class _Engine:
                     continue
                 for r in range(r1, r2 + 1):  # one cell refused: find which
                     for c in range(c1, c2 + 1):
-                        failures.extend(self._write_plain(si, [(r, c)], content, formula))
+                        failures.extend(self._write_rects(si, [(r, c, r, c)], content, formula))
         return failures
 
     def _write_unit(self, unit: Unit, content: Any, formula: bool) -> str | None:
@@ -1398,7 +1458,8 @@ class _Engine:
 
         for u in units:
             fix = u.fixes[u.tries]
-            if u.kind == "cell":
+            # 1.11.8: an error constant's fix (cleared, or 0) is a plain write of one cell too
+            if u.kind == "cell" or (u.kind == "const" and fix["kind"] == "value"):
                 slot = (u.key[0], fix["kind"] == "formula", repr(fix["content"]))  # repr: 0 and False are different contents
                 plain[slot].append(u)
                 contents[slot] = fix["content"]
@@ -1426,9 +1487,12 @@ class _Engine:
         if units:
             self.step(f"undoing {len(units):,} fix{'es' if len(units) != 1 else ''} that did not pass", None, force=True)
         plain: dict[tuple[int, str], list[tuple[int, int]]] = defaultdict(list)
+        consts: dict[tuple[int, str], list[Unit]] = defaultdict(list)
         for u in units:
             if u.kind == "cell":
                 plain[(u.key[0], u.old)].append((u.key[1], u.key[2]))
+            elif u.kind == "const" and isinstance(u.old, str) and u.old.startswith("#"):
+                consts[(u.key[0], u.old)].append(u)  # 1.11.8: the error typed back, many cells per Excel call
             else:
                 msg = self._write_unit(u, u.old, u.kind != "const")
                 if msg:
@@ -1437,6 +1501,13 @@ class _Engine:
         for (si, text), cells in plain.items():
             for r, c, m in self._write_plain(si, cells, text, True):
                 self.note(f"REVERT FAILED {self.sheets[si].name}!{a1(r, c)}: {m}")
+        for (si, text), group in consts.items():
+            failed = {(r, c): m for r, c, m in self._write_plain(si, [(u.key[1], u.key[2]) for u in group], text, True)}
+            for u in group:
+                m = failed.get((u.key[1], u.key[2]))
+                if m:
+                    u.notes.append(f"could not restore the original content ({m})")
+                    self.note(f"REVERT FAILED {self.sheets[si].name}!{a1(u.key[1], u.key[2])}: {m}")
         if count:
             self.counts["rolled_back"] += len(units)
         self.timings["write"] += time.time() - t
