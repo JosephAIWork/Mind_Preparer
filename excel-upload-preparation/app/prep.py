@@ -2214,7 +2214,7 @@ def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]]
     return [{**o, "in_style_table": True, "note": note} if o["op"] == "explicit_colors" else o for o in operations]
 
 
-def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None, defer_verify: bool = False, run: Any = None, verify: Any = None) -> dict[str, Any]:
+def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None, defer_verify: bool = False, run: Any = None, verify: Any = None, excel: Any = None) -> dict[str, Any]:
     """Apply approved operations to a fresh copy of `source_path`.
 
     `progress(stage, message, fraction, **facts)` (optional) is told every
@@ -2230,7 +2230,8 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     is already the fresh copy of `source_path` (made by make_immutable_copy, its hash in
     `run.source_sha256`) and open in `run.excel` as `run.wb`; `run.verify(path)` answers the opens-in-
     Excel check instead of a second Excel. An Excel failure is raised (the worker falls back to the
-    cold path) instead of falling back to openpyxl. `verify` alone: the check, for a cold start."""
+    cold path) instead of falling back to openpyxl. `verify` alone: the check, for a cold start.
+    `excel`: an Excel to write in (the worker's own, for a cold start), instead of a new session."""
     if not operations:
         return {"status": "NOT_APPLICABLE", "message": "No operations selected."}
     source_path = Path(source_path).resolve()
@@ -2254,7 +2255,7 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     elif prefer_excel and com_available():
         operations = _colors_in_the_style_table(copy_path, operations, warnings, progress)
         try:
-            applied, failed = _apply_with_excel(copy_path, operations, progress)
+            applied, failed = _apply_with_excel(copy_path, operations, progress) if excel is None else _apply_with_excel(copy_path, operations, progress, excel=excel)
             method = "excel_com"
         except Exception as exc:
             warnings.append(f"Excel COM apply failed ({str(exc)[:160]}); fell back to openpyxl.")

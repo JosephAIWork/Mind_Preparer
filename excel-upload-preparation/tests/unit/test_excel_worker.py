@@ -123,3 +123,78 @@ def test_recalculate_after_a_loop_version_is_made_ahead_and_matches(flagged_mode
     assert runs["1"] == runs["0"]
     perf = [json.loads(line) for line in (tmp_path / "perf_1.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(r["stage"] == "recalc_ahead_used" for r in perf)
+
+
+def test_a_job_that_waits_too_long_is_cancelled_and_never_runs(tmp_path):
+    import threading
+    import time as _time
+
+    w = excel_worker.ExcelWorker("t-queue", tmp_path / "apply")
+    try:
+        ran = []
+        threading.Thread(target=lambda: w._submit(lambda: _time.sleep(2.0)), daemon=True).start()
+        _time.sleep(0.2)
+        with pytest.raises(excel_worker.WorkerUnavailable):
+            w._submit(lambda: ran.append(1), queue_timeout=0.3)
+        _time.sleep(2.5)
+        assert ran == [] and w._submit(lambda: 7) == 7  # cancelled, never ran; the worker goes on
+    finally:
+        w.stop()
+
+
+def test_a_job_that_hangs_retires_the_worker(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setenv("MINDREADY_EXCEL_WORKER", "1")
+    w = excel_worker.worker_for("t-hang", tmp_path / "apply")
+    if w is None:
+        pytest.skip("no COM here")
+    with pytest.raises(excel_worker.WorkerUnavailable):
+        w._submit(lambda: _time.sleep(1.5), timeout=0.3)
+    assert w._stopped and excel_worker.WORKERS.get("t-hang") is not w
+    fresh = excel_worker.worker_for("t-hang", tmp_path / "apply")
+    assert fresh is not w and fresh._submit(lambda: 3) == 3
+
+
+@needs_excel
+def test_a_failed_warm_apply_falls_back_at_the_same_path(flagged_model_broken_xlsx, monkeypatch, tmp_path):
+    from app import prep
+
+    monkeypatch.setenv("MINDREADY_EXCEL_WORKER", "1")
+    monkeypatch.setenv("MINDREADY_PERF_LOG", str(tmp_path / "perf.jsonl"))
+    client = TestClient(server.app)
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    plan = {a["id"]: a for a in body["plan"]}
+    assert client.post(f"/api/sessions/{sid}/apply", json={"operations": plan["flag_spelling"]["operations"], "reanalyze": True}).status_code == 200
+    real = prep._apply_with_excel
+
+    def refuse_in_the_open_copy(copy_path, operations, progress=None, excel=None, wb=None):
+        if wb is not None:
+            raise prep.NotSavedError("refused in the open copy")  # not "Excel gone": a plain failure
+        return real(copy_path, operations, progress, excel=excel, wb=wb) if excel is not None else real(copy_path, operations, progress)
+
+    monkeypatch.setattr(prep, "_apply_with_excel", refuse_in_the_open_copy)
+    r2 = client.post(f"/api/sessions/{sid}/apply", json={"operations": plan["special_headers"]["operations"], "reanalyze": True})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["result"]["status"] == "APPLIED"
+    s = server.SESSIONS[sid]
+    name = Path(s.paths["ver-002"]).name
+    assert Path(s.paths["ver-003"]).relative_to(s.work_dir).as_posix() == f"apply/v2/{name}"
+    perf = [json.loads(line) for line in (tmp_path / "perf.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(r["stage"] == "excel_worker_fallback" for r in perf)
+
+
+@needs_excel
+def test_an_unused_recalculation_ahead_leaves_no_copy_behind(flagged_model_broken_xlsx, monkeypatch, tmp_path):
+    monkeypatch.setenv("MINDREADY_EXCEL_WORKER", "1")
+    client = TestClient(server.app)
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    plan = {a["id"]: a for a in body["plan"]}
+    s = server.SESSIONS[sid]
+    server._apply_and_version(s, plan["flag_spelling"]["operations"], "loop", "Mind loop", True)  # recalculated ahead
+    assert client.post(f"/api/sessions/{sid}/apply", json={"operations": plan["special_headers"]["operations"], "reanalyze": True}).status_code == 200
+    excel_worker.stop_all_workers()
+    leftovers = [p for p in (s.work_dir / "recalc").rglob("*") if p.is_file()] if (s.work_dir / "recalc").exists() else []
+    assert leftovers == []

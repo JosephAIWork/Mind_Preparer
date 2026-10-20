@@ -39,7 +39,8 @@ from .inventory import make_immutable_copy, next_copy_path
 from .perf import record as perf_record
 from .perf import stage as perf_stage
 
-JOB_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_JOB_TIMEOUT_S", "1800"))
+JOB_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_JOB_TIMEOUT_S", "1800"))  # once a job has started
+QUEUE_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_QUEUE_TIMEOUT_S", "1800"))  # waiting for its turn
 IDLE_S = float(os.environ.get("MINDREADY_EXCEL_IDLE_S", "900"))
 HOLD_MIN_FREE_MB = int(os.environ.get("MINDREADY_EXCEL_HOLD_MIN_FREE_MB", "3000"))
 
@@ -122,9 +123,10 @@ class ExcelWorker:
                     continue
                 if item is None:
                     break
-                fn, fut = item
+                fn, fut, started = item
                 if not fut.set_running_or_notify_cancel():
-                    continue
+                    continue  # cancelled while it waited: it never runs
+                started.set()
                 try:
                     fut.set_result(fn())
                 except BaseException as exc:  # noqa: BLE001 -- handed to the waiting caller
@@ -134,9 +136,11 @@ class ExcelWorker:
                     else:
                         fut.set_exception(exc)
                 finally:
-                    fn = fut = item = None
+                    fn = fut = item = started = None
                     gc.collect()
                     last = time.time()
+                if self._stopped and self._q.empty():
+                    break
         finally:
             self._drop()
             pythoncom.CoUninitialize()
@@ -147,8 +151,19 @@ class ExcelWorker:
             self._pid = excel_pid(self._excel)
         return self._excel
 
+    def _discard_recalc(self) -> None:
+        """A recalculation made ahead that nobody took: delete its copy, so the next Recalculate's
+        copy takes the path it always did."""
+        found, self._recalc = self._recalc, None
+        if found is not None:
+            try:
+                found[2].unlink()
+            except OSError:
+                pass
+
     def _drop(self) -> None:
         """Close what is held, delete its copy (so the next copy takes the same path), quit Excel."""
+        self._discard_recalc()
         held, self._held = self._held, None
         if held is not None:
             close_quietly(held.wb)
@@ -177,16 +192,41 @@ class ExcelWorker:
         gc.collect()
         perf_record("excel_worker_abandon", 0.0, session=self.sid)
 
-    def _submit(self, fn: Callable[[], Any], timeout: float | None = JOB_TIMEOUT_S) -> Any:
+    def _submit(self, fn: Callable[[], Any], timeout: float = JOB_TIMEOUT_S, queue_timeout: float = QUEUE_TIMEOUT_S, kill_on_timeout: bool = True) -> Any:
+        """Run `fn` on the worker thread and wait for it. Waiting for its turn and running are timed
+        apart: a job that never got its turn is cancelled (it will not run later); a job that runs
+        too long has its Excel killed -- only then, and only the running job's -- and the worker is
+        retired, so later requests go the old way at once instead of queueing behind it."""
         if self._stopped:
             raise WorkerUnavailable("the Excel worker is stopped")
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        self._q.put((fn, fut))
+        started = threading.Event()
+        self._q.put((fn, fut, started))
+        if not started.wait(queue_timeout) and fut.cancel():
+            raise WorkerUnavailable(f"the Excel worker was busy for {int(queue_timeout)} s")
         try:
             return fut.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
+            if not kill_on_timeout:
+                raise WorkerUnavailable(f"the Excel worker did not finish within {int(timeout)} s") from None
+            self._retire()
             kill_excel(self._pid)  # the hung call then fails on the worker thread, which drops everything
-            raise WorkerUnavailable(f"Excel did not answer within {int(timeout or 0)} s") from None
+            raise WorkerUnavailable(f"Excel did not answer within {int(timeout)} s") from None
+
+    def _retire(self) -> None:
+        """No more jobs for this worker: cancel what waits, and let worker_for make a new one."""
+        self._stopped = True
+        with _LOCK:
+            if WORKERS.get(self.sid) is self:
+                WORKERS.pop(self.sid, None)
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                item[1].cancel()
+        self._q.put(None)
 
     # --- jobs (run on the worker thread) ------------------------------------------------------
     def _job_preopen(self, version: Path) -> dict[str, Any]:
@@ -199,7 +239,7 @@ class ExcelWorker:
             return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
 
     def _preopen(self, version: Path) -> dict[str, Any]:
-        self._drop()
+        self._drop()  # also deletes a recalculation made ahead that nobody took
         with perf_stage("verify_opens", file=version.name, worker=True):
             try:
                 excel = self._ensure_excel()
@@ -240,22 +280,51 @@ class ExcelWorker:
             and not any(o["op"] == "explicit_colors" for o in operations)
         )
         if not warm:
-            self._drop()  # whatever is held is not this version's copy: delete it, then today's path
-            return apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, verify=verify)
+            # whatever is held is not this version's copy: delete it, then the old path -- in an
+            # Excel this worker started, so a hang can be killed
+            self._drop()
+            held = None
+            try:
+                excel = self._ensure_excel()
+            except Exception:
+                self._abandon()
+                excel = None  # apply_operations starts its own, as before
+            try:
+                return apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, verify=verify, excel=excel)
+            finally:
+                excel = None
+                self._drop()
+        self._discard_recalc()
         self._held = None
         if progress is not None:
             progress("apply_copy", "The copy was made and opened while the previous version was being analysed", None, done=0, total=len(operations))
         run = ExcelRun(self._excel, held.wb, held.copy_path, held.source_sha256, verify)
         held.wb = None
+        copy_path = held.copy_path
+        failed: str | None = None
+        gone = False
+        res: dict[str, Any] = {}
         try:
             res = apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, run=run)
+        except Exception as exc:  # the text only: the exception's frames hold COM proxies of this thread
+            failed = f"{type(exc).__name__}: {str(exc)[:240]}"
+            gone = excel_gone(exc)
         finally:
             run.wb = None
             run.excel = None
             run = held = None
-            excel, self._excel, self._pid = self._excel, None, None  # every write starts from a freshly opened copy
-            quit_excel(excel)
-            excel = None
+            if gone:
+                self._abandon()
+            else:
+                excel, self._excel, self._pid = self._excel, None, None  # every write starts from a freshly opened copy
+                quit_excel(excel)
+                excel = None
+        if failed is not None:
+            try:
+                copy_path.unlink()  # the old path makes this copy again, at this path
+            except OSError:
+                pass
+            raise WorkerUnavailable(f"the apply in the open copy failed ({failed})")
         return res
 
     def _job_recalc_ahead(self) -> None:
@@ -265,6 +334,9 @@ class ExcelWorker:
         would have put it."""
         from .recalc import recalculate_in
 
+        if self._held is not None and free_mb() < HOLD_MIN_FREE_MB:
+            self._drop()  # not now: Recalculate runs as before
+            return
         held, self._held = self._held, None
         if held is None:
             return
@@ -308,8 +380,7 @@ class ExcelWorker:
         except WorkerUnavailable as exc:
             return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
         if recalc_ahead and speculative_recalc() and info.get("opens") and not self._stopped:
-            fut: concurrent.futures.Future = concurrent.futures.Future()
-            self._q.put((self._job_recalc_ahead, fut))
+            self._q.put((self._job_recalc_ahead, concurrent.futures.Future(), threading.Event()))
         return info
 
     def take_recalc(self, version: Path) -> tuple[Path, dict[str, Any]] | None:
@@ -322,8 +393,7 @@ class ExcelWorker:
     def preopen_async(self, version: Path) -> None:
         if self._stopped:
             return
-        fut: concurrent.futures.Future = concurrent.futures.Future()
-        self._q.put((lambda: self._job_preopen(Path(version)), fut))
+        self._q.put((lambda: self._job_preopen(Path(version)), concurrent.futures.Future(), threading.Event()))
 
     def apply(self, source: Path, operations: list[dict[str, Any]], progress: Any = None, defer_verify: bool = False, recalc_ahead: bool = False) -> dict[str, Any]:
         """apply_operations on `source`, in the copy held open when it is this version's. The check
@@ -338,14 +408,21 @@ class ExcelWorker:
     def release(self) -> None:
         """Let go of the held workbook and of Excel (before another Excel user, or a Recalculate)."""
         try:
-            self._submit(self._drop, timeout=120)
+            self._submit(self._drop, timeout=300, queue_timeout=120, kill_on_timeout=False)
         except WorkerUnavailable:
-            pass
+            pass  # busy: the caller goes ahead (memory only); a busy job is never killed for this
 
     def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
+        while True:  # what waits never runs
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                item[1].cancel()
         self._q.put(None)
         self.thread.join(timeout=120)
 
