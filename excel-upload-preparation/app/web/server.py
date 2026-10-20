@@ -1474,7 +1474,7 @@ def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
         scan_s = sum(float(x.get("seconds") or 0) for x in s.scan.get("stages", []) if x.get("stage") != "convert") or None
     wb0 = s.result["workbook_analysis"]["workbooks"][0]
     blocking = sum(int(a.get("count") or 0) for a in s.plan if a.get("level") == "blocking" and a.get("default_on"))
-    return estimate_chain(mb, scan_s, len(wb0.get("formulas", [])), _stored_errors(s), blocking, loop)
+    return estimate_chain(mb, scan_s, len(wb0.get("formulas", [])), _stored_errors(s), blocking, loop, worker=excel_worker.enabled() and com_available())
 
 
 def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:

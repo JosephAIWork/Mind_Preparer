@@ -31,10 +31,12 @@ def _excel_session(mb: float) -> tuple[float, float]:
     return EXCEL_START_S + max(5.0, OPEN_S_PER_MB * mb), max(3.0, SAVE_S_PER_MB * mb)
 
 
-def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0, stored_errors: int | None = None, blocking_ops: int = 0, has_loop: bool = True) -> dict[str, Any]:
+def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0, stored_errors: int | None = None, blocking_ops: int = 0, has_loop: bool = True, worker: bool = False) -> dict[str, Any]:
     """-> {"steps": [{id, low_s, mid_s, high_s, why}], "total": {low_s, mid_s, high_s}, "caveat", "basis"}.
     `scan_s`: the last scan of this file (without the .xlsb conversion); `stored_errors`: formula cells
-    whose value Excel last stored is an error (None = not known)."""
+    whose value Excel last stored is an error (None = not known). `worker` (1.11.9): the session's
+    Excel worker opens each next copy while the version is analysed, so Prep rounds and the loop
+    wait for no Excel start, open or second check, and Recalculate after the loop is ready."""
     scan = float(scan_s) if scan_s and scan_s > 0 else max(30.0, FALLBACK_SCAN_S_PER_FORMULA * formula_count)
     open_s, save_s = _excel_session(file_mb)
     verify_s = open_s  # a second Excel opens the saved file
@@ -62,20 +64,20 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
     # Fix the formulas and the structure: one or two rounds of open, write, save, re-scan (the check
     # that the file opens runs alongside the re-scan)
     if blocking_ops:
-        one = open_s + WRITE_S_PER_OP * blocking_ops + save_s + max(scan, verify_s)
+        one = (0.0 if worker else open_s) + WRITE_S_PER_OP * blocking_ops + save_s + (scan if worker else max(scan, verify_s))
         steps.append({"id": "prepare", "low_s": one, "mid_s": 1.5 * one, "high_s": 2.5 * one, "why": f"{blocking_ops:,} planned change(s), usually one or two rounds"})
     else:
         steps.append({"id": "prepare", "low_s": 5.0, "mid_s": 5.0, "high_s": 2.0 * (open_s + save_s + scan), "why": "nothing planned now (the fixer may leave something)"})
 
     # Build the Mind loop: one open, write, save, re-scan
-    one = open_s + save_s + max(scan, verify_s)
+    one = (save_s + scan) if worker else open_s + save_s + max(scan, verify_s)
     if has_loop:
         steps.append({"id": "loop", "low_s": one, "mid_s": one, "high_s": 1.5 * one, "why": "one round through Excel"})
     else:
         steps.append({"id": "loop", "low_s": 0.0, "mid_s": 0.0, "high_s": 0.0, "why": "skipped: no loop to build"})
 
     # Recalculate: open, full rebuild (seconds), save, find the error cells
-    rc = open_s + 5.0 + save_s + 5.0
+    rc = 5.0 if worker and has_loop else open_s + 5.0 + save_s + 5.0
     steps.append({"id": "recalc", "low_s": rc, "mid_s": rc, "high_s": 1.5 * rc, "why": "one full recalculation in Excel"})
 
     for s in steps:
