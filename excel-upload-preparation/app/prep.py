@@ -1813,7 +1813,10 @@ def _op_target(o: dict[str, Any]) -> str:
     return f"{o['sheet']}!{where}" if where else str(o["sheet"])
 
 
-def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None) -> tuple[list[dict], list[dict]]:
+def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None, excel: Any = None, wb: Any = None) -> tuple[list[dict], list[dict]]:
+    """Write `operations` into `copy_path` through Excel and save it. `excel` / `wb` (1.11.9): an
+    Excel the caller owns, with `copy_path` already open in it (the per-session worker, which opened
+    the copy while the previous version was being analysed); the workbook is closed here as always."""
     applied: list[dict] = []
     failed: list[dict] = []
     # Every cell any operation writes. A multi-cell array formula (Ctrl+Shift+Enter)
@@ -1919,14 +1922,15 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             rng = None
         return {**o, "array": target}
 
-    def _run(excel: Any) -> None:
+    def _run(excel: Any, given: Any = None) -> None:
         wb = None
         try:
             ordered = _ordered(operations)
             total = len(ordered)
             if progress is not None:
-                progress("apply_write", "Opening the copy in Excel", 0.0, done=0, total=total)
-            wb = open_for_write(excel, copy_path)
+                progress("apply_write", "The copy is already open in Excel" if given is not None else "Opening the copy in Excel", 0.0, done=0, total=total)
+            wb = given if given is not None else open_for_write(excel, copy_path)
+            given = None
             # Manual calculation while writing: in automatic mode Excel recalculates every
             # dependent after each write, and 12,678 writes into a 70k-formula model ran for
             # hours. The mode is restored before the save, so the file keeps its own setting
@@ -2005,6 +2009,10 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             raise ValueError(f"unknown op {o['op']}")
         return record
 
+    if excel is not None:
+        _run(excel, wb)
+        wb = None
+        return applied, failed
     with excel_session() as excel:
         _run(excel)
     return applied, failed
@@ -2206,7 +2214,7 @@ def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]]
     return [{**o, "in_style_table": True, "note": note} if o["op"] == "explicit_colors" else o for o in operations]
 
 
-def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None, defer_verify: bool = False) -> dict[str, Any]:
+def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None, defer_verify: bool = False, run: Any = None, verify: Any = None) -> dict[str, Any]:
     """Apply approved operations to a fresh copy of `source_path`.
 
     `progress(stage, message, fraction, **facts)` (optional) is told every
@@ -2216,18 +2224,34 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     `defer_verify` (1.11.4): the check that the copy opens in Excel (a second Excel, ~40 s on a
     30 MB model) and the change log that records its answer are left to `res["finish"]()`, which
     the caller runs while it does something else (the web server: during the re-analysis). Until
-    then `verified_opens_in_excel` is None."""
+    then `verified_opens_in_excel` is None.
+
+    `run` (1.11.9, app/excel_worker.py): the per-session Excel worker's warm start -- `run.copy_path`
+    is already the fresh copy of `source_path` (made by make_immutable_copy, its hash in
+    `run.source_sha256`) and open in `run.excel` as `run.wb`; `run.verify(path)` answers the opens-in-
+    Excel check instead of a second Excel. An Excel failure is raised (the worker falls back to the
+    cold path) instead of falling back to openpyxl. `verify` alone: the check, for a cold start."""
     if not operations:
         return {"status": "NOT_APPLICABLE", "message": "No operations selected."}
     source_path = Path(source_path).resolve()
     if progress is not None:
         progress("apply_copy", "Copying the workbook (the source is never modified)", None, done=0, total=len(operations))
-    copy_path, source_sha256 = make_immutable_copy(source_path, work_dir)
+    if run is not None:
+        if any(o["op"] == "explicit_colors" for o in operations):
+            raise ValueError("explicit_colors edits the copy before Excel opens it: it cannot use a copy already open")
+        copy_path, source_sha256 = Path(run.copy_path), run.source_sha256
+    else:
+        copy_path, source_sha256 = make_immutable_copy(source_path, work_dir)
+    verify = verify or (run.verify if run is not None else None) or verify_opens_in_excel
     warnings: list[str] = []
     method = "openpyxl"
     applied: list[dict] = []
     failed: list[dict] = []
-    if prefer_excel and com_available():
+    if run is not None:
+        applied, failed = _apply_with_excel(copy_path, operations, progress, excel=run.excel, wb=run.wb)
+        run.wb = None
+        method = "excel_com"
+    elif prefer_excel and com_available():
         operations = _colors_in_the_style_table(copy_path, operations, warnings, progress)
         try:
             applied, failed = _apply_with_excel(copy_path, operations, progress)
@@ -2247,7 +2271,7 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     deferred = defer_verify and com_available()
     if progress is not None:
         progress("apply_verify", "The check that the copy opens in Excel runs alongside the re-analysis" if deferred else "Opening the copy in Excel to check it" if com_available() else "Excel is not available here: the copy is not verified", None, done=len(operations), total=len(operations))
-    verification = {"opens": None} if deferred or not com_available() else verify_opens_in_excel(copy_path)
+    verification = {"opens": None} if deferred or not com_available() else verify(copy_path)
     entry = {
         "rule_id": sorted({o["rule_id"] for o in operations}),
         "action": "prep_apply_operations",
@@ -2276,7 +2300,7 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     }
     if deferred:
         def finish() -> bool | None:
-            opens = verify_opens_in_excel(copy_path).get("opens")
+            opens = verify(copy_path).get("opens")
             entry["verified_opens_in_excel"] = res["verified_opens_in_excel"] = opens
             append_change_log(copy_path, entry)
             return opens

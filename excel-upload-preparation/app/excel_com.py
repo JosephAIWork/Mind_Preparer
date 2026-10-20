@@ -115,47 +115,129 @@ def com_available() -> bool:
     return True
 
 
-@contextlib.contextmanager
-def excel_session(mm_addin: bool = True) -> Iterator[Any]:
-    """A hidden Excel of its own. `mm_addin` (1.10.1): load the MM for Excel add-in into it when
-    the machine has one, so MM_ functions evaluate instead of showing #NAME?."""
-    import pythoncom
+def start_excel(mm_addin: bool = True) -> Any:
+    """A hidden Excel of its own, set up as every session needs it (on a thread that called
+    CoInitialize). `mm_addin` (1.10.1): load the MM for Excel add-in into it when the machine has
+    one, so MM_ functions evaluate instead of showing #NAME?."""
     import win32com.client
 
     from .perf import stage
 
+    with stage("excel_start", mm_addin=mm_addin):
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
+        excel.AskToUpdateLinks = False
+        try:
+            excel.EnableEvents = False
+        except Exception:
+            pass
+        if mm_addin:
+            load_mm_addin(excel)
+    return excel
+
+
+def quit_excel(excel: Any) -> None:
+    """Quit `excel`, every COM proxy collected first and after.
+
+    A proxy collected after Quit()/CoUninitialize() raises RPC_E_DISCONNECTED (0x80010108)
+    inside the garbage collector, which faulthandler reports as a "Windows fatal exception"
+    (harmless but alarming). Callers keep proxies inside an inner function scope and we
+    collect here."""
+    gc.collect()
+    try:
+        if excel is not None:
+            excel.Quit()
+    except Exception:
+        pass
+    excel = None
+    gc.collect()
+
+
+@contextlib.contextmanager
+def excel_session(mm_addin: bool = True) -> Iterator[Any]:
+    """A hidden Excel of its own for the duration of the block (start_excel / quit_excel)."""
+    import pythoncom
+
     pythoncom.CoInitialize()
     excel = None
     try:
-        with stage("excel_start", mm_addin=mm_addin):
-            excel = win32com.client.DispatchEx("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
-            excel.AskToUpdateLinks = False
-            try:
-                excel.EnableEvents = False
-            except Exception:
-                pass
-            if mm_addin:
-                load_mm_addin(excel)
+        excel = start_excel(mm_addin)
         yield excel
     finally:
-        # Release every COM proxy the caller created *before* Excel goes away:
-        # a proxy collected after Quit()/CoUninitialize() raises
-        # RPC_E_DISCONNECTED (0x80010108) inside the garbage collector, which
-        # faulthandler reports as a "Windows fatal exception" (harmless but
-        # alarming). Callers keep proxies inside an inner function scope and
-        # we collect here.
-        gc.collect()
-        try:
-            if excel is not None:
-                excel.Quit()
-        except Exception:
-            pass
+        quit_excel(excel)
         excel = None
         gc.collect()
         pythoncom.CoUninitialize()
+
+
+# 1.11.9 -- what the per-session Excel worker (app/excel_worker.py) needs to tell a dead or hung
+# Excel from a refused operation, and to stop one that hangs.
+EXCEL_GONE_HRESULTS = {
+    -2147417848,  # RPC_E_DISCONNECTED: the object invoked has disconnected from its clients
+    -2147023174,  # RPC_S_SERVER_UNAVAILABLE
+    -2147023170,  # RPC_S_CALL_FAILED
+    -2147417851,  # RPC_E_SERVERFAULT
+    -2146959355,  # CO_E_SERVER_EXEC_FAILURE
+}
+
+
+def excel_pid(excel: Any) -> int | None:
+    """The process id of an automation Excel (to stop it when it hangs or dies half-way)."""
+    try:
+        import win32process
+
+        return int(win32process.GetWindowThreadProcessId(int(excel.Hwnd))[1])
+    except Exception:
+        return None
+
+
+def kill_excel(pid: int | None) -> None:
+    if not pid:
+        return
+    try:
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, int(pid))  # PROCESS_TERMINATE
+        if handle:
+            ctypes.windll.kernel32.TerminateProcess(handle, 1)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def excel_gone(exc: BaseException) -> bool:
+    """True when `exc` says the Excel process is gone or unreachable (not that it refused a call)."""
+    code = getattr(exc, "hresult", None)
+    if code is None and getattr(exc, "args", None):
+        code = exc.args[0]
+    return code in EXCEL_GONE_HRESULTS
+
+
+def excel_alive(excel: Any) -> bool:
+    try:
+        _ = excel.Workbooks.Count
+        return True
+    except Exception:
+        return False
+
+
+def open_check(excel: Any, path: Path) -> tuple[dict[str, Any], Any]:
+    """Open `path` to change it, as an apply would, and answer as verify_opens_in_excel does.
+    -> (the answer, the open workbook or None). A file Excel opens read-only (a password to
+    modify) still opens: True, with no workbook to keep."""
+    try:
+        wb = open_for_write(excel, path)
+    except NotSavedError:
+        return {"available": True, "opens": True, "sheet_count": None, "error": None}, None
+    except Exception as exc:
+        return {"available": True, "opens": False, "sheet_count": None, "error": str(exc)[:300]}, None
+    try:
+        count = int(wb.Worksheets.Count)
+    except Exception:
+        count = None
+    return {"available": True, "opens": True, "sheet_count": count, "error": None}, wb
 
 
 def open_workbook(excel: Any, path: Path, read_only: bool = True) -> Any:

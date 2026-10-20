@@ -1,0 +1,324 @@
+"""One Excel per session, kept by a thread of its own (1.11.9).
+
+Before, every step of Do everything after Fix all issues started an Excel, opened the version (a
+minute on Phoenix, 179 MB), wrote, saved and quit, and a second Excel then opened the saved file
+read-only to check that it opens. Now:
+
+- When a version is saved, its check is made by opening a fresh copy of it -- the very copy the next
+  apply will write into, at the very path make_immutable_copy would give it -- in a freshly started
+  Excel. That runs while the server re-analyses the version (minutes on a big file), so it costs no
+  wall-clock time, and the workbook stays open ("held").
+- The next apply on that version writes into the held workbook: no Excel start, no open, no copy.
+- Anything else -- another version, an explicit_colors operation (it edits the copy before Excel
+  opens it), a workbook with data connections, little free memory, the idle timeout, a Recalculate
+  or any other Excel user -- closes the held workbook and deletes its copy first, so later paths and
+  results are exactly what they were.
+
+Every COM object of a session lives on its thread `excel-<session id>`: other threads hand it jobs
+through a queue and wait for plain results (COM proxies must stay on the thread that made them).
+When Excel dies or hangs (the wait has a timeout), the worker kills it, drops what it held and
+raises WorkerUnavailable; the server then does what it did before this module existed.
+MINDREADY_EXCEL_WORKER=0 turns it off.
+"""
+from __future__ import annotations
+
+import atexit
+import concurrent.futures
+import ctypes
+import gc
+import os
+import queue
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from .excel_com import _file_stamp, close_quietly, excel_alive, excel_gone, excel_pid, kill_excel, open_check, quit_excel, start_excel
+from .inventory import make_immutable_copy
+from .perf import record as perf_record
+from .perf import stage as perf_stage
+
+JOB_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_JOB_TIMEOUT_S", "1800"))
+IDLE_S = float(os.environ.get("MINDREADY_EXCEL_IDLE_S", "900"))
+HOLD_MIN_FREE_MB = int(os.environ.get("MINDREADY_EXCEL_HOLD_MIN_FREE_MB", "3000"))
+
+
+def enabled() -> bool:
+    return os.environ.get("MINDREADY_EXCEL_WORKER", "1").strip().lower() not in ("0", "off", "no", "false")
+
+
+class WorkerUnavailable(RuntimeError):
+    """The worker's Excel died, hung or failed: do it the way it was done before (a fresh Excel)."""
+
+
+def free_mb() -> int:
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    try:
+        m = MEMORYSTATUSEX()
+        m.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return int(m.ullAvailPhys // 2**20)
+    except Exception:
+        return 1 << 30
+
+
+@dataclass
+class _Held:
+    source: Path            # the version file the copy was made from
+    stamp: tuple[int, int]  # its (mtime_ns, size) then
+    copy_path: Path
+    source_sha256: str
+    wb: Any
+
+
+@dataclass
+class ExcelRun:
+    """What apply_operations needs to write into a workbook the worker already holds open."""
+    excel: Any
+    wb: Any
+    copy_path: Path
+    source_sha256: str
+    verify: Callable[[Path], dict[str, Any]] | None
+
+
+class ExcelWorker:
+    def __init__(self, sid: str, apply_dir: Path, idle_s: float = IDLE_S) -> None:
+        self.sid = sid
+        self.apply_dir = Path(apply_dir)
+        self.idle_s = idle_s
+        self._q: queue.Queue = queue.Queue()
+        self._stopped = False
+        # owned by the worker thread only
+        self._excel: Any = None
+        self._pid: int | None = None
+        self._held: _Held | None = None
+        self.thread = threading.Thread(target=self._loop, name=f"excel-{sid}", daemon=True)
+        self.thread.start()
+
+    # --- the thread ---------------------------------------------------------------------------
+    def _loop(self) -> None:
+        import pythoncom
+
+        pythoncom.CoInitialize()
+        last = time.time()
+        try:
+            while True:
+                try:
+                    item = self._q.get(timeout=1)
+                except queue.Empty:
+                    pythoncom.PumpWaitingMessages()
+                    if self._held is not None and time.time() - last > self.idle_s:
+                        self._drop()
+                    continue
+                if item is None:
+                    break
+                fn, fut = item
+                if not fut.set_running_or_notify_cancel():
+                    continue
+                try:
+                    fut.set_result(fn())
+                except BaseException as exc:  # noqa: BLE001 -- handed to the waiting caller
+                    if excel_gone(exc) or (self._excel is not None and not excel_alive(self._excel)):
+                        self._abandon()
+                        fut.set_exception(WorkerUnavailable(f"Excel stopped answering: {str(exc)[:200]}"))
+                    else:
+                        fut.set_exception(exc)
+                finally:
+                    fn = fut = item = None
+                    gc.collect()
+                    last = time.time()
+        finally:
+            self._drop()
+            pythoncom.CoUninitialize()
+
+    def _ensure_excel(self) -> Any:
+        if self._excel is None:
+            self._excel = start_excel()
+            self._pid = excel_pid(self._excel)
+        return self._excel
+
+    def _drop(self) -> None:
+        """Close what is held, delete its copy (so the next copy takes the same path), quit Excel."""
+        held, self._held = self._held, None
+        if held is not None:
+            close_quietly(held.wb)
+            held.wb = None
+            try:
+                held.copy_path.unlink()
+            except OSError:
+                pass
+        held = None
+        excel, self._excel, self._pid = self._excel, None, None
+        quit_excel(excel)
+        excel = None
+        gc.collect()
+
+    def _abandon(self) -> None:
+        """Excel died or hangs: kill it first, then forget everything."""
+        kill_excel(self._pid)
+        held, self._held = self._held, None
+        if held is not None:
+            held.wb = None
+            try:
+                held.copy_path.unlink()
+            except OSError:
+                pass
+        self._excel, self._pid = None, None
+        gc.collect()
+        perf_record("excel_worker_abandon", 0.0, session=self.sid)
+
+    def _submit(self, fn: Callable[[], Any], timeout: float | None = JOB_TIMEOUT_S) -> Any:
+        if self._stopped:
+            raise WorkerUnavailable("the Excel worker is stopped")
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        self._q.put((fn, fut))
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            kill_excel(self._pid)  # the hung call then fails on the worker thread, which drops everything
+            raise WorkerUnavailable(f"Excel did not answer within {int(timeout or 0)} s") from None
+
+    # --- jobs (run on the worker thread) ------------------------------------------------------
+    def _job_preopen(self, version: Path) -> dict[str, Any]:
+        try:
+            return self._preopen(Path(version))
+        except Exception as exc:
+            if excel_gone(exc):
+                raise
+            self._drop()  # nothing half-held: the next apply opens cold
+            return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
+
+    def _preopen(self, version: Path) -> dict[str, Any]:
+        self._drop()
+        with perf_stage("verify_opens", file=version.name, worker=True):
+            try:
+                excel = self._ensure_excel()
+            except Exception as exc:
+                self._abandon()
+                return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
+            stamp = _file_stamp(version)
+            copy_path, sha = make_immutable_copy(version, self.apply_dir)
+            info, wb = open_check(excel, copy_path)
+            keep = wb is not None and info.get("opens") is True
+            if keep:
+                try:
+                    keep = int(wb.Connections.Count) == 0  # a data connection could refresh while held
+                except Exception:
+                    keep = False
+            if keep and free_mb() < HOLD_MIN_FREE_MB:
+                keep = False
+            if keep:
+                self._held = _Held(version, stamp, copy_path, sha, wb)
+            else:
+                close_quietly(wb)
+                try:
+                    copy_path.unlink()
+                except OSError:
+                    pass
+                self._drop()
+            wb = excel = None
+        return info
+
+    def _job_apply(self, source: Path, operations: list[dict[str, Any]], progress: Any, verify: Callable[[Path], dict[str, Any]]) -> dict[str, Any]:
+        from .prep import apply_operations
+
+        held = self._held
+        warm = (
+            held is not None
+            and held.source == Path(source)
+            and held.stamp == _file_stamp(source)
+            and not any(o["op"] == "explicit_colors" for o in operations)
+        )
+        if not warm:
+            self._drop()  # whatever is held is not this version's copy: delete it, then today's path
+            return apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, verify=verify)
+        self._held = None
+        if progress is not None:
+            progress("apply_copy", "The copy was made and opened while the previous version was being analysed", None, done=0, total=len(operations))
+        run = ExcelRun(self._excel, held.wb, held.copy_path, held.source_sha256, verify)
+        held.wb = None
+        try:
+            res = apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, run=run)
+        finally:
+            run.wb = None
+            run.excel = None
+            run = held = None
+            excel, self._excel, self._pid = self._excel, None, None  # every write starts from a freshly opened copy
+            quit_excel(excel)
+            excel = None
+        return res
+
+    # --- public (any thread) ------------------------------------------------------------------
+    def preopen(self, version: Path) -> dict[str, Any]:
+        """The opens-in-Excel check of `version`, made by opening the next apply's copy of it."""
+        try:
+            return self._submit(lambda: self._job_preopen(Path(version)))
+        except WorkerUnavailable as exc:
+            return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
+
+    def preopen_async(self, version: Path) -> None:
+        if self._stopped:
+            return
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        self._q.put((lambda: self._job_preopen(Path(version)), fut))
+
+    def apply(self, source: Path, operations: list[dict[str, Any]], progress: Any = None, defer_verify: bool = False) -> dict[str, Any]:
+        """apply_operations on `source`, in the copy held open when it is this version's. The check
+        that the result opens is the open of the next copy (preopen). Not deferred: done before
+        returning, as apply_operations does."""
+        res = self._submit(lambda: self._job_apply(Path(source), operations, progress, self.preopen))
+        if not defer_verify and "finish" in res:
+            res.pop("finish")()  # a job of its own, after the apply job released its Excel
+        return res
+
+    def release(self) -> None:
+        """Let go of the held workbook and of Excel (before another Excel user, or a Recalculate)."""
+        try:
+            self._submit(self._drop, timeout=120)
+        except WorkerUnavailable:
+            pass
+
+    def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        self._q.put(None)
+        self.thread.join(timeout=120)
+
+
+WORKERS: dict[str, ExcelWorker] = {}
+_LOCK = threading.Lock()
+
+
+def worker_for(sid: str, apply_dir: Path) -> ExcelWorker | None:
+    from .excel_com import com_available
+
+    if not enabled() or not com_available():
+        return None
+    with _LOCK:
+        w = WORKERS.get(sid)
+        if w is None or w._stopped:
+            w = WORKERS[sid] = ExcelWorker(sid, apply_dir)
+        return w
+
+
+def release(sid: str) -> None:
+    w = WORKERS.get(sid)
+    if w is not None and not w._stopped:
+        w.release()
+
+
+def stop_all_workers() -> None:
+    with _LOCK:
+        workers = list(WORKERS.values())
+        WORKERS.clear()
+    for w in workers:
+        w.stop()
+
+
+atexit.register(stop_all_workers)

@@ -44,7 +44,9 @@ from app.change_apply import convert_output_format  # noqa: E402
 from app.chat_context import answer_question, recalculation_context  # noqa: E402
 from app.config import load_config  # noqa: E402
 from app.excel_com import com_available  # noqa: E402
+from app.perf import record as perf_record  # noqa: E402
 from app.perf import stage as perf_stage  # noqa: E402
+from app import excel_worker  # noqa: E402
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
@@ -424,7 +426,18 @@ def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer
     operation reported into `s.apply_status` (GET /status, field "apply")."""
     _apply_start(s, len(ops), reanalyze)
     try:
-        res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
+        # 1.11.9: through the session's Excel worker -- the copy is already open when the previous
+        # version's check opened it; Excel dead or hung -> the way it was done before
+        worker = excel_worker.worker_for(s.id, s.work_dir / "apply")
+        res = None
+        if worker is not None:
+            try:
+                res = worker.apply(s.current_path, ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
+            except excel_worker.WorkerUnavailable as exc:
+                perf_record("excel_worker_fallback", 0.0, session=s.id, error=str(exc)[:160])
+                _apply_start(s, len(ops), reanalyze)
+        if res is None:
+            res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
     except Exception as exc:
         _apply_finish(s, error=f"apply failed: {exc}")
         raise
@@ -546,6 +559,7 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
         progress = _progress_for(s)
         try:
             if needs_convert:
+                excel_worker.release(s.id)
                 path = _convert(s, path, progress)
             with perf_stage("scan", file=path.name):
                 out = _analyze(s, path, progress)
@@ -636,6 +650,7 @@ def health() -> dict[str, Any]:
     return {
         "version": app.version,
         "excel": com_available(),
+        "excel_worker": excel_worker.enabled() and com_available(),
         "assistant": llm_available(),
         "rules": len(engine().active_rules()),
         "frontend": DIST_DIR.is_dir(),
@@ -919,6 +934,7 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
 
     def worker() -> None:
         try:
+            excel_worker.release(s.id)  # 1.11.9: one Excel per session
             state["report"] = run_loop(cfg, progress)
             state["state"] = "done"
         except Exception as exc:  # the thread must never die silently
@@ -1122,6 +1138,7 @@ def recalc(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
     RECALCULATING.add(session_id)
     try:
+        excel_worker.release(s.id)  # 1.11.9: one Excel per session
         with perf_stage("recalc_endpoint", file=s.current_path.name):
             copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
             res = recalculate(copy_path)
@@ -1226,6 +1243,7 @@ def numbers_check(session_id: str) -> dict[str, Any]:
     if found is None:
         return {"ran": False, "clean": True, "version_id": s.current_version_id, "verdict": "This is the original workbook: nothing to compare.", "counts": {}}
     original, moves = found
+    excel_worker.release(s.id)
     return _numbers_public(compare_workbooks(original, s.current_path, moves), s.current_version_id)
 
 
@@ -1303,6 +1321,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
 
     def worker() -> None:
         try:
+            excel_worker.release(s.id)  # 1.11.9: one Excel per session -- the fixer has its own
             # On a prepared version: what did the preparation itself change? An error that was a
             # value in the original is Prep's doing -- the fixer must not put a 0 over it.
             regressions = None
@@ -1319,6 +1338,10 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             res["numbers_check"] = numbers
             if res.get("status") == "error":
                 raise RuntimeError(res.get("message") or "the automatic fixer failed")
+            if not res.get("output_path"):
+                ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
+                if ew is not None:
+                    ew.preopen_async(source)  # 1.11.9: nothing changed -- Prep's first round finds this version open
             if res.get("output_path"):
                 output = Path(res["output_path"])
                 left = int(res.get("errors_after") or 0)
@@ -1330,6 +1353,9 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
                 )
                 state["version"] = _add_version(s, output, "autofix", label, res.get("applied", []), verified, res["change_log_entry"]["output_sha256"])
                 rec = _recalc_out(s, res["recalc"], output, close_round=False)
+                ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
+                if ew is not None:
+                    ew.preopen_async(output)  # 1.11.9: Prep's first round finds it open
                 progress("reanalyze", "Checking the fixed version against the rules", None)
                 state["analysis"] = _run_scan(s, output)
                 rec["readiness"] = s.readiness()
@@ -1662,6 +1688,7 @@ def reports(session_id: str) -> dict[str, Any]:
     copy_path = Path(analysis["source"]["copy_path"])
     stem = s.current_path.stem
     out_dir = s.work_dir / "reports" / s.current_version_id
+    excel_worker.release(s.id)
     standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
     built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
     return {

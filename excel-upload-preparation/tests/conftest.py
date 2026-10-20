@@ -172,3 +172,13 @@ def macro_xlsm(tmp_path: Path) -> Path:
             dst.writestr(item, src.read(item.filename))
         dst.writestr("xl/vbaProject.bin", b"SYNTHETIC_NONFUNCTIONAL_VBA_PLACEHOLDER")
     return tmp_zip
+
+@pytest.fixture(autouse=True)
+def _stop_excel_workers():
+    """1.11.9: a test never leaves a session's Excel worker (and its Excel) behind."""
+    yield
+    try:
+        from app.excel_worker import stop_all_workers
+    except Exception:
+        return
+    stop_all_workers()
