@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.11.8
+
+**Fix all issues writes in bulk.** The fixer wrote every rectangle of cells in its own Excel call, and every
+error constant (an error typed as data; Phoenix has 10,002) in its own call. It now joins rectangles into
+multi-area ranges ("A1:B3,D5,...", up to 250 characters) and writes each group in one call; Excel writes a
+multi-area range area by area exactly like one rectangle each (a relative R1C1 formula adjusts per cell). A
+group Excel refuses is written again rectangle by rectangle, then cell by cell, so a refused cell is blamed
+as before. Error constants join the plain cells of their sheet and content, and undoing writes them back in
+bulk too.
+
+Phoenix TVOG, "Do everything" from the original .xlsb (two sheets skipped, assistant off), before and after
+on the same machine: the fixer's own work 431 s -> 193 s, the whole chain 2,552 s -> 2,241 s. The two final
+workbooks were compared cell by cell (`scripts/compare_final_workbooks.py`): all 1,210,552 cells have the
+same formula or content; the one stored value that differs is `Runs!B45 = NOW()`. `night_chain.py
+--no-assistant` makes such runs deterministic. One Excel per session (the next speed-up) is planned in
+`docs/PLAN_EXCEL_SESSION.md`.
+
 ## 1.11.7
 
 **Pivot tables: a rule (STR-009), a Prep action and a setting.** Mind's converter stopped on Phoenix TVOG
