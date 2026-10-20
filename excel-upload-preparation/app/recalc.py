@@ -180,14 +180,15 @@ def _error_cells(sheet: Any, used_range: Any) -> list[tuple[int, int, str, str]]
     return found
 
 
-def _scan(excel, copy_path: Path, save: bool = True) -> dict[str, Any]:
+def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str, Any]:
     """Open, fully rebuild, save (unless `save` is False), and scan every used range for error values.
     Every COM proxy lives inside this function so it is released before the
-    session quits Excel."""
+    session quits Excel. `wb` (1.11.9): `copy_path` already open in `excel` (the session's Excel
+    worker opened it); it is closed here as always."""
     mmforexcel_loaded = _mmforexcel_loaded(excel)
-    wb = None
     try:
-        wb = open_for_write(excel, copy_path)
+        if wb is None:
+            wb = open_for_write(excel, copy_path)
         with stage("recalc_full_rebuild", file=copy_path.name):
             excel.CalculateFullRebuild()
         if save:
@@ -410,6 +411,14 @@ def group_errors(formula_errors: list[dict[str, Any]], addin_gap_errors: list[di
             g["cause"] += f" -- array formula {', '.join(arrays[:4])}{' ...' if len(arrays) > 4 else ''} (Ctrl+Shift+Enter; it can only be changed as a whole)"
         out.append({"id": f"g{i + 1}", **g, "count": len(g["cells"])})
     return out
+
+
+def recalculate_in(excel: Any, copy_path: Path, wb: Any = None) -> dict[str, Any]:
+    """recalculate() in an Excel the caller owns, `copy_path` possibly already open in it as `wb`
+    (1.11.9: the session's Excel worker, ahead of the Recalculate step). Errors are raised."""
+    copy_path = Path(copy_path).resolve()
+    with stage("recalculate", file=copy_path.name, worker=True):
+        return _scan(excel, copy_path, save=True, wb=wb)
 
 
 def recalculate(copy_path: Path, save: bool = True) -> dict[str, Any]:

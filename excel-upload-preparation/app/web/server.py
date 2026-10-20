@@ -421,7 +421,7 @@ def _apply_snapshot(s: Session) -> dict[str, Any] | None:
     return st
 
 
-def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer_verify: bool = False) -> dict[str, Any]:
+def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer_verify: bool = False, source: str | None = None) -> dict[str, Any]:
     """apply_operations on the current version, every stage and every written
     operation reported into `s.apply_status` (GET /status, field "apply")."""
     _apply_start(s, len(ops), reanalyze)
@@ -432,7 +432,7 @@ def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer
         res = None
         if worker is not None:
             try:
-                res = worker.apply(s.current_path, ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
+                res = worker.apply(s.current_path, ops, progress=_apply_progress_for(s), defer_verify=defer_verify, recalc_ahead=source == "loop")
             except excel_worker.WorkerUnavailable as exc:
                 perf_record("excel_worker_fallback", 0.0, session=s.id, error=str(exc)[:160])
                 _apply_start(s, len(ops), reanalyze)
@@ -779,7 +779,7 @@ def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: 
     with perf_stage("apply_operations", file=s.current_path.name, operations=len(ops), source=source):
         # 1.11.4: with a re-analysis to run, the check that the new file opens in Excel (a second
         # Excel, ~40 s on a 30 MB model) runs alongside it instead of before it
-        res = _tracked_apply(s, ops, reanalyze, defer_verify=reanalyze_wanted)
+        res = _tracked_apply(s, ops, reanalyze, defer_verify=reanalyze_wanted, source=source)
     output = Path(res["output_path"])
     finish = res.pop("finish", None)
     checker: threading.Thread | None = None
@@ -1138,10 +1138,18 @@ def recalc(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
     RECALCULATING.add(session_id)
     try:
-        excel_worker.release(s.id)  # 1.11.9: one Excel per session
         with perf_stage("recalc_endpoint", file=s.current_path.name):
-            copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
-            res = recalculate(copy_path)
+            # 1.11.9: after a Mind loop the session's Excel worker recalculated this version while it
+            # was being analysed; otherwise (or when that did not happen) as before, in its own Excel
+            ew = excel_worker.WORKERS.get(s.id)
+            ahead = ew.take_recalc(s.current_path) if ew is not None and not ew._stopped else None
+            excel_worker.release(s.id)  # one Excel per session
+            if ahead is not None:
+                copy_path, res = ahead
+                perf_record("recalc_ahead_used", 0.0, file=s.current_path.name)
+            else:
+                copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
+                res = recalculate(copy_path)
             with perf_stage("recalc_out", file=s.current_path.name):
                 return _recalc_out(s, res, copy_path)
     finally:

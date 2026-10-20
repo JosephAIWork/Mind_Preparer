@@ -35,13 +35,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .excel_com import _file_stamp, close_quietly, excel_alive, excel_gone, excel_pid, kill_excel, open_check, quit_excel, start_excel
-from .inventory import make_immutable_copy
+from .inventory import make_immutable_copy, next_copy_path
 from .perf import record as perf_record
 from .perf import stage as perf_stage
 
 JOB_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_JOB_TIMEOUT_S", "1800"))
 IDLE_S = float(os.environ.get("MINDREADY_EXCEL_IDLE_S", "900"))
 HOLD_MIN_FREE_MB = int(os.environ.get("MINDREADY_EXCEL_HOLD_MIN_FREE_MB", "3000"))
+
+
+def speculative_recalc() -> bool:
+    return os.environ.get("MINDREADY_SPECULATIVE_RECALC", "1").strip().lower() not in ("0", "off", "no", "false")
 
 
 def enabled() -> bool:
@@ -97,6 +101,7 @@ class ExcelWorker:
         self._excel: Any = None
         self._pid: int | None = None
         self._held: _Held | None = None
+        self._recalc: tuple[Path, tuple[int, int], Path, dict[str, Any]] | None = None  # (version, stamp, copy, result)
         self.thread = threading.Thread(target=self._loop, name=f"excel-{sid}", daemon=True)
         self.thread.start()
 
@@ -253,13 +258,66 @@ class ExcelWorker:
             excel = None
         return res
 
-    # --- public (any thread) ------------------------------------------------------------------
-    def preopen(self, version: Path) -> dict[str, Any]:
-        """The opens-in-Excel check of `version`, made by opening the next apply's copy of it."""
+    def _job_recalc_ahead(self) -> None:
+        """After a Mind loop version, Do everything recalculates next: do it now, on the copy held open
+        -- what POST /recalculate does (a full rebuild in a fresh Excel with the add-in, saved, every
+        error cell read), on a byte-identical copy, earlier. The copy then moves to where Recalculate
+        would have put it."""
+        from .recalc import recalculate_in
+
+        held, self._held = self._held, None
+        if held is None:
+            return
         try:
-            return self._submit(lambda: self._job_preopen(Path(version)))
+            res = recalculate_in(self._excel, held.copy_path, held.wb)
+            held.wb = None
+            target = next_copy_path(self.apply_dir.parent / "recalc", held.copy_path.name)
+            held.copy_path.replace(target)
+            self._recalc = (held.source, held.stamp, target, res)
+        except Exception as exc:
+            held.wb = None
+            try:
+                held.copy_path.unlink()
+            except OSError:
+                pass
+            self._recalc = None
+            if excel_gone(exc):
+                raise
+        finally:
+            held = None
+            excel, self._excel, self._pid = self._excel, None, None
+            quit_excel(excel)
+            excel = None
+
+    def _job_take_recalc(self, version: Path) -> tuple[Path, dict[str, Any]] | None:
+        found, self._recalc = self._recalc, None
+        if found is None:
+            return None
+        source, stamp, path, res = found
+        if source == Path(version) and stamp == _file_stamp(version) and path.is_file():
+            return path, res
+        return None
+
+    # --- public (any thread) ------------------------------------------------------------------
+    def preopen(self, version: Path, recalc_ahead: bool = False) -> dict[str, Any]:
+        """The opens-in-Excel check of `version`, made by opening the next apply's copy of it.
+        `recalc_ahead`: a Mind loop version -- recalculate the held copy right after (in the queue,
+        before any later request), for the Recalculate step that follows."""
+        try:
+            info = self._submit(lambda: self._job_preopen(Path(version)))
         except WorkerUnavailable as exc:
             return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
+        if recalc_ahead and speculative_recalc() and info.get("opens") and not self._stopped:
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+            self._q.put((self._job_recalc_ahead, fut))
+        return info
+
+    def take_recalc(self, version: Path) -> tuple[Path, dict[str, Any]] | None:
+        """The recalculation of `version` made ahead (waits for it if it is still running), or None."""
+        try:
+            return self._submit(lambda: self._job_take_recalc(Path(version)))
+        except WorkerUnavailable:
+            return None
 
     def preopen_async(self, version: Path) -> None:
         if self._stopped:
@@ -267,11 +325,12 @@ class ExcelWorker:
         fut: concurrent.futures.Future = concurrent.futures.Future()
         self._q.put((lambda: self._job_preopen(Path(version)), fut))
 
-    def apply(self, source: Path, operations: list[dict[str, Any]], progress: Any = None, defer_verify: bool = False) -> dict[str, Any]:
+    def apply(self, source: Path, operations: list[dict[str, Any]], progress: Any = None, defer_verify: bool = False, recalc_ahead: bool = False) -> dict[str, Any]:
         """apply_operations on `source`, in the copy held open when it is this version's. The check
         that the result opens is the open of the next copy (preopen). Not deferred: done before
-        returning, as apply_operations does."""
-        res = self._submit(lambda: self._job_apply(Path(source), operations, progress, self.preopen))
+        returning, as apply_operations does. `recalc_ahead`: the result is a Mind loop version."""
+        verify = (lambda path: self.preopen(path, recalc_ahead=True)) if recalc_ahead else self.preopen
+        res = self._submit(lambda: self._job_apply(Path(source), operations, progress, verify))
         if not defer_verify and "finish" in res:
             res.pop("finish")()  # a job of its own, after the apply job released its Excel
         return res

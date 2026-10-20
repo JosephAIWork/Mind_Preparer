@@ -98,3 +98,28 @@ def test_a_dead_excel_falls_back_to_the_old_path(flagged_model_broken_xlsx, monk
     assert r2.json()["result"]["status"] == "APPLIED" and r2.json()["version"]["id"] == "ver-003"
     perf = [json.loads(line) for line in (tmp_path / "perf.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(r["stage"] == "excel_worker_fallback" for r in perf)
+
+
+@needs_excel
+def test_recalculate_after_a_loop_version_is_made_ahead_and_matches(flagged_model_broken_xlsx, monkeypatch, tmp_path):
+    runs = {}
+    for flag in ("0", "1"):
+        monkeypatch.setenv("MINDREADY_EXCEL_WORKER", flag)
+        monkeypatch.setenv("MINDREADY_PERF_LOG", str(tmp_path / f"perf_{flag}.jsonl"))
+        client = TestClient(server.app)
+        body = _upload(client, flagged_model_broken_xlsx)
+        sid = body["sessionId"]
+        plan = {a["id"]: a for a in body["plan"]}
+        s = server.SESSIONS[sid]
+        out = server._apply_and_version(s, plan["flag_spelling"]["operations"], "loop", "Mind loop", True)  # a loop version
+        rc = client.post(f"/api/sessions/{sid}/recalculate").json()
+        runs[flag] = {
+            "label": out["version"]["label"].split(" — ", 1)[-1],
+            "recalc": (rc.get("status"), rc.get("formula_errors"), rc.get("mmforexcel_loaded")),
+            "recalc_path": str(Path(s.recalc_path).relative_to(s.work_dir)),
+            "cells": _cells(Path(s.recalc_path)),
+        }
+        excel_worker.stop_all_workers()
+    assert runs["1"] == runs["0"]
+    perf = [json.loads(line) for line in (tmp_path / "perf_1.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(r["stage"] == "recalc_ahead_used" for r in perf)

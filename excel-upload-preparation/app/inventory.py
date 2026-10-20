@@ -200,23 +200,28 @@ def make_immutable_copy(source_path: Path, work_dir: Path) -> tuple[Path, str]:
     if not source_path.is_file():
         raise FileNotFoundError(source_path)
     source_sha256 = sha256_of(source_path)
+    copy_path = next_copy_path(work_dir, source_path.name)
+    shutil.copy2(source_path, copy_path)
+    return copy_path, source_sha256
+
+
+def next_copy_path(work_dir: Path, name: str) -> Path:
+    """Where the next copy named `name` goes in `work_dir`: work_dir/name, else the first free
+    work_dir/vN/name. The source may itself be an earlier output living in `work_dir` (the UI
+    re-applies changes to the file it just produced): never copy a file onto itself, and never
+    overwrite a previous output -- use a fresh versioned sub-folder instead."""
+    work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
-    copy_path = work_dir / source_path.name
-    # The source may itself be an earlier output living in `work_dir` (the UI
-    # re-applies changes to the file it just produced): never copy a file onto
-    # itself, and never overwrite a previous output -- use a fresh versioned
-    # sub-folder instead.
+    copy_path = work_dir / name
     if copy_path.exists():
         n = 2
         while True:
-            candidate = work_dir / f"v{n}" / source_path.name
+            candidate = work_dir / f"v{n}" / name
             if not candidate.exists():
                 candidate.parent.mkdir(parents=True, exist_ok=True)
-                copy_path = candidate
-                break
+                return candidate
             n += 1
-    shutil.copy2(source_path, copy_path)
-    return copy_path, source_sha256
+    return copy_path
 
 
 def open_cached(analysis: dict[str, Any], workbook_index: int = 0):
