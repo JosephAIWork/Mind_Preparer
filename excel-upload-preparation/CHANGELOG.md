@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.11.9
+
+**One Excel per session.** After Fix all issues, each Prep round, the Mind loop and Recalculate used to start
+an Excel, open the version (about a minute on Phoenix, 179 MB), write, save and quit -- and a second Excel then
+opened the saved file to check that it opens. Now a thread per session (`app/excel_worker.py`) owns that
+session's Excel:
+
+- the check that a new version opens is made by opening a fresh copy of it -- the copy the next step writes
+  into, at the same path -- while the server re-analyses the version, and that copy stays open;
+- the next Prep round or loop apply writes into it: no Excel start, no open, no copy, no second Excel;
+- after a Mind loop version, the worker also recalculates the open copy right away (the same full rebuild,
+  save and error read as Recalculate), so the Recalculate step finds its result ready;
+- anything else -- another version, an explicit_colors operation, data connections, low memory, the idle
+  timeout, the numbers check, reports, the Mind run, a Recalculate it did not prepare -- drops the held copy
+  first, so paths and results are unchanged; a dead or hung Excel is killed and the request falls back to
+  the old path. `MINDREADY_EXCEL_WORKER=0` turns it off, `MINDREADY_SPECULATIVE_RECALC=0` only the early
+  recalculation.
+
+Phoenix TVOG, Do everything from the original .xlsb (two sheets skipped, assistant off), same machine, with
+the 1.11.8 bulk writes in both: Prep apply 104 s -> 59 s, loop apply 106 s -> 52 s, Recalculate 125 s -> 12 s.
+But the early opens run alongside the re-analysis, and on this laptop they slow it (scans 288 / 374 / 369 s ->
+396 / 428 / 396 s), so the time after Fix all issues fell only from 1,099 s to 971 s (one run each). The final
+workbook is identical to the old path's, cell by cell (1,210,552 cells; only `Runs!B45 = NOW()` differs), and so
+are the steps, versions and labels. An adversarial review (19 findings, 16 confirmed) led to: timeouts counted
+from a job's start, a job that times out in the queue cancelled, only the running job's Excel ever killed (and
+the worker then retired), release() never killing, a failed warm apply falling back at the same path.
+
 ## 1.11.8
 
 **Fix all issues writes in bulk.** The fixer wrote every rectangle of cells in its own Excel call, and every
