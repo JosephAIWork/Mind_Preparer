@@ -122,3 +122,113 @@ def test_prep_turns_a_plain_pivot_into_formulas_and_a_grouped_one_into_values(tm
     assert wb["Pivots"]["C4"].value.startswith("=SUMIFS(Data!$C$2:$C$9,Data!$A$2:$A$9,") and wb["Pivots"]["C6"].value == "=SUM(Data!$C$2:$C$9)"
     values = openpyxl.load_workbook(res["output_path"], data_only=True)["Pivots"]
     assert (values["C4"].value, values["C5"].value, values["C6"].value) == (10, 26, 36)
+
+
+def test_getpivotdata_anywhere_keeps_every_pivot_as_a_pivot():
+    analysis = {"workbooks": [{"sheets": [{"name": "Pivot", "pivot_tables": [{"name": "PT1", "ref": "A3:C9", "grouped_fields": ["Age"]}]}],
+                               "formulas": [{"sheet": "Summary", "cell": "C5", "formula": '=GETPIVOTDATA("Sum of BEL",Pivot!$A$3,"LoB","Motor")'}]}]}
+    ops, skipped = plan_pivot_tables(analysis, {}, "blocking")
+    assert ops == [] and "GETPIVOTDATA on Summary" in skipped[0] and "#REF!" in skipped[0]
+    assert "Mind cannot read it" in skipped[0]  # a grouped pivot: the user is told it still blocks Mind
+    # no GETPIVOTDATA: the grouped pivot is converted as before
+    analysis["workbooks"][0]["formulas"] = [{"sheet": "Summary", "cell": "C5", "formula": "=Pivot!B4"}]
+    ops, _ = plan_pivot_tables(analysis, {}, "blocking")
+    assert [o["pivot"] for o in ops] == ["PT1"]
+
+
+def test_criterion_treats_only_plain_digits_as_a_number():
+    from app.pivots import _criterion
+
+    assert _criterion("1.5") == "1.5" and _criterion("-2e3") == "-2e3"
+    assert _criterion("1_000") == '"=1_000"' and _criterion("nan") == '"=nan"' and _criterion("inf") == '"=inf"'
+
+
+def test_restore_writes_an_error_back_as_the_error():
+    from app.pivots import _restore
+
+    class Cell:
+        def __init__(self):
+            self.Formula = self.Value2 = None
+
+    cells: dict = {}
+
+    class Sheet:
+        def Cells(self, r, c):
+            return cells.setdefault((r, c), Cell())
+
+    _restore(Sheet(), [(1, 1), (1, 2)], {(1, 1): -2146826246, (1, 2): 3.0})
+    assert cells[(1, 1)].Formula == "#N/A" and cells[(1, 1)].Value2 is None
+    assert cells[(1, 2)].Value2 == 3.0
+
+
+def test_unprotect_runs_before_the_pivots_and_titles_follow_column_and_repeated_row_inserts():
+    from app.prep import _ordered
+
+    ops = [
+        {"op": "pivot_to_values", "sheet": "S", "pivot": "PT1", "cell": "A1"},
+        {"op": "unprotect_sheet", "sheet": "S"},
+        {"op": "insert_row", "sheet": "S", "row": 6},
+        {"op": "set_value", "sheet": "S", "cell": "D6", "after": "#T", "after_inserts": True, "insert_at": 6},
+        {"op": "insert_column", "sheet": "S", "column": "B"},  # the assistant's: left of the title
+        {"op": "insert_row", "sheet": "S", "row": 6},          # the assistant's: the same row again
+        {"op": "set_value", "sheet": "T", "cell": "D6", "after": "#U", "after_inserts": True, "insert_at": 6},
+    ]
+    ordered = _ordered(ops)
+    assert [o["op"] for o in ordered[:2]] == ["unprotect_sheet", "pivot_to_values"]
+    cells = {o["after"]: o["cell"] for o in ordered if o["op"] == "set_value"}
+    assert cells["#T"] == "E7"  # two blank rows at 6 and 7, the grid at 8; one column right
+    assert cells["#U"] == "D6"  # another sheet: untouched
+
+
+@needs_excel
+def test_convert_keeps_empty_cells_empty_the_users_formulas_and_refuses_hidden_items(tmp_path):
+    from app.excel_com import close_quietly, excel_session
+    from app.pivots import convert
+
+    with excel_session(mm_addin=False) as excel:
+        wb = excel.Workbooks.Add()
+        try:
+            data = wb.Worksheets(1)
+            data.Name = "Data"
+            rows = [("LoB", "Year", "Run", "Amount"), ("Motor", 2024, "Base", 1), ("Motor", 2025, "Base", 2), ("Home", 2024, "Base", 3),
+                    ("Home", 2024, "Shock", 0)]
+            data.Range(data.Cells(1, 1), data.Cells(len(rows), 4)).Value2 = rows
+            ws = wb.Worksheets.Add()
+            ws.Name = "Pivots"
+            src = f"Data!R1C1:R{len(rows)}C4"
+            pt = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("A4"), "Sparse")
+            pt.PivotFields("LoB").Orientation = 1
+            pt.PivotFields("Year").Orientation = 2  # columns: Home has no 2025
+            pt.PivotFields("Run").Orientation = 3   # a report filter in A2:B2
+            pt.AddDataField(pt.PivotFields("Amount"))
+            ws.Range("D2").Formula = "=Data!D2*2"   # the user's own cell beside the filter
+            hidden = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("K4"), "Hidden")
+            hidden.PivotFields("Run").Orientation = 1
+            hidden.AddDataField(hidden.PivotFields("Amount"))
+            hidden.PivotFields("Run").PivotItems("Shock").Visible = False  # adds 0 today: would match by chance
+            two = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("P4"), "TwoValues")
+            two.PivotFields("LoB").Orientation = 1
+            two.AddDataField(two.PivotFields("Amount"), "Sum A", -4157)
+            two.AddDataField(two.PivotFields("Year"), "Max Y", -4136)  # a "Values" field among the columns
+            sliced = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("U4"), "Sliced")
+            sliced.PivotFields("LoB").Orientation = 1
+            sliced.AddDataField(sliced.PivotFields("Amount"))
+            slicer = wb.SlicerCaches.Add2(sliced, "Run")  # Run is not in the layout: only the slicer filters it
+            slicer.Slicers.Add(ws, Name="RunSlicer", Caption="Run", Top=10, Left=600, Width=100, Height=100)
+            slicer.SlicerItems("Shock").Selected = False
+            excel.Calculate()
+            body = pt.DataBodyRange
+            empty = [(int(c.Row), int(c.Column)) for c in body if c.Value2 is None]
+            assert empty and excel.Intersect(ws.Range("D2"), pt.TableRange2) is not None  # inside the rectangle, not the pivot
+            done = convert(excel, wb, ws, "Sparse", "formulas")
+            assert done["to"] == "formulas", done
+            assert all(not ws.Cells(r, c).HasFormula and ws.Cells(r, c).Value2 is None for r, c in empty)
+            assert ws.Range("D2").Formula == "=Data!D2*2"
+            done = convert(excel, wb, ws, "Hidden", "formulas")
+            assert done["to"] == "values" and "hidden items" in done["why_values"]
+            assert convert(excel, wb, ws, "TwoValues", "formulas")["to"] == "formulas"
+            done = convert(excel, wb, ws, "Sliced", "formulas")
+            assert done["to"] == "values" and "Run has hidden items" in done["why_values"]
+        finally:
+            wb.Saved = True
+            close_quietly(wb)

@@ -15,10 +15,14 @@ values, and the reason is reported. Labels are always plain cells.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 XL_PASTE_VALUES = -4163
 XL_PASTE_FORMATS = -4122
+XL_PASTE_COMMENTS = -4144
+XL_PASTE_VALIDATION = 6
+XL_CELL_TYPE_FORMULAS = -4123  # Range.SpecialCells
 XL_DATABASE = 1  # PivotCache.SourceType: a worksheet range
 XL_NO_ADDITIONAL_CALCULATION = -4143
 # PivotCell.PivotCellType
@@ -28,7 +32,11 @@ FUNCTIONS = {-4157: "SUMIFS", -4112: "COUNTIFS", -4106: "AVERAGEIFS", -4136: "MA
 PLAIN = {"SUMIFS": "SUM", "COUNTIFS": "COUNTA", "AVERAGEIFS": "AVERAGE", "MAXIFS": "MAX", "MINIFS": "MIN"}
 MAX_FORMULA_CELLS = 20_000  # above this a pivot becomes values: that many SUMIFS slow Excel and Mind down
 TOLERANCE = 1e-9
+# Value2 gives an error cell as this number (pywin32): written back as the error, not as the number
+ERRORS = {-2146826281: "#DIV/0!", -2146826246: "#N/A", -2146826259: "#NAME?", -2146826288: "#NULL!",
+          -2146826252: "#NUM!", -2146826265: "#REF!", -2146826273: "#VALUE!"}
 
+_NUMBER_RE = re.compile(r"[+-]?\d+(\.\d+)?([eE][+-]?\d+)?")
 _SOURCE_RE = re.compile(r"^(?:'?(?P<sheet>(?:[^'!]|'')+)'?!)?R(?P<r1>\d+)C(?P<c1>\d+):R(?P<r2>\d+)C(?P<c2>\d+)$")
 
 
@@ -54,11 +62,8 @@ def _criterion(value: Any) -> str:
     if isinstance(value, (int, float)):
         return repr(float(value)).rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
     text = str(value)
-    try:
-        float(text)
-        return text  # a number Excel gave as text: compared as a number
-    except ValueError:
-        pass
+    if _NUMBER_RE.fullmatch(text):
+        return text  # a number Excel gave as text: compared as a number (not '1_000', 'nan', 'inf' ...)
     text = text.replace("~", "~~").replace("*", "~*").replace("?", "~?").replace('"', '""')
     return f'"={text}"'
 
@@ -85,6 +90,26 @@ def formula_plan(pt: Any, excel_ws: Any) -> tuple[list[tuple[int, int, str]] | N
     r1, c1, r2, c2 = (int(m.group(k)) for k in ("r1", "c1", "r2", "c2"))
     if int(pt.CalculatedFields().Count):
         return None, "it has a calculated field"
+    # Hidden items, label / value filters and slicers leave rows out of the pivot that the
+    # formulas would still add up; today's numbers can match by chance (a hidden item adding 0).
+    # A slicer on a field left out of the layout hides that field's items: HiddenFields covers it.
+    # (Not the report filters: picking one item hides the others; CurrentPage handles those below.)
+    try:
+        values_field = str(pt.DataPivotField.Name)
+    except Exception:
+        values_field = None
+    for fields in (pt.RowFields, pt.ColumnFields, pt.HiddenFields):
+        for k in range(1, int(fields.Count) + 1):
+            pf = fields.Item(k)
+            name = str(pf.Name)
+            if name == values_field:  # the "Values" field of a pivot with several values: no items of its own
+                continue
+            try:
+                hidden = int(pf.HiddenItems.Count) or int(pf.PivotFilters.Count)
+            except Exception:
+                hidden = True
+            if hidden:
+                return None, f"its field {name} has hidden items or a filter"
     src = excel_ws.Parent.Worksheets(src_sheet)
     headers = src.Range(src.Cells(r1, c1), src.Cells(r1, c2)).Value2[0]
     column_of = {str(h): c1 + i for i, h in enumerate(headers) if h is not None}
@@ -149,6 +174,39 @@ def _same(a: Any, b: Any) -> bool:
     return a in (None, "") and b in (None, "", 0)
 
 
+def _restore(ws: Any, cells: list[tuple[int, int]], shown: dict[tuple[int, int], Any]) -> None:
+    """Put back what the pivot showed, an error cell as its error (#N/A ...), not as Value2's number.
+    Excel busy for an instant (RPC_E_CALL_REJECTED) gets the same cell again."""
+    for r, c in cells:
+        v = shown[(r, c)]
+        for attempt in range(4):
+            try:
+                cell = ws.Cells(r, c)
+                if type(v) is int and v in ERRORS:
+                    cell.Formula = ERRORS[v]  # typed error text is stored as the error constant
+                else:
+                    cell.Value2 = v
+                break
+            except Exception:
+                if attempt == 3:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+
+
+def _formula_of(cell: Any) -> str:
+    try:
+        return str(cell.Formula2)  # keeps a dynamic-array formula as it is
+    except Exception:
+        return str(cell.Formula)
+
+
+def _set_formula(cell: Any, formula: str) -> None:
+    try:
+        cell.Formula2 = formula
+    except Exception:
+        cell.Formula = formula
+
+
 def convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str, Any]:
     """Turn the pivot `pivot_name` of `ws` into plain cells (to="values") or formulas (to="formulas",
     falling back to values when the formulas would not give the same numbers). -> what was done."""
@@ -165,17 +223,41 @@ def convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str,
     shown = None
     if plan:
         shown = {(r, c): ws.Cells(r, c).Value2 for r, c, _ in plan}
-    # values and formats, through a scratch sheet: a pivot cannot be pasted over
+    # TableRange2 is the rectangle around the report filters and the body: the cells beside the
+    # filters and the row between are the user's own (a pivot cell never holds a formula). Their
+    # formulas are written back after the copy, so they keep following their inputs.
+    extra: list[tuple[int, int, str]] = []
+    if rows * cols > 1:  # SpecialCells on one cell would search the whole sheet
+        try:
+            extra = [(int(x.Row), int(x.Column), _formula_of(x)) for x in rng.SpecialCells(XL_CELL_TYPE_FORMULAS)]
+        except Exception:  # "no cells were found"
+            extra = []
+    # values and formats (and comments and validation), through a scratch sheet: a pivot cannot be pasted over
     scratch = wb.Worksheets.Add()
     try:
         rng.Copy()
         scratch.Range("A1").PasteSpecial(XL_PASTE_VALUES)
         scratch.Range("A1").PasteSpecial(XL_PASTE_FORMATS)
+        for kind in (XL_PASTE_COMMENTS, XL_PASTE_VALIDATION):
+            try:
+                scratch.Range("A1").PasteSpecial(kind)
+            except Exception:  # nothing of that kind to paste
+                pass
         excel.CutCopyMode = False
-        top, left = int(rng.Row), int(rng.Column)
         rng.Clear()  # clearing the whole range removes the pivot table
-        scratch.Range(scratch.Cells(1, 1), scratch.Cells(rows, cols)).Copy(ws.Range(address))
+        # the pivot is gone now: its values exist only on the scratch sheet, so Excel busy
+        # for an instant gets the same copy again rather than leaving the area empty
+        for attempt in range(4):
+            try:
+                scratch.Range(scratch.Cells(1, 1), scratch.Cells(rows, cols)).Copy(ws.Range(address))
+                break
+            except Exception:
+                if attempt == 3:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
         excel.CutCopyMode = False
+        for r, c, f in extra:
+            _set_formula(ws.Cells(r, c), f)
     finally:
         alerts = excel.DisplayAlerts
         excel.DisplayAlerts = False
@@ -186,13 +268,27 @@ def convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str,
         if to == "formulas":
             out["why_values"] = why
         return out
-    for r, c, f in plan:
-        ws.Cells(r, c).Formula = f
-    ws.Calculate()
-    moved = [(r, c) for r, c, _ in plan if not _same(shown[(r, c)], ws.Cells(r, c).Value2)]
+    # A cell the pivot showed empty (a combination with no data) stays empty: its formula
+    # would give 0, and AVERAGE, COUNT, ="" and Mind's comparisons treat 0 and empty differently.
+    plan = [(r, c, f) for r, c, f in plan if shown[(r, c)] not in (None, "")]
+    if not plan:
+        out["why_values"] = "it shows no values"
+        return out
+    written: list[tuple[int, int]] = []
+    try:
+        for r, c, f in plan:
+            ws.Cells(r, c).Formula = f
+            written.append((r, c))
+        ws.Calculate()
+        moved = [(r, c) for r, c, _ in plan if not _same(shown[(r, c)], ws.Cells(r, c).Value2)]
+    except Exception as exc:
+        # the pivot is already gone, so a retry could not start again: the cells go back to its
+        # values here rather than keeping formulas nobody checked
+        _restore(ws, written, shown)
+        out["why_values"] = f"writing its formulas failed ({str(exc)[:120]}) -- kept as values"
+        return out
     if moved:
-        for r, c, _ in plan:
-            ws.Cells(r, c).Value2 = shown[(r, c)]
+        _restore(ws, written, shown)
         r, c = moved[0]
         out["why_values"] = f"the formulas did not give back {len(moved)} of its {len(plan)} values (e.g. {_col(c)}{r}: grouped items, hidden items or a filter)"
         return out

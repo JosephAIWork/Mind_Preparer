@@ -1480,9 +1480,19 @@ def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple
     ops: list[dict] = []
     skipped: list[str] = []
     to = "pivot_to_values" if mode == "values" else "pivot_to_formulas"
+    # GETPIVOTDATA reads a pivot table: once the pivot is cells it returns #REF! (and so does every
+    # cell built on it). Which pivot each one reads is not recorded, so none is converted (as
+    # scripts/pivots_to_values.py refuses such a workbook).
+    # Only looked for when there is a pivot: a big model has hundreds of thousands of formulas.
+    has_pivots = any(s.get("pivot_tables") for s in analysis["workbooks"][0].get("sheets", []))
+    gpd = sorted({f["sheet"] for f in analysis["workbooks"][0].get("formulas", []) or [] if isinstance(f.get("formula"), str) and "GETPIVOTDATA(" in f["formula"].upper()}) if has_pivots else []
     for s in analysis["workbooks"][0].get("sheets", []):
         for p in s.get("pivot_tables", []) or []:
             why = blocking_pivot(p)
+            if gpd:
+                mind = f"; Mind cannot read it as it is ({why}): replace the GETPIVOTDATA by hand first" if why else ""
+                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table -- GETPIVOTDATA on {', '.join(gpd)} reads pivot tables and would become #REF!{mind}")
+                continue
             if not why and mode == "blocking":
                 skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table (the pivot setting); Mind reads its cells as values")
                 continue
@@ -1684,32 +1694,40 @@ def formula_replacement_op(sheet: str, cell: str, before: str, after: str, rule_
 def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cell ops on original coordinates, then inserts (bottom-up / right-to-left),
     then cell ops written for post-insert coordinates, then sheet-level ops."""
+    # sheet protection comes off first: a protected sheet refuses the pivot conversion and every write
+    unprotect = [o for o in operations if o["op"] == "unprotect_sheet"]
     phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # 1.11.7: the pivot tables first, so their cells can be written
-    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "unprotect_sheet", "remove_validation"} and not o.get("after_inserts")]
+    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "remove_validation"} and not o.get("after_inserts")]
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
-    phase2 = [_resolve_insert_at(o, row_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
+    phase2 = [_resolve_insert_at(o, row_inserts, col_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
     sheet_level = [o for o in operations if o["op"] in ("rename_sheet", "set_sheet_visibility", "break_external_link")]
-    return phase0 + phase1 + row_inserts + col_inserts + phase2 + sheet_level
+    return unprotect + phase0 + phase1 + row_inserts + col_inserts + phase2 + sheet_level
 
 
-def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]]) -> dict[str, Any]:
+def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]], col_inserts: list[dict[str, Any]] = ()) -> dict[str, Any]:
     """A cell written into a row this plan inserts (`insert_at` = the row the
     companion insert targets) lands one row lower for every *earlier* row this
     plan inserts on the same sheet -- including inserts planned by other
-    actions the user selected. Recomputed from `insert_at` every time, so the
+    actions the user selected. A second insert at the same row (another entry,
+    e.g. the assistant's) adds a blank row between the title and its grid, so
+    the cell goes down to the last of them, right above the grid. A column
+    inserted at or left of the cell moves it one column right (the columns are
+    inserted after the rows). Recomputed from `insert_at` every time, so the
     same operation list can be ordered repeatedly without drifting."""
     at = op.get("insert_at")
     if at is None:
         return op
     at = int(at)
-    shift = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) < at)
-    if not shift:
-        return op
+    same_row = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) == at)
+    shift = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) < at) + max(0, same_row - 1)
     ref = parse_ref(str(op["cell"]))
     if not ref:
         return op
-    return {**op, "cell": ref_text(ref["c1"], at + shift)}
+    cshift = sum(1 for o in col_inserts if o["sheet"] == op["sheet"] and col_to_num(str(o["column"])) <= ref["c1"])
+    if not shift and not cshift:
+        return op
+    return {**op, "cell": ref_text(ref["c1"] + cshift, at + shift)}
 
 
 EXCEL_REFUSED_FORMULA = -2146827284  # 0x800A03EC: Excel would not accept the value/formula
