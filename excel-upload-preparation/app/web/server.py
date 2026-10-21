@@ -135,6 +135,9 @@ class Session:
     model_map: dict[str, Any] | None = None
     model_map_version_id: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    # one Apply at a time: two at once would both copy the same version and the last one to finish
+    # would become current without the other's changes
+    apply_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def readiness(self) -> dict[str, Any] | None:
         """The verdict for the current version (None before the first analysis)."""
@@ -530,6 +533,9 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         "delta": delta,
         "readiness": readiness,
         "prep_progress": prep_progress(s.plan_history, s.apply_history),
+        # the pivot setting travels with every analysis too: an upload must show its choices
+        "pivot_mode": s.pivot_mode,
+        "pivot_modes": PIVOT_MODES,
     }
 
 
@@ -773,7 +779,17 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
 
 def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool = False) -> dict[str, Any]:
     """Write `ops` into a fresh copy of the current version, register the result as the next
-    version, re-analyse it when asked, and report the outcome (the shape every Apply returns)."""
+    version, re-analyse it when asked, and report the outcome (the shape every Apply returns).
+    One Apply at a time per session: a second one is refused while the first runs."""
+    if not s.apply_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="an Apply is already running for this session")
+    try:
+        return _apply_and_version_locked(s, ops, source, who, reanalyze, minor)
+    finally:
+        s.apply_lock.release()
+
+
+def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool) -> dict[str, Any]:
     before = _before_apply(s)
     reanalyze_wanted = reanalyze
     with perf_stage("apply_operations", file=s.current_path.name, operations=len(ops), source=source):
@@ -801,16 +817,24 @@ def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: 
     version = _add_version(s, output, source, label_of(), res.get("applied", []), res.get("verified_opens_in_excel"), res["change_log_entry"]["output_sha256"], minor=minor)
     reanalyzed = reanalyze and res["status"] in ("APPLIED", "PARTIAL")
     scanned: dict[str, Any] = {}
+    scan_error: str | None = None
     try:
         if reanalyzed:
             scanned = _run_scan(s, output)
+    except HTTPException as exc:
+        # the new version is already current: the Apply still answers with it (an error here would
+        # leave the page on the old version, and a second Apply would write the same changes twice)
+        scan_error = str(exc.detail)
+        reanalyzed = False
     finally:
         if checker is not None:
             checker.join()
             version["verified_opens_in_excel"] = res.get("verified_opens_in_excel")
             version["label"] = version["label"].split(" — ")[0] + " — " + label_of()
-    out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version}
+    out: dict[str, Any] = {"result": _apply_result(res, version["file_name"]), "version": version, "versions": s.versions}
     out.update(scanned)
+    if scan_error is not None:
+        out["scan_error"] = scan_error
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     return out
@@ -1179,10 +1203,13 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     original = _original_path(s)
     if original is not None and out["formula_errors"]:
         base = _original_baseline(s, original)
+        # the original's cells where they are now (title rows inserted, sheets renamed), as the numbers check sees them
+        found = _original_and_moves(s)
+        forward = found[1].forward if found is not None and found[0] == original else None
         if base is not None:
-            cls = classify_errors(out["formula_errors"], base["errors"], base["ref_formulas"])
+            cls = classify_errors(out["formula_errors"], base["errors"], base["ref_formulas"], forward)
         else:
-            cls = classify_against_original(original, out["formula_errors"])
+            cls = classify_against_original(original, out["formula_errors"], forward)
             cls["message"] = (cls.get("message") or "") + " -- compared with the original's cached values, its own recalculation did not run"
         out["formula_errors"] = cls["errors"]
         out["preexisting_errors"], out["new_errors"] = cls["preexisting"], cls["new"]
@@ -1435,7 +1462,9 @@ def readiness(session_id: str) -> dict[str, Any]:
 
 def _stored_errors(s: Session) -> int | None:
     """Formula cells whose value Excel last stored is an error, from the scan's own load (still in the
-    workbook cache); None when that load is gone or kept no values."""
+    workbook cache); None when that load is gone or kept no values, or when the fixer has work the
+    count cannot see: a sheet the scan skipped (the fixer reads every sheet), and -- with no error
+    counted -- an error typed as a constant or a formula holding #REF! (the fixer settles both)."""
     from openpyxl.cell.cell import ERROR_CODES
 
     from app.inventory import _WORKBOOK_CACHE
@@ -1449,12 +1478,19 @@ def _stored_errors(s: Session) -> int | None:
     codes = set(ERROR_CODES)
     n = 0
     for ws in wb.worksheets:
+        if getattr(ws, "mind_ready_ignored", False):
+            return None  # its errors are not known
         cached = getattr(ws, "mind_ready_cached", None)
         if cached is None:
-            if getattr(ws, "mind_ready_ignored", False) or not hasattr(ws, "_cells"):
-                continue  # a skipped sheet or a chart sheet
+            if not hasattr(ws, "_cells"):
+                continue  # a chart sheet
             return None
         n += sum(1 for v in cached.values() if isinstance(v, str) and v in codes)
+    if n == 0:
+        for ws in wb.worksheets:
+            for c in getattr(ws, "_cells", {}).values():
+                if c.data_type == "e" or (c.data_type == "f" and "#REF!" in str(getattr(c.value, "text", c.value))):
+                    return None
     return n
 
 
@@ -1474,7 +1510,33 @@ def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
         scan_s = sum(float(x.get("seconds") or 0) for x in s.scan.get("stages", []) if x.get("stage") != "convert") or None
     wb0 = s.result["workbook_analysis"]["workbooks"][0]
     blocking = sum(int(a.get("count") or 0) for a in s.plan if a.get("level") == "blocking" and a.get("default_on"))
-    return estimate_chain(mb, scan_s, len(wb0.get("formulas", [])), _stored_errors(s), blocking, loop, worker=excel_worker.enabled() and com_available())
+    # the pivot tables Prep turns into cells cost far more than a plain write: priced by their size
+    from openpyxl.utils.cell import range_boundaries
+
+    pivots: list[tuple[str, int]] = []
+    for a in s.plan:
+        if a.get("id") == "pivot_tables" and a.get("level") == "blocking" and a.get("default_on"):
+            for o in a.get("operations", []):
+                try:
+                    c1, r1, c2, r2 = range_boundaries(str(o.get("range") or o.get("cell")))
+                    cells = (r2 - r1 + 1) * (c2 - c1 + 1)
+                except (ValueError, TypeError):
+                    cells = 0
+                pivots.append((str(o.get("op")), cells))
+    stored = _stored_errors(s)
+    # with errors left, the original's own recalculation runs once per session (the first time)
+    baseline_mb = 0.0
+    original = _original_path(s)
+    if s.original_baseline is None and stored != 0 and original is not None:
+        try:
+            baseline_mb = original.stat().st_size / 2**20
+        except OSError:
+            baseline_mb = 0.0
+    # the worker holds the next copy open only with enough free memory, and works out the
+    # recalculation ahead only when that is on: otherwise every step pays its own Excel
+    worker = excel_worker.enabled() and com_available() and excel_worker.free_mb() >= excel_worker.HOLD_MIN_FREE_MB
+    return estimate_chain(mb, scan_s, len(wb0.get("formulas", [])), stored, blocking, loop, worker=worker,
+                          recalc_ahead=excel_worker.speculative_recalc(), baseline_mb=baseline_mb, pivots=pivots)
 
 
 def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:

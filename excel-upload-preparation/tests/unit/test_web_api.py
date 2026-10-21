@@ -717,3 +717,54 @@ def test_model_map_route_reads_the_analysed_copy(client, flagged_model_broken_xl
     again = client.get(f"/api/sessions/{sid}/model-map").json()
     assert again["version_id"] == body["version_id"]
     assert client.get("/api/sessions/nope/model-map").status_code == 404
+
+
+def test_an_upload_carries_the_pivot_setting_and_its_choices(client, plain_grid_xlsx):
+    """The Prep panel's pivot choices come with the upload itself, not only with a reopened session."""
+    body = _upload(client, plain_grid_xlsx)
+    assert body["pivot_mode"] == server.DEFAULT_PIVOT_MODE and body["pivot_modes"] == server.PIVOT_MODES
+
+
+def _fake_apply(tmp_path):
+    """_tracked_apply without Excel: the current version copied as the new one."""
+    import shutil
+
+    def fake(s, ops, reanalyze, defer_verify=False, source=None):
+        out = tmp_path / f"applied_{len(s.versions)}.xlsx"
+        shutil.copyfile(s.current_path, out)
+        return {"status": "APPLIED", "output_path": str(out), "applied": list(ops), "verified_opens_in_excel": True, "change_log_entry": {"output_sha256": "0" * 64}}
+
+    return fake
+
+
+def test_an_apply_whose_scan_is_refused_still_answers_with_the_new_version(client, plain_grid_xlsx, tmp_path, monkeypatch):
+    """The new version is current once written: a refused re-analysis is reported, not raised, so the page
+    moves to it (an error left the page on the old version, and a second Apply wrote everything twice)."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    monkeypatch.setattr(server, "_tracked_apply", _fake_apply(tmp_path))
+
+    def refused(s, path=None):
+        raise server.HTTPException(status_code=409, detail="a scan is already running for this session")
+
+    monkeypatch.setattr(server, "_run_scan", refused)
+    res = client.post(f"/api/sessions/{sid}/apply", json={"operations": [{"op": "set_value", "sheet": "Data", "cell": "Z9", "after": 1}], "reanalyze": True})
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["version"]["id"] == "ver-002" == server.SESSIONS[sid].current_version_id
+    assert [v["id"] for v in out["versions"]] == ["ver-001", "ver-002"] and "already running" in out["scan_error"]
+
+
+def test_a_second_apply_is_refused_while_one_runs(client, plain_grid_xlsx, tmp_path, monkeypatch):
+    """Two Applies at once would both copy the same version; the last to finish would drop the other's changes."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    monkeypatch.setattr(server, "_tracked_apply", _fake_apply(tmp_path))
+    op = {"operations": [{"op": "set_value", "sheet": "Data", "cell": "Z9", "after": 1}], "reanalyze": False}
+    s = server.SESSIONS[sid]
+    assert s.apply_lock.acquire(blocking=False)  # an Apply running
+    try:
+        res = client.post(f"/api/sessions/{sid}/apply", json=op)
+        assert res.status_code == 409 and "already running" in res.json()["detail"]
+    finally:
+        s.apply_lock.release()
+    assert client.post(f"/api/sessions/{sid}/apply", json=op).status_code == 200
+    assert not s.apply_lock.locked()

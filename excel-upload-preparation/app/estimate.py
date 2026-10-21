@@ -19,6 +19,10 @@ FIRST_READ_PER_SCAN = 0.6  # the fixer reads every cell's value and formula once
 PASS_PER_SCAN = 1.0  # one fix pass: write, recalculate, read back, judge
 WRITE_S_PER_OP = 0.02  # a Prep operation written through Excel
 FALLBACK_SCAN_S_PER_FORMULA = 0.0035  # when the file was never scanned in this session (Palermo, CNHI)
+# a pivot table turned into cells: copy, paste and clear through a scratch sheet, then (to formulas)
+# about ten Excel calls per value cell -- what the pivot adds up, its value, the formula, the check
+PIVOT_S_EACH = 3.0
+PIVOT_S_PER_CELL = 0.01
 
 CAVEAT = (
     "A rough guess: it depends on how many formula errors Excel finds when it recalculates, how many "
@@ -31,12 +35,24 @@ def _excel_session(mb: float) -> tuple[float, float]:
     return EXCEL_START_S + max(5.0, OPEN_S_PER_MB * mb), max(3.0, SAVE_S_PER_MB * mb)
 
 
-def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0, stored_errors: int | None = None, blocking_ops: int = 0, has_loop: bool = True, worker: bool = False) -> dict[str, Any]:
+def pivot_seconds(pivots: list[tuple[str, int]]) -> float:
+    """Seconds to turn the pivot tables of a Prep round into cells: `pivots` = (operation, cells of the
+    pivot) per pivot; only "pivot_to_formulas" pays per cell (above MAX_FORMULA_CELLS it becomes values)."""
+    from .pivots import MAX_FORMULA_CELLS
+
+    return sum(PIVOT_S_EACH + (PIVOT_S_PER_CELL * cells if op == "pivot_to_formulas" and cells <= MAX_FORMULA_CELLS else 0.0) for op, cells in pivots)
+
+
+def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0, stored_errors: int | None = None, blocking_ops: int = 0, has_loop: bool = True, worker: bool = False,
+                   recalc_ahead: bool = True, baseline_mb: float = 0.0, pivots: list[tuple[str, int]] = ()) -> dict[str, Any]:
     """-> {"steps": [{id, low_s, mid_s, high_s, why}], "total": {low_s, mid_s, high_s}, "caveat", "basis"}.
     `scan_s`: the last scan of this file (without the .xlsb conversion); `stored_errors`: formula cells
     whose value Excel last stored is an error (None = not known). `worker` (1.11.9): the session's
     Excel worker opens each next copy while the version is analysed, so Prep rounds and the loop
-    wait for no Excel start, open or second check, and Recalculate after the loop is ready."""
+    wait for no Excel start, open or second check, and (`recalc_ahead`) Recalculate after the loop
+    is ready. `baseline_mb`: the size of the original when its own recalculation (the baseline the
+    errors left are compared with) has not run yet in this session, 0 when it has or will not be
+    needed. `pivots`: (operation, cells) of every pivot table Prep turns into cells (pivot_seconds)."""
     scan = float(scan_s) if scan_s and scan_s > 0 else max(30.0, FALLBACK_SCAN_S_PER_FORMULA * formula_count)
     open_s, save_s = _excel_session(file_mb)
     verify_s = open_s  # a second Excel opens the saved file
@@ -64,8 +80,10 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
     # Fix the formulas and the structure: one or two rounds of open, write, save, re-scan (the check
     # that the file opens runs alongside the re-scan)
     if blocking_ops:
-        one = (0.0 if worker else open_s) + WRITE_S_PER_OP * blocking_ops + save_s + (scan if worker else max(scan, verify_s))
-        steps.append({"id": "prepare", "low_s": one, "mid_s": 1.5 * one, "high_s": 2.5 * one, "why": f"{blocking_ops:,} planned change(s), usually one or two rounds"})
+        piv = pivot_seconds(list(pivots))  # once, in the first round (the pivot tables are cells after it)
+        one = (0.0 if worker else open_s) + WRITE_S_PER_OP * max(0, blocking_ops - len(pivots)) + save_s + (scan if worker else max(scan, verify_s))
+        why = f"{blocking_ops:,} planned change(s), usually one or two rounds" + (f", {len(pivots):,} pivot table(s) turned into cells" if pivots else "")
+        steps.append({"id": "prepare", "low_s": one + piv, "mid_s": 1.5 * one + piv, "high_s": 2.5 * one + 1.5 * piv, "why": why})
     else:
         steps.append({"id": "prepare", "low_s": 5.0, "mid_s": 5.0, "high_s": 2.0 * (open_s + save_s + scan), "why": "nothing planned now (the fixer may leave something)"})
 
@@ -77,8 +95,12 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
         steps.append({"id": "loop", "low_s": 0.0, "mid_s": 0.0, "high_s": 0.0, "why": "skipped: no loop to build"})
 
     # Recalculate: open, full rebuild (seconds), save, find the error cells
-    rc = 5.0 if worker and has_loop else open_s + 5.0 + save_s + 5.0
-    steps.append({"id": "recalc", "low_s": rc, "mid_s": rc, "high_s": 1.5 * rc, "why": "one full recalculation in Excel"})
+    rc = 5.0 if worker and recalc_ahead and has_loop else open_s + 5.0 + save_s + 5.0
+    # with errors left, the original is recalculated once per session too (another Excel and a full
+    # open); the fixer's step may already have paid it, so the low figure leaves it out
+    base = EXCEL_START_S + max(5.0, OPEN_S_PER_MB * baseline_mb) + 5.0 if baseline_mb > 0 else 0.0
+    steps.append({"id": "recalc", "low_s": rc, "mid_s": rc + base, "high_s": 1.5 * rc + base,
+                  "why": "one full recalculation in Excel" + (", and one of the original to compare the errors left with" if base else "")})
 
     for s in steps:
         for k in ("low_s", "mid_s", "high_s"):
