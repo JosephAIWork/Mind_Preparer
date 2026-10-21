@@ -39,6 +39,7 @@ def main() -> int:
     ap.add_argument("--skip-autofix", action="store_true")
     ap.add_argument("--ignore", default="")
     ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant's advice (deterministic, for before/after comparisons)")
+    ap.add_argument("--pivot-mode", default=None, help="blocking / formulas / values: what Prep does with the pivot tables (Advanced > Prep)")
     a = ap.parse_args()
     B = f"http://127.0.0.1:{a.port}/api"
     wb = Path(a.workbook)
@@ -63,6 +64,20 @@ def main() -> int:
 
     def state():
         return requests.get(f"{B}/sessions/{sid}", timeout=300).json()
+
+    if a.pivot_mode:
+        r = requests.post(f"{B}/sessions/{sid}/pivot-mode", json={"mode": a.pivot_mode}, timeout=600)
+        r.raise_for_status()
+        chain["pivot_mode"] = a.pivot_mode
+        say("pivot setting:", a.pivot_mode)
+    # what the main screen shows before Do everything is clicked, to compare with the real time
+    try:
+        est = requests.get(f"{B}/sessions/{sid}/estimate", timeout=300)
+        chain["estimate"] = est.json() if est.status_code == 200 else {"error": est.text[:300]}
+        say("estimate:", json.dumps(chain["estimate"])[:300])
+    except requests.RequestException as exc:
+        chain["estimate"] = {"error": str(exc)[:300]}
+    t_chain = time.time()
 
     if not a.skip_autofix:
         say("fix all issues: start")
@@ -164,6 +179,7 @@ def main() -> int:
     final.write_bytes(r.content)
     chain["final_file"] = str(final)
     chain["seconds"] = round(time.time() - t0)
+    chain["seconds_after_estimate"] = round(time.time() - t_chain)  # what the estimate is for
     (out / "chain.json").write_text(json.dumps(chain, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
     say("final:", v["label"], "->", final, f"({chain['seconds']} s)")
     return 0 if all((s.get("ok") in (True, None)) for s in chain["steps"].values()) else 1
