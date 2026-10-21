@@ -25,7 +25,7 @@
 
     <div class="bar">
       @if (stack.entries().length) {
-        <button cdsButton="primary" size="md" (click)="applyAll()" [disabled]="running()">Apply all {{ stack.operations().length }} changes</button>
+        <button cdsButton="primary" size="md" (click)="applyAll()" [disabled]="running() || stale()">Apply all {{ stack.operations().length }} changes</button>
         <button cdsButton="ghost" size="md" (click)="stack.clear()" [disabled]="running()">Empty the list</button>
       }
       @if (running()) {
@@ -40,7 +40,10 @@
       }
     </div>
     @if (stack.entries().length && !running()) {
-      <p class="hint">One Excel session and one re-analysis for the whole list, in the order the changes were added.</p>
+      @if (stale()) {
+        <p class="hint">Remove the entries made on an older version first (Show the list), then add them again from the current version.</p>
+      }
+      <p class="hint">One Excel session and one re-analysis for the whole list. Pivot tables, inserted rows and columns and sheet-level changes run in a fixed order; the other changes are written in the order added.</p>
     }
   </div>
 }

@@ -4,7 +4,7 @@ import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
-import { ChatMessage, FixTarget, Proposal, appliedCount, failedCount, failedText } from "../../core/models";
+import { ChatMessage, FixTarget, Proposal, Version, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** The assistant: questions about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
@@ -25,6 +25,8 @@ export class AssistantPanel implements OnDestroy {
   readonly phase = signal("");
   readonly partial = signal("");
   readonly proposal = signal<Proposal | null>(null);
+  /** The version the proposal was made on: an Apply from the list above may make a newer one meanwhile. */
+  private proposalVersion: Version | null = null;
   readonly applying = signal(false);
   readonly fraction = signal<number | null>(null);
   readonly applyLine = signal("");
@@ -76,6 +78,7 @@ export class AssistantPanel implements OnDestroy {
     this.streaming.set(true);
     this.phase.set("Thinking…");
     this.partial.set("");
+    this.proposalVersion = this.store.currentVersion();
     try {
       const reply = await this.api.chatStream(id, history, q, this.target() ?? undefined, (ev) => {
         if (ev.type === "phase") this.phase.set(ev.phase === "lookup" ? "Looking into the workbook…" : ev.phase === "repair" ? "Checking the proposal…" : "Answering…");
@@ -97,7 +100,7 @@ export class AssistantPanel implements OnDestroy {
     const p = this.proposal();
     if (!p) return;
     const label = `Assistant: ${p.summary || p.operations.length + " changes"}`.slice(0, 120);
-    this.stack.add("assistant", label, p.operations);
+    this.stack.add("assistant", label, p.operations, this.proposalVersion);
     this.store.chatHistory.update((h) => [...h, { role: "assistant", content: `${p.operations.length} changes added to the list (applied with the others from the top of the page)`, note: true, tone: "success" }]);
     this.proposal.set(null);
   }
@@ -110,6 +113,12 @@ export class AssistantPanel implements OnDestroy {
     const id = this.store.sessionId();
     const p = this.proposal();
     if (!id || !p || this.applying()) return;
+    const now = this.store.currentVersion();
+    if (this.proposalVersion && now && this.proposalVersion.id !== now.id) {
+      // its cells were chosen on the older version: after an inserted row they would land one row off
+      this.error.set(`This proposal was made on ${this.proposalVersion.label.split(" — ")[0]}; the workbook is now ${now.label.split(" — ")[0]}. Ask again so it is made on the current version.`);
+      return;
+    }
     this.applying.set(true);
     this.applyLine.set(`Writing ${p.operations.length} changes through Excel…`);
     this.stop = followApply(this.api, id, (t) => {

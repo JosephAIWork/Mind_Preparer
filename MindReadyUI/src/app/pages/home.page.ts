@@ -205,6 +205,9 @@ export class HomePage implements OnDestroy {
 
   private timers: ReturnType<typeof setTimeout>[] = [];
   private fixAllFollowing = false;
+  private estimateSeq = 0;
+  /** Set when the page is left (Advanced): a running Do everything starts no further step unseen. */
+  private destroyed = false;
 
   constructor() {
     // The session may arrive after this page is built (a `?session=<id>` link is resumed by the
@@ -231,14 +234,18 @@ export class HomePage implements OnDestroy {
   }
 
   private async loadEstimate(id: string): Promise<void> {
+    // only the latest request counts: an older answer (made before the loop plan arrived) may come last
+    const seq = ++this.estimateSeq;
     try {
-      this.estimate.set(await this.api.estimate(id, this.canBuildLoop()));
+      const e = await this.api.estimate(id, this.canBuildLoop());
+      if (seq === this.estimateSeq) this.estimate.set(e);
     } catch {
-      this.estimate.set(null); // an older server without the estimate: nothing shown
+      if (seq === this.estimateSeq) this.estimate.set(null); // an older server without the estimate: nothing shown
     }
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     this.timers.forEach(clearTimeout);
     if (this.ticker) clearInterval(this.ticker);
     this.fixAllFollowing = false;
@@ -453,9 +460,13 @@ export class HomePage implements OnDestroy {
         // preparation caused none of them (no regression): the workbook was already living with
         // them, so the chain goes on (Recalculate then compares with the original). A Stop or a
         // used-up time budget still stops it.
-        const accepted = !clean && !!r && ["partial", "stuck", "unchanged"].includes(r.status) && !r.stopped && (r.regression_cells ?? 0) === 0;
+        const acceptable = !clean && !!r && ["partial", "stuck", "unchanged"].includes(r.status) && !r.stopped && (r.regression_cells ?? 0) === 0;
+        // On a prepared version "no regression" means something only when the comparison with the
+        // original ran (none is made on the original itself): when Excel failed it, nothing was checked.
+        const compared = r?.numbers_check == null || r.numbers_check.ran !== false;
+        const accepted = acceptable && compared;
         const kept = after ?? left.length;
-        const line = r?.status === "clean" ? "Every formula error is fixed" : accepted ? `Fixed what it could; ${kept} error${kept === 1 ? "" : "s"} the workbook already had stay, moving on` : r?.status === "unchanged" ? (clean ? "No formula error to fix" : "Nothing could be changed") : `Fixed what it could (${r?.status ?? "partial"})`;
+        const line = r?.status === "clean" ? "Every formula error is fixed" : accepted ? `Fixed what it could; ${kept} error${kept === 1 ? "" : "s"} the workbook already had stay, moving on` : acceptable ? "The errors left could not be checked against the original (the comparison did not run)" : r?.status === "unchanged" ? (clean ? "No formula error to fix" : "Nothing could be changed") : `Fixed what it could (${r?.status ?? "partial"})`;
         const leftText = left.length ? `${left.length} left for a person: ` + left.slice(0, 3).map((l) => `${l.sheet}!${l.cell} ${l.error}`).join(", ") + (left.length > 3 ? ", …" : "") + " (Advanced › Recalculate)" : "";
         const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText].filter(Boolean).join(" · ");
         this.fixAll.set({ running: false, fraction: null, line, detail, tone: clean ? "ok" : "warn" });
@@ -513,6 +524,7 @@ export class HomePage implements OnDestroy {
     const names: string[] = [];
     try {
       for (let round = 1; round <= 3; round++) {
+        if (this.destroyed) return false; // the page was left: no further round unseen
         const acts = this.store.plan().filter((a) => a.level === "blocking" && a.default_on && a.count > 0);
         const ops = acts.flatMap((a) => a.operations);
         if (!ops.length) break;
@@ -658,10 +670,11 @@ export class HomePage implements OnDestroy {
     this.chainRunning.set(true);
     this.chainLine.set("");
     this.steps.set(STEPS.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
-    await this.loadEstimate(id);
+    // the clock starts before the estimate is fetched: until then the timer would show the last run's time
     this.stepSeconds = {};
     this.chainT0 = this.stepT0 = Date.now();
     this.clock.set(Date.now());
+    await this.loadEstimate(id);
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = setInterval(() => this.clock.set(Date.now()), 10_000);
     const runners: Record<StepId, () => Promise<boolean>> = {
@@ -673,6 +686,7 @@ export class HomePage implements OnDestroy {
     const states: Record<StepId, typeof this.fixAll> = { fixAll: this.fixAll, prepare: this.prepare, loop: this.loop, recalc: this.recalc };
     try {
       for (const step of STEPS) {
+        if (this.destroyed) return; // the page was left: the next step would run unseen
         if (step.id === "loop" && !this.canBuildLoop()) {
           this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs a decision first (Advanced › Mind loop)" : "No run loop in this workbook" });
           continue;

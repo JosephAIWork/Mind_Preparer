@@ -205,7 +205,7 @@ export interface AutoFixStatus {
   error?: string | null;
   elapsed_s?: number;
   version?: Version | null;
-  result?: { status: string; summary?: string; errors_before?: number; errors_after?: number; cells_fixed?: number; left?: AutoFixLeft[]; regression_cells?: number; stopped?: string | null } | null;
+  result?: { status: string; summary?: string; errors_before?: number; errors_after?: number; cells_fixed?: number; left?: AutoFixLeft[]; regression_cells?: number; stopped?: string | null; numbers_check?: { ran?: boolean } | null } | null;
   analysis?: Partial<SessionStart> | null;
 }
 
