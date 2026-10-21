@@ -104,7 +104,7 @@ def test_range_length_keeps_quoted_sheet_names():
 def test_the_formula_memo_gives_the_same_answers_and_hands_out_fresh_copies():
     """1.11.10: inside formula_memo() each formula is parsed once; the answers are the ones
     without it, a caller changing what it got changes nothing, and the memo ends with the scan."""
-    formulas = ['=SUM(Sheet1!A1:B2,C3)+'My Sheet'!D4+Rate', '=IF(A1="x!B2",VLOOKUP(A1,$A:$B,2,0),1:3)', "=A1", "plain"]
+    formulas = ["=SUM(Sheet1!A1:B2,C3)+'My Sheet'!D4+Rate", '=IF(A1="x!B2",VLOOKUP(A1,$A:$B,2,0),1:3)', "=A1", "plain"]
 
     def answers():
         return [(cell_refs_in_formula(f), called_functions(f), name_tokens(f), mask_strings(f), mask_strings(f, False)) for f in formulas]
