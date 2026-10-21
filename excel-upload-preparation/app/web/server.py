@@ -59,6 +59,7 @@ from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Status, aggregate_status  # noqa: E402
 from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
+from app.formula_utils import formula_memo  # noqa: E402
 from app.prep import ASSISTANT_OPS, DEFAULT_PIVOT_MODE, PIVOT_MODES, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
 from app.recalc import classify_against_original, classify_errors, formulas_with_broken_refs, group_errors, recalculate  # noqa: E402
@@ -490,10 +491,11 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     label, module = MODE_MAP[s.mode]
     work = s.work_dir / "analysis" / s.current_version_id
     previous = s.result["validation_report"] if s.result else None
-    result = module.run(path, work, load_config(), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
-    if progress is not None:
-        progress("plan", "Planning the fixes", None)
-    s.plan = plan_actions(result["workbook_analysis"], result["validation_report"], s.grid_names or None, s.pivot_mode)
+    with formula_memo():  # 1.11.10: the rules and the planners parse each formula once between them
+        result = module.run(path, work, load_config(), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
+        if progress is not None:
+            progress("plan", "Planning the fixes", None)
+        s.plan = plan_actions(result["workbook_analysis"], result["validation_report"], s.grid_names or None, s.pivot_mode)
     report = result["validation_report"]
     # "Fix available" means the current prep plan has an operation for the rule.
     fixable = {rid for a in s.plan if a["count"] > 0 for rid in a["rule_ids"]} | {o["rule_id"] for a in s.plan for o in a["operations"]}

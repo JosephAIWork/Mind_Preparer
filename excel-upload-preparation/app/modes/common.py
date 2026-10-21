@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from ..formula_utils import formula_memo
 from ..inventory import build_analysis
 from ..models import Mode, ProcessingResult, Status
 from ..report import build_validation_report
@@ -31,7 +32,13 @@ def _build_question(finding: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_mode(
+def run_mode(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """_run_mode with every formula parsed once for all the rules (1.11.10, formula_memo)."""
+    with formula_memo():
+        return _run_mode(*args, **kwargs)
+
+
+def _run_mode(
     mode: Mode,
     source_path: Path,
     work_dir: Path,

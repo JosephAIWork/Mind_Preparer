@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path.cwd()))  # run from the app folder to compare another copy of it
 
 from app.config import load_config  # noqa: E402
+from app.formula_utils import formula_memo  # noqa: E402
 from app.modes import plan_mode  # noqa: E402
 from app.prep import plan_actions  # noqa: E402
 from app.rules_engine import RulesEngine  # noqa: E402
@@ -41,8 +42,9 @@ def main() -> int:
     a = ap.parse_args()
     ignore = [x for x in a.ignore.split(",") if x] or None
     t = time.perf_counter()
-    res = plan_mode.run(Path(a.workbook), Path(tempfile.mkdtemp(prefix="fp_")), load_config(), engine=RulesEngine(), ignore_sheets=ignore)
-    plan = plan_actions(res["workbook_analysis"], res["validation_report"], None)
+    with formula_memo():  # as the server's scan (1.11.10)
+        res = plan_mode.run(Path(a.workbook), Path(tempfile.mkdtemp(prefix="fp_")), load_config(), engine=RulesEngine(), ignore_sheets=ignore)
+        plan = plan_actions(res["workbook_analysis"], res["validation_report"], None)
     seconds = round(time.perf_counter() - t, 1)
     out = {"seconds": seconds, "analysis": clean(res["workbook_analysis"]), "report": clean(res["validation_report"]), "plan": clean(plan)}
     Path(a.out).write_text(json.dumps(out, indent=0, sort_keys=True, default=str, ensure_ascii=False), encoding="utf-8")

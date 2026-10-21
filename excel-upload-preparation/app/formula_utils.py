@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import functools
 import re
+import threading
+from contextlib import contextmanager
 
 STORAGE_PREFIX_RE = re.compile(r"_xl(?:fn|ws|udf|pm|op|dlm|l)\.", re.IGNORECASE)  # _xll. = XLL add-in call (MMForExcel)
 FUNCTION_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.!])([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
@@ -39,12 +41,61 @@ ERROR_LITERAL_RE = re.compile(r"#(?:N/A|REF!|DIV/0!|NAME\?|VALUE!|NUM!|NULL!|SPI
 LOCAL_SCOPE_FUNCTIONS = {"LET", "LAMBDA"}  # their arguments define names of their own
 
 
+# 1.11.10: one scan asks the same formula for its references, its function calls and its names
+# several times over (CNHI: 1.7 million cell_refs_in_formula calls for 245,847 formulas, one rule
+# after another). Inside formula_memo() each answer is worked out once per formula text and kept
+# until the last open scan ends -- compactly (tuples), and handed out as fresh lists and dicts,
+# so a caller that changes what it got changes nothing for the next one.
+MEMO_MAX = 600_000  # formulas remembered per kind; beyond that, worked out again each time
+_MEMO: dict[str, dict[str, tuple | str]] | None = None
+_MEMO_USERS = 0
+_MEMO_LOCK = threading.Lock()
+
+
+@contextmanager
+def formula_memo():
+    """Remember what the formula helpers found, per formula text, until the outermost scan using
+    it ends (scans may nest and run in parallel: the answers depend on the text alone)."""
+    global _MEMO, _MEMO_USERS
+    with _MEMO_LOCK:
+        _MEMO_USERS += 1
+        if _MEMO is None:
+            _MEMO = {"refs": {}, "functions": {}, "names": {}, "masked": {}, "masked_strings_only": {}}
+    try:
+        yield
+    finally:
+        with _MEMO_LOCK:
+            _MEMO_USERS -= 1
+            if _MEMO_USERS == 0:
+                _MEMO = None
+
+
+def _remembered(kind: str, formula: str) -> tuple | str | None:
+    memo = _MEMO
+    return None if memo is None else memo[kind].get(formula)
+
+
+def _remember(kind: str, formula: str, value: tuple | str) -> None:
+    memo = _MEMO
+    if memo is not None and len(memo[kind]) < MEMO_MAX:
+        memo[kind][formula] = value
+
+
 def name_tokens(formula: str) -> list[str]:
     """Every bare name a formula refers to (defined names, tables, or names
     that do not exist): string literals, quoted sheet names, cell and range
     references, function calls and error literals are left out. A formula
     that calls LET or LAMBDA is skipped: its own variables are not workbook
     names, and RSK-004 reviews LET."""
+    hit = _remembered("names", formula)
+    if hit is not None:
+        return list(hit)
+    out = _name_tokens(formula)
+    _remember("names", formula, tuple(out))
+    return out
+
+
+def _name_tokens(formula: str) -> list[str]:
     if LOCAL_SCOPE_FUNCTIONS & {fn.upper() for fn in called_functions(formula)}:
         return []
     masked = mask_strings(formula)
@@ -76,7 +127,15 @@ def mask_strings(formula: str, mask_sheet_quotes: bool = True) -> str:
     # times (4.4 million calls for Palermo's 57,537 formulas): nothing to mask, nothing to copy.
     if '"' not in formula and (not mask_sheet_quotes or "'" not in formula):
         return formula
-    return _mask_strings(formula, mask_sheet_quotes)
+    if _MEMO is None:
+        return _mask_strings(formula, mask_sheet_quotes)
+    # 1.11.10: inside a scan, every formula once (the cache below holds 65,536 -- CNHI has 245,847)
+    kind = "masked" if mask_sheet_quotes else "masked_strings_only"
+    hit = _remembered(kind, formula)
+    if hit is None:
+        hit = _mask_strings.__wrapped__(formula, mask_sheet_quotes)
+        _remember(kind, formula, hit)
+    return hit
 
 
 @functools.lru_cache(maxsize=1 << 16)
@@ -126,8 +185,13 @@ def called_functions(formula: str) -> list[str]:
     prefixes stripped, string literals ignored, in order."""
     if not formula or not formula.startswith("="):
         return []
+    hit = _remembered("functions", formula)
+    if hit is not None:
+        return list(hit)
     masked = mask_strings(formula)
-    return [strip_storage_prefix(m.group(1)).upper() for m in FUNCTION_CALL_RE.finditer(masked)]
+    out = [strip_storage_prefix(m.group(1)).upper() for m in FUNCTION_CALL_RE.finditer(masked)]
+    _remember("functions", formula, tuple(out))
+    return out
 
 
 def split_top_level_args(arglist: str) -> list[str]:
@@ -310,6 +374,18 @@ def cell_refs_in_formula(formula: str) -> list[dict]:
     a parse_ref()-shaped dict. Sheet is None when the reference is local."""
     if not formula or not formula.startswith("="):
         return []
+    hit = _remembered("refs", formula)
+    if hit is not None:
+        return [dict(zip(_REF_KEYS, t)) for t in hit]
+    out = _cell_refs_in_formula(formula)
+    _remember("refs", formula, tuple(tuple(d[k] for k in _REF_KEYS) for d in out))
+    return out
+
+
+_REF_KEYS = ("sheet", "ref", "c1", "r1", "c2", "r2", "whole_column", "whole_row", "cells")  # _ref_dict's
+
+
+def _cell_refs_in_formula(formula: str) -> list[dict]:
     masked = mask_strings(formula, mask_sheet_quotes=False)
     # Mask double-quoted strings only; quoted sheet names must survive for REF_RE.
     out = []

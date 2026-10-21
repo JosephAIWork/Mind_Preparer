@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import load_config  # noqa: E402
+from app.formula_utils import formula_memo  # noqa: E402
 from app.modes import plan_mode  # noqa: E402
 from app.prep import plan_actions  # noqa: E402
 from app.rules_engine import RulesEngine  # noqa: E402
@@ -67,9 +68,10 @@ def main() -> int:
     if prof:
         prof.enable()
     ignore = [s.strip() for s in a.ignore.split(",") if s.strip()] or None
-    result = plan_mode.run(path, work, load_config(), engine=engine, ignore_sheets=ignore, progress=progress)
-    progress("plan", "plan")
-    plan = plan_actions(result["workbook_analysis"], result["validation_report"], None)
+    with formula_memo():  # as the server's scan (1.11.10)
+        result = plan_mode.run(path, work, load_config(), engine=engine, ignore_sheets=ignore, progress=progress)
+        progress("plan", "plan")
+        plan = plan_actions(result["workbook_analysis"], result["validation_report"], None)
     progress("end", "end")
     if prof:
         prof.disable()

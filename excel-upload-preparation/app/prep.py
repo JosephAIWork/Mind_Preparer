@@ -44,6 +44,7 @@ from .formula_utils import (
     col_to_num,
     collapse_na_reference_calls,
     describe_reference_problem,
+    formula_memo,
     mask_strings,
     num_to_col,
     parse_ref,
@@ -1644,7 +1645,14 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
 
     `grid_names` (optional, "Sheet!Ref" -> name) comes from the assistant
     (app/grid_naming.suggest_names) and is only used by `create_grid_titles`,
-    and there only where the deterministic name would be a weak one."""
+    and there only where the deterministic name would be a weak one.
+    1.11.10: every formula parsed once for all the planners (formula_memo; shared with the scan
+    when the caller opened it around both)."""
+    with formula_memo():
+        return _plan_actions(analysis, validation_report, grid_names, pivot_mode)
+
+
+def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None, pivot_mode: str) -> list[dict[str, Any]]:
     out = []
     merged = merged_ranges(analysis)
     pivots = pivot_ranges(analysis)
