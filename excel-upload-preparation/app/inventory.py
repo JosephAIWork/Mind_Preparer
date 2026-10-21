@@ -779,11 +779,30 @@ def build_analysis(
 
 
 # --- MM-call iterators shared by the validators -----------------------------
+_MM_FORMULAS: dict[str, Any] = {}  # the last workbook's formulas that can call an MM_ function
+
+
+def _mm_formulas(formulas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """1.11.10: the rules ask for one MM_ function after another (38 times per scan), each a pass
+    over every formula (245,847 on CNHI): the formulas that mention "mm_" at all are found once.
+    A formula with non-ASCII text is always kept (find_calls' own shortcut is ASCII only)."""
+    hit = _MM_FORMULAS
+    if hit.get("src") is formulas and hit.get("n") == len(formulas):
+        return hit["mm"]
+    mm = [f for f in formulas if isinstance(f.get("formula"), str) and (not f["formula"].isascii() or "mm_" in f["formula"].lower())]
+    _MM_FORMULAS.clear()
+    _MM_FORMULAS.update(src=formulas, n=len(formulas), mm=mm)
+    return mm
+
+
 def mm_calls(analysis: dict[str, Any], function_name: str) -> list[dict[str, Any]]:
     """Every call site of one MM_ function: {sheet, cell, formula, args, array_ref}."""
     out = []
     for wb_entry in analysis["workbooks"]:
-        for f in wb_entry["formulas"]:
+        formulas = wb_entry["formulas"]
+        if function_name.isascii() and function_name.lower().startswith("mm_"):
+            formulas = _mm_formulas(formulas)
+        for f in formulas:
             for args in find_calls(f["formula"], function_name):
                 out.append(
                     {

@@ -183,3 +183,25 @@ def test_an_indirect_that_names_no_sheet_anyone_can_tell_blocks_every_sheet(tmp_
     })
     index = prep.reference_index(build_analysis(path, tmp_path / "w", "t"))
     assert set(index["text_addressed"]) == {"One", "Two", "Report"}  # C1: any sheet; E1: its own sheet
+
+
+def test_referenced_by_finds_the_first_reader_as_the_plain_scan_does():
+    """1.11.10: referenced_by looks only at the rectangles in the cell's band of rows (tall ones
+    apart); the answer must stay the first reader in reading order."""
+    import random
+
+    from app.prep import referenced_by
+
+    rng = random.Random(7)
+    for _ in range(20):
+        rects = []
+        for i in range(rng.randint(0, 300)):
+            r1 = rng.randint(1, 5000)
+            r2 = r1 + rng.choice([0, 0, 3, 64, 200, 30000])
+            c1 = rng.randint(1, 30)
+            rects.append((r1, r2, c1, c1 + rng.randint(0, 5), f"S!X{i}"))
+        index = {"whole_cols": {}, "whole_rows": {}, "rects": {"S": rects}}
+        for _ in range(200):
+            row, col = rng.randint(1, 40000), rng.randint(1, 36)
+            plain = next((o for r1, r2, c1, c2, o in rects if r1 <= row <= r2 and c1 <= col <= c2), None)
+            assert referenced_by(index, "S", row, col) == plain

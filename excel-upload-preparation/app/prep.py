@@ -353,10 +353,52 @@ def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int) -> str 
     owner = index["whole_cols"].get(sheet, {}).get(col) or index["whole_rows"].get(sheet, {}).get(row)
     if owner:
         return owner
-    for r1, r2, c1, c2, own in index["rects"].get(sheet, []):
+    rects = index["rects"].get(sheet)
+    if not rects:
+        return None
+    # 1.11.10: the first rectangle (in reading order) that holds the cell, from the few in its
+    # band of rows instead of all of them (CNHI: 8,914 questions, a million rectangles)
+    blocks, tall = _row_blocks(index, sheet, rects)
+    best = None
+    for i in blocks.get(row // _BLOCK_ROWS, ()):
+        r1, r2, c1, c2, own = rects[i]
         if r1 <= row <= r2 and c1 <= col <= c2:
-            return own
-    return None
+            best = i
+            break
+    for i in tall:
+        if best is not None and i > best:
+            break
+        r1, r2, c1, c2, own = rects[i]
+        if r1 <= row <= r2 and c1 <= col <= c2:
+            best = i
+            break
+    return rects[best][4] if best is not None else None
+
+
+_BLOCK_ROWS = 64
+_TALL_BLOCKS = 256  # a rectangle over more bands than this is checked on every question instead
+_ROW_BLOCKS: dict[str, Any] = {}  # the last index's bands, per sheet
+
+
+def _row_blocks(index: dict[str, Any], sheet: str, rects: list[tuple[int, int, int, int, str]]) -> tuple[dict[int, list[int]], list[int]]:
+    """Per band of rows, the rectangles (by position, in order) that reach into it; the tall ones apart."""
+    if _ROW_BLOCKS.get("index") is not index:
+        _ROW_BLOCKS.clear()
+        _ROW_BLOCKS["index"] = index
+    found = _ROW_BLOCKS.get(sheet)
+    if found is not None and found[2] == len(rects):
+        return found[0], found[1]
+    blocks: dict[int, list[int]] = {}
+    tall: list[int] = []
+    for i, (r1, r2, _c1, _c2, _own) in enumerate(rects):
+        b1, b2 = r1 // _BLOCK_ROWS, r2 // _BLOCK_ROWS
+        if b2 - b1 >= _TALL_BLOCKS:
+            tall.append(i)
+            continue
+        for k in range(b1, b2 + 1):
+            blocks.setdefault(k, []).append(i)
+    _ROW_BLOCKS[sheet] = (blocks, tall, len(rects))
+    return blocks, tall
 
 
 def whole_reference_to(index: dict[str, Any], sheet: str) -> str | None:
@@ -1336,7 +1378,9 @@ def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
     reaches below the grid is left for a person."""
     ops, skipped = [], []
     wb0 = analysis["workbooks"][0]
-    grids = all_grids(analysis)
+    grids: dict[str, list[dict[str, Any]]] = {}  # 1.11.10: per sheet once, not once per array formula
+    for x in all_grids(analysis):
+        grids.setdefault(x["sheet"], []).append(x)
     by_grid: dict[tuple[str, str], dict[str, Any]] = {}
     for f in wb0.get("formulas", []):
         if not f.get("array_ref"):
@@ -1344,7 +1388,7 @@ def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
         target, origin = parse_ref(f["array_ref"]), parse_ref(f["cell"])
         if not target or not origin:
             continue
-        g = grid_containing([x for x in grids if x["sheet"] == f["sheet"]], origin["r1"], origin["c1"])
+        g = grid_containing(grids.get(f["sheet"], []), origin["r1"], origin["c1"])
         if not g or (target["r2"] <= g["last_row"] and target["c2"] <= g["last_col"]):
             continue
         if target["r2"] > g["last_row"]:

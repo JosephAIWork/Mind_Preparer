@@ -77,6 +77,9 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     (MM_RANGE placement -- KB: 'must be contained in a table without any
     other formulas or inputs' -- is RNG-001 in validators/kb.py)."""
     oversized = []
+    by_sheet: dict[str, list[dict[str, Any]]] = {}  # 1.11.10: once, not once per array formula
+    for g in all_grids(analysis):
+        by_sheet.setdefault(g["sheet"], []).append(g)
     for wb in analysis["workbooks"]:
         for f in wb["formulas"]:
             if not f.get("array_ref"):
@@ -85,8 +88,7 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
             origin = parse_ref(f["cell"])
             if not target or not origin:
                 continue
-            sheet_grids = [g for g in all_grids(analysis) if g["sheet"] == f["sheet"]]
-            g = grid_containing(sheet_grids, origin["r1"], origin["c1"])
+            g = grid_containing(by_sheet.get(f["sheet"], []), origin["r1"], origin["c1"])
             if g and (target["r2"] > g["last_row"] or target["c2"] > g["last_col"]):
                 # the first cell Mind names: just past the grid's last column (or its last row)
                 beyond = ref_text(g["last_col"] + 1, target["r1"]) if target["c2"] > g["last_col"] else ref_text(target["c1"], g["last_row"] + 1)
