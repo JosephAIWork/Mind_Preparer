@@ -21,11 +21,11 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .perf import record, stage
 from .excel_com import MM_XLL_ENV, close_quietly, com_available, excel_session, mm_addin_loaded, open_for_write, save_in_place
-from .formula_utils import called_functions, mask_strings, ref_text
+from .formula_utils import called_functions, col_to_num, mask_strings, ref_text
 
 # Excel COM's Range.Value returns error cells as these negative integer xlErr*
 # constants, never as the display string -- confirmed empirically (Range.Text
@@ -264,9 +264,28 @@ def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str
 # --- root-cause grouping (1.6.3) -------------------------------------------------
 _REF_TOKEN_RE = re.compile(r"(?:(?:'[^']+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?")
 _NUMBER_RE = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")
+_A1_CELL_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})$")
+
+# How a cell of the original moved in the prepared version: (sheet, row, column) -> the same
+# (app.numbers_check.Moves.forward -- rows / columns inserted, sheets renamed).
+Forward = Callable[[str, int, int], tuple[str, int, int]]
 
 
-def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str, Any]], original_formulas_with_ref: set[tuple[str, str]] | None = None) -> dict[str, Any]:
+def _moved_key(sheet: str, cell: str, forward: Forward | None) -> tuple[str, str]:
+    """(sheet, A1 address) of an original cell -> where that cell is in the prepared
+    version. A range or anything else that is not one plain address keeps its text
+    (its sheet's new name still applies)."""
+    cell = cell.replace("$", "")
+    if forward is None:
+        return sheet, cell
+    m = _A1_CELL_RE.match(cell)
+    if m is None:
+        return forward(sheet, 1, 1)[0], cell
+    sheet, row, col = forward(sheet, int(m.group(2)), col_to_num(m.group(1)))
+    return sheet, ref_text(col, row)
+
+
+def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str, Any]], original_formulas_with_ref: set[tuple[str, str]] | None = None, forward: Forward | None = None) -> dict[str, Any]:
     """1.7.2: split recalculation errors of a prepared version against the errors
     of the ORIGINAL after the same full recalculation (the honest baseline --
     cached values can be stale, e.g. a number saved before the column a
@@ -274,10 +293,18 @@ def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str
     original errs at the same sheet+address, or has an erroring formula with
     the same text on the same sheet (row inserts shift addresses), or when the
     original's formula at that address already contained #REF! (broken
-    whatever its cached value said)."""
-    by_addr = {(e.get("sheet", ""), str(e.get("cell", "")).replace("$", "")) for e in original_errors}
-    by_formula = {(e.get("sheet", ""), str(e.get("formula", ""))) for e in original_errors if str(e.get("formula", "")).startswith("=")}
-    with_ref = original_formulas_with_ref or set()
+    whatever its cached value said).
+
+    `forward` (how the preparation moved the original's cells: rows inserted
+    above a grid, sheets renamed) puts each original address where that cell
+    is now, so a title row above an erroring grid does not turn its old errors
+    into new ones -- nor pass a new error that landed on an old address.
+    With `forward` the addresses are exact and the formula-text match is not
+    used: a good cell pushed onto an erroring cell's row reads the same text
+    (=A10/B10) and would pass a new error as an old one."""
+    by_addr = {_moved_key(e.get("sheet", ""), str(e.get("cell", "")), forward) for e in original_errors}
+    by_formula = {(e.get("sheet", ""), str(e.get("formula", ""))) for e in original_errors if str(e.get("formula", "")).startswith("=")} if forward is None else set()
+    with_ref = {_moved_key(sh, cell, forward) for sh, cell in (original_formulas_with_ref or set())}
     out, pre = [], 0
     for e in errors:
         key_a = (e.get("sheet", ""), str(e.get("cell", "")).replace("$", ""))
@@ -311,15 +338,17 @@ def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
     return out
 
 
-def classify_against_original(original_path: Path, errors: list[dict[str, Any]]) -> dict[str, Any]:
+def classify_against_original(original_path: Path, errors: list[dict[str, Any]], forward: Forward | None = None) -> dict[str, Any]:
     """1.7.2: which recalculation errors were already errors in the ORIGINAL
     upload (the model's own #DIV/0! / #N/A, which Mind takes as they are) and
     which are new (introduced by the preparation, or revealed by it).
 
     An error cell counts as pre-existing when the original had an error at the
     same sheet+address, or -- because row inserts shift addresses -- an error
-    with the same formula text on the same sheet. Reads the original's cached
-    values (what Excel last saved), never recalculates it."""
+    with the same formula text on the same sheet; `forward` moves the original's
+    addresses as classify_errors does (and then the text match is not used).
+    Reads the original's cached values (what Excel last saved), never
+    recalculates it."""
     from openpyxl import load_workbook
 
     by_addr: set[tuple[str, str]] = set()
@@ -334,9 +363,9 @@ def classify_against_original(original_path: Path, errors: list[dict[str, Any]])
                     for cv, cf in zip(row_v, row_f):
                         v = cv.value
                         if isinstance(v, str) and v.startswith("#") and (v.endswith("!") or v.endswith("?") or v in ("#N/A", "#NULL!")):
-                            by_addr.add((ws_v.title, cv.coordinate))
+                            by_addr.add(_moved_key(ws_v.title, cv.coordinate, forward))
                             f = cf.value
-                            if isinstance(f, str) and f.startswith("="):
+                            if forward is None and isinstance(f, str) and f.startswith("="):
                                 by_formula.add((ws_v.title, f))
         finally:
             wb_v.close()

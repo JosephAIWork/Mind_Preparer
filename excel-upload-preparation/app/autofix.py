@@ -145,6 +145,24 @@ def qualify_refs(text: str, sheet: str) -> str:
     return "".join(out)
 
 
+def holds_deleted_ref(text: str) -> bool:
+    """A #REF! outside the formula's string literals: a deleted reference. "#REF!" in quotes is
+    text the formula looks for or shows (=COUNTIF(..., "#REF!")), and Mind compiles it."""
+    return "#REF!" in _STRING_RE.sub('""', text).upper()
+
+
+def deleted_refs_to_na(text: str) -> str:
+    """Each deleted reference (#REF!) becomes NA(); a "#REF!" inside a string literal stays."""
+    out: list[str] = []
+    pos = 0
+    for m in _STRING_RE.finditer(text):
+        out.append(_REF_LITERAL_RE.sub("NA()", text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_REF_LITERAL_RE.sub("NA()", text[pos:]))
+    return "".join(out)
+
+
 def target_probe(r1c1_formula: str, sheet: str) -> str | None:
     """A formula (R1C1, every reference naming its sheet) that says where the
     INDIRECT / OFFSET calls of `r1c1_formula` point: "row|column|sheet number|
@@ -455,8 +473,8 @@ def candidate_fixes(formula: str, parsed: Parsed, kind_of_value: str, preferred:
         # the deleted reference becomes NA(); a call that needs a range there (SUMIFS(#REF!, ...) --
         # Excel refuses SUMIFS(NA(), ...)) becomes NA() as a whole. What is left may still compute
         # in another branch, so IFERROR goes first; the plain value is the last resort.
-        substituted = _REF_LITERAL_RE.sub("NA()", formula)
-        body = None if "#REF!" in substituted.upper() else collapse_na_reference_calls(substituted)[1:]
+        substituted = deleted_refs_to_na(formula)
+        body = None if holds_deleted_ref(substituted) else collapse_na_reference_calls(substituted)[1:]
         dead = True
     if body is not None and _PURE_NA_RE.match("=" + body):
         body, dead = None, True
@@ -2121,14 +2139,14 @@ class _Engine:
                     if frow is None:
                         continue
                     for j, text in enumerate(frow):
-                        if text and "#REF!" in text.upper():
+                        if text and "#REF!" in text.upper() and holds_deleted_ref(text):
                             key = (sh.index, sh.r0 + start + i, sh.c0 + j)
                             if key not in self.err and key not in self.units and key not in self.cell_unit:
                                 found[(sh.index, text)].append(key)
         units: list[Unit] = []
         for (si, text), keys in found.items():
-            fixed = _REF_LITERAL_RE.sub("NA()", text)
-            if "#REF!" in fixed.upper():
+            fixed = deleted_refs_to_na(text)
+            if holds_deleted_ref(fixed):
                 continue
             fixed = collapse_na_reference_calls(fixed)
             sh = self.sheets[si]

@@ -92,3 +92,46 @@ def test_only_the_rows_that_hold_an_array_are_looked_at_cell_by_cell():
     # row 5 holds no array: its two cells were only used to draw the row's span, never asked one by one
     assert sheet.cells_asked.count((5, 2)) == 1 and sheet.cells_asked.count((5, 9)) == 1
     assert sheet.cells_asked.count((7, 5)) == 2                  # the span's end, then the cell itself
+
+
+# --- 1.11.x: pre-existing errors follow the original's cells through Prep's row inserts ----------
+def _down_one_row_from_10(sheet, row, col):
+    """A title row inserted at row 10 of S, and S renamed T (as Moves.forward answers)."""
+    if sheet == "S":
+        return "T", row + (row >= 10), col
+    return sheet, row, col
+
+
+def test_an_old_error_moved_down_by_a_title_row_stays_preexisting():
+    original = [{"sheet": "S", "cell": "C10", "error": "#DIV/0!", "formula": "=A10/B10"}]
+    # the original's error is now at C11 (formula text shifted too), and a cell the preparation
+    # broke landed on the old address C10
+    now = [
+        {"sheet": "T", "cell": "C11", "error": "#DIV/0!", "formula": "=A11/B11"},
+        {"sheet": "T", "cell": "C10", "error": "#VALUE!", "formula": "=A9+B9"},
+    ]
+    out = recalc.classify_errors(now, original, {("S", "$D$12")}, _down_one_row_from_10)
+    assert [e["preexisting"] for e in out["errors"]] == [True, False]
+    assert (out["preexisting"], out["new"]) == (1, 1)
+    # the original's #REF! formulas move as well
+    ref = recalc.classify_errors([{"sheet": "T", "cell": "D13", "error": "#REF!", "formula": "=#REF!"}], [], {("S", "$D$12")}, _down_one_row_from_10)
+    assert ref["preexisting"] == 1
+    # without the moves, as before: matched by address only
+    same = recalc.classify_errors(now, original)
+    assert same["preexisting"] == 0
+    # a good cell from C9 pushed onto C10 now reads the old error's text (=A10/B10): with the moves
+    # known it is not taken for the old error (the text match is only the fallback without them)
+    pushed = [{"sheet": "T", "cell": "C10", "error": "#DIV/0!", "formula": "=A10/B10"}]
+    assert recalc.classify_errors(pushed, original, None, _down_one_row_from_10)["new"] == 1
+
+
+def test_the_cached_value_fallback_moves_the_original_too(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "S"
+    ws["C10"] = "#DIV/0!"  # what openpyxl reads back as the cached value of an error cell
+    p = tmp_path / "original.xlsx"
+    wb.save(p)
+    now = [{"sheet": "T", "cell": "C11", "error": "#DIV/0!", "formula": "=A11/B11"}, {"sheet": "T", "cell": "C10", "error": "#DIV/0!", "formula": "=A9/B9"}]
+    out = recalc.classify_against_original(p, now, _down_one_row_from_10)
+    assert [e["preexisting"] for e in out["errors"]] == [True, False]

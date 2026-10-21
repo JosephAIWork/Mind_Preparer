@@ -95,6 +95,19 @@ def test_a_dead_formula_is_replaced_and_a_broken_one_loses_its_ref_literal():
     assert [f["content"] for f in endpoint] == ["=IFERROR(NA(),0)", '=IFERROR(NA(),"")']  # the range can never be rebuilt: nothing of the #REF! is kept
 
 
+def test_a_ref_text_in_quotes_is_not_a_deleted_reference():
+    # a check formula that counts or shows the text "#REF!" compiles in Mind: it is never rewritten
+    for f in ['=COUNTIF(R1C1:R10C1,"#REF!")', '=IF(ISERROR(R1C1),"#REF!",R1C1)']:
+        assert not autofix.holds_deleted_ref(f)
+        assert autofix.deleted_refs_to_na(f) == f
+    # a real deleted reference next to the text: only the reference becomes NA()
+    mixed = '=IF(ISERROR(#REF!),"#REF!",\'S\'!#REF!)'
+    assert autofix.holds_deleted_ref(mixed)
+    assert autofix.deleted_refs_to_na(mixed) == '=IF(ISERROR(NA()),"#REF!",NA())'
+    fixes = candidate_fixes('=IF(RC[1]=0,"#REF!",#REF!)', parse_r1c1('=IF(RC[1]=0,"#REF!",#REF!)'), "number")
+    assert fixes[0]["content"] == '=IFERROR(IF(RC[1]=0,"#REF!",NA()),0)'  # the formula is kept, its text too
+
+
 # --- the engine, in a real Excel -----------------------------------------------------------
 def _book(tmp_path: Path, fill) -> Path:
     wb = openpyxl.Workbook()
@@ -453,6 +466,7 @@ def test_a_dormant_ref_becomes_na_without_a_trip_to_prep(tmp_path):
         ws["B1"] = "=IF(A1>0,10,#REF!)"          # 10 today: the #REF! branch is never evaluated, so no error shows
         ws["C1"] = "=B1*2"
         ws["B2"] = "=ERROR.TYPE(#REF!)"          # 4 today; with NA() it would read 7 -> must stay as it is
+        ws["B3"] = '=COUNTIF(A1:A2,"#REF!")'     # the text "#REF!", no deleted reference: never touched
 
     src = _book(tmp_path, fill)
     res = run_autofix(src, tmp_path / "work")
@@ -461,6 +475,7 @@ def test_a_dormant_ref_becomes_na_without_a_trip_to_prep(tmp_path):
     assert [f["cell"] for f in fixed] == ["B1"] and fixed[0]["after"] == "=IF(A1>0,10,NA())"
     wb = openpyxl.load_workbook(res["output_path"])
     assert wb["Calc"]["B1"].value == "=IF(A1>0,10,NA())" and wb["Calc"]["B2"].value == "=ERROR.TYPE(#REF!)"
+    assert wb["Calc"]["B3"].value == '=COUNTIF(A1:A2,"#REF!")'
     after = _values(Path(res["output_path"]))
     assert after["Calc!B1"] == 10 and after["Calc!C1"] == 20 and after["Calc!B2"] == 4
 
