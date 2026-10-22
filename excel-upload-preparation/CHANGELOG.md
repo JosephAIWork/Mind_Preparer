@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.11.10
+
+**The scan's rule checks parse each formula once, and a review of 1.11.5-1.11.7.** The rules and the Prep
+planners each worked out a formula's references, function calls, names and text with strings masked on
+their own -- up to nine times per formula on CNHI (245,847 formulas). A per-scan memo (`formula_memo()` in
+`app/formula_utils.py`, keyed by the formula's text, handing out fresh copies) now works each out once for
+the whole scan and plan. Three slow spots the profile showed went too:
+
+- the formulas that can call an `MM_` function are found once per workbook (38 passes over every formula
+  before);
+- RSK-002 and its planner group the grids by sheet once instead of once per array formula;
+- `referenced_by` looks only in the cell's band of 64 rows (tall rectangles apart), still returning the first
+  reader in reading order (a randomized test checks it against the plain scan).
+
+Scan + plan with `scripts/perf_scan.py`, same machine, one at a time (1.11.9 -> memo -> all of it): CNHI
+347 s -> 316 s -> 162 s (rules 193 s -> 164 s -> 77 s; peak memory 645 MB -> 966 MB), Horizon 41 s -> 30 s
+-> 25 s, Palermo 162 s -> 146 s -> about the same (two back-to-back pairs, 145 / 169 s before the last three
+and 148 / 169 s after; its rules 21-26 s -> 16-17 s): most of Palermo's time is loading the workbook
+(openpyxl, 80-110 s), which this does not touch. The scan fingerprints (`scripts/scan_fingerprint.py`: every finding, cell and planned
+operation) of Horizon, Palermo and CNHI are identical before and after, and identical between 1.11.4 and
+1.11.9 too, apart from the 1.11.7 pivot additions.
+
+An adversarial review of 1.11.5-1.11.7 (32 findings, 27 confirmed by a second agent, all fixed with tests):
+
+- pivot tables: a workbook with GETPIVOTDATA keeps its pivots (with a note); error and empty pivot cells
+  are kept as they are; a failed write after Clear goes back to values; user formulas beside the filters
+  are kept; hidden items, filters and slicers fall back to values; the sheet is unprotected first; the
+  title shift follows column inserts too;
+- Fix all issues: the dormant `#REF!` step leaves `"#REF!"` inside text alone; Recalculate matches the
+  original's errors through the rows and columns inserted since;
+- server: one Apply at a time per session (409); a failed re-analysis still returns the new version (with
+  `scan_error`); every scan says the pivot setting; the estimate counts skipped sheets, error constants and
+  dormant `#REF!` as unknown errors, the original's own recalculation, the pivot tables, and the worker's
+  real state;
+- the Apply-all list and the Do everything screen: entries added during Apply all are kept, stale entries
+  block Apply all, overlap warnings follow inserts and the server's order, the last repeat wins, the timer
+  and the estimate no longer show stale numbers.
+
+**The estimate, recalibrated.** Four Do everything runs (`night_chain.py --pivot-mode`, which now also keeps
+the estimate in chain.json): Phoenix TVOG with each pivot setting, and Palermo. The old figures were
+measured before the bulk writes and the Excel worker: the likely figure was 1.4-2.4 times the real time.
+Excel now opens at about 8 s + 0.3 s/MB and saves at about 10 s + 0.18 s/MB (it was 1.2 and 0.9 s/MB),
+a fix pass costs about 0.1 of a scan (it was one scan), and a re-scan 0.7-1.5 scans. Fitted on these
+four runs, the likely figure is 0.96-1.26 of the real time and each real time is between the low and the
+high figure; CNHI is the next file to check it on.
+
+| run | real | likely, before | likely, now |
+|---|---|---|---|
+| Phoenix, pivots blocking (1 to cells) | 1,787 s | 3,821 s | 2,125 s |
+| Phoenix, pivots to formulas | 1,456 s | 3,199 s | 1,712 s |
+| Phoenix, pivots to values | 1,189 s | 2,880 s | 1,503 s |
+| Palermo | 843 s | 1,199 s | 809 s |
+
+On Phoenix "to formulas" gives the same workbook as "to values": its six SUMMARY pivots have a report filter
+with hidden items and its CFs pivot has about 108,000 cells (over 20,000), so each falls back to values, as
+designed. The converted cells equal what the pivots showed (96,675 cells compared, no difference). Palermo's
+chain (1,020 s, it was 1,286 s in 1.11.4) ends, exactly as in 1.11.4, with Recalculate finding 667 formula errors
+in the Mind loop version, where Fix all issues and Prep had each left none -- still to look into. Its
+final workbook equals 1.11.4's in all 4,035,983 cells but one (`scripts/compare_final_workbooks.py`):
+`'Saved down'!C2`, a `CELL("filename")` that Prep writes as a value, holds the app's temporary folder,
+which differs per run -- and is not the user's own path, also to look into.
+
 ## 1.11.9
 
 **One Excel per session.** After Fix all issues, each Prep round, the Mind loop and Recalculate used to start

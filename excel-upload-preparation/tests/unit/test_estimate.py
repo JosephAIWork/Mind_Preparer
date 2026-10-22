@@ -1,15 +1,17 @@
 """1.11.6: the "Do everything" time estimate (app/estimate.py) and its endpoint."""
 from fastapi.testclient import TestClient
 
-from app.estimate import CAVEAT, estimate_chain
+from app.estimate import CAVEAT, OPEN_S_PER_MB, RECALC_AHEAD_S, SAVE_S_PER_MB, estimate_chain
 from app.web import server
 
 
 def test_phoenix_numbers_give_the_range_it_took():
-    # Phoenix TVOG: 179 MB, scan 344 s, 6,147 error cells -- Fix all issues took ~37 min
-    r = estimate_chain(179, 344, 305_785, 6147, 844, True)
+    # Phoenix TVOG (1.11.10, two sheets skipped so the stored errors are unknown): 170 MB, scan 270 s, 852
+    # Prep changes, 8 pivot tables to values -- Fix all issues took 661 s, the whole Do everything 1,189 s
+    r = estimate_chain(170, 270, 305_785, None, 852, True, worker=True, baseline_mb=170, pivots=[("pivot_to_values", 0)] * 8)
     fix = next(s for s in r["steps"] if s["id"] == "fixAll")
-    assert fix["low_s"] <= 37 * 60 <= fix["high_s"]
+    assert fix["low_s"] <= 661 <= fix["high_s"]
+    assert r["total"]["low_s"] <= 1189 <= r["total"]["high_s"]
     assert [s["id"] for s in r["steps"]] == ["fixAll", "prepare", "loop", "recalc"]
     assert r["total"]["low_s"] <= r["total"]["mid_s"] <= r["total"]["high_s"]
     assert r["caveat"] == CAVEAT and "depends" in CAVEAT
@@ -61,13 +63,14 @@ def test_the_originals_recalculation_is_counted_when_it_has_not_run():
     without = estimate_chain(179, 344, 305_785, 48, 0, True, worker=True)
     pending = estimate_chain(179, 344, 305_785, 48, 0, True, worker=True, baseline_mb=179)
     assert recalc(pending)["low_s"] == recalc(without)["low_s"] == 5  # the fixer's step may have paid it
-    assert recalc(pending)["mid_s"] - recalc(without)["mid_s"] >= 1.2 * 179 and "original" in recalc(pending)["why"]
+    assert recalc(pending)["mid_s"] - recalc(without)["mid_s"] >= OPEN_S_PER_MB * 179 and "original" in recalc(pending)["why"]
 
 
 def test_recalculate_is_ready_only_when_the_worker_works_it_out_ahead():
     recalc = lambda r: next(s for s in r["steps"] if s["id"] == "recalc")  # noqa: E731
-    assert recalc(estimate_chain(179, 344, 305_785, 48, 0, True, worker=True))["mid_s"] == 5
-    assert recalc(estimate_chain(179, 344, 305_785, 48, 0, True, worker=True, recalc_ahead=False))["mid_s"] > 200
+    assert recalc(estimate_chain(179, 344, 305_785, 48, 0, True, worker=True))["mid_s"] == RECALC_AHEAD_S["mid"]
+    # otherwise its own Excel opens and saves the version
+    assert recalc(estimate_chain(179, 344, 305_785, 48, 0, True, worker=True, recalc_ahead=False))["mid_s"] > OPEN_S_PER_MB * 179 + SAVE_S_PER_MB * 179
 
 
 def _book(tmp_path, name, fill):
