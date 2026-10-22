@@ -351,3 +351,19 @@ def test_a_dropdown_kept_in_the_extension_block_is_found(tmp_path):
     analysis = {"workbooks": [{"copy_path": str(path)}]}
     assert loop_builder._dropdown_at(analysis, "Drivers", "K3") == "a dropdown list (Lists!$B$2:$B$6)"
     assert loop_builder._dropdown_at(analysis, "Drivers", "H3") is None
+
+
+def test_an_output_that_reads_the_cleared_area_gets_it_cleared():
+    # Palermo (1.11.11): Macro!A13 = Projection!CX15 + OFFSET(V13, 0, 10 * tariff): the block the macro
+    # copies adds the per-tariff results it pasted earlier, which the macro clears before its loop
+    from app import loop_builder
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Macro"
+    ws["A13"] = "=Projection!CX15+OFFSET(V13,0,10*(MATCH(1,X1:X3,0)-1))"
+    ws["B13"] = "=Projection!CY15"
+    area = {"sheet": "Macro", "r1": 13, "c1": 22, "r2": 140, "c2": 281}
+    assert loop_builder._reader_of_area(wb, "Macro!A13:B13", area) == "Macro!A13"
+    assert loop_builder._reader_of_area(wb, "Macro!B13:B13", area) is None  # reads another sheet only
+    assert loop_builder._reader_of_area(wb, "Macro!A13:B13", {**area, "sheet": "Other"}) is None

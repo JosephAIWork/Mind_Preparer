@@ -71,6 +71,30 @@ def _cells_of(sheet: str, ref: str) -> list[tuple[int, int]]:
     return [(c, row) for row in range(r["r1"], r["r2"] + 1) for c in range(r["c1"], r["c2"] + 1)]
 
 
+def _reader_of_area(wb: Any, block: str, area: dict[str, Any]) -> str | None:
+    """The first cell of `block` ('Sheet'!A1:B2, an output the macro copies) whose formula reads a cell of
+    `area` (a cleared area: sheet, r1, c1, r2, c2), or None. Such a block adds what an earlier run left
+    there to every loop value: the macro clears it first, Mind would not."""
+    from .formula_utils import cell_refs_in_formula
+
+    sheet, ref = _split(block)
+    if wb is None or sheet is None or sheet not in wb.sheetnames:
+        return None
+    ws = wb[sheet]
+    for col, row in _cells_of(sheet, ref):
+        f = ws.cell(row=row, column=col).value
+        if not isinstance(f, str) or not f.startswith("="):
+            continue
+        for r in cell_refs_in_formula(f):
+            if (r.get("sheet") or sheet) != area["sheet"]:
+                continue
+            r1, r2 = r.get("r1") or 1, r.get("r2") or 1_048_576
+            c1, c2 = r.get("c1") or 1, r.get("c2") or 16_384
+            if r1 <= area["r2"] and r2 >= area["r1"] and c1 <= area["c2"] and c2 >= area["c1"]:
+                return f"{_qs(sheet)}!{num_to_col(col)}{row}"
+    return None
+
+
 def _held(analysis: dict[str, Any], sheet: str, col: int, row: int) -> Any:
     from .inventory import cell_value
 
@@ -793,6 +817,13 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         ws = wb[c["sheet"]]
         r2 = min(c["r2"], ws.max_row)
         c2 = min(c["c2"], ws.max_column)
+        # 1.11.11: an output block that reads the cleared area (Palermo: Macro!A13 = ... + OFFSET(V13, ...)
+        # over the per-tariff results the macro pastes) would add the earlier run's values to every loop
+        # value in Mind; the macro clears them first, so the plan does too, without being asked
+        reader = next((rd for o in plan["outputs"] if o.get("from") for rd in [_reader_of_area(wb, o["from"], c)] if rd), None)
+        clear = clear_old or reader is not None
+        if reader and not clear_old:
+            c["read_by"] = reader
         n = 0
         over = 0
         for row in ws.iter_rows(min_row=c["r1"], max_row=r2, min_col=c["c1"], max_col=c2):
@@ -805,15 +836,17 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 if n >= MAX_CLEARS:
                     over += 1
                     continue
-                if clear_old:
+                if clear:
                     ops.append({"op": "clear_cell", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": ref, "before": cell.value, "after": None, "note": "the macro clears this area before a run; nothing from an earlier run stays"})
                 n += 1
         c["cells"] = n
-        c["included"] = bool(clear_old and n)
+        c["included"] = bool(clear and n)
         if over:
             c["why"] = f"{over} more filled cells in the area were left (limit {MAX_CLEARS})"
-        if clear_old:
+        if clear:
             plan["counts"]["cleared"] += n
+        if c.get("read_by") and n:
+            plan["notes"].append(f"{c['resolved'] if c.get('resolved') else c['target']} is cleared although not asked: {c['read_by']} reads it, so what an earlier run left there would be added to every loop value in Mind (the macro clears it before its loop)")
 
     plan["operations"] = ops
     ready = [le for le in plan["loops"] if le["status"] == "ready"]
