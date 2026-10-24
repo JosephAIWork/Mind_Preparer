@@ -1041,53 +1041,100 @@ functions:
   registry_status: core_v0_1
 - function: MM_INSTANCE
   category: Instance
-  syntax: =MM_INSTANCE(Cell, Param, [NanIfNotExists])
-  purpose: 'Returns the value of a cell for a specified instance. Used to link different instances.
+  syntax: =MM_INSTANCE(Value, Param, [NanIfNotExists])
+  purpose: 'Returns the value of a cell or range for ONE specified instance. A plain reference to a workbook
+    that has instances returns the SUM over the linked instances (the rows of /InstanceKeys); MM_INSTANCE
+    is how a formula reads one instance instead of that total, and the only way to read a sibling instance
+    of the same workbook.
 
     '
   parameters:
-    Cell:
+    Value:
       required: true
-      type: cell
-      description: Cell whose value should be returned. Not meant to be a range bigger than a cell.
+      type: cell_or_range
+      description: Cell or range whose values are returned for the chosen instance (Mind KB, published
+        2026-10-20; earlier versions of this registry said a single cell only).
     Param:
       required: true
       type: index_or_name
-      description: Index or name of the instance to access.
+      description: Index (1-based position in the instance list) or name (instance key) of the instance
+        to read.
     NanIfNotExists:
       required: false
       type: boolean
-      description: 'If TRUE, returns NaN when the instance does not exist. If FALSE, returns the initial
-        Excel value of the cell.
+      description: 'If TRUE, returns NaN when the instance does not exist. If FALSE (the default), silently
+        returns the initial Excel value of the cell.
 
         '
   mind_behavior:
-  - Accesses values across instances.
-  - Can return NaN if requested instance does not exist and NanIfNotExists is TRUE.
-  - Can access values of a multidimensional cell for a specified instance.
+  - Reads one instance; a plain cross-workbook reference instead sums all linked instances (Mind's formula
+    view marks it /* cross-model SUM */).
+  - Can read a sibling instance of the same workbook, which /InstanceKeys links cannot do.
+  - Returns all values of a multidimensional cell for the chosen instance, even when that loop does not
+    exist in the selected instance (e.g. per-instance loops named with MM_INSTINDEX).
+  - Returns NaN for a missing instance only when NanIfNotExists is TRUE; otherwise the Excel value.
+  - Under partial load an instance outside the loaded group behaves as missing (Excel default value).
+  - Observed 2026-10-22 (project testy1) - Mind's upload check (Excel value vs Mind value, before any
+    run) reports 0 for MM_INSTANCE(cell, k) with k above 1, even when the instances exist; after a run
+    the values are right (1200 and 800). Treat that log line as a false alarm, not a formula error.
+  - Asking for the currently selected instance gives the same result as not using the function.
   excel_behavior:
-  - Uses Excel default values where applicable.
+  - Instances do not exist in Excel; the function returns the referenced cell's own Excel value whatever
+    Param is.
   validation_rules:
-  - Cell should be a single cell.
   - Param must identify an existing instance by index or name.
-  - Consider NanIfNotExists when missing instances are possible.
+  - Set NanIfNotExists to TRUE when the instance may not exist, or size the calling table to the instance
+    count.
+  - Wrap in MM_ISINSTANCELOADED when instance groups (/INSTANCESELECT) are used.
   - Review carefully when used with dynamic loops.
   common_mistakes:
-  - Passing a range instead of a single cell.
-  - Assuming missing instances always return NaN.
-  - Using instance name inconsistently.
+  - Using MM_INSTANCE to total instances; a plain reference already sums the linked instances.
+  - Summing non-additive values (labels, dates) through a plain reference instead of taking them from
+    one instance.
+  - Assuming missing instances always return NaN (the default returns the Excel value).
+  - Hard-coding instance names that drift from /InstanceKeys; prefer indexes, or keys read from the instance
+    table.
   - Using the function when accessing the currently selected instance would give the same result.
   use_when:
-  - Linking values across instances.
-  - Consolidating across instance structures.
-  - Accessing another instance from the currently selected instance.
+  - Reading one specific instance instead of the sum over linked instances.
+  - Taking a non-additive value (label, date, setting) from one instance in a consolidated output.
+  - Building a table with one row per instance (row k reads instance k).
+  - Reading a sibling instance of the same workbook (for example reinsurance reading the underlying portfolios).
   avoid_when:
+  - Totalling linked instances; a plain reference does it.
   - Accessing a cell in the same selected instance where no instance lookup is required.
+  - Modelling a dimension a loop could carry; Mind recommends loops unless instance features are needed
+    (less RAM and CPU).
+  patterns:
+  - name: Label from one instance
+    formula: =MM_INSTANCE(Model!LabelCell, 1)
+    note: Consolidated statements keep plain references for amounts (summed) and take the period label
+      from instance 1.
+  - name: One row per instance
+    formula: =MM_INSTANCE(Model!Cell, Index)
+    note: The Index column counts 1, 2, 3 (previous + 1) in a grid resized to the instance count; the
+      dimensions of Cell come along.
+  - name: Instance names list
+    formula: =MM_INSTANCE(Loop!KeyCell, Index)
+    note: KeyCell holds =MM_INSTANCEKEY(), so the column lists every instance key.
+  - name: Gated sibling read
+    formula: =IF(IsReinsurance, IF(Row=0, 0, MM_INSTANCE(OFFSET(Source, Row, 0), Index)), 0)
+    note: A cheap IF in front keeps instances that do not need the value from evaluating it; OFFSET inside
+      the first argument picks the row.
+  - name: Partial-load guard
+    formula: =IF(MM_ISINSTANCELOADED(A5, "TS2"), MM_INSTANCE(A5, "TS2"), 0)
+    note: Returns 0 instead of the Excel default when TS2 is not in the loaded instance group.
   related_functions:
   - MM_INSTINDEX
   - MM_INSTANCEKEY
   - MM_ISINSTANCELOADED
   - MM_INSTANCEUNION
+  - MM_LOOPINSTANCE
+  sources:
+  - Mind KB article functions/instance/mm_instance (published 2026-10-20), read with the Mind MCP get_kb_article
+    tool.
+  - Mind tutorials instances/intro, instances/calc and instances/partial, read with get_mind_tutorial.
+  - Read-only look at the Harel MM-IFRS17 project (13 portfolio instances), 2026-10-22.
   registry_status: core_v0_1
 - function: MM_INSTINDEX
   category: Instance

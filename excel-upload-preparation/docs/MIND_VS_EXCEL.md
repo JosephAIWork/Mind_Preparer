@@ -392,6 +392,72 @@ runs; the five cells left were the `Saved down` file paths fed by the
 one-cell array formula `{=LEFT(CELL("filename",A1),...)}`, now frozen by
 FRM-012 as well.
 
+## Instances demo: a grid title without '#' (2026-10-22)
+
+**The case.** Three hand-built workbooks to show how instances work:
+`1_Central` (an `/InstanceKeys` grid listing Product A, B, C under the header
+`2_Product`, plus a data table), `2_Product` (the workbook to copy, its name
+from `MM_INSTANCEKEY`) and `3_Summary` (a plain link to `2_Product`, and one
+row per copy with `MM_INSTANCE(cell, 1 / 2 / 3)`). Uploaded to Mind as
+**testy1** (folder MindReady_Sandbox). Mind's log:
+
+    3_Summary > Summary > D12: Excel value: 1000 Mind value: 0
+    3_Summary > Summary > D13: Excel value: 1000 Mind value: 0
+
+**What Mind did** (read with the Mind MCP, read-only): every grid of Central was
+"Untitled"; the title text `Instances /InstanceKeys` had become the *header* of
+a one-column grid B4:B8, so the model had no flags at all;
+`get_specific_grid(Instances)` answered "This model doesnt contains Instances
+grid", and `2_Product` had only `Original_Instance`. The title over the data
+table split it in two (D4:D8 under the header "Product data", E5:F8 apart).
+
+**Why 0 -- two causes, found one after the other.** First upload: copies 2 and
+3 did not exist (the title problem below). Second upload, titles fixed: the
+three copies existed and the log was *the same*. The 0 comes from Mind's upload
+check, not from the model: after a run in Mind (2026-10-22) the grid showed
+
+    No.  Product    Total premium
+    1    Product A  1000
+    2    Product B  1200
+    3    Product C   800
+
+which is exactly what the model should give.
+
+**Lessons.**
+
+1. A grid title must **start with `#`** and sit directly above the grid's
+   top-left cell (`#Instances /InstanceKeys`). Without the `#` the title is read
+   as the header row and every `/Flag` in it is lost. For `/InstanceKeys` that
+   means no instances at all, and the upload gives no error.
+2. Before uploading a workbook built by hand, read it with the app's own grid
+   detection (`app/grids.py` `detect_grids`, the same reading the scan uses):
+   it gives each grid's name and flags. Here it would have shown no names and
+   no flags. After the fix it shows `Instances` with `instancekeys`,
+   `Product data`, `This product`, `All products`, `Each product`, and the
+   notes as lone text cells.
+3. Text cells touching each other form a grid: a sheet title over a subtitle,
+   a column of notes. Keep notes in single cells with empty cells around them.
+   A header cell that starts with `#` reads like a title; `No.` was used instead.
+4. In the upload log, "Mind value: 0" on an `MM_INSTANCE(cell, 2 / 3 ...)` cell
+   does **not** prove the instance is missing. After the fix (re-upload
+   2026-10-22 11:39) Mind had the three copies Product A, B, C, and the upload
+   check still reported D12 and D13 as 0. The plain link C6 was *not* reported
+   (1,000 = 1,000, no sum of the copies), and the project had not been run
+   ("Project not run - no output available"; every copy still showed Product A,
+   1,000). Reading: the upload check compares each cell before any run, without
+   the instances' own values -- copy 1 gives the Excel value, a copy number
+   above 1 gives 0. So check the model's instance list first (Mind MCP
+   `get_project_structure`); the values themselves come only from a run.
+   **Confirmed by the run above: this log line is a false alarm of Mind's
+   upload check.** Do not "fix" a formula for it.
+5. When the instances do exist, cells built on them differ from Excel by
+   design: Excel has only one copy. Seen in Mind after the run: D12 1,200 and
+   D13 800 (Excel 1,000), C12 / C13 Product B / Product C. Expected but not
+   yet looked at: the plain link C6 at 3,000 (Excel 1,000). These are not
+   errors.
+
+The demo files are in `PyCodes\MindInstancesDemo` (outside the app).
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all
