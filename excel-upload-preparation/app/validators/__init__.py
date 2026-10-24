@@ -6,9 +6,10 @@ A validator function takes `(rule, analysis, config)` and returns a partial
 Finding dict (at least `status` and `message`); `run_rule` fills in the rest
 from the rule definition and returns a dict ready for `app.models.Finding`.
 
-If a rule's implementation path doesn't resolve to a real function (not
-built in this MVP pass), `run_rule` returns the rule's own `on_unevaluable`
-status rather than silently skipping it -- SKILL.md non-negotiable rule #8.
+If a rule's implementation path doesn't resolve to a real function (a rule
+that is documented but not built), `run_rule` returns the rule's own
+`on_unevaluable` status rather than silently skipping it: a rule that cannot
+be checked is never reported as passed.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ def run_rule(rule: dict[str, Any], analysis: dict[str, Any], config: dict[str, A
             location={},
             observed=None,
             expected=None,
-            message=f"Not implemented in this MVP: {implementation}. Rule text: {rule['description']}",
+            message=f"Not implemented: {implementation}. Rule text: {rule['description']}",
             readiness_impact=rule["on_unevaluable"],
         )
         return base

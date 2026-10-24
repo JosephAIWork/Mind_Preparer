@@ -1,4 +1,4 @@
-"""Real recalculation adapter (CLAUDE_CODE_PROMPT.md phase 9): drives the
+"""Real recalculation adapter: drives the
 locally-installed Excel via win32com to recalculate a copy of the workbook.
 Setting calculation flags or saving through openpyxl is explicitly NOT a
 valid recalculation per excel/recalculation.md -- this is the trusted

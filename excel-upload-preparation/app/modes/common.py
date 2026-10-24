@@ -89,8 +89,8 @@ def _run_mode(
             "validation_status": validation_report["status"],
             "recalculation_performed": False,
             "reason": (
-                "PASS is unreachable in this MVP: no recalculation adapter is implemented "
-                "(READY-001 always reports NOT_SUPPORTED)."
+                "PASS needs a real recalculation in Excel: until one has run, "
+                "READY-001 reports NOT_SUPPORTED."
                 if overall_status != Status.PASS
                 else None
             ),

@@ -3,7 +3,7 @@
 Two uses, both advisory:
 
 * `suggest_formula_fix` -- one-shot "suggest a fix" for a formula finding
-  (UI button). Never auto-applied (SKILL.md non-negotiable rule #6). Output
+  (UI button). Never applied automatically. Output
   is always tagged evidence=RECOMMENDATION.
 * `chat_completion` -- multi-turn conversation used by the
   workbook chatbot (app/chat_context.py). The model only ever *answers*;

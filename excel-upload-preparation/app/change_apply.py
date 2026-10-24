@@ -1,4 +1,4 @@
-"""Real change-set application (CLAUDE_CODE_PROMPT.md phase 8), scoped to
+"""Real change-set application, scoped to
 the handful of rules the mined rule set itself marks as safe to
 auto-correct (almost everything else needs a human judgment call by the
 rules' own design). Every apply function:

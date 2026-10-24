@@ -194,7 +194,7 @@ def has_vba_project(path: Path) -> bool:
 
 def make_immutable_copy(source_path: Path, work_dir: Path) -> tuple[Path, str]:
     """Hash the source, then copy it -- never open or modify the original.
-    Non-negotiable rule #1 (SKILL.md): never modify the source workbook.
+    The source workbook is never modified.
     """
     source_path = Path(source_path)
     if not source_path.is_file():

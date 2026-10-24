@@ -1,8 +1,7 @@
 """PREP_MIND_LOOPS: focuses on loop/result/resize rules (modes/prep-mind-loops.md).
-ANALYZE+VALIDATE+ASK only in this MVP -- auto-correction (TRANSFORM) needs
-change-set application, which isn't built yet, so `output` stays null and
-status is capped by the same NOT_SUPPORTED/REQUIRES_USER_INPUT findings that
-would otherwise block a real correction."""
+This mode analyzes, validates and asks only: it applies nothing, so `output` stays null and the
+status is capped by the NOT_SUPPORTED / REQUIRES_USER_INPUT findings that would block a
+correction. Changes are made through Prep, the automatic fixer and the Mind loop builder."""
 from __future__ import annotations
 
 from pathlib import Path

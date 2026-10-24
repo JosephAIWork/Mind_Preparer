@@ -2,7 +2,7 @@
 reviewable *operations* and apply the ones the user approves to a fresh copy
 through Excel.
 
-Design (SKILL.md non-negotiables #1, #4, #6, #7):
+Design (the source is never modified, nothing is invented, nothing is applied without approval):
   * `plan_actions()` never touches a file: every action lists exactly which
     cells / sheets it would change, with before/after, and says what it had
     to skip and why.

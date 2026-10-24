@@ -1,6 +1,5 @@
-"""PLAN_MODE: analyze and report only, across every active rule. Matches
-modes/plan-mode.md exactly -- this is the one mode fully realizable in the
-MVP scope (no TRANSFORM step is needed since it never applies changes)."""
+"""PLAN_MODE: analyze and report only, across every active rule (modes/plan-mode.md). It never
+applies changes, so it needs no TRANSFORM step."""
 from __future__ import annotations
 
 from pathlib import Path
