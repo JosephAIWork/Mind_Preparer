@@ -1,4 +1,4 @@
-"""The one answer the user needs (1.7.2): is this workbook acceptable by Mind,
+"""The one answer the user needs: is this workbook acceptable by Mind,
 and if not, what exactly stands in the way?
 
 The engine already knows everything: each finding carries the rule's
@@ -219,7 +219,7 @@ def plan_counts(plan: list[dict[str, Any]]) -> dict[str, int]:
     return {a["id"]: int(a.get("count", 0)) for a in plan}
 
 
-# --- what an Apply did (1.7.3) --------------------------------------------------------------
+# --- what an Apply did --------------------------------------------------------------
 STATUS_RANK = {"PASS": 0, "WARNING": 1, "REQUIRES_USER_INPUT": 2, "NOT_SUPPORTED": 3, "ERROR": 4}
 MANUAL_SOURCES = {"assistant": "Assistant fix", "formula_replacement": "Formula fix"}
 

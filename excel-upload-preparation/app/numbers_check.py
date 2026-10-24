@@ -1,11 +1,11 @@
-"""1.8.0 -- did the preparation change what the model computes?
+"""Did the preparation change what the model computes?
 
 Prep inserts rows, writes titles and renames sheets. Excel moves ordinary
 references along, but not everything a model reads is an ordinary reference:
-a 3-D reference (=SUM('LoB 1:>>'!K65)) keeps its row when a row is inserted on
-one of its sheets, and INDIRECT("'"&$E$2&"'!H"&n) is text. On one of the test
-models (PVFP) the standard Prep changed 2,462 computed values that way -- 1,781
-of them into errors -- and nothing said so.
+a 3-D reference (=SUM('Line 1:>>'!K65)) keeps its row when a row is inserted on
+one of its sheets, and INDIRECT("'"&$E$2&"'!H"&n) is text. On one real model
+the standard Prep changed 2,462 computed values that way -- 1,781 of them into
+errors -- and nothing said so.
 
 This module recalculates the ORIGINAL workbook and a PREPARED version of it in
 one Excel session and compares every formula cell, following each cell through

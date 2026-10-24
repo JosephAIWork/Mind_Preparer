@@ -1,7 +1,7 @@
-"""Pivot tables, through Excel (1.11.7): turn one into plain cells, or into formulas over its source.
+"""Pivot tables, through Excel: turn one into plain cells, or into formulas over its source.
 
-Mind's converter stopped on Phoenix TVOG with "The method or operation is not implemented"; with its pivot
-tables turned into values the same file was accepted. Mind imports values only, so a pivot table as
+Mind's converter stops on a workbook with pivot tables ("The method or operation is not implemented");
+with its pivot tables turned into values the same file is accepted. Mind imports values only, so a pivot table as
 plain cells is what Mind reads -- but frozen: it does not follow its source in a Mind loop. As formulas
 it does: every value, subtotal and grand-total cell becomes SUMIFS / COUNTIFS / AVERAGEIFS / MAXIFS /
 MINIFS over the pivot's source range, with the cell's row and column items (and the report filters)

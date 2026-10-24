@@ -1,7 +1,7 @@
 """Real change-set application (CLAUDE_CODE_PROMPT.md phase 8), scoped to
 the handful of rules the mined rule set itself marks as safe to
-auto-correct (see CHANGELOG.md -- almost everything else needs a human
-judgment call by the rules' own design). Every apply function:
+auto-correct (almost everything else needs a human judgment call by the
+rules' own design). Every apply function:
 
   * works on a **fresh copy**, never the file it was handed directly
     in place without a hash check first (non-negotiable rule #1);
@@ -10,7 +10,7 @@ judgment call by the rules' own design). Every apply function:
   * never claims recalculation succeeded -- call app.recalc.recalculate()
     separately afterward (see app/modes -- VERIFY is a distinct step).
 
-1.3.0: cell edits are written by **Excel through COM** whenever Excel is
+Cell edits are written by **Excel through COM** whenever Excel is
 available (`Range.Formula` / `Range.FormulaArray` on the copy, then Save).
 A pure-Python (openpyxl) save drops package parts it doesn't model and the
 result can fail to open in Excel -- see app/excel_com.py. The openpyxl path

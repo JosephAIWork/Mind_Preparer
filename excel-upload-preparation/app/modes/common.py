@@ -1,6 +1,6 @@
 """Shared ANALYZE -> VALIDATE -> ASK -> REPORT runner for all four modes.
 TRANSFORM/VERIFY are intentionally absent (no change-set application or
-recalculation adapter in this MVP -- see CHANGELOG.md 1.1.0).
+recalculation adapter here: Prep, the fixer and app/recalc.py do those).
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _build_question(finding: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_mode(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """_run_mode with every formula parsed once for all the rules (1.11.10, formula_memo)."""
+    """_run_mode with every formula parsed once for all the rules (formula_memo)."""
     with formula_memo():
         return _run_mode(*args, **kwargs)
 

@@ -1,23 +1,21 @@
-"""LLM abstraction (CLAUDE_CODE_PROMPT.md phase 7) over the shared Milliman
-APIM Claude gateway.
+"""LLM abstraction over the shared Milliman APIM Claude gateway.
 
 Two uses, both advisory:
 
 * `suggest_formula_fix` -- one-shot "suggest a fix" for a formula finding
   (UI button). Never auto-applied (SKILL.md non-negotiable rule #6). Output
   is always tagged evidence=RECOMMENDATION.
-* `chat_completion` (1.4.0) -- multi-turn conversation used by the
+* `chat_completion` -- multi-turn conversation used by the
   workbook chatbot (app/chat_context.py). The model only ever *answers*;
   every workbook change still goes through the reviewable prep plan
   (app/prep.py) and the user's explicit approval.
 
-Credential discovery reuses the proven repo convention (see
-reserve_narrator/utils/key_loader.py): a `secret.key` file holding a Fernet
-key, with a sibling `config.enc` holding the Azure APIM subscription key,
-searched for in nearby project directories (this package is one level
-deeper than reserve_narrator, hence levels_up=4).
+Credentials: a `secret.key` file holding a Fernet key, with a sibling
+`config.enc` holding the Azure APIM subscription key (or a `secret.key` with
+an `AZURE_OPENAI_API_KEY=` line), searched for in the app's folder, the four
+folders above it and their subfolders (levels_up=4).
 
-1.7.2: the default model is Sonnet 5 (`MIND_READY_MODEL` overrides it), and
+The default model is Sonnet 5 (`MIND_READY_MODEL` overrides it), and
 `chat_completion(..., on_delta=)` streams the reply (server-sent events) so
 the web app can show the text as it is written (`MIND_READY_STREAM=0`
 turns streaming off).

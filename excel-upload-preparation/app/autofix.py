@@ -1,8 +1,8 @@
-"""1.8.0 -- the automatic formula-error fixer ("Fix all automatically" on the
+"""The automatic formula-error fixer ("Fix all automatically" on the
 Recalculate step).
 
-The manual way (Fix panel: one error or one group at a time, a proposal, an
-Apply, a recalculation) stays. This module does the same job on its own, for
+Next to the manual way (Fix panel: one error or one group at a time, a proposal,
+an Apply, a recalculation), this module does the same job on its own, for
 every error cell of a workbook, in ONE Excel session:
 
     open a copy -> full recalculation -> read every formula cell
@@ -19,7 +19,7 @@ every error cell of a workbook, in ONE Excel session:
     until no error is left, or nothing more can be fixed safely
     full rebuild (the confirmation) -> save
 
-Two rules decided by the tool's owner (2026-10-05):
+Two rules decided by the tool's owner:
   * clean means ZERO error cells, including the ones the original already had;
   * a good number never changes: a fix that would change one is undone, another
     way is tried, and when none works the error stays and is listed for a person.
@@ -662,7 +662,7 @@ class _Engine:
         self.counts: dict[str, int] = defaultdict(int)
         self.formula_cells = 0
         self.passes = 0
-        # 1.11.6: the label of the round being settled ("Pass 1"), so the steps inside one round (write,
+        # the label of the round being settled ("Pass 1"), so the steps inside one round (write,
         # recalculate, read back, undo) report progress; None outside a round
         self._round_label: str | None = None
         self._round_size = 0
@@ -1359,10 +1359,10 @@ class _Engine:
     def _write_plain(self, si: int, cells: list[tuple[int, int]], content: Any, formula: bool, on_written: Callable[[int], None] | None = None) -> list[tuple[int, int, str]]:
         """Write one content into plain cells. -> failures (row, col, message). `on_written(n)` hears
         of every rectangle written (n cells), for progress.
-        1.11.8: many rectangles go in ONE Excel call -- a multi-area range ("A1:B3,D5,...", at most
+        Many rectangles go in ONE Excel call -- a multi-area range ("A1:B3,D5,...", at most
         MULTI_AREA_CHARS characters), which Excel writes area by area exactly as one rectangle each
-        (a relative R1C1 formula adjusts per cell). Phoenix: 10,002 error constants cleared one Excel
-        call each took most of the fixer's 977 s of writing. A batch Excel refuses is written again
+        (a relative R1C1 formula adjusts per cell). On a 170 MB workbook, clearing 10,002 error
+        constants one Excel call each took most of the fixer's 977 s of writing. A batch Excel refuses is written again
         rectangle by rectangle (and a refused rectangle cell by cell), so a refusal is found and
         blamed on its own cell as before."""
         sh = self.sheets[si]
@@ -1476,7 +1476,7 @@ class _Engine:
 
         for u in units:
             fix = u.fixes[u.tries]
-            # 1.11.8: an error constant's fix (cleared, or 0) is a plain write of one cell too
+            # an error constant's fix (cleared, or 0) is a plain write of one cell too
             if u.kind == "cell" or (u.kind == "const" and fix["kind"] == "value"):
                 slot = (u.key[0], fix["kind"] == "formula", repr(fix["content"]))  # repr: 0 and False are different contents
                 plain[slot].append(u)
@@ -1510,7 +1510,7 @@ class _Engine:
             if u.kind == "cell":
                 plain[(u.key[0], u.old)].append((u.key[1], u.key[2]))
             elif u.kind == "const" and isinstance(u.old, str) and u.old.startswith("#"):
-                consts[(u.key[0], u.old)].append(u)  # 1.11.8: the error typed back, many cells per Excel call
+                consts[(u.key[0], u.old)].append(u)  # the error typed back, many cells per Excel call
             else:
                 msg = self._write_unit(u, u.old, u.kind != "const")
                 if msg:
@@ -1707,7 +1707,7 @@ class _Engine:
         new_value = {k: new for k, _, new in changed}
         # a fix that leaves its own cell in error cured nothing
         useless = [u for u in units if u.kind != "const" and _is_error(new_value[u.key] if u.key in new_value else self.value_at(u.key))]
-        # a dormant #REF! (1.11.6) computed fine before: its own value must not move
+        # a dormant #REF! computed fine before: its own value must not move
         useless += [u for u in units if u.group.startswith(DORMANT_REF) and u.key in new_value and u not in useless]
         violations = self.judge(changed, set(written))
         if not violations and not useless:
@@ -2127,7 +2127,7 @@ class _Engine:
         return "partial" if self.counts["accepted"] else "stuck"
 
     def fix_dormant_refs(self) -> list[Unit]:
-        """1.11.6: a formula that holds #REF! in a branch Excel does not evaluate today shows no
+        """A formula that holds #REF! in a branch Excel does not evaluate today shows no
         error, so no pass reaches it -- yet Mind cannot compile it (REF-001). Each deleted reference
         becomes NA() (a call that needs a range there becomes NA() as a whole), as Prep's
         fix_broken_refs does, and goes through the same gate: kept only if no value moves, the

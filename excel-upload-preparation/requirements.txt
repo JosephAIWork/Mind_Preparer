@@ -2,8 +2,6 @@ openpyxl>=3.1
 PyYAML>=6.0
 pydantic>=2.9
 jsonschema>=4.20
-pytest>=8.0
-streamlit>=1.42
 pywin32>=306; sys_platform == "win32"
 requests>=2.31
 cryptography>=42.0
@@ -11,4 +9,4 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 playwright>=1.45  # real-Mind automation (app/mind_client.py, app/mind_loop.py); uses the installed Edge
-oletools>=0.60  # 1.9.0: the model map reads the VBA (olevba)
+oletools>=0.60  # the model map reads the VBA (olevba)

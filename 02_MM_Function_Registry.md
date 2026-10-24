@@ -1510,7 +1510,7 @@ mind_behavior:
   - Returns all values of a multidimensional cell for the chosen instance, even when that loop does not exist in the selected instance (e.g. per-instance loops named with MM_INSTINDEX).
   - Returns NaN for a missing instance only when NanIfNotExists is TRUE; otherwise the Excel value.
   - Under partial load an instance outside the loaded group behaves as missing (Excel default value).
-  - Observed 2026-10-22 (project testy1) - Mind's upload check (Excel value vs Mind value, before any run) reports 0 for MM_INSTANCE(cell, k) with k above 1, even when the instances exist; after a run the values are right (1200 and 800). Treat that log line as a false alarm, not a formula error.
+  - Observed 2026-10-22 (a test project) - Mind's upload check (Excel value vs Mind value, before any run) reports 0 for MM_INSTANCE(cell, k) with k above 1, even when the instances exist; after a run the values are right (1200 and 800). Treat that log line as a false alarm, not a formula error.
   - Asking for the currently selected instance gives the same result as not using the function.
 
 excel_behavior:
@@ -1567,7 +1567,7 @@ related_functions:
 sources:
   - Mind KB article functions/instance/mm_instance (published 2026-10-20), read with the Mind MCP get_kb_article tool.
   - Mind tutorials instances/intro, instances/calc and instances/partial, read with get_mind_tutorial.
-  - Read-only look at the Harel MM-IFRS17 project (13 portfolio instances), 2026-10-22.
+  - Read-only look at a Mind-built IFRS 17 project with 13 portfolio instances, 2026-10-22.
 
 registry_status: core_v0_1
 ```

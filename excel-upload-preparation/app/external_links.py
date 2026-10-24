@@ -1,11 +1,11 @@
-"""External links (1.8.6): what a workbook reads from another workbook, and the
+"""External links: what a workbook reads from another workbook, and the
 values Excel keeps for it.
 
-A formula such as ='[1]General Assumptions'!$D$13*H21 reads a cell of another
+A formula such as ='[1]Other sheet'!$D$13*H21 reads a cell of another
 file. Excel stores a copy of every external cell it has read
 (xl/externalLinks/externalLinkN.xml) and shows those copies when the file
-cannot be reached -- on PVFP the link points to a file on a colleague's
-machine and 20,934 formulas live on that cache. Mind cannot follow an
+cannot be reached -- a link to a file on a colleague's machine can leave
+tens of thousands of formulas living on that cache. Mind cannot follow an
 external link at all: every such formula is an error there, and the package
 part makes the converter report "external links".
 

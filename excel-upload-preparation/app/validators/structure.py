@@ -1,5 +1,5 @@
 """STR-*/GRID-* validators: structure/grid checks from
-01_Mind_Readiness_Standard.md section 3, backed since 1.3.0 by the KB's
+01_Mind_Readiness_Standard.md section 3, backed by the KB's
 documented grid-detection algorithm (app/grids.py, "General structure and
 guidelines"): grids are blocks of non-empty cells, an alone text cell is
 ignored, a text-only first row is the header row, '#Name' above a grid names
@@ -381,17 +381,17 @@ def totals_reconcile(rule, analysis: dict[str, Any], config: dict[str, Any]) -> 
     return finding("PASS", f"All {checked} checked SUM/addition total(s) reconcile with their addends.", {"mismatches": [], "checked": checked})
 
 
-from .references import external_links_in_formulas  # noqa: E402,F401  (REF-002, 1.8.6)
+from .references import external_links_in_formulas  # noqa: E402,F401  (REF-002)
 
 
 
 def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
     """STR-008: a text cell with nothing around it (no grid, no title above, no label beside it)
     that a formula reads. Mind imports grids; a text cell standing alone is not in the model,
-    and the formula gets nothing (PVFP: 'LoB 1'!G2 = "LoB 1" stood alone once Prep had moved
-    the label beside it into a title; "GWP_Retained#"&$G$2 came back as "GWP_Retained#" and
-    20,000 cells followed). A number standing alone is imported; so is a text under a '#'
-    title, next to or under a label, or inside a grid (test workbook 5, 2026-10-08)."""
+    and the formula gets nothing (seen in a real Mind conversion: a lone text cell G2 that
+    Prep had separated from its label; "Name#"&$G$2 came back as "Name#" and 20,000 cells
+    followed). A number standing alone is imported; so is a text under a '#' title, next to
+    or under a label, or inside a grid (test workbook, 2026-10-08)."""
     from ..prep import reference_index, referenced_by, standalone_labels
 
     try:
@@ -410,7 +410,7 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     return finding(
         "ERROR",
         f"{len(sites)} text cell(s) standing alone on their sheet -- no grid, no title above, no label beside -- are read by formulas. Mind imports grids, "
-        "not loose text cells: the formula gets nothing (confirmed in Mind on the model PVFP, 'LoB 1'!G2 = \"LoB 1\": \"GWP_Retained#\"&$G$2 came back as \"GWP_Retained#\" "
+        "not loose text cells: the formula gets nothing (confirmed in a real Mind conversion: \"Name#\"&$G$2, with G2 a lone text cell, came back as \"Name#\" "
         f"and 20,000 cells followed). First: {first['sheet']}!{first['cell']} = {first['text']!r}, read by {first['read_by']}. "
         "The Prep action 'Give a lone text cell that formulas read a title of its own' writes a '#' title in the empty cell above it, which makes it a one-cell grid Mind imports "
         "(a number standing alone is imported as it is; a text next to or under a label too).",
@@ -420,7 +420,7 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
 
 
 def blocking_pivot(p: dict[str, Any]) -> str | None:
-    """1.11.7: why Mind's converter cannot take this pivot table, or None. Phoenix TVOG: rejected
+    """Why Mind's converter cannot take this pivot table, or None. A client model was rejected
     ("The method or operation is not implemented") with a pivot whose field is grouped; a copy without
     its pivot tables was accepted. Only the grouped field is treated as blocking until a Mind test
     shows plain pivot tables fail too."""
@@ -446,7 +446,7 @@ def pivot_tables(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict
         return finding(
             "ERROR",
             f"{len(blocking)} of the {len(pivots)} pivot table(s) hold what Mind's converter cannot read: first {first['sheet']}!{first['ref']} ({first['name']}): {first['blocking']}. "
-            "Mind stopped on such a workbook with \"The method or operation is not implemented\" (Phoenix TVOG, 2026-10-18) and took it once the pivot tables were plain cells. "
+            "Mind stopped on such a workbook with \"The method or operation is not implemented\" (seen in a real Mind conversion, 2026-10-18) and took it once the pivot tables were plain cells. "
             "The Prep action 'Pivot tables' turns them into formulas over their source (values where formulas cannot give the same numbers).",
             observed,
             location={"sheet": first["sheet"], "cell": first["ref"].split(":")[0]},

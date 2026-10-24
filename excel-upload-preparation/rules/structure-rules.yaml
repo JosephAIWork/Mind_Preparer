@@ -218,7 +218,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-08, model PVFP, 20,934 formulas on a link to an unreachable file)
+    document: real Mind conversion testing (2026-10-08, a client model, 20,934 formulas on a link to an unreachable file)
     article: REF-002
   validation:
     deterministic: true
@@ -239,7 +239,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-08, model PVFP, LoB 1!G2, and test workbook 5)
+    document: real Mind conversion testing (2026-10-08, a client model and a test workbook)
     article: STR-008
   validation:
     deterministic: true
@@ -260,7 +260,7 @@ rules:
   confidence: MEDIUM
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-18, Phoenix TVOG -- rejected with its 8 pivot tables, accepted with them as values)
+    document: real Mind conversion testing (2026-10-18, a client model -- rejected with its 8 pivot tables, accepted with them as values)
     article: STR-009
   validation:
     deterministic: true

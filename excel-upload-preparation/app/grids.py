@@ -15,11 +15,11 @@ guess -- but it is still this app's reading of the doc, so findings built on
 it are labeled INFERENCE where they depend on grid *boundaries* and
 DETERMINISTIC_FINDING where they only depend on a title cell's own text.
 
-1.7.3: a merged cell occupies every cell of its range. Mind reads a header
+A merged cell occupies every cell of its range. Mind reads a header
 merged over B4:E4 as a header row four columns wide (a conversion of a real
 model failed with "the array formula ... exceeds the grid size. Ensure that
 the column headers cover the entire array formula" at the first column past
-the merge); reading the merge as one cell hid that.
+the merge); reading the merge as one cell would hide that.
 """
 from __future__ import annotations
 

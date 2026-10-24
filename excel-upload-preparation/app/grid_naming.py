@@ -1,4 +1,4 @@
-"""Context-aware grid names from the Milliman APIM Claude gateway (1.6.7).
+"""Context-aware grid names from the Milliman APIM Claude gateway.
 
 Why this exists
 ---------------

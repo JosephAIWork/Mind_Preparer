@@ -8,12 +8,11 @@ Never runs macros: AutomationSecurity is forced to msoAutomationSecurityForceDis
 before opening, per instructions/core.md ("never execute VBA... during inspection").
 Always operates on a copy, never the user's original file.
 
-1.6.2: built on app/excel_com.py's `excel_session` like every other Excel
-path in the app, with every COM proxy scoped inside an inner function. The
-previous hand-rolled lifecycle released Range/Worksheet proxies *after*
-`CoUninitialize`, which poisoned the apartment for a later session in the
-same process: a recalculation following an Excel apply failed with
-"The interface is unknown" (RPC_S_UNKNOWN_IF). Results carry `ran` so a
+Built on app/excel_com.py's `excel_session` like every other Excel
+path in the app, with every COM proxy scoped inside an inner function.
+Releasing Range/Worksheet proxies *after* `CoUninitialize` poisons the
+apartment for a later session in the same process: a recalculation following
+an Excel apply then fails with "The interface is unknown" (RPC_S_UNKNOWN_IF). Results carry `ran` so a
 run that could not happen is never mistaken for a clean one.
 """
 from __future__ import annotations
@@ -46,7 +45,7 @@ ADDIN_NAME_MARKERS = ("mmforexcel", "milliman", "mind")
 
 
 def _mmforexcel_loaded(excel) -> bool:
-    """Is a Mind / MM for Excel add-in loaded in this Excel instance? 1.10.1: `excel_session`
+    """Is a Mind / MM for Excel add-in loaded in this Excel instance? `excel_session`
     registers the machine's MM for Excel XLL into its background Excel (automation never
     loads the user's startup add-ins by itself), and XLLs show up in `AddIns2` -- checked
     first. The COMAddIns / AddIns checks stay for an add-in installed another way. Without
@@ -129,9 +128,9 @@ def _errors_in_block(rng: Any, found: list[tuple[int, int, str, str]]) -> None:
         formulas = ((formulas,),)
     top_row = int(rng.Row)
     top_col = int(rng.Column)
-    # 1.8.0: the error cells come out of the two arrays just read, and their
+    # the error cells come out of the two arrays just read, and their
     # addresses are arithmetic. Asking Excel about each one (Cells, Address,
-    # HasArray: three round trips a cell) took ten minutes for a model with
+    # HasArray: three round trips a cell) takes ten minutes for a model with
     # 65,883 error cells -- twice, since the original is recalculated too.
     for r_idx, row in enumerate(values):
         for c_idx, val in enumerate(row):
@@ -146,11 +145,11 @@ def _errors_in_block(rng: Any, found: list[tuple[int, int, str, str]]) -> None:
 def _error_cells(sheet: Any, used_range: Any) -> list[tuple[int, int, str, str]]:
     """(row, column, error, formula) of every formula cell of the sheet showing an error, row by row.
 
-    1.11.4: Excel answers first how many cells of the used range hold an error (one SUMPRODUCT,
+    Excel answers first how many cells of the used range hold an error (one SUMPRODUCT,
     computed inside Excel), and a sheet with none costs nothing more; otherwise Go To Special
     (formulas that are errors) hands over just those cells. Reading the whole used range, values and
-    formulas, to find them took 47 s on Palermo's 5.7 million cells, at every recalculation. Whenever
-    Excel cannot answer either question the whole used range is read, as before."""
+    formulas, to find them takes 47 s on a workbook of 5.7 million cells, at every recalculation.
+    Whenever Excel cannot answer either question the whole used range is read."""
     found: list[tuple[int, int, str, str]] = []
     try:
         address = str(used_range.Address)
@@ -183,7 +182,7 @@ def _error_cells(sheet: Any, used_range: Any) -> list[tuple[int, int, str, str]]
 def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str, Any]:
     """Open, fully rebuild, save (unless `save` is False), and scan every used range for error values.
     Every COM proxy lives inside this function so it is released before the
-    session quits Excel. `wb` (1.11.9): `copy_path` already open in `excel` (the session's Excel
+    session quits Excel. `wb`: `copy_path` already open in `excel` (the session's Excel
     worker opened it); it is closed here as always."""
     mmforexcel_loaded = _mmforexcel_loaded(excel)
     try:
@@ -219,7 +218,7 @@ def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str
         close_quietly(wb)
         wb = None
 
-    # 1.10.0: without the add-in every cell that reads an MM_ cell shows #NAME? as well (a Mind
+    # without the add-in every cell that reads an MM_ cell shows #NAME? as well (a Mind
     # loop written into a model: the whole calculation sheet). A #NAME? whose own functions are
     # all known -- Excel's or MM_ -- is downstream of the gap, not a defect of the workbook.
     downstream = 0
@@ -261,7 +260,7 @@ def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str
     }
 
 
-# --- root-cause grouping (1.6.3) -------------------------------------------------
+# --- root-cause grouping ---------------------------------------------------------
 _REF_TOKEN_RE = re.compile(r"(?:(?:'[^']+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?")
 _NUMBER_RE = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")
 _A1_CELL_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})$")
@@ -286,7 +285,7 @@ def _moved_key(sheet: str, cell: str, forward: Forward | None) -> tuple[str, str
 
 
 def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str, Any]], original_formulas_with_ref: set[tuple[str, str]] | None = None, forward: Forward | None = None) -> dict[str, Any]:
-    """1.7.2: split recalculation errors of a prepared version against the errors
+    """Split recalculation errors of a prepared version against the errors
     of the ORIGINAL after the same full recalculation (the honest baseline --
     cached values can be stale, e.g. a number saved before the column a
     formula pointed to was deleted). An error is pre-existing when the
@@ -339,7 +338,7 @@ def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
 
 
 def classify_against_original(original_path: Path, errors: list[dict[str, Any]], forward: Forward | None = None) -> dict[str, Any]:
-    """1.7.2: which recalculation errors were already errors in the ORIGINAL
+    """Which recalculation errors were already errors in the ORIGINAL
     upload (the model's own #DIV/0! / #N/A, which Mind takes as they are) and
     which are new (introduced by the preparation, or revealed by it).
 
@@ -444,7 +443,7 @@ def group_errors(formula_errors: list[dict[str, Any]], addin_gap_errors: list[di
 
 def recalculate_in(excel: Any, copy_path: Path, wb: Any = None) -> dict[str, Any]:
     """recalculate() in an Excel the caller owns, `copy_path` possibly already open in it as `wb`
-    (1.11.9: the session's Excel worker, ahead of the Recalculate step). Errors are raised."""
+    (the session's Excel worker, ahead of the Recalculate step). Errors are raised."""
     copy_path = Path(copy_path).resolve()
     with stage("recalculate", file=copy_path.name, worker=True):
         return _scan(excel, copy_path, save=True, wb=wb)
@@ -452,7 +451,7 @@ def recalculate_in(excel: Any, copy_path: Path, wb: Any = None) -> dict[str, Any
 
 def recalculate(copy_path: Path, save: bool = True) -> dict[str, Any]:
     """Recalculates `copy_path` in place (it's already a disposable copy)
-    and reports any formula-error cells found afterward. `save=False` (1.11.4): the recalculated
+    and reports any formula-error cells found afterward. `save=False`: the recalculated
     values are not written back -- for a copy nothing reads again (the original's baseline)."""
     if not com_available():
         return _not_run("NOT_SUPPORTED", "pywin32 is not available in this environment; Excel COM recalculation cannot run here.")

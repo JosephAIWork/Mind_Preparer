@@ -1,8 +1,8 @@
-"""One Excel per session, kept by a thread of its own (1.11.9).
+"""One Excel per session, kept by a thread of its own.
 
-Before, every step of Do everything after Fix all issues started an Excel, opened the version (a
-minute on Phoenix, 179 MB), wrote, saved and quit, and a second Excel then opened the saved file
-read-only to check that it opens. Now:
+Starting an Excel, opening the version (a minute on a 179 MB workbook), writing, saving and quitting
+for every step of Do everything, then opening the saved file again read-only to check it, costs
+minutes on a big file. Instead:
 
 - When a version is saved, its check is made by opening a fresh copy of it -- the very copy the next
   apply will write into, at the very path make_immutable_copy would give it -- in a freshly started
@@ -17,7 +17,7 @@ read-only to check that it opens. Now:
 Every COM object of a session lives on its thread `excel-<session id>`: other threads hand it jobs
 through a queue and wait for plain results (COM proxies must stay on the thread that made them).
 When Excel dies or hangs (the wait has a timeout), the worker kills it, drops what it held and
-raises WorkerUnavailable; the server then does what it did before this module existed.
+raises WorkerUnavailable; the server then falls back to one Excel per step.
 MINDREADY_EXCEL_WORKER=0 turns it off.
 """
 from __future__ import annotations
@@ -196,7 +196,7 @@ class ExcelWorker:
         """Run `fn` on the worker thread and wait for it. Waiting for its turn and running are timed
         apart: a job that never got its turn is cancelled (it will not run later); a job that runs
         too long has its Excel killed -- only then, and only the running job's -- and the worker is
-        retired, so later requests go the old way at once instead of queueing behind it."""
+        retired, so later requests fall back to one Excel per step at once instead of queueing behind it."""
         if self._stopped:
             raise WorkerUnavailable("the Excel worker is stopped")
         fut: concurrent.futures.Future = concurrent.futures.Future()
@@ -288,7 +288,7 @@ class ExcelWorker:
                 excel = self._ensure_excel()
             except Exception:
                 self._abandon()
-                excel = None  # apply_operations starts its own, as before
+                excel = None  # apply_operations starts its own Excel
             try:
                 return apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, verify=verify, excel=excel)
             finally:
@@ -335,7 +335,7 @@ class ExcelWorker:
         from .recalc import recalculate_in
 
         if self._held is not None and free_mb() < HOLD_MIN_FREE_MB:
-            self._drop()  # not now: Recalculate runs as before
+            self._drop()  # not now: Recalculate runs in its own fresh Excel
             return
         held, self._held = self._held, None
         if held is None:

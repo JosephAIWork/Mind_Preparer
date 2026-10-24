@@ -1,4 +1,4 @@
-"""Milliman Mind's MCP server, as an optional extra (1.11.2).
+"""Milliman Mind's MCP server, as an optional extra.
 
 Mind exposes its AI Assistant's tools over MCP (https://vm-prod.milliman-mind.com/api/chatbot/mcp, a
 bearer token per user, issued by the Mind team; the one seen lasts 24 h). With a token the app reads a
@@ -56,7 +56,7 @@ def available() -> tuple[bool, str]:
 
 
 def project_id_from(link_or_id: str) -> str:
-    """The project GUID from a .../init/71/<guid> link, or the GUID itself."""
+    """The project GUID from a .../init/<company>/<guid> link, or the GUID itself."""
     m = _INIT_RE.search(link_or_id or "")
     if m:
         return m.group(1)
@@ -78,7 +78,7 @@ class MindMcp:
     """One MCP connection; `open(project)` opens a project session that every tool call then uses.
 
         with MindMcp() as mcp:
-            mcp.open("https://shared.milliman-mind.com/init/71/<guid>")
+            mcp.open("https://shared.milliman-mind.com/init/<company>/<guid>")
             mcp.call("get_project_structure")
     """
 

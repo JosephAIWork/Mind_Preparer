@@ -1,4 +1,4 @@
-"""1.8.0 -- the assistant's part in the automatic fixer (app/autofix.py).
+"""The assistant's part in the automatic fixer (app/autofix.py).
 
 The fixer keeps an error formula and gives it a value to return when it
 fails: =IFERROR(<formula>, <fallback>). Which fallback fits -- 0, empty text

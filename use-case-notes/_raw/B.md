@@ -1,0 +1,8 @@
+# Raw notes from editor B (prep.py, change_apply.py, preservation.py, modes/common.py, numbers_check.py, estimate.py, theme_colors.py, excel_com.py)
+
+- UC-6 | app/prep.py | titles and moved labels change values | `=COUNTA(CoverageDetails!A:A)` counted a title written into column A and the model picked a different policy; `=Information!A1` on five sheets read 0 after the company name was "moved" into a title. Hence the reference index every write site consults.
+- UC-4 | app/prep.py, app/numbers_check.py | row inserts vs 3-D refs and INDIRECT | an ordinary Prep changed 2,462 computed values, 1,781 of them into errors: a 3-D reference =SUM('LoB 1:>>'!K65) reads the same cell on every sheet by position (a row inserted on one sheet shifts that sheet alone), and INDIRECT("'"&$E$2&"'!H"&n) builds an address as text ($E$2 holds 'LoB 1').
+- UC-4 | app/prep.py | INDIRECT sheet-name patterns | text pieces like "'CoC "&n&"'!F14" name every sheet starting with 'CoC '.
+- UC-2, UC-5 | app/estimate.py | estimate calibration | the time estimate's constants were fitted on four Do everything runs: Palermo (27 MB) and Phoenix TVOG (170 MB, one per pivot setting); FALLBACK_SCAN_S_PER_FORMULA = 0.0035 s/formula measured on Palermo and CNHI.
+- UC-4 | app/prep.py | FRM-007 example | INDIRECT("'"&$G710&"'!$Z$16") with G710 = "LoB 1" became 'LoB 1'!$Z$16 (the caution text and docstring now use a generic $G10 / 'Line 1').
+- UC-2, UC-3 | app/theme_colors.py | theme colours cell by cell | the Excel cell-by-cell recolouring never converged on Palermo (11,807 -> 11,719 -> 11,720 cells on one sheet: Excel keeps the theme reference for the default text colour) and took about an hour for one 123,686-cell sheet of CNHI (60 more sheets behind it); hence the style-table conversion.

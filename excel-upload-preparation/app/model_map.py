@@ -11,7 +11,7 @@ Everything here is read off the workbook itself; nothing is guessed:
 - its data validations: a list dropdown is a switch, with its options;
 - its sheet names (Inputs, Data, Assumptions, Output, Results, Reporting ...);
 - its formulas: the constant cells the calculation reads most through absolute
-  references (the key of a model that has no macro loop, like PVFP's `'LoB 1'!G2`).
+  references (the key of a model that has no macro loop, e.g. a line-of-business selector cell).
 
 Each item carries its evidence (the macro line, the name, the dropdown) so a person can
 check it. The web app shows the map on its "Model map" screen and jumps to any cell.
@@ -551,7 +551,7 @@ def _label_near(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
 
 def _labelled_settings(analysis: dict[str, Any], sheets: list[dict[str, Any]], per_sheet: dict[str, int], taken: set[str]) -> list[dict[str, Any]]:
     """On small input/control sheets (few formulas, few cells): 'label | value' pairs -- a text cell with a
-    constant right next to it (Horizon's Parametres, Palermo's Macro and Control, CNHI's Model Inputs)."""
+    constant right next to it (a parameters sheet, a macro control sheet, a model inputs sheet)."""
     from .inventory import open_cached
 
     out: list[dict[str, Any]] = []
@@ -593,7 +593,7 @@ def _labelled_settings(analysis: dict[str, Any], sheets: list[dict[str, Any]], p
                     pairs.append({"sheet": s["name"], "cell": _sheet_ref(s["name"], nxt.coordinate), "label": v.strip(), "value": nxt.value if not isinstance(nxt.value, float) or abs(nxt.value) < 1e15 else str(nxt.value)})
                     break
                 if nxt is None or nxt.column - c.column > 3:
-                    # a label with the value under it (Horizon's Parametres: the text on one row, the number on the next)
+                    # a label with the value under it (the text on one row, the number on the next)
                     for dc in (0, 1, 2):
                         w = grid.get((c.row + 1, c.column + dc))
                         if isinstance(w, (int, float)) and not isinstance(w, bool):
@@ -660,7 +660,7 @@ def build_model_map(analysis: dict[str, Any]) -> dict[str, Any]:
             key = (o["to"], o["from"])
             if o["to"] and key not in {(x["to"], x["from"]) for x in loop_outputs}:
                 loop_outputs.append({**o, "macro": loop["procedure"], "loop_var": loop["var"], "when": "each loop pass"})
-    # a driver whose own sheet is a per-item row (Horizon: CALCUL!A2:NI2 <- BASE Polices row n)
+    # a driver whose own sheet is a per-item row (Calc!A2:NI2 <- row n of a policy table)
     per_item_inputs: list[dict[str, Any]] = []
     for d in drivers:
         if d.get("set_from") and "<" in str(d["set_from"]):
@@ -736,7 +736,7 @@ def build_model_map(analysis: dict[str, Any]) -> dict[str, Any]:
         for rng in v["ranges"].split():
             r0 = parse_ref(rng)
             if r0 and not (r0["r1"] == r0["r2"] and r0["c1"] == r0["c2"]) and (r0["r2"] - r0["r1"] + 1) * (r0["c2"] - r0["c1"] + 1) <= 60:
-                # a dropdown over a block: one switch per cell when the cells carry names (PVFP: LoB1_Boolean ... in G51:G60)
+                # a dropdown over a block: one switch per cell when the cells carry names (one named flag per row of G51:G60)
                 cells = [f"{num_to_col(c)}{rw}" for rw in range(r0["r1"], r0["r2"] + 1) for c in range(r0["c1"], r0["c2"] + 1)]
                 named = [(c, names.name_of(v["sheet"], c)) for c in cells]
                 if sum(1 for _, n in named if n) >= len(cells) // 2:

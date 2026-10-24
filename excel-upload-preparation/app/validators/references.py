@@ -1,18 +1,18 @@
-"""Reference checks Mind's converter or runner enforces (1.7.3), each learnt
-from a real refusal:
+"""Reference checks Mind's converter or runner enforces, each learnt from a
+real refusal:
 
   * FRM-005 circular references -- Mind's runner stops with "Run error:
-    Circular reference found" (model RAROK, 2026-09-30). Excel tolerates a
+    Circular reference found" (observed 2026-09-30). Excel tolerates a
     cycle when iterative calculation is on; Mind never does. The dependency
     graph of every formula cell (references, ranges, defined names) is
     searched for cycles and each cycle is reported as its chain of cells.
   * FRM-006 3-D references -- 'First:Last'!A1 spans every sheet between two
     tabs. Mind reads 'First:Last' as one sheet name and fails with "Sheet
-    '...' not found in workbook ... on compiling formula" (model PVFP,
+    '...' not found in workbook ... on compiling formula" (observed
     2026-09-30). The sheets the reference spans are listed in tab order and
     the equivalent explicit formula is proposed -- without the sheets that
-    hold no grid: Mind creates no spreadsheet for those (the divider tabs
-    '>> Reporting', '>>>' of the same model: "Spreadsheet not found error",
+    hold no grid: Mind creates no spreadsheet for those (divider tabs such
+    as '>>>' that hold only a heading: "Spreadsheet not found error",
     2026-10-01), and an empty sheet adds nothing to SUM/AVERAGE/COUNT/MIN/
     MAX. The same rule flags any other formula that reads a grid-less sheet.
 
@@ -38,9 +38,9 @@ DYNAMIC_REFERENCE_FUNCTIONS = {"INDIRECT", "OFFSET"}
 # CHOOSE's and SWITCH's values, IFS' pairs after the first condition. A cycle that only closes
 # through such an argument is one Excel computes (the branches never evaluate together).
 CONDITIONAL_ARGS: dict[str, Any] = {"IF": {1, 2}, "IFERROR": {1}, "IFNA": {1}, "CHOOSE": "rest", "SWITCH": "rest", "IFS": "rest"}
-# 1.8.4: a lookup reads ONE cell of its table. A cycle that closes only through the table of an
-# INDEX / VLOOKUP / HLOOKUP / MATCH / LOOKUP / XLOOKUP is not a cycle for Excel (PVFP: once INDIRECT
-# became direct references, =INDEX(Inputs!$I$152:$CZ$10240, ...) reached a cell that reads the sheet
+# A lookup reads ONE cell of its table. A cycle that closes only through the table of an
+# INDEX / VLOOKUP / HLOOKUP / MATCH / LOOKUP / XLOOKUP is not a cycle for Excel (once INDIRECT
+# became direct references, =INDEX(<a large input table>, ...) reached a cell that reads the sheet
 # the lookup sits on; Excel reported no circular reference) -- it is reported as a conditional one.
 LOOKUP_TABLE_ARGS: dict[str, Any] = {"INDEX": {0}, "VLOOKUP": {1}, "HLOOKUP": {1}, "MATCH": {1}, "LOOKUP": "rest", "XLOOKUP": {1, 2}}
 COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}}
@@ -536,8 +536,8 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
 # --- FRM-007 -----------------------------------------------------------------------------
 # INDIRECT's result used as a value -- compared, multiplied, divided, negated, concatenated:
 # Mind returns a reference object for INDIRECT and cannot turn it into a number ("Run error:
-# Unable to cast object of type 'AM.Models.AMReference' to type 'System.IConvertible'", model
-# PVFP, 2026-10-01). Where the text INDIRECT builds can be worked out from constants (string
+# Unable to cast object of type 'AM.Models.AMReference' to type 'System.IConvertible'",
+# observed 2026-10-01). Where the text INDIRECT builds can be worked out from constants (string
 # literals, cells holding text, ROW()/COLUMN(), simple arithmetic and text functions), the
 # equivalent direct reference is proposed; a target that does not exist in the workbook is an
 # error in Excel already (#REF!) and that call becomes NA() in its place -- never the whole
@@ -923,7 +923,7 @@ def external_links_in_formulas(rule, analysis: dict[str, Any], config: dict[str,
     return finding(
         "ERROR",
         f"{len(sites)} formula(s) read another workbook ({files}). Mind cannot follow an external link: each of these is an error there, and the converter reports the link "
-        f"(PVFP: 20,934 such formulas, '20,000 deterministic errors'). Excel shows the copy it kept of each external cell, or #REF! where it kept none. "
+        f"(seen in a real Mind conversion: 20,934 such formulas, '20,000 deterministic errors'). Excel shows the copy it kept of each external cell, or #REF! where it kept none. "
         f"First: {first['sheet']}!{first['cell']} = {first['formula'][:90]}"
         + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
         + f". The Prep action 'Freeze external links' writes that copy into {observed['with_proposal']} formula(s) (NA() where Excel kept none) and removes the link; Excel's values stay the same"

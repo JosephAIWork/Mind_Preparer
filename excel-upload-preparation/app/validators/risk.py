@@ -77,7 +77,7 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     (MM_RANGE placement -- KB: 'must be contained in a table without any
     other formulas or inputs' -- is RNG-001 in validators/kb.py)."""
     oversized = []
-    by_sheet: dict[str, list[dict[str, Any]]] = {}  # 1.11.10: once, not once per array formula
+    by_sheet: dict[str, list[dict[str, Any]]] = {}  # once, not once per array formula
     for g in all_grids(analysis):
         by_sheet.setdefault(g["sheet"], []).append(g)
     for wb in analysis["workbooks"]:

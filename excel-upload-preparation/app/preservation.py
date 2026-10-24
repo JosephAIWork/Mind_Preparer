@@ -1,11 +1,10 @@
 """Package-part comparison: a pure before/after diff of two OOXML zip
 packages. Used by scripts/compare_packages.py. This is inspection only (no
-mutation), so it's safe to implement in the MVP even though full change-set
-application (phase 8) isn't built yet.
+mutation).
 
 Per instructions/preservation.md, differences should be classified as
 AUTHORIZED_CHANGE / EXPECTED_RECALCULATION_CHANGE / METADATA_CHANGE /
-UNAUTHORIZED_CHANGE / UNVERIFIABLE_CHANGE. This MVP has no change-set
+UNAUTHORIZED_CHANGE / UNVERIFIABLE_CHANGE. This comparison has no change-set
 context to know what was *authorized*, so every changed/added/removed part
 is reported as UNVERIFIABLE_CHANGE -- an honest default, not a guess.
 """

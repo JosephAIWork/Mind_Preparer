@@ -98,7 +98,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-09-30, model RAROK)
+    document: real Mind conversion testing (2026-09-30, a client model)
     article: FRM-005
   validation:
     deterministic: true
@@ -119,7 +119,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-09-30, model PVFP)
+    document: real Mind conversion testing (2026-09-30, a client model)
     article: FRM-006
   validation:
     deterministic: true
@@ -140,7 +140,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-01, model PVFP)
+    document: real Mind conversion testing (2026-10-01, a client model)
     article: FRM-007
   validation:
     deterministic: true
@@ -161,7 +161,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-06, model Horizon and a 49-cell test workbook)
+    document: real Mind conversion testing (2026-10-06, a client model and a 49-cell test workbook)
     article: FRM-008
   validation:
     deterministic: true
@@ -182,7 +182,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-06, model Horizon and a 49-cell test workbook)
+    document: real Mind conversion testing (2026-10-06, a client model and a 49-cell test workbook)
     article: FRM-009
   validation:
     deterministic: true
@@ -203,7 +203,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-06, model Horizon, column T, and three diagnostic uploads)
+    document: real Mind conversion testing (2026-10-06, a client model and three diagnostic uploads)
     article: FRM-010
   validation:
     deterministic: true
@@ -224,7 +224,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-08, model CNHI, Wave!P38 and a diagnostic sheet)
+    document: real Mind conversion testing (2026-10-08, a client model and a diagnostic sheet)
     article: FRM-011
   validation:
     deterministic: true
@@ -245,7 +245,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-08, model Palermo, Saved down!C5)
+    document: real Mind conversion testing (2026-10-08, a client model)
     article: FRM-012
   validation:
     deterministic: true
@@ -266,7 +266,7 @@ rules:
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-08, model PVFP, LoB 1!AB78)
+    document: real Mind conversion testing (2026-10-08, a client model)
     article: FRM-013
   validation:
     deterministic: true

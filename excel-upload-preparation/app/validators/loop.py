@@ -62,7 +62,7 @@ def repeated_definition_range_lengths(rule, analysis: dict[str, Any], config: di
         dyn = [s for s in sites if s.get("dynamic")]
         if dyn and len(dyn) == len(sites):
             # every definition reads its range from the table (MM_COLUMN / MM_ROW / MM_TABLE): Mind sizes them
-            # from the same grid, so they stay equal, and they grow together when rows are added (1.11.1)
+            # from the same grid, so they stay equal, and they grow together when rows are added
             dynamic_names.append(name)
             continue
         if dyn:

@@ -1,7 +1,7 @@
-"""A rough time estimate for "Do everything" (1.11.6), per step, before it runs.
+"""A rough time estimate for "Do everything", per step, before it runs.
 
-Built from what was measured (1.11.10: four Do everything runs on Palermo, 27 MB, and Phoenix TVOG, 170 MB,
-with the 1.11.8 bulk writes and the 1.11.9 Excel worker): an Excel session starts in about 5 s, opens a
+Built from what was measured (four Do everything runs on two large workbooks, 27 MB and 170 MB, with
+bulk writes and the per-session Excel worker): an Excel session starts in about 5 s, opens a
 workbook in about 8 s + 0.3 s per MB and saves it in about 10 s + 0.18 s per MB, and the app's own scan
 of the workbook (measured on this very file, the last scan) is the unit for the rest -- the fixer's first
 full read of every cell takes about 0.3 of a scan, each fix pass about 0.1 of a scan (it writes in bulk),
@@ -25,7 +25,7 @@ RESCAN = {"low": 0.7, "mid": 1.2, "high": 1.5}  # the re-scan of a new version, 
 RECALC_AHEAD_S = {"low": 5.0, "mid": 15.0}  # Recalculate worked out ahead by the worker: wait, read, answer
 BASELINE_EXTRA_S = 25.0  # the original's recalculation besides its Excel and open: rebuild, error read, answer
 WRITE_S_PER_OP = 0.02  # a Prep operation written through Excel
-FALLBACK_SCAN_S_PER_FORMULA = 0.0035  # when the file was never scanned in this session (Palermo, CNHI)
+FALLBACK_SCAN_S_PER_FORMULA = 0.0035  # when the file was never scanned in this session (measured on two large models)
 # a pivot table turned into cells: copy, paste and clear through a scratch sheet, then (to formulas)
 # about ten Excel calls per value cell -- what the pivot adds up, its value, the formula, the check
 PIVOT_S_EACH = 3.0
@@ -54,7 +54,7 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
                    recalc_ahead: bool = True, baseline_mb: float = 0.0, pivots: list[tuple[str, int]] = ()) -> dict[str, Any]:
     """-> {"steps": [{id, low_s, mid_s, high_s, why}], "total": {low_s, mid_s, high_s}, "caveat", "basis"}.
     `scan_s`: the last scan of this file (without the .xlsb conversion); `stored_errors`: formula cells
-    whose value Excel last stored is an error (None = not known). `worker` (1.11.9): the session's
+    whose value Excel last stored is an error (None = not known). `worker`: the session's
     Excel worker opens each next copy while the version is analysed, so Prep rounds and the loop
     wait for no Excel start, open or second check, and (`recalc_ahead`) Recalculate after the loop
     is ready. `baseline_mb`: the size of the original when its own recalculation (the baseline the

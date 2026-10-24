@@ -4,8 +4,8 @@ parser. Used by inventory.py, grids.py and the validators. Per
 instructions/decision-rules.md, function extraction and formula tokenization
 belong in code, not the LLM.
 
-1.3.0: string literals and quoted sheet names are masked before scanning
-(so `="SUM(" & A1` no longer counts as a SUM call), and the OOXML storage
+String literals and quoted sheet names are masked before scanning
+(so `="SUM(" & A1` does not count as a SUM call), and the OOXML storage
 prefixes Excel adds to formulas are stripped: `_xlfn.` (functions newer than
 Excel 2007, e.g. `_xlfn.XLOOKUP`), `_xlws.`, `_xlpm.` (LAMBDA parameters) and
 `_xludf.` (user-defined / add-in functions that were unresolved when the file
@@ -41,9 +41,9 @@ ERROR_LITERAL_RE = re.compile(r"#(?:N/A|REF!|DIV/0!|NAME\?|VALUE!|NUM!|NULL!|SPI
 LOCAL_SCOPE_FUNCTIONS = {"LET", "LAMBDA"}  # their arguments define names of their own
 
 
-# 1.11.10: one scan asks the same formula for its references, its function calls and its names
-# several times over (CNHI: 1.7 million cell_refs_in_formula calls for 245,847 formulas, one rule
-# after another). Inside formula_memo() each answer is worked out once per formula text and kept
+# One scan asks the same formula for its references, its function calls and its names
+# several times over (on a 245,847-formula workbook: 1.7 million cell_refs_in_formula calls, one
+# rule after another). Inside formula_memo() each answer is worked out once per formula text and kept
 # until the last open scan ends -- compactly (tuples), and handed out as fresh lists and dicts,
 # so a caller that changes what it got changes nothing for the next one.
 MEMO_MAX = 600_000  # formulas remembered per kind; beyond that, worked out again each time
@@ -123,13 +123,13 @@ def undefined_names(formula: str, known: set[str]) -> list[str]:
 def mask_strings(formula: str, mask_sheet_quotes: bool = True) -> str:
     """Replace the *content* of "..." string literals (and optionally '...'
     quoted sheet names) with spaces, preserving length so positions line up."""
-    # 1.11.4: most formulas hold no quote at all, and the rules mask the same formula dozens of
-    # times (4.4 million calls for Palermo's 57,537 formulas): nothing to mask, nothing to copy.
+    # most formulas hold no quote at all, and the rules mask the same formula dozens of
+    # times (4.4 million calls for 57,537 formulas on one workbook): nothing to mask, nothing to copy.
     if '"' not in formula and (not mask_sheet_quotes or "'" not in formula):
         return formula
     if _MEMO is None:
         return _mask_strings(formula, mask_sheet_quotes)
-    # 1.11.10: inside a scan, every formula once (the cache below holds 65,536 -- CNHI has 245,847)
+    # inside a scan, every formula once (the cache below holds 65,536; a big workbook has far more)
     kind = "masked" if mask_sheet_quotes else "masked_strings_only"
     hit = _remembered(kind, formula)
     if hit is None:
@@ -244,8 +244,8 @@ def find_calls_detailed(formula: str, function_name: str) -> list[dict]:
     call text, which the resize/syntax validators need."""
     if not formula or not formula.startswith("="):
         return []
-    # 1.11.4: the rules ask every formula for one function after another (a million calls on
-    # Horizon); a formula that does not contain the name cannot call it (exact for ASCII text,
+    # the rules ask every formula for one function after another (a million calls on a
+    # small model); a formula that does not contain the name cannot call it (exact for ASCII text,
     # where IGNORECASE is plain lower-casing)
     if formula.isascii() and function_name.isascii() and function_name.lower() not in formula.lower():
         return []
@@ -401,8 +401,8 @@ def _cell_refs_in_formula(formula: str) -> list[dict]:
 def range_length(ref: str) -> int | None:
     """Cell count of a simple A1 / A1:A10 / Sheet!A1:B2 / 'My Sheet'!A1:B2 reference. None if
     unparseable (e.g. a defined name or an expression rather than a literal range).
-    1.10.2: the quotes of a quoted sheet name are part of the reference -- stripping them
-    made every loop range on a sheet with a space in its name "unresolvable" (LOOP-003)."""
+    The quotes of a quoted sheet name are part of the reference: stripping them would make every
+    loop range on a sheet with a space in its name "unresolvable" (LOOP-003)."""
     text = (ref or "").strip()
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1].strip()
@@ -417,13 +417,13 @@ def ref_text(c1: int, r1: int, c2: int | None = None, r2: int | None = None) -> 
     return f"{a}:{num_to_col(c2)}{r2}"
 
 
-# --- 1.7.2: arguments Excel only accepts as a reference ---------------------------------
+# --- arguments Excel only accepts as a reference ----------------------------------------
 # In these argument positions Excel accepts a range, a defined name, #REF! or a
 # function that returns a reference -- and REFUSES the whole formula (COM error
 # 0x800A03EC, nothing is written) for anything else: NA(), #N/A, a number, text,
 # TRUE, an array constant, arithmetic (A1:A5+0), IFERROR(...), FILTER(...).
-# Verified one by one in Excel on 2026-09-24 after an assistant fix rewrote
-# SUMIFS('BASE Polices'!#REF!, ...) to SUMIFS(NA(), ...) in 17 cells and Excel
+# Verified one by one in Excel after an assistant fix rewrote
+# SUMIFS('Some sheet'!#REF!, ...) to SUMIFS(NA(), ...) in 17 cells and Excel
 # refused every one. Positions are 0-based.
 def _ifs_positions(n: int) -> list[int]:  # SUMIFS(sum_range, criteria_range1, criteria1, criteria_range2, ...)
     return [0] + list(range(1, n, 2))

@@ -15,8 +15,8 @@ Design notes
 
 This module is deliberately small and dependency-light (only Playwright).
 
-Project operations (1.6.8) -- the selectors below were mapped on the live site
-and proven by the Shlomo closed loop; every one takes the Playwright ``page``
+Project operations -- the selectors below were mapped on the live site and
+proven by a full closed loop on a real model; every one takes the Playwright ``page``
 from ``mind_session`` and returns plain dicts so ``app/mind_loop.py`` can run
 unattended:
 
@@ -262,9 +262,10 @@ def is_authenticated() -> dict[str, Any]:
             return {"authenticated": False, "error": str(e)[:200]}
 
 
-# --- project operations (mapped on the live site, 1.6.8) ----------------------
+# --- project operations (mapped on the live site) -----------------------------
 MAIN_URL = "https://shared.milliman-mind.com/main"
 MANAGER_HOST = "prod01"
+# the sandbox folder the app creates its projects in, and the only place it deletes from
 SANDBOX_FOLDER = "MindReady_Sandbox"
 # Angular ngx-guided-tour: a full-screen mask that intercepts every click and
 # re-arms on each page load. Removed before any interaction.
@@ -352,7 +353,7 @@ def open_manager(page: Page) -> bool:
 def ensure_folder(page: Page, folder: str = SANDBOX_FOLDER) -> bool:
     """Open `folder` in the manager, creating it when it does not exist."""
     exists = False
-    for _ in range(6):  # 1.8.7: the manager's list may still be loading right after a run; look again before creating anything
+    for _ in range(6):  # the manager's list may still be loading right after a run; look again before creating anything
         exists = page.evaluate("(f)=>[...document.querySelectorAll('a')].some(e=>((e.innerText||'').trim().startsWith(f)))", folder)
         if exists:
             break
@@ -423,7 +424,7 @@ def step_status(page: Page) -> dict[str, str]:
 def read_error_logs(page: Page) -> list[str]:
     """Click 'Display Error Logs' / 'View logs' and return the errors, each as one line:
     '<kind>: <message lines> | MODEL ... | <model> > <instance> > <sheet>!<cell> | <mind ref>'
-    (1.8.6: the whole block of each error, not just its first line)."""
+    (the whole block of each error, not just its first line)."""
     btn = page.get_by_role("button", name=re.compile(r"Display Error Logs|View logs", re.I))
     if not btn.count():
         return []
@@ -634,8 +635,8 @@ def project_exists(page: Page, name: str) -> bool:
 
 def delete_project(page: Page, name: str, folder: str = SANDBOX_FOLDER, attempts: int = 2) -> str:
     """Best-effort delete of a sandbox project through the tile menu and the
-    type-'delete'-to-confirm modal. Refuses any name outside the sandbox
-    convention. Returns 'deleted' | 'still present' | 'not found' | 'refused'."""
+    type-'delete'-to-confirm modal. Refuses any name without the sandbox
+    project prefix the app is allowed to create and delete. Returns 'deleted' | 'still present' | 'not found' | 'refused'."""
     if not name.startswith("zzz_"):
         return "refused"
     result = "not found"

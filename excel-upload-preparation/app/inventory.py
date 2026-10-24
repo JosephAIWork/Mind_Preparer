@@ -8,11 +8,11 @@ convention: schemas/workbook-analysis.schema.json declares those fields as
 plain `type: object` / `type: array` with no nested schema, so there is
 nothing more specific to conform to.
 
-1.3.0 additions (all read-only, all from the same single cell pass):
+Also read (all read-only, all from the same single cell pass):
   * Mind-style grid detection with '#Title /Flag' parsing (app/grids.py)
   * array formulas (legacy CSE and dynamic-array) and data-table formulas,
     which openpyxl hands back as objects rather than '=...' strings and
-    were previously invisible to every formula check
+    would otherwise be invisible to every formula check
   * per-sheet style statistics (number-format categories, theme colours,
     empty-but-filled cells), outlines/hidden rows+columns, data validations,
     conditional formatting, sheet protection, tab colour
@@ -44,22 +44,22 @@ from .perf import stage as perf_stage
 from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, parse_ref, range_length, storage_prefixes
 from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
-fast_xlsx.install()  # 1.11.4: the C XML parser, and the cached values kept from the formula load
-fast_xlsx.patch_openpyxl()  # 1.11.5: a grouped pivot field no longer stops the load
+fast_xlsx.install()  # the C XML parser, and the cached values kept from the formula load
+fast_xlsx.patch_openpyxl()  # a grouped pivot field must not stop the load
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25
-# Coordinates kept per sheet for app/prep.py actions. 1.7.2: raised from 5000 --
-# that cap made the theme-colour and empty-style actions run in 5000-cell
-# batches, so a large sheet needed several Prep rounds for one action. 250k
+# Coordinates kept per sheet for app/prep.py actions. A small cap (5000) would make
+# the theme-colour and empty-style actions run in 5000-cell batches, so a large
+# sheet would need several Prep rounds for one action. 250k
 # short strings cost a few MB at most; the public API still truncates lists.
 MAX_STYLE_CELL_REFS = 250_000
 
 class _BoundedCache(dict):
-    """A dict that keeps only the `limit` most recently used entries (1.11.2).
+    """A dict that keeps only the `limit` most recently used entries.
 
     The workbook caches below hold a whole openpyxl workbook per analysed copy. Unbounded, every
-    re-analysis of a version added one more: a 36 MB model (CNHI) took the web server past 13 GB and
+    re-analysis of a version would add one more: a 36 MB model took the web server past 13 GB and
     the machine out of memory. An evicted workbook is simply read again from its copy if needed."""
 
     def __init__(self, limit: int) -> None:
@@ -254,7 +254,7 @@ def _values_workbook(path: str, ignore_sheets: Iterable[str] = ()):
     key = f"{path}|{'|'.join(ignore)}" if ignore else path
     wb = _VALUES_CACHE.get(key)
     if wb is None:
-        # 1.11.4: the formula load of the same file kept every cached value -- no second parse
+        # the formula load of the same file kept every cached value -- no second parse
         formulas = _WORKBOOK_CACHE.get(str(path))
         if formulas is not None and getattr(formulas, "mind_ready_ignore", ()) == ignore:
             wb = fast_xlsx.values_view(formulas)
@@ -271,8 +271,8 @@ def values_cell(analysis: dict[str, Any], sheet: str, row: int, col: int) -> Any
     copy_path = analysis["workbooks"][0]["copy_path"]
     ignored = ignored_sheet_names(analysis)
     try:
-        # the sheets the scan skipped stay out of the load (1.11.4: it is then served from the scan's
-        # own load); a value on a skipped sheet still needs the full load, as before
+        # the sheets the scan skipped stay out of the load (it is then served from the scan's own
+        # load); a value on a skipped sheet needs the full load
         wb = _values_workbook(str(copy_path), () if sheet in ignored else ignored)
     except Exception:
         return None
@@ -436,8 +436,8 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
     style_info: dict[tuple[int, int, int], tuple[bool, str, bool]] = {}
     format_category: dict[tuple[str, bool], str] = {}
 
-    # 1.11.4: the cells the sheet holds, row by row -- ws.iter_rows() also *creates* a blank cell for
-    # every empty position of the used rectangle (Palermo: 5.4 million of them), and a blank cell
+    # the cells the sheet holds, row by row -- ws.iter_rows() also *creates* a blank cell for
+    # every empty position of the used rectangle (5.4 million on one 27 MB workbook), and a blank cell
     # adds nothing below (no value, no style, no comment, no link)
     for _key, cell in sorted(ws._cells.items()):
         value = cell.value
@@ -474,9 +474,9 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
         if occupied_here and sheet_protected and (cell.protection is None or cell.protection.locked):
             locked_cells += 1
         if cell.has_style:
-            # 1.11.4: what a style says is worked out once per (font, fill, number format) -- reading
-            # cell.font / cell.fill / cell.number_format built three style proxies a cell (13 million
-            # on Palermo, two minutes)
+            # what a style says is worked out once per (font, fill, number format) -- reading
+            # cell.font / cell.fill / cell.number_format builds three style proxies a cell (13 million
+            # on a 27 MB workbook, two minutes)
             st = cell._style
             style_key = (st[0], st[1], st[3])  # StyleArray: fontId, fillId, borderId, numFmtId, ...
             info = style_info.get(style_key)
@@ -553,7 +553,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
     except Exception:
         pass
 
-    # 1.11.6: where the pivot tables sit -- Excel refuses to write into one or to insert a row or a
+    # where the pivot tables sit -- Excel refuses to write into one or to insert a row or a
     # column through it. The report filters sit above the body (rowPageCount rows and a blank row).
     pivot_tables = []
     for pv in getattr(ws, "_pivots", None) or []:
@@ -563,7 +563,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
             if not ref:
                 continue
             top = ref["r1"] - (int(loc.rowPageCount or 0) + 1 if loc.rowPageCount else 0)
-            # 1.11.7: what the pivot is built from -- a grouped field is what Mind's converter could not read (Phoenix)
+            # what the pivot is built from -- Mind's converter cannot read a grouped field
             grouped, calculated, source = [], [], None
             try:
                 cache = pv.cache
@@ -783,8 +783,8 @@ _MM_FORMULAS: dict[str, Any] = {}  # the last workbook's formulas that can call 
 
 
 def _mm_formulas(formulas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """1.11.10: the rules ask for one MM_ function after another (38 times per scan), each a pass
-    over every formula (245,847 on CNHI): the formulas that mention "mm_" at all are found once.
+    """The rules ask for one MM_ function after another (38 times per scan), each a pass
+    over every formula (245,847 on a big workbook): the formulas that mention "mm_" at all are found once.
     A formula with non-ASCII text is always kept (find_calls' own shortcut is ASCII only)."""
     hit = _MM_FORMULAS
     if hit.get("src") is formulas and hit.get("n") == len(formulas):
@@ -832,7 +832,7 @@ def loop_definitions(analysis: dict[str, Any]) -> dict[str, list[dict[str, Any]]
                 "formula": call["formula"],
                 "range_arg": range_arg,
                 "range_length": range_length(range_arg) if range_arg else None,
-                # 1.11.1: MM_COLUMN(cell) / MM_ROW(cell) / MM_TABLE(cell): the range follows the table's grid in Mind
+                # MM_COLUMN(cell) / MM_ROW(cell) / MM_TABLE(cell): the range follows the table's grid in Mind
                 "dynamic": bool(range_arg and re.search(r"\bMM_(COLUMN|ROW|TABLE|LASTROW|LASTROWCELL|LASTCOLUMN|LASTCOLUMNCELL)\s*\(", range_arg, re.I)),
                 "literal_name": args[0].strip().startswith('"'),
             }

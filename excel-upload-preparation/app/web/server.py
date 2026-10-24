@@ -1,11 +1,10 @@
-"""FastAPI backend for the Figma-built "Mind Ready" front-end
-(`Mind Copilot Skill/MindReadyUI`, Angular + Carbon; 1.11.0).
+"""FastAPI backend of the Mind Ready web app (the front end is the Angular + Carbon
+app in `MindReadyUI`).
 
-One endpoint per function of the front-end's `src/services/api.ts`, on top of
-the same engine the Streamlit UI uses (app/modes, app/prep, app/chat_context,
-app/recalc, app/excel_report, app/change_apply). Nothing here re-implements
-a rule or a change; it only maps the engine's dicts onto the front-end's
-TypeScript contracts (docs/FIGMA_UI_PROMPT.md) and keeps a per-session
+One endpoint per call of the front end's API service, on top of the analysis
+engine (app/modes, app/prep, app/chat_context, app/recalc, app/excel_report,
+app/change_apply). Nothing here re-implements a rule or a change; it only maps
+the engine's dicts onto the front end's TypeScript contracts and keeps a per-session
 **version lineage**: every write is a new file, verified to open in Excel,
 with its change log.
 
@@ -76,8 +75,8 @@ MODE_MAP = {
     "structure_fix": ("Structure Fix", structure_fix),
 }
 ALLOWED_SUFFIXES = {".xlsx", ".xlsm", ".xlsb"}
-# 1.11.0: the front end is the Angular + Carbon app in MindReadyUI (its build is committed). The
-# retired React app (FigmaOutput) can still be served with MIND_READY_DIST=<path to FigmaOutput/dist>.
+# The front end is the Angular + Carbon app in MindReadyUI (its build is committed). Another
+# build can be served with MIND_READY_DIST=<path to its dist folder>.
 DEFAULT_DIST = PACKAGE_ROOT.parent / "MindReadyUI" / "dist" / "mind-ready-ui" / "browser"
 DIST_DIR = Path(os.environ.get("MIND_READY_DIST", str(DEFAULT_DIST)))
 GRID_FIELDS = (
@@ -108,31 +107,31 @@ class Session:
     current_version_id: str = ""
     result: dict[str, Any] | None = None
     plan: list[dict[str, Any]] = field(default_factory=list)
-    last_delta: dict[str, Any] | None = None  # 1.11.0: what the last analysis changed vs the previous one
+    last_delta: dict[str, Any] | None = None  # what the last analysis changed vs the previous one
     recalc: dict[str, Any] | None = None  # last real recalculation of the current version
     recalc_version_id: str | None = None
     recalc_path: Path | None = None  # the recalculated copy: freshest cell values for the workbook view
     grid_names: dict[str, str] = field(default_factory=dict)  # "Sheet!Ref" -> assistant-proposed grid name
     created_at: float = field(default_factory=time.time)
-    # 1.6.6 -- upload size gate + scan status
+    # Upload size gate + scan status
     size: dict[str, Any] | None = None  # app.sizing.size_gate of the uploaded file
     ignore_sheets: list[str] = field(default_factory=list)  # sheets the user chose not to scan
-    pivot_mode: str = DEFAULT_PIVOT_MODE  # 1.11.7: what Prep (and Do everything) does with the pivot tables
+    pivot_mode: str = DEFAULT_PIVOT_MODE  # what Prep (and Do everything) does with the pivot tables
     pending: bool = False  # uploaded and inspected, not analysed yet (deferred upload)
     scan: dict[str, Any] = field(default_factory=dict)  # live status of the current/last scan
-    # 1.7.2 -- one entry per analysis: how much prep work each version still needs (the Prep gauge)
+    # One entry per analysis: how much prep work each version still needs (the Prep gauge)
     plan_history: list[dict[str, Any]] = field(default_factory=list)
-    # 1.7.3 -- one entry per Apply: the changes really written into the file (the applied-changes gauge)
+    # One entry per Apply: the changes really written into the file (the applied-changes gauge)
     apply_history: list[dict[str, Any]] = field(default_factory=list)
-    # 1.7.2 -- the ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
+    # The ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
     # (computed once per session, the baseline every later recalculation is compared with)
     original_baseline: dict[str, Any] | None = None
-    # 1.11.4 -- (sheet, cell) of the original's formulas that contain #REF!, taken from its own scan
+    # (sheet, cell) of the original's formulas that contain #REF!, taken from its own scan
     # (None until the original was scanned with no sheet skipped: then the baseline reads the file)
     original_ref_formulas: set[tuple[str, str]] | None = None
-    # 1.7.2 -- live status of the current/last Apply (GET /status, field "apply")
+    # Live status of the current/last Apply (GET /status, field "apply")
     apply_status: dict[str, Any] = field(default_factory=dict)
-    # 1.9.0 -- the model map (inputs, loop driver, run settings, outputs) of the analysed version
+    # The model map (inputs, loop driver, run settings, outputs) of the analysed version
     model_map: dict[str, Any] | None = None
     model_map_version_id: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -179,7 +178,7 @@ def _register_file(s: Session, path: Path) -> str:
 def _add_version(
     s: Session, path: Path, source: str, label_body: str, change_log: list[dict[str, Any]], verified: bool | None, sha256: str, minor: bool = False
 ) -> dict[str, Any]:
-    """1.7.4: versions are numbered major.minor. A fix made on the Recalculate
+    """Versions are numbered major.minor. A fix made on the Recalculate
     step (`minor`) is the next minor of the current major (v2 -> v2.1 -> v2.2);
     everything else -- and a recalculation after such fixes -- starts the next
     major (v3). Ids follow the number: ver-002, ver-002.1, ..."""
@@ -195,7 +194,7 @@ def _add_version(
     download_name = _register_file(s, path)
     version = {
         "id": vid,
-        "parent": s.current_version_id or None,  # 1.8.0: the version this one was made from
+        "parent": s.current_version_id or None,  # the version this one was made from
         "major": major,
         "minor": n_minor,
         "label": f"v{number} — {label_body}",
@@ -292,7 +291,7 @@ def _delta(previous: dict[str, Any] | None, current: dict[str, Any], version_id:
     }
 
 
-# --- scan status (1.6.6) ------------------------------------------------------------------
+# --- scan status ------------------------------------------------------------------
 def _scan_start(s: Session, needs_convert: bool) -> None:
     now = time.time()
     s.scan = {
@@ -361,7 +360,7 @@ def _scan_snapshot(s: Session) -> dict[str, Any]:
     return sc
 
 
-# --- apply status (1.7.2) -----------------------------------------------------------------
+# --- apply status -----------------------------------------------------------------
 def _apply_start(s: Session, total: int, reanalyze: bool) -> None:
     now = time.time()
     s.apply_status = {
@@ -430,7 +429,7 @@ def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer
     operation reported into `s.apply_status` (GET /status, field "apply")."""
     _apply_start(s, len(ops), reanalyze)
     try:
-        # 1.11.9: through the session's Excel worker -- the copy is already open when the previous
+        # Through the session's Excel worker -- the copy is already open when the previous
         # version's check opened it; Excel dead or hung -> the way it was done before
         worker = excel_worker.worker_for(s.id, s.work_dir / "apply")
         res = None
@@ -461,10 +460,10 @@ def _status_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _sync_recalc_finding(s: Session) -> None:
-    """1.7.4: READY-001 ("successful recalculation") is NOT_SUPPORTED in every
+    """READY-001 ("successful recalculation") is NOT_SUPPORTED in every
     analysis pass -- the pass never runs Excel -- and, worst status winning,
-    it kept the whole report at NOT_SUPPORTED even after a clean Recalculate.
-    When the current version has a real recalculation, the finding says what
+    it would hold the whole report at NOT_SUPPORTED after a clean Recalculate.
+    So when the current version has a real recalculation, the finding says what
     it found (PASS when no new error, ERROR otherwise) and the report's status
     and summary are recomputed."""
     if not s.result:
@@ -491,7 +490,7 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     label, module = MODE_MAP[s.mode]
     work = s.work_dir / "analysis" / s.current_version_id
     previous = s.result["validation_report"] if s.result else None
-    with formula_memo():  # 1.11.10: the rules and the planners parse each formula once between them
+    with formula_memo():  # the rules and the planners parse each formula once between them
         result = module.run(path, work, load_config(), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
         if progress is not None:
             progress("plan", "Planning the fixes", None)
@@ -510,10 +509,10 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         }
     _sync_recalc_finding(s)  # a re-analysis of a version already recalculated keeps that result
     delta = _delta(previous, report, s.current_version_id)
-    s.last_delta = delta  # 1.11.0: shown again when the page reopens the session
+    s.last_delta = delta  # shown again when the page reopens the session
     summary = _summary(result["workbook_analysis"])
     summary["size"] = s.size
-    # 1.7.2: the verdict and the Prep gauge travel with every analysis
+    # The verdict and the Prep gauge travel with every analysis
     readiness = s.readiness()
     counts = plan_counts(s.plan)
     s.plan_history.append({
@@ -662,13 +661,13 @@ def health() -> dict[str, Any]:
         "assistant": llm_available(),
         "rules": len(engine().active_rules()),
         "frontend": DIST_DIR.is_dir(),
-        # 1.6.6: deferred upload + sheet selection + scan status are available
+        # Deferred upload + sheet selection + scan status are available
         "upload_gate": True,
         "size_threshold_mb": round(size_threshold_bytes(load_config()) / MB, 1),
-        # 1.7.2: the assistant's model and POST /chat/stream
+        # The assistant's model and POST /chat/stream
         "model": DEFAULT_MODEL_ID,
         "streaming": True,
-        # 1.8.0: POST /auto-fix ("Fix all automatically" on the Recalculate step)
+        # POST /auto-fix ("Fix all automatically" on the Recalculate step)
         "autofix": True,
     }
 
@@ -711,7 +710,7 @@ def create_session(file: UploadFile = File(...), mode: str = Form("plan"), defer
 
 @app.get("/api/sessions/{session_id}")
 def session_state(session_id: str) -> dict[str, Any]:
-    """1.10.0: the state of an analysed session, in the shape an upload returns, so the web app
+    """The state of an analysed session, in the shape an upload returns, so the web app
     can open it again (`/?session=<id>`, or `/model-map?session=<id>`) after a reload."""
     s = _session(session_id)
     if not s.result:
@@ -737,7 +736,7 @@ def session_state(session_id: str) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/pivot-mode")
 def set_pivot_mode(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """1.11.7: what Prep does with the pivot tables -- "blocking" (leave them, convert only the ones
+    """What Prep does with the pivot tables -- "blocking" (leave them, convert only the ones
     Mind cannot read), "formulas" or "values" -- and the plan made again with it (Do everything
     applies the blocking actions of that plan)."""
     s = _session(session_id)
@@ -795,7 +794,7 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
     before = _before_apply(s)
     reanalyze_wanted = reanalyze
     with perf_stage("apply_operations", file=s.current_path.name, operations=len(ops), source=source):
-        # 1.11.4: with a re-analysis to run, the check that the new file opens in Excel (a second
+        # With a re-analysis to run, the check that the new file opens in Excel (a second
         # Excel, ~40 s on a 30 MB model) runs alongside it instead of before it
         res = _tracked_apply(s, ops, reanalyze, defer_verify=reanalyze_wanted, source=source)
     output = Path(res["output_path"])
@@ -850,7 +849,7 @@ def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any
     action_ids = {o.get("action_id") for o in ops}
     source = "assistant" if action_ids == {"assistant"} else "formula" if action_ids == {"formula_replacement"} else "prep"
     who = {"assistant": "Assistant", "formula": "Formula fix", "prep": "Prep"}[source]
-    minor = payload.get("versionStep") == "minor"  # 1.7.4: a fix on the Recalculate step
+    minor = payload.get("versionStep") == "minor"  # a fix on the Recalculate step
     return _apply_and_version(s, ops, source, who, bool(payload.get("reanalyze", True)), minor=minor)
 
 
@@ -915,7 +914,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
 
 
-# --- the app runs itself against real Mind (1.6.8) ------------------------------------
+# --- the app runs itself against real Mind ------------------------------------
 MIND_LOOPS: dict[str, dict[str, Any]] = {}  # session id -> {state, events, report, started, work_dir}
 _MIND_LOOP_LOCK = threading.Lock()
 
@@ -960,7 +959,7 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
 
     def worker() -> None:
         try:
-            excel_worker.release(s.id)  # 1.11.9: one Excel per session
+            excel_worker.release(s.id)  # one Excel per session
             state["report"] = run_loop(cfg, progress)
             state["state"] = "done"
         except Exception as exc:  # the thread must never die silently
@@ -1073,7 +1072,7 @@ def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]
             )
             question = f"[About the recalculation error {focus.get('error', '')}{where}{formula}.{siblings}{array_note}] {question}"
         else:
-            # 1.7.2: a replacement is judged by a full Excel recalculation afterwards -- say so up front
+            # A replacement is judged by a full Excel recalculation afterwards -- say so up front
             question = (
                 f"[About finding {focus['rule_id']}{where}. If you propose a replacement formula, it must behave like the original on "
                 "blank cells, text and errors (e.g. wrap with IF(x=\"\",0,...) when the original tolerated blanks); every new error "
@@ -1145,7 +1144,7 @@ def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
     if s.original_baseline is None:
         copy_path, _ = make_immutable_copy(original, s.work_dir / "recalc_original")
         with perf_stage("recalc_original_baseline", file=original.name):
-            res = recalculate(copy_path, save=False)  # 1.11.4: a disposable copy -- nothing reads it again
+            res = recalculate(copy_path, save=False)  # a disposable copy -- nothing reads it again
         ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED"))
         s.original_baseline = {
             "ran": ran,
@@ -1165,7 +1164,7 @@ def recalc(session_id: str) -> dict[str, Any]:
     RECALCULATING.add(session_id)
     try:
         with perf_stage("recalc_endpoint", file=s.current_path.name):
-            # 1.11.9: after a Mind loop the session's Excel worker recalculated this version while it
+            # After a Mind loop the session's Excel worker recalculated this version while it
             # was being analysed; otherwise (or when that did not happen) as before, in its own Excel
             ew = excel_worker.WORKERS.get(s.id)
             ahead = ew.take_recalc(s.current_path) if ew is not None and not ew._stopped else None
@@ -1185,7 +1184,7 @@ def recalc(session_id: str) -> dict[str, Any]:
 def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True) -> dict[str, Any]:
     """What a recalculation of the current version means for the session: the
     errors against the original's, the root-cause groups, READY-001, the verdict.
-    `res` has the shape of app.recalc.recalculate -- the automatic fixer (1.8.0)
+    `res` has the shape of app.recalc.recalculate -- the automatic fixer
     ends with a full recalculation of its own and hands it in the same way."""
     out = {
         "status": res["status"],
@@ -1199,7 +1198,7 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
         "addin_gap_errors": [{"sheet": e.get("sheet", ""), "cell": e.get("cell", ""), "formula": e.get("formula", "")} for e in res.get("addin_gap_errors", [])],
     }
     out["groups"] = group_errors(out["formula_errors"], out["addin_gap_errors"])
-    # 1.7.2: errors the original already had are the model's own, not the preparation's.
+    # Errors the original already had are the model's own, not the preparation's.
     # The baseline is the ORIGINAL after the same full recalculation (once per
     # session), never its cached values -- those can be stale.
     original = _original_path(s)
@@ -1221,7 +1220,7 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     else:
         out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
         out["compared_with_original"] = original is not None
-    # 1.7.4: a recalculation after fixes (v2.1, v2.2, ...) closes the round: the
+    # A recalculation after fixes (v2.1, v2.2, ...) closes the round: the
     # same file becomes the next major version (v3), and the recalculation is its own
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
     if close_round and out["ran"] and current is not None and current.get("minor"):
@@ -1236,11 +1235,11 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
         out["report"] = {k: v for k, v in s.result["validation_report"].items() if k != "_version_id"}
         out["plan"] = s.plan
     s.recalc_path = copy_path
-    out["readiness"] = s.readiness()  # 1.7.2: a clean recalculation is what turns the verdict green
+    out["readiness"] = s.readiness()  # a clean recalculation is what turns the verdict green
     return out
 
 
-# --- 1.8.0: did the preparation change what the model computes? ---------------------------------
+# --- did the preparation change what the model computes? ---------------------------------
 def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
     """The versions that lead to `version_id`, oldest first (a version restored
     from History branches: the list order alone is not the path)."""
@@ -1284,7 +1283,7 @@ def numbers_check(session_id: str) -> dict[str, Any]:
     return _numbers_public(compare_workbooks(original, s.current_path, moves), s.current_version_id)
 
 
-# --- 1.8.0: fix all automatically ----------------------------------------------------------------
+# --- fix all automatically ----------------------------------------------------------------
 AUTOFIX: dict[str, dict[str, Any]] = {}  # session id -> live state of the current / last run
 RECALCULATING: set[str] = set()          # sessions with a manual recalculation in progress
 
@@ -1358,7 +1357,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
 
     def worker() -> None:
         try:
-            excel_worker.release(s.id)  # 1.11.9: one Excel per session -- the fixer has its own
+            excel_worker.release(s.id)  # one Excel per session -- the fixer has its own
             # On a prepared version: what did the preparation itself change? An error that was a
             # value in the original is Prep's doing -- the fixer must not put a 0 over it.
             regressions = None
@@ -1378,7 +1377,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             if not res.get("output_path"):
                 ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
                 if ew is not None:
-                    ew.preopen_async(source)  # 1.11.9: nothing changed -- Prep's first round finds this version open
+                    ew.preopen_async(source)  # nothing changed -- Prep's first round finds this version open
             if res.get("output_path"):
                 output = Path(res["output_path"])
                 left = int(res.get("errors_after") or 0)
@@ -1392,7 +1391,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
                 rec = _recalc_out(s, res["recalc"], output, close_round=False)
                 ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
                 if ew is not None:
-                    ew.preopen_async(output)  # 1.11.9: Prep's first round finds it open
+                    ew.preopen_async(output)  # Prep's first round finds it open
                 progress("reanalyze", "Checking the fixed version against the rules", None)
                 state["analysis"] = _run_scan(s, output)
                 rec["readiness"] = s.readiness()
@@ -1453,7 +1452,7 @@ def stop_autofix(session_id: str) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/readiness")
 def readiness(session_id: str) -> dict[str, Any]:
-    """1.7.2: the one verdict -- blocked / unverified / ready -- with what stands
+    """The one verdict -- blocked / unverified / ready -- with what stands
     in the way and the next step, plus the Prep gauge history."""
     s = _session(session_id)
     r = s.readiness()
@@ -1498,7 +1497,7 @@ def _stored_errors(s: Session) -> int | None:
 
 @app.get("/api/sessions/{session_id}/estimate")
 def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
-    """1.11.6: how long "Do everything" may take, per step (low / likely / high seconds) with the
+    """How long "Do everything" may take, per step (low / likely / high seconds) with the
     caveat; `loop=false` when the chain will skip the loop. See app/estimate.py."""
     s = _session(session_id)
     if not s.result:
@@ -1556,7 +1555,7 @@ def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/model-map")
 def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
-    """Where the model's inputs, loop driver, run settings and outputs are (1.9.0): read off the
+    """Where the model's inputs, loop driver, run settings and outputs are: read off the
     analysed copy's macros, names, dropdowns, sheet names and formulas. Cached per analysed version."""
     s = _session(session_id)
     _model_map_of(s, refresh)
@@ -1568,7 +1567,7 @@ def _truthy(v: Any) -> bool:
 
 
 def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    """The Mind loop plan (1.10.0) for the current version with the caller's choices:
+    """The Mind loop plan for the current version with the caller's choices:
     name / names, first, last, count_cell, clear_old."""
     mp = _model_map_of(s)
     names = payload.get("names") if isinstance(payload.get("names"), dict) else None
@@ -1582,7 +1581,7 @@ def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/mind-loop-plan")
 def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False, fixed_ranges: bool = False) -> dict[str, Any]:
-    """1.10.0: the macro's run loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
+    """The macro's run loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
     the block the macro writes per pass -- as a plan (nothing written): the loops, the outputs,
     the cleared areas, the operations, and what cannot be built and why."""
     s = _session(session_id)
@@ -1595,7 +1594,7 @@ def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str =
 
 @app.post("/api/sessions/{session_id}/mind-loop-plan/apply")
 def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """1.10.0: write the Mind loop plan (built again from the same choices, so what is written is
+    """Write the Mind loop plan (built again from the same choices, so what is written is
     what was shown) into a new version and re-analyse it."""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
@@ -1620,7 +1619,7 @@ def cells(session_id: str, sheet: str, cell: str, rows: int = 3, cols: int = 3) 
     return cell_window(s.result["workbook_analysis"], sheet, cell, rows=rows, cols=cols, values_path=fresh)
 
 
-# --- Grid Namer (1.7.0) ---------------------------------------------------------------
+# --- Grid Namer ---------------------------------------------------------------
 @app.get("/api/mind-flags")
 def mind_flags() -> dict[str, Any]:
     """The documented Mind title flags (references/mind-flags.yaml), for the

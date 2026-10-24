@@ -1,4 +1,4 @@
-"""The app runs itself against real Milliman Mind (1.6.8).
+"""The app runs itself against real Milliman Mind.
 
 One call -- ``run_loop(LoopConfig(...))`` -- takes a raw model workbook and,
 with nobody watching, repeats:
@@ -41,8 +41,8 @@ re-preps its own output (that grows a workbook for ever fewer names). When
 no rule applies it stops and says so: that report is the developer's cue.
 
 Guardrails: the source is never modified (immutable copies everywhere);
-only sandbox projects (``zzz_`` prefix, ``MindReady_Sandbox`` folder) are
-created or deleted; a project that has been run cannot be deleted by
+only sandbox projects (the project prefix and sandbox folder in LoopConfig /
+mind_client) are created or deleted; a project that has been run cannot be deleted by
 automation and is listed for manual cleanup.
 """
 from __future__ import annotations

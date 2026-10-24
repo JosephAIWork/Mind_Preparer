@@ -1,4 +1,4 @@
-"""Mind loop -- the macro's run loop written as Mind formulas (1.10.0).
+"""Mind loop -- the macro's run loop written as Mind formulas.
 
 The Model map (app.model_map) says which cell a macro sets on every pass (the driver), what it
 sets it from (a row of a table, an item of a list, a counter), the cells that bound the run, and
@@ -156,9 +156,9 @@ def _x14_dropdowns(copy_path: str, sheet: str) -> list[tuple[str, str]]:
 
 
 def _dropdown_at(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
-    """1.11.3: the list dropdown (data validation) on a cell, if it has one. Mind reads a cell with a
+    """The list dropdown (data validation) on a cell, if it has one. Mind reads a cell with a
     dropdown as an input and drops its formula: an MM_LOOP written there is lost (seen in Mind on
-    2026-10-16 with CNHI's two drivers and a probe workbook)."""
+    2026-10-16 with a model's two driver cells and a probe workbook)."""
     from .inventory import open_cached
 
     r = parse_ref(ref)
@@ -497,7 +497,7 @@ def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: in
 
 
 def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, first_src: dict[str, Any], last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
-    """The driver is the loop counter itself (Palermo: Projection!C3 = polProcess): MM_LOOP over
+    """The driver is the loop counter itself (a cell the macro sets to its counter): MM_LOOP over
     a cell holding the count gives 1..n; another first value needs the IndexStart / IndexEnd
     arguments; without a cell holding the count the plan asks for one."""
     drv_sheet, drv_ref = _split(d["cell"])
@@ -533,7 +533,7 @@ def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first:
 
 
 def _derived_loop(analysis: dict[str, Any], d: dict[str, Any], names: Any, name: str, first: int, last: int, last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
-    """The driver is computed from the counter (CNHI: active_year = proj_year + i - 1): the
+    """The driver is computed from the counter (e.g. year = first_year + i - 1): the
     statement's right-hand side with MM_LOOP in the counter's place."""
     st = str(d.get("statement") or "")
     if "=" not in st:
@@ -817,8 +817,8 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         ws = wb[c["sheet"]]
         r2 = min(c["r2"], ws.max_row)
         c2 = min(c["c2"], ws.max_column)
-        # 1.11.11: an output block that reads the cleared area (Palermo: Macro!A13 = ... + OFFSET(V13, ...)
-        # over the per-tariff results the macro pastes) would add the earlier run's values to every loop
+        # an output block that reads the cleared area (e.g. A13 = ... + OFFSET(V13, ...) over the
+        # per-item results the macro pastes) would add the earlier run's values to every loop
         # value in Mind; the macro clears them first, so the plan does too, without being asked
         reader = next((rd for o in plan["outputs"] if o.get("from") for rd in [_reader_of_area(wb, o["from"], c)] if rd), None)
         clear = clear_old or reader is not None

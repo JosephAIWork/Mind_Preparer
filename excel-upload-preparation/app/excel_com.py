@@ -1,7 +1,7 @@
 """Shared Excel COM session helper (Windows + pywin32 + an installed Excel).
 
-Why every *output* workbook goes through Excel rather than openpyxl
-(CHANGELOG 1.3.0): openpyxl round-trips only the parts it understands. Real
+Why every *output* workbook goes through Excel rather than openpyxl:
+openpyxl round-trips only the parts it understands. Real
 Mind workbooks carry parts it doesn't -- a Power Pivot data model
 (`xl/model/item.data`, 13 MB in the test workbook), `customXml/` items,
 slicers, form controls... -- and it drops them silently. The resulting file
@@ -12,7 +12,7 @@ available; the openpyxl path is kept only as an explicitly-labelled
 reduced-fidelity fallback.
 
 Every session: hidden, alerts off, macros force-disabled
-(`AutomationSecurity = 3`), links never updated, events off, and (1.10.1) the
+(`AutomationSecurity = 3`), links never updated, events off, and the
 MM for Excel add-in loaded when the machine has it (`mm_for_excel_xll`).
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from typing import Any, Iterator
 FILE_FORMAT_CODES = {"xlsx": 51, "xlsm": 52, "xlsb": 50}  # xlOpenXMLWorkbook / MacroEnabled / Binary
 XL_CELL_TYPE_FORMULAS = -4123
 
-# 1.10.1 -- the MM for Excel add-in (Milliman Mind's Excel add-in, an XLL). Excel started by
+# The MM for Excel add-in (Milliman Mind's Excel add-in, an XLL). Excel started by
 # automation never loads the add-ins of the user's startup list (the `OPEN` values under
 # HKCU\...\Excel\Options), so a background Excel shows #NAME? on every MM_ call unless the
 # XLL is registered into that instance explicitly (`Application.RegisterXLL`). With it loaded,
@@ -117,7 +117,7 @@ def com_available() -> bool:
 
 def start_excel(mm_addin: bool = True) -> Any:
     """A hidden Excel of its own, set up as every session needs it (on a thread that called
-    CoInitialize). `mm_addin` (1.10.1): load the MM for Excel add-in into it when the machine has
+    CoInitialize). `mm_addin`: load the MM for Excel add-in into it when the machine has
     one, so MM_ functions evaluate instead of showing #NAME?."""
     import win32com.client
 
@@ -172,7 +172,7 @@ def excel_session(mm_addin: bool = True) -> Iterator[Any]:
         pythoncom.CoUninitialize()
 
 
-# 1.11.9 -- what the per-session Excel worker (app/excel_worker.py) needs to tell a dead or hung
+# What the per-session Excel worker (app/excel_worker.py) needs to tell a dead or hung
 # Excel from a refused operation, and to stop one that hangs.
 EXCEL_GONE_HRESULTS = {
     -2147417848,  # RPC_E_DISCONNECTED: the object invoked has disconnected from its clients

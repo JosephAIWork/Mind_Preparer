@@ -1,6 +1,6 @@
 """Builds the reviewable Excel outputs.
 
-Two products (CHANGELOG 1.3.0):
+Two products:
 
 * **Standalone report** (`build_standalone_report`): a brand-new .xlsx with a
   Summary sheet and a Findings sheet, written with openpyxl. It contains no

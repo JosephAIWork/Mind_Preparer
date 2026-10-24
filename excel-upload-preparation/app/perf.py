@@ -1,4 +1,4 @@
-"""Stage timings (1.11.4): where the time goes on a big workbook.
+"""Stage timings: where the time goes on a big workbook.
 
 Every slow step (starting Excel, opening, writing, recalculating, saving, the check that the file opens,
 the scan) is timed with `stage(name)` and appended as one JSON line to

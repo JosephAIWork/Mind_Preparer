@@ -1,4 +1,4 @@
-"""Workbook preparation (1.4.0, extended 1.5.0): turn findings into concrete,
+"""Workbook preparation: turn findings into concrete,
 reviewable *operations* and apply the ones the user approves to a fresh copy
 through Excel.
 
@@ -22,7 +22,7 @@ Operation shape: {op, action_id, rule_id, sheet, before, after, note, ...}
   insert_row / insert_column             -> row / column
   set_sheet_visibility                   -> after = True|False
   unprotect_sheet, explicit_colors (cells)
-  remove_validation                      -> cell: its dropdown / data validation is deleted (1.11.3)
+  remove_validation                      -> cell: its dropdown / data validation is deleted
 Cell operations flagged `after_inserts` run after the row/column inserts
 (their coordinates are post-insert).
 """
@@ -61,7 +61,7 @@ from .validators.kb import documented_flags
 
 STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values"}
 PIVOT_OPS = {"pivot_to_formulas", "pivot_to_values"}
-# 1.11.7: what Prep does with the pivot tables (Advanced > Prep actions; Do everything follows it)
+# What Prep does with the pivot tables (Advanced > Prep actions; Do everything follows it)
 PIVOT_MODES = {
     "blocking": "Leave them, turn only the blocking ones into formulas",
     "formulas": "Turn every pivot table into formulas",
@@ -204,19 +204,19 @@ def _row_insert_is_safe(grids: list[dict[str, Any]], sheet: str, row: int, own: 
     return [o for o in grids if o["sheet"] == sheet and o is not own and o["first_row"] < row <= o["last_row"]]
 
 
-# --- what the model's formulas read (1.6.8) ------------------------------------------
+# --- what the model's formulas read ------------------------------------------
 # A title is text written into a cell; a moved label is a cell emptied; a row
 # insert shifts every cell below it. None of that may change a computed value.
-# The real Shlomo model showed how it can: `=COUNTA(CoverageDetails!A:A)` counted
-# a title written into column A and the model picked a different policy, and
-# `=Information!A1` on five sheets read 0 after the company name was "moved"
-# into a title. So every write site asks this index first.
+# A real model showed how it can: a `=COUNTA(Sheet!A:A)` counted a title written
+# into column A and the model picked a different policy, and `=Info!A1` on five
+# sheets read 0 after the company name was "moved" into a title. So every write
+# site asks this index first.
 _REF_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 
-# 1.8.0 -- two ways a formula reads a sheet that Excel does not move along when a row
-# is inserted there. Both changed computed values on a real model (PVFP: 2,462 cells,
-# 1,781 of them into errors) after an ordinary Prep:
-#   * a 3-D reference, =SUM('LoB 1:>>'!K65): it reads the SAME cell on every sheet of the
+# Two ways a formula reads a sheet that Excel does not move along when a row is
+# inserted there. Both changed computed values on a real model (2,462 cells, 1,781
+# of them into errors) after an ordinary Prep:
+#   * a 3-D reference, =SUM('Line 1:>>'!K65): it reads the SAME cell on every sheet of the
 #     range, by position. A row inserted on one of them shifts that sheet alone.
 #   * an address built as text, =INDIRECT("'"&$E$2&"'!H"&n): text is not a reference.
 _STRING_LITERAL_RE = re.compile(r'"(?:[^"]|"")*"')
@@ -253,8 +253,8 @@ def _three_d_sheets(formula: str, order: list[str]) -> list[tuple[str, list[str]
 
 def _text_addressed_sheets(analysis: dict[str, Any], formula: str, home: str | None, order: list[str], seen_values: dict[tuple[str, int, int], Any]) -> list[str]:
     """The sheets an INDIRECT in `formula` may build an address on: a sheet named
-    in one of its text pieces ("'CoC "&n&"'!F14" names every sheet starting with
-    'CoC '), or named by a cell the formula reads ($E$2 holds 'LoB 1'). A cell
+    in one of its text pieces ("'Year "&n&"'!F14" names every sheet starting with
+    'Year '), or named by a cell the formula reads ($E$2 holds 'Line 1'). A cell
     that holds some other text names a sheet that does not exist: that INDIRECT
     points nowhere and no sheet is at stake. When nothing can be read at all:
     the formula's own sheet for an address without a sheet, every sheet
@@ -297,7 +297,7 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
     """Every cell range the workbook's formulas and defined names read:
     {'rects': {sheet: [(r1, r2, c1, c2, owner)]}, 'whole_cols': {sheet: {col: owner}},
      'whole_rows': {sheet: {row: owner}}} where owner names the reading formula,
-    plus (1.8.0) 'positional': {sheet: owner} for the sheets inside a 3-D reference and
+    plus 'positional': {sheet: owner} for the sheets inside a 3-D reference and
     'text_addressed': {sheet: owner} for the sheets an INDIRECT builds addresses on."""
     key = str(analysis.get("analysis_id") or id(analysis)) + ":" + str(analysis["workbooks"][0].get("copy_path"))
     cached = _REF_INDEX_CACHE.get(key)
@@ -356,8 +356,8 @@ def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int) -> str 
     rects = index["rects"].get(sheet)
     if not rects:
         return None
-    # 1.11.10: the first rectangle (in reading order) that holds the cell, from the few in its
-    # band of rows instead of all of them (CNHI: 8,914 questions, a million rectangles)
+    # The first rectangle (in reading order) that holds the cell, from the few in its band of
+    # rows instead of all of them (a large workbook asks thousands of questions of a million rectangles)
     blocks, tall = _row_blocks(index, sheet, rects)
     best = None
     for i in blocks.get(row // _BLOCK_ROWS, ()):
@@ -438,10 +438,10 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
                 continue
             row = ref["r1"]
             if row <= g["first_row"]:
-                # 1.7.2: a '#Title' on the grid's own first row (next to a label or
-                # a header) is not separated by a row above it -- the whole block
-                # just moves down and the next scan finds the same trapped title.
-                # This was an endless Prep round; it is a manual job.
+                # A '#Title' on the grid's own first row (next to a label or a
+                # header) is not separated by a row above it -- the whole block
+                # just moves down and the next scan finds the same trapped title,
+                # an endless Prep round. It is a manual job.
                 skipped.append(f"{g['sheet']}!{cell}: the title shares the grid's first row with other content -- an empty row above would not separate it; move the title to its own row by hand")
                 continue
             others = _row_insert_is_safe(grids, g["sheet"], row, own=g)
@@ -456,7 +456,7 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
     return ops, skipped
 
 
-# --- context-aware grid titles (1.5.0) ---------------------------------------------
+# --- context-aware grid titles ---------------------------------------------
 def _clean_name(text: Any) -> str:
     s = str(text).strip()
     s = s.lstrip("#").strip()
@@ -758,7 +758,7 @@ def _canonical_flags(flags: Any, docs: dict[str, dict[str, Any]]) -> tuple[list[
 
 
 def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> dict[str, Any]:
-    """The Grid Namer screen (1.7.0): the user selected an area of a sheet,
+    """The Grid Namer screen: the user selected an area of a sheet,
     chose a name and flags, and submitted. Naming cannot redraw Mind's grid
     boundaries -- only label what its detection already sees -- so each area
     is resolved to the detected grid it touches (exactly one, or the
@@ -985,7 +985,7 @@ _SHEET_REF_ERROR_RE = re.compile(r"(?<![:\w'.])(?:'(?:[^']|'')+'|[A-Za-z0-9_.]+)
 def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool, bool]:
     """Replace broken references with NA(): every standalone reference to a broken
     defined name and every standalone literal #REF!, sheet-qualified or not
-    ('BASE Polices'!#REF!, 1.7.2). A call that then holds NA() where Excel needs
+    ('Policy data'!#REF!). A call that then holds NA() where Excel needs
     a range (SUMIFS(NA(),...) -- Excel refuses such a formula) becomes NA()
     itself (`collapse_na_reference_calls`; exact, it could only ever produce an
     error). Returns (fixed, has_unfixable, collapsed) where has_unfixable is
@@ -1034,7 +1034,7 @@ def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, An
     broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
     name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
     lit_re = re.compile(r"#REF!")
-    # 1.8.3: a name no definition exists for (misspelt, or deleted) is broken too -- Excel shows
+    # A name no definition exists for (misspelt, or deleted) is broken too -- Excel shows
     # #NAME? where it is evaluated, Mind refuses the formula ('not a function') even in a branch
     # never taken. It becomes NA() like a #REF! name.
     known = {str(d["name"]).upper() for d in wb0.get("defined_names", []) if d.get("name")} | {str(t).upper() for sh in wb0.get("sheets", []) for t in sh.get("tables", [])}
@@ -1051,13 +1051,13 @@ def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, An
 
 
 def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]:
-    """REF-001, the range case (1.7.2): a formula whose broken reference stands
+    """REF-001, the range case: a formula whose broken reference stands
     for a whole range cannot be patched piecewise, so the *whole* formula
     becomes =NA(). Conservative for the same reason as the piecewise fix: the
     cell already evaluated to an error, and it still does -- no valid value
     changes. It is a bigger decision (a calculation is replaced, not repaired),
     so it is its own action with its own checkbox and a caution note.
-    1.7.4: where only the call that needs the range has to go
+    Where only the call that needs the range has to go
     (`collapse_na_reference_calls`), only that call becomes NA() --
     =IFERROR(SUMIF(#REF!,1),0) -> =IFERROR(NA(),0) keeps its 0."""
     ops, skipped = [], []
@@ -1078,7 +1078,7 @@ def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]
     return ops, skipped
 
 
-# --- FRM-003: spilled-range references (1.7.2) --------------------------------------------
+# --- FRM-003: spilled-range references --------------------------------------------
 # Excel stores `A1#` (a reference to the range a dynamic-array formula spills
 # into) as `_xlfn.ANCHORARRAY(A1)`. Mind rejects every such formula with
 # "Unsupported formula: ANCHORARRAY()". The spill's current extent is known:
@@ -1169,7 +1169,7 @@ def plan_freeze_spill_refs(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-# --- FRM-008 / FRM-009: where Mind computes another value than Excel (1.8.1) ---------------
+# --- FRM-008 / FRM-009: where Mind computes another value than Excel ---------------
 def _mind_values(analysis: dict[str, Any]) -> dict[str, Any] | None:
     from .validators.mind_values import scan
 
@@ -1236,7 +1236,7 @@ def plan_empty_cells_as_zero(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-# --- FRM-006: 3-D references written out sheet by sheet (1.8.3) -------------------------------
+# --- FRM-006: 3-D references written out sheet by sheet -------------------------------
 def plan_expand_3d_references(analysis, report) -> tuple[list[dict], list[str]]:
     """FRM-006: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets between the
     two tabs, the ones Mind imports (a sheet with no grid is left out). Exact as long as the
@@ -1290,12 +1290,12 @@ def _held_on_omitted_sheets(analysis: dict[str, Any], formula: str, references: 
     return held
 
 
-# --- FRM-007: INDIRECT used as a value, replaced by the reference it builds (1.8.4) ------------
+# --- FRM-007: INDIRECT used as a value, replaced by the reference it builds ------------
 def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
     """FRM-007: Mind returns a reference for INDIRECT and cannot use it as a value
     ('Unable to cast AM.Models.AMReference to System.IConvertible'). Where the text INDIRECT
-    builds can be worked out from the workbook's constants ("'"&$G710&"'!$Z$16" with G710 =
-    "LoB 1"), the call becomes that direct reference -- the value Excel computes today. A target
+    builds can be worked out from the workbook's constants ("'"&$G10&"'!$Z$16" with G10 =
+    "Line 1"), the call becomes that direct reference -- the value Excel computes today. A target
     that does not exist becomes NA() where it stands (that call was an error already). Text
     that depends on a computed value is left for a person: the direct reference would freeze
     one state of the model."""
@@ -1324,7 +1324,7 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-# --- REF-002: external links frozen to the values Excel keeps (1.8.6) ------------------------
+# --- REF-002: external links frozen to the values Excel keeps ------------------------
 def plan_freeze_external_links(analysis, report) -> tuple[list[dict], list[str]]:
     """REF-002: each reference to another workbook becomes the value Excel shows for it (the
     copy kept in the link's cache: a number, a text, TRUE/FALSE), or NA() where Excel kept none
@@ -1369,7 +1369,7 @@ def plan_freeze_external_links(analysis, report) -> tuple[list[dict], list[str]]
     return ops, skipped
 
 
-# --- RSK-002: headers over every column an array formula covers (1.8.3) -----------------------
+# --- RSK-002: headers over every column an array formula covers -----------------------
 def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
     """RSK-002: Mind refuses an array formula that reaches past its grid ('Ensure that the
     column headers cover the entire array formula'). The grid's header row is extended over
@@ -1378,7 +1378,7 @@ def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
     reaches below the grid is left for a person."""
     ops, skipped = [], []
     wb0 = analysis["workbooks"][0]
-    grids: dict[str, list[dict[str, Any]]] = {}  # 1.11.10: per sheet once, not once per array formula
+    grids: dict[str, list[dict[str, Any]]] = {}  # per sheet once, not once per array formula
     for x in all_grids(analysis):
         grids.setdefault(x["sheet"], []).append(x)
     by_grid: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1509,7 +1509,7 @@ def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-# 1.7.2: every action carries its `level` -- "blocking" when Mind's converter
+# Every action carries its `level` -- "blocking" when Mind's converter
 # refuses the workbook (or computes wrong) without it, "optional" when Mind reads
 # the file as it is and the change only improves it. The level is the priority
 # of the rule the action serves (rules/*.yaml: REQUIRED -> blocking); it is not
@@ -1517,7 +1517,7 @@ def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
 # `caution` says why a blocking action still deserves a look before Apply.
 BLOCKING, OPTIONAL = "blocking", "optional"
 def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple[list[dict], list[str]]:
-    """STR-009 (1.11.7): one operation per pivot table to convert -- the blocking ones always, the
+    """STR-009: one operation per pivot table to convert -- the blocking ones always, the
     others when the pivot setting says so. To formulas (each falls back to values in Excel when its
     formulas would not give the same numbers) unless the setting is "values"."""
     from .validators.structure import blocking_pivot
@@ -1559,7 +1559,7 @@ ACTIONS: list[dict[str, Any]] = [
     {"id": "freeze_external_links", "title": "Freeze external links: write the value Excel shows for each reference to another workbook, then break the link", "rule_ids": ["REF-002"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a reference to another workbook becomes the copy Excel kept of that cell (a number or a text), NA() where it kept none; the values stop following the other file -- which they already do not when it cannot be reached", "planner": plan_freeze_external_links},
     {"id": "direct_references", "title": "Replace INDIRECT used as a value by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
-     "caution": "rewrites formulas: INDIRECT(\"'\"&$G710&\"'!$Z$16\") becomes 'LoB 1'!$Z$16, the reference the text designates with today's inputs (Mind cannot use INDIRECT as a value); a text built from an input that changes later would no longer be followed -- Excel's values today stay the same", "planner": plan_direct_references},
+     "caution": "rewrites formulas: INDIRECT(\"'\"&$G10&\"'!$Z$16\") becomes 'Line 1'!$Z$16, the reference the text designates with today's inputs (Mind cannot use INDIRECT as a value); a text built from an input that changes later would no longer be followed -- Excel's values today stay the same", "planner": plan_direct_references},
     {"id": "cover_array_headers", "title": "Extend the header row over every column an array formula covers", "rule_ids": ["RSK-002"], "default_on": True, "level": BLOCKING,
      "caution": "writes 'Period n' into the empty header cells above the array's columns (Mind refuses an array formula that reaches past its grid); rename them by hand if the model has better words", "planner": plan_cover_array_headers},
     {"id": "freeze_spill_refs", "title": "Replace spilled-range references (A1#) by the fixed range they cover today", "rule_ids": ["FRM-003"], "default_on": True, "level": BLOCKING,
@@ -1618,7 +1618,7 @@ def merged_conflict(merged: dict[str, list[tuple[int, int, int, int]]], sheet: s
 
 
 def _drop_merged_targets(ops: list[dict[str, Any]], skipped: list[str], merged: dict[str, list[tuple[int, int, int, int]]]) -> list[dict[str, Any]]:
-    """1.7.2: a cell write aimed at a non-first cell of a merged range is moved
+    """A cell write aimed at a non-first cell of a merged range is moved
     from the operations to the skip list (Excel would ignore it silently).
     Writes planned for post-insert coordinates are left to the executor's guard."""
     kept = []
@@ -1633,7 +1633,7 @@ def _drop_merged_targets(ops: list[dict[str, Any]], skipped: list[str], merged: 
 
 
 def pivot_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int, int, str]]]:
-    """1.11.6: per sheet, every pivot table as (r1, r2, c1, c2, its range) -- from the inventory."""
+    """Per sheet, every pivot table as (r1, r2, c1, c2, its range) -- from the inventory."""
     out: dict[str, list[tuple[int, int, int, int, str]]] = {}
     for s in analysis["workbooks"][0].get("sheets", []):
         for p in s.get("pivot_tables", []) or []:
@@ -1644,7 +1644,7 @@ def pivot_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int
 
 
 def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: dict[str, list[tuple[int, int, int, int, str]]]) -> list[dict[str, Any]]:
-    """1.11.6: Excel refuses a write into a pivot table ("We can't change this part of the
+    """Excel refuses a write into a pivot table ("We can't change this part of the
     PivotTable") and a row or column inserted through one ("it will affect a PivotTable"): those
     operations move to the skip list -- with the cell writes that wait for a refused insert -- so a
     round does not plan them again and again."""
@@ -1690,7 +1690,7 @@ def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], gr
     `grid_names` (optional, "Sheet!Ref" -> name) comes from the assistant
     (app/grid_naming.suggest_names) and is only used by `create_grid_titles`,
     and there only where the deterministic name would be a weak one.
-    1.11.10: every formula parsed once for all the planners (formula_memo; shared with the scan
+    Every formula is parsed once for all the planners (formula_memo; shared with the scan
     when the caller opened it around both)."""
     with formula_memo():
         return _plan_actions(analysis, validation_report, grid_names, pivot_mode)
@@ -1700,7 +1700,7 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
     out = []
     merged = merged_ranges(analysis)
     pivots = pivot_ranges(analysis)
-    taken: dict[tuple[str, str], str] = {}  # 1.8.3: one write per cell -- the action earlier in the table keeps it
+    taken: dict[tuple[str, str], str] = {}  # one write per cell -- the action earlier in the table keeps it
     for a in ACTIONS:
         try:
             if a["id"] == "create_grid_titles":
@@ -1748,7 +1748,7 @@ def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     then cell ops written for post-insert coordinates, then sheet-level ops."""
     # sheet protection comes off first: a protected sheet refuses the pivot conversion and every write
     unprotect = [o for o in operations if o["op"] == "unprotect_sheet"]
-    phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # 1.11.7: the pivot tables first, so their cells can be written
+    phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # the pivot tables first, so their cells can be written
     phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "remove_validation"} and not o.get("after_inserts")]
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
@@ -1884,7 +1884,7 @@ def _op_target(o: dict[str, Any]) -> str:
 
 
 def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None, excel: Any = None, wb: Any = None) -> tuple[list[dict], list[dict]]:
-    """Write `operations` into `copy_path` through Excel and save it. `excel` / `wb` (1.11.9): an
+    """Write `operations` into `copy_path` through Excel and save it. `excel` / `wb`: an
     Excel the caller owns, with `copy_path` already open in it (the per-session worker, which opened
     the copy while the previous version was being analysed); the workbook is closed here as always."""
     applied: list[dict] = []
@@ -1942,9 +1942,9 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                     break
         rng = ws.Range(target)
         try:
-            # 1.7.2 guard: Excel silently ignores a write into any cell of a merged
+            # Guard: Excel silently ignores a write into any cell of a merged
             # range other than its first cell -- no error, nothing written. Prep
-            # then reported "applied, verified" and the next scan proposed the
+            # would report "applied, verified" and the next scan propose the
             # same write again, forever. Refuse, and say why.
             _merged_guard(rng, sheet, target)
             try:
@@ -2060,7 +2060,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
         elif o["op"] == "set_sheet_visibility":
             ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
         elif o["op"] == "explicit_colors":
-            if not o.get("in_style_table"):  # 1.8.0: already done for every sheet at once (app/theme_colors.py)
+            if not o.get("in_style_table"):  # already done for every sheet at once (app/theme_colors.py)
                 _explicit_colors(ws, o, i, total, progress)
         elif o["op"] == "insert_row":
             ws.Rows(int(o["row"])).Insert()
@@ -2134,15 +2134,15 @@ def _explicit_colors(ws: Any, o: dict[str, Any], i: int, total: int, progress: A
     """FMT-002 at the cell level: theme colours become the same colours as
     explicit RGB.
 
-    1.8.0: by blocks. The cells are covered with rectangles and a rectangle
+    By blocks. The cells are covered with rectangles and a rectangle
     that has one font colour and one fill is re-coloured in one go; a mixed
     one is split into its rows, a mixed row into its cells -- the cell-by-cell
     assignment this replaces, which took ~10 COM calls a cell (37 minutes for
     the 77,000 cells of one model, 124,000 on another). The result is the same
-    cell for cell (`blockwise=False` is the old way, kept for the test that
-    says so).
+    cell for cell (`blockwise=False` is the cell-by-cell way, kept for the test
+    that says so).
 
-    Since `_colors_in_the_style_table` this is the fallback only (a package
+    With `_colors_in_the_style_table` this is the fallback only (a package
     whose style table or theme cannot be read): Excel keeps the default text
     colour as a theme colour when a cell is assigned the colour it already
     shows, so this way FMT-002 comes back at the next scan."""
@@ -2263,7 +2263,7 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
 
 
 def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]], warnings: list[str], progress: Any = None) -> list[dict[str, Any]]:
-    """FMT-002 (1.8.0): theme colours become RGB in the copy's style table,
+    """FMT-002: theme colours become RGB in the copy's style table,
     before Excel opens it -- a few hundred fonts and fills instead of hundreds
     of thousands of cells, and the default text colour, which Excel keeps as a
     theme colour when a cell is assigned the colour it already shows, is
@@ -2291,12 +2291,12 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     stage (app.progress.APPLY_STAGES) and, while writing, every operation
     (`done` / `total`).
 
-    `defer_verify` (1.11.4): the check that the copy opens in Excel (a second Excel, ~40 s on a
+    `defer_verify`: the check that the copy opens in Excel (a second Excel, ~40 s on a
     30 MB model) and the change log that records its answer are left to `res["finish"]()`, which
     the caller runs while it does something else (the web server: during the re-analysis). Until
     then `verified_opens_in_excel` is None.
 
-    `run` (1.11.9, app/excel_worker.py): the per-session Excel worker's warm start -- `run.copy_path`
+    `run` (app/excel_worker.py): the per-session Excel worker's warm start -- `run.copy_path`
     is already the fresh copy of `source_path` (made by make_immutable_copy, its hash in
     `run.source_sha256`) and open in `run.excel` as `run.wb`; `run.verify(path)` answers the opens-in-
     Excel check instead of a second Excel. An Excel failure is raised (the worker falls back to the
@@ -2332,7 +2332,7 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
     if method == "openpyxl":
         applied, failed = _apply_with_openpyxl(copy_path, operations, progress)
         warnings.append("Written with openpyxl (reduced fidelity): structural operations were refused and the file may not open in Excel.")
-    # 1.7.3 guard: changes that did not reach the file were not applied, whatever
+    # Guard: changes that did not reach the file were not applied, whatever
     # the writer reported. A copy still byte-identical to its source holds none of them.
     if applied and sha256_of(copy_path) == source_sha256:
         reason = "the changes were made in Excel but the file was not saved: the output is identical to the source"
@@ -2388,7 +2388,7 @@ def summarize_plan(actions: list[dict[str, Any]]) -> str:
     return json.dumps([{k: v for k, v in a.items() if k in ("id", "title", "rule_ids", "count", "skipped")} for a in actions], indent=1)
 
 
-# --- operations proposed by the assistant (1.5.0) --------------------------------------
+# --- operations proposed by the assistant --------------------------------------
 ASSISTANT_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula", "rename_sheet", "insert_row", "insert_column", "set_sheet_visibility", "unprotect_sheet"}
 BAD_SHEET_CHARS = set('[]:*?/\\')
 
@@ -2500,7 +2500,7 @@ def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dic
 
 
 def _refuse_what_excel_refuses(sheet: str, cell: str, formula: str) -> None:
-    """1.7.2: a formula Excel would refuse to store (a value where a function
+    """A formula Excel would refuse to store (a value where a function
     needs a cell range, e.g. SUMIFS(NA(), ...)) is rejected here, with the
     concrete repair, so the assistant fixes it before the user sees it --
     instead of Excel failing it at Apply time."""

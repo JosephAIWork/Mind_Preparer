@@ -1,17 +1,17 @@
-"""FMT-002 where the colours live: the workbook's style table (1.8.0).
+"""FMT-002 where the colours live: the workbook's style table.
 
 A cell does not carry a colour. It points at a font and a fill in
 `xl/styles.xml`, and a few hundred fonts and fills serve hundreds of
-thousands of cells. Until now the action "Replace theme colours with
-explicit RGB" went through the cells in Excel (read the colour, assign it
-back), which had two faults on real models:
+thousands of cells. Doing the action "Replace theme colours with explicit
+RGB" through the cells in Excel (read the colour, assign it back) has two
+faults on real models:
 
-  * it never finished its job: when the colour assigned is the one the cell
+  * it never finishes its job: when the colour assigned is the one the cell
     already shows, Excel keeps the theme reference for the default text
-    colour, so the same cells were planned again in every Prep round
-    (11,807 -> 11,719 -> 11,720 cells on one sheet of Palermo);
-  * it was slow where colours are mixed: about 10 COM calls a cell -- an hour
-    for one 123,686-cell sheet of CNHI, with 60 more sheets behind it.
+    colour, so the same cells are planned again in every Prep round
+    (11,807 -> 11,719 -> 11,720 cells on one sheet of a large model);
+  * it is slow where colours are mixed: about 10 COM calls a cell -- an hour
+    for one 123,686-cell sheet of another model, with 60 more sheets behind it.
 
 Here every theme colour of the style table's fonts and fills is replaced by
 the RGB colour Excel shows for it (theme colour + tint, in Excel's own

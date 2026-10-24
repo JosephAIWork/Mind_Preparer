@@ -1,21 +1,21 @@
-"""1.8.1 -- two places where Mind computes another value than Excel.
+"""Places where Mind computes another value than Excel.
 
-Both were found by uploading a model that recalculates clean in Excel (Horizon,
-2026-10-06) and confirmed with a 49-cell test workbook in Mind:
+The first two were found by uploading a client model that recalculates clean in
+Excel and confirmed with a 49-cell test workbook in Mind:
 
 FRM-008  arithmetic on a cell that holds "" (empty text), inside IFERROR.
          Excel: ""-1 is #VALUE!, IFERROR returns its fallback.
          Mind:  "" counts as 0, the arithmetic gives a number, IFERROR never fires.
-         =IFERROR(1+INT((D192-1)/12),"") was blank in Excel and a value in Mind
-         on 1,242 cells. =IF(D192="","",IFERROR(...)) gives both the same.
+         =IFERROR(1+INT((A10-1)/12),"") is blank in Excel and a value in Mind
+         where A10 holds "". =IF(A10="","",IFERROR(...)) gives both the same.
 
 FRM-009  a number compared with a cell that is empty in Excel.
          Excel: the empty cell is 0.  Mind: it is not (0=empty is false, 1<=empty is true).
          The empty cell is read directly (=IF(1<=B8,0,1)) or through a formula
-         that lands on it and shows 0 in Excel: a plain reference (=+OUTPUT!P4)
-         or an exact VLOOKUP / HLOOKUP. Horizon: H9 = VLOOKUP(...) landed on an
-         empty cell, IF(D35<=$H$9,0,1) returned 0 on 157 live rows and the
-         reserves came out wrong. N() around the reading makes it a 0 in both.
+         that lands on it and shows 0 in Excel: a plain reference (=+Sheet2!P4)
+         or an exact VLOOKUP / HLOOKUP. A lookup that lands on an empty cell,
+         then compared (IF(A35<=$H$9,0,1)), returns another value in Mind for
+         every live row. N() around the reading makes it a 0 in both.
 
 What the same test showed to be the SAME in both, and is therefore not flagged:
 SUMIFS with ">="&DATE() criteria, N(""), MIN(90,""), ""<=number, cell="" on an
@@ -114,7 +114,7 @@ class _Book:
         self._vc: dict[str, dict] = {}
         self._land: dict[tuple[str, int, int], tuple[str, int, int] | None] = {}
         self._vectors: dict[tuple, tuple[bool, bool]] = {}
-        # 1.8.12: defined names that stand for a range (Palermo: VLOOKUP(Policy_tariff,Assumptions_array,MATCH(B67,Assumption_headings,0),FALSE))
+        # defined names that stand for a range (e.g. VLOOKUP(Key_name, Table_name, MATCH(B67, Headings_name, 0), FALSE))
         self.names: dict[str, dict] = {}
         for d in wb0.get("defined_names", []) or []:
             val = str(d.get("value") or "").strip()
@@ -280,8 +280,8 @@ class _Book:
         args = [body[a:b].strip() for a, b in spans]
         idx = as_number(args[2])
         if idx is None:
-            idx = self._match_index(sheet, args[2])  # 1.8.12: MATCH(heading, headings, 0) as the column index
-        table = self._range_of(sheet, args[1])  # 1.8.12: a defined name as the table
+            idx = self._match_index(sheet, args[2])  # MATCH(heading, headings, 0) as the column index
+        table = self._range_of(sheet, args[1])  # a defined name as the table
         if args[3].upper() not in ("0", "FALSE") or idx is None or idx != int(idx) or idx < 1 or table is None:
             return None
         tsheet = table["sheet"] or sheet
@@ -441,11 +441,11 @@ def _iferror_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int
 
 
 def _guard_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int]]]]:
-    """Every construct that hides an error of X behind a fallback: IFERROR(X, fb), and (1.8.11)
+    """Every construct that hides an error of X behind a fallback: IFERROR(X, fb), and
     IF(ISNUMBER(X), ..., fb) / IF(ISERROR(X), fb, ...) / IF(ISERR(X), fb, ...). Each as
     (start, open paren of X's call, close of the whole construct, [X span, fallback span]):
     Excel takes the fallback when X errors on a "" cell, Mind computes X with "" as 0
-    (PVFP, Reporting_General!I23 = IF(ISNUMBER('LoB 1'!H171*NOT(LoB3_Boolean)),...,"")) ."""
+    (e.g. IF(ISNUMBER(Sheet2!H171*NOT(Flag_name)),...,"") where H171 holds "")."""
     out = _iferror_calls(masked)
     for m in _IF_RE.finditer(masked):
         open_at = m.end() - 1
@@ -656,7 +656,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     if m.start() < lo or m.end() > hi or not _is_arithmetic_operand(masked, m.start(), m.end(), lo, hi):
                         continue
                     if ":" in m.group("ref"):
-                        # 1.8.10: a range in array arithmetic (SUMPRODUCT(I53:DL53*...)): its "" cells, named one by one
+                        # a range in array arithmetic (SUMPRODUCT(I53:DL53*...)): its "" cells, named one by one
                         r = parse_ref(formula[m.start():m.end()])
                         if not r or r["whole_column"] or r["whole_row"] or (r["r2"] - r["r1"] + 1) * (r["c2"] - r["c1"] + 1) > 600:
                             continue
@@ -762,7 +762,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         cells = sorted({formula[refs[k].start():refs[k].end()] for ks in union.values() for k in ks})
         kinds = pattern_kinds.get((sheet, col, rel), set())
         # A cell the new test reads must not hold an error: IF(#REF!="", ...) is #REF!, where the
-        # IFERROR it replaces returned the fallback (seen on PVFP: 19 values changed, 9 into errors).
+        # IFERROR it replaces returned the fallback (seen on a client model: 19 values changed, 9 into errors).
         # Such a row keeps its formula -- Excel and Mind both stop on the error and fall back.
         errors = sorted({
             formula[refs[k].start():refs[k].end()]
@@ -776,8 +776,8 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             "suggested_formula": None if issue else _guarded(formula, refs, calls, union, range_extra.get((sheet, row, col))), "issue": issue,
         })
 
-    # 1.8.9: every formula cell that lands on an empty cell and is read by some formula -- AVERAGE,
-    # COUNT, MIN and MAX skip an empty where Excel saw a 0 (PVFP, Reporting_LoB Total!H30)
+    # every formula cell that lands on an empty cell and is read by some formula -- AVERAGE,
+    # COUNT, MIN and MAX skip an empty where Excel saw a 0
     try:
         from ..prep import reference_index, referenced_by
         index = reference_index(analysis)
@@ -834,7 +834,7 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
     return finding(
         "ERROR",
         f'{now} formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR, or inside an IF that tests ISNUMBER / ISERROR on it. Excel stops on the "" (#VALUE!) and returns the fallback; '
-        'Mind counts "" as 0, computes a number and never reaches the fallback, so these cells get another value in Mind (confirmed in Mind on the model Horizon: '
+        'Mind counts "" as 0, computes a number and never reaches the fallback, so these cells get another value in Mind (confirmed in a real Mind conversion: '
         "1,242 cells blank in Excel held a value). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
@@ -877,7 +877,7 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
         "ERROR",
         f'{now} formula(s) look up (VLOOKUP, HLOOKUP or MATCH, exact match) a key that holds "" (empty text) in a column or row that has an empty cell, inside IFERROR. '
         'Excel finds nothing and returns the IFERROR fallback; Mind matches the empty cell -- the header cell of a table Prep gave a title -- and returns that row '
-        "(confirmed in Mind on the model Horizon: =1+($C$10=1)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),...) came back NaN on 621 rows, the lookup returned the header text). "
+        "(confirmed in a real Mind conversion: =1+(<a flag>=1)*IFERROR(VLOOKUP(<a cell holding \"\">,<a titled table>,2,0),...) came back NaN on 621 rows, the lookup returned the header text). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks; Excel's results stay the same"
@@ -923,7 +923,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
     return finding(
         "ERROR",
         "A number is compared with a cell that is empty. Excel reads the empty cell as 0; Mind does not (0 = empty is false there, 1 <= empty is true), so the comparison goes the "
-        "other way in Mind (confirmed in Mind on the model Horizon: IF(D35<=$H$9,0,1) returned 0 on 157 live rows and the reserves came out wrong). "
+        "other way in Mind (confirmed in a real Mind conversion: IF(<a number> <= <an empty cell>, 0, 1) returned 0 on 157 live rows where Excel returns 1, and the reserves came out wrong). "
         + " ".join(p + "." for p in parts)
         + f" The Prep action 'Read empty cells as 0 where they are compared' puts N() around {with_fix} of them (N of an empty cell is 0 in both; N of a number is the number); "
         "Excel's results stay the same"
@@ -934,9 +934,9 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
 
 
 # --- FRM-011: a line break inside a string literal -------------------------------------------
-# CNHI, Wave!P38: =BB62&"<line break>/ Beneficiary - "&D8 came back from Mind as another text,
-# while =BB62&CHAR(10)&"x" came back the same (Diag, 2026-10-08). The break written as CHAR(10)
-# is the same text in Excel.
+# =B62&"<line break>/ text - "&D8 came back from Mind as another text, while =B62&CHAR(10)&"x"
+# came back the same (observed in Mind, 2026-10-08). The break written as CHAR(10) is the same
+# text in Excel.
 _BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 
@@ -1005,8 +1005,8 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
     first = sites[0]
     return finding(
         "ERROR",
-        f"{len(sites)} formula(s) hold a line break typed inside a string literal (\"...\"): Mind computes another text for them (confirmed in Mind on the model CNHI, "
-        "Wave!P38; the same break written as CHAR(10) came back the same). "
+        f"{len(sites)} formula(s) hold a line break typed inside a string literal (\"...\"): Mind computes another text for them (confirmed in a real Mind conversion; "
+        "the same break written as CHAR(10) came back the same). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action 'Write line breaks inside text as CHAR(10)' rewrites {observed['with_proposal']} of them; the text Excel shows is the same.",
@@ -1016,8 +1016,8 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
 
 
 # --- FRM-012: a formula that asks Excel about itself --------------------------------------------
-# Palermo, 'Saved down'!C5 = MID(CELL("filename",'Summary Output'!A1),FIND("[",CELL("filename",...))+1,...):
-# the file's path and name, used to build save paths for a macro. Mind has no file: its CELL("filename")
+# =MID(CELL("filename",Sheet2!A1),FIND("[",CELL("filename",...))+1,...): the file's path and
+# name, used to build save paths for a macro. Mind has no file: its CELL("filename")
 # returned a text without "[", FIND failed and the run stopped ("startIndex ('-1') must be a
 # non-negative value", 2026-10-08). The value such a formula shows today is written in its place.
 _ENV_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
@@ -1054,7 +1054,7 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
     return finding(
         "ERROR",
         f"{len(sites)} formula(s) ask Excel about itself with {', '.join(sorted({c for x in sites for c in x['calls']}))} -- the file's name or path, the session. Mind has no file to answer with: "
-        "on the model Palermo, MID(CELL(\"filename\",...),FIND(\"[\",...)+1,...) stopped the run (\"startIndex ('-1') must be a non-negative value\"). "
+        "in a real Mind conversion, MID(CELL(\"filename\",...),FIND(\"[\",...)+1,...) stopped the run (\"startIndex ('-1') must be a non-negative value\"). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" (shows {str(first['value'])[:60]!r} today)" if first["issue"] is None else f" ({first['issue']})")
         + f". The Prep action 'Write what CELL / INFO formulas show today in their place' freezes {observed['with_proposal']} of them to the value Excel shows"
@@ -1065,10 +1065,10 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
 
 
 # --- FRM-013: an error cell kept on purpose that Mind computes ---------------------------------
-# PVFP, 'LoB 1'!AB78 = AB77-AB84 with AB84 holding "": #VALUE! in Excel, kept on purpose (the fixer
-# would have changed a good value by hiding it); 0 in Mind, which counts "" as 0 -- and the IFERROR
-# cells fed by it ("No GEP" in Excel) turned into numbers there. Written as IF(AB84="",NA(),AB77-AB84)
-# it is an error in both (another error in Excel: #N/A for #VALUE!; what reads it sees an error as before).
+# =AB77-AB84 with AB84 holding "": #VALUE! in Excel, kept on purpose (the fixer would have changed
+# a good value by hiding it); 0 in Mind, which counts "" as 0 -- and the IFERROR cells fed by it
+# (a text label in Excel) turned into numbers there. Written as IF(AB84="",NA(),AB77-AB84) it is an
+# error in both (another error in Excel: #N/A for #VALUE!; what reads it sees an error as before).
 def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
     """FRM-013: arithmetic on a cell that holds "", with no IFERROR around it, in a cell that shows an error."""
     try:
@@ -1086,8 +1086,8 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
     return finding(
         "ERROR",
         f'{len(sites)} cell(s) show an error in Excel because their formula does arithmetic on a cell that holds "" (empty text), with no IFERROR to catch it -- errors kept on purpose. '
-        'Mind counts "" as 0 and computes a number there, and everything that read the error (IFERROR fallbacks, "No GEP" labels) changes with it '
-        "(confirmed in Mind on the model PVFP, 'LoB 1'!AB78 = AB77-AB84). "
+        'Mind counts "" as 0 and computes a number there, and everything that read the error (IFERROR fallbacks, text labels) changes with it '
+        "(confirmed in a real Mind conversion: =AB77-AB84 with AB84 holding \"\"). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action 'Keep an error cell an error in Mind' rewrites {with_fix} of them as IF(cell=\"\",NA(),...): an error in both (#N/A in place of #VALUE!), what reads it sees an error as before"

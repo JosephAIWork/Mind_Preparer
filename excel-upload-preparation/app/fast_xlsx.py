@@ -1,13 +1,13 @@
-"""Faster openpyxl reading for big workbooks (1.11.4). Imported by app.inventory; installs itself once.
+"""Faster openpyxl reading for big workbooks. Imported by app.inventory; installs itself once.
 
 1. The XML parser. openpyxl reads every sheet with defusedxml's iterparse when defusedxml is installed,
-   and that parser runs its handlers in Python: on Palermo (27 MB, 5.7 million used cells) half of the
+   and that parser runs its handlers in Python: on a 27 MB workbook (5.7 million used cells) half of the
    time a load took was spent inside it. The standard library's iterparse gives the same events from
    its C parser (expat), which never resolves external entities and, from expat 2.4, stops entity
    bombs itself -- what defusedxml guards against cannot happen there either.
 
 2. The cached values. Several rules need the value Excel stored for each formula cell, and they got it
-   by loading the whole workbook a second time with data_only=True -- another six minutes on Palermo.
+   by loading the whole workbook a second time with data_only=True -- another six minutes on that workbook.
    The value is in the same `<c>` element the formula is read from, so the first load keeps it
    (`ws.mind_ready_cached[(row, col)]`, exactly what a data_only load would give that cell) and
    `values_view` serves the data_only workbook from it. Cells without a formula are the same in both
@@ -32,7 +32,7 @@ _INSTALLED = False
 
 
 def _safe_iterparse():
-    """The standard library's iterparse on its C parser (expat). Measured on Horizon: 5.4 s against
+    """The standard library's iterparse on its C parser (expat). Measured on a 1.6 MB model: 5.4 s against
     7.4 s for defusedxml and 10.6 s for lxml (whose Python element proxies cost more than they save).
     ElementTree never fetches external entities or DTDs; expat >= 2.4 stops entity-expansion bombs
     (billion laughs) by itself. An older expat keeps defusedxml."""

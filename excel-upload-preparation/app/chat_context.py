@@ -1,4 +1,4 @@
-"""Workbook chatbot (1.4.0; changes 1.5.0): grounds a multi-turn conversation
+"""Workbook chatbot: grounds a multi-turn conversation
 in the analysis and the findings, and lets the user ask for changes.
 
 The model gets, on every turn:
@@ -11,7 +11,7 @@ The model gets, on every turn:
     (their call sites);
   * the conversation so far.
 
-Changing the workbook (1.5.0): the assistant may (a) request cell contents
+Changing the workbook: the assistant may (a) request cell contents
 it hasn't seen with a ```lookup block -- the app answers within the same
 turn, up to MAX_LOOKUPS times -- and (b) end its answer with a ```changes
 block listing operations. The app validates the block against the real
@@ -36,7 +36,7 @@ MAX_RETRIEVAL_CHARS = 6000
 MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
 MAX_PROPOSAL_RETRIES = 2  # a rejected ```changes block is sent back (twice at most) with the validation errors
-PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block (1.7.2)
+PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block
 CELL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:(?P<sheet>'[^']+'|[A-Za-z0-9_]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![A-Za-z0-9_(])")
 RULE_ID_RE = re.compile(r"\b([A-Z]{2,7})-(\d{3})\b")
 MM_FN_RE = re.compile(r"\bMM_[A-Za-z0-9_]+\b", re.IGNORECASE)
@@ -361,7 +361,7 @@ def answer_question(
     """Run one turn (with up to MAX_LOOKUPS lookup round-trips). Returns the
     display text, the raw text, and any validated change proposal.
     `extra_context` (e.g. the last recalculation) is appended to the system
-    context for this turn. `on_event` (1.7.2) streams the turn: a
+    context for this turn. `on_event` streams the turn: a
     {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
     model call, then {"type": "delta", "text"} for each chunk of its reply."""
     context = build_context_pack(analysis, validation_report, prep_actions)
@@ -371,9 +371,9 @@ def answer_question(
         system += "\n\n<recalculation>\n" + _trim(extra_context, 6000) + "\n</recalculation>"
     turn = question if not detail else f"{question}\n\n<retrieved_detail>\n{detail}\n</retrieved_detail>"
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]] + [{"role": "user", "content": turn}]
-    # 1.7.2: a ```changes block costs ~30 tokens per cell; the old 1200-token
-    # default silently truncated proposals at ~35 operations (the rest of the
-    # finding's cells never made it into the proposal and nothing said so).
+    # A ```changes block costs ~30 tokens per cell: a 1200-token limit would cut a
+    # proposal off at ~35 operations without saying so (the rest of the finding's
+    # cells would never make it into the proposal).
     kwargs: dict[str, Any] = {"max_tokens": PROPOSAL_MAX_TOKENS}
     if model_id:
         kwargs["model_id"] = model_id

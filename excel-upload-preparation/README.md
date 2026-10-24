@@ -162,7 +162,7 @@ the two honest cases below.
   every output untouched. While a scan runs, a **status indicator** shows
   the stage (convert / copy / read sheet i of N / scan sheet i of N / names /
   rule i of M / report / plan), overall progress and elapsed time -- web app
-  via `GET /api/sessions/{id}/status`, Streamlit via `st.status`.
+  via `GET /api/sessions/{id}/status`.
 
 - **Analysis & validation**: `app/inventory.py` (single-pass, openpyxl +
   zipfile, no execution of VBA/links) + `app/grids.py` (Mind's documented
@@ -256,11 +256,6 @@ the two honest cases below.
   Mind, Deliver, Versions -- is under **Advanced**. The built `dist` is
   committed; rebuild with `npm install && npx ng build --configuration
   production` in `MindReadyUI`.
-- **UI**: `run_excel_upload_prep.bat` launches `app/ui/streamlit_app.py`:
-  sidebar (upload, mode, run, current-file card) and sections Findings /
-  Prep workbook / Ask the assistant / Recalculate / Reports (report
-  downloads carry a visible "verified to open in Excel" line). Verified
-  end-to-end with Playwright on a real 13.7 MB `.xlsm`.
 
 Still honestly `NOT_SUPPORTED`: `READY-001` until a real recalculation has
 been run (`FORMULA-001`, which could never pass, was removed in 1.6.4). `PASS` still requires a clean, real
@@ -268,9 +263,9 @@ recalculation -- it's not handed out for free, and on a machine without
 MMForExcel installed it will only ever be `NOT_SUPPORTED`, `WARNING`, or
 `ERROR`, never a false `PASS`.
 
-Setup: `pip install -r requirements.txt`, then `python -m pytest tests/unit`
-(146 tests; the Excel-backed ones skip without Excel).
-Run the UI: `run_excel_upload_prep.bat` (or `streamlit run app/ui/streamlit_app.py`).
+Setup: `pip install -r requirements.txt` to run the app; `pip install -r requirements-dev.txt`
+for the tests, then `python -m pytest tests` (the Excel-backed ones skip without Excel).
+Run the app: `run_mind_ready_web.bat`.
 
 ## Implementation note
 

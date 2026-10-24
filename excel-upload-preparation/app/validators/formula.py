@@ -7,10 +7,10 @@ FRM-002 checks every function call against two mined lists:
     function syntax; if a function is not listed, do not auto-generate or
     auto-correct it";
   * native Excel functions: references/supported-excel-functions.yaml, the
-    KB page "Supported Excel formulas" (1.3.0 -- previously unavailable),
+    KB page "Supported Excel formulas",
     UNION references/mind-confirmed-functions.yaml (accepted by Mind on
     evidence other than that page, each entry with its source).
-1.7.3: the KB page names what Mind supports and says nothing about the rest,
+The KB page names what Mind supports and says nothing about the rest,
 so a native function missing from it is *not documented*, not refused: it is
 reported as a WARNING. Only what the Mind documentation refuses is an ERROR.
 A name that is on neither list and is not an Excel function at all is a
