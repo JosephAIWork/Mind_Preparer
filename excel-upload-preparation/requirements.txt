@@ -3,9 +3,9 @@ PyYAML>=6.0
 pydantic>=2.9
 jsonschema>=4.20
 pywin32>=306; sys_platform == "win32"
-requests>=2.31
+requests>=2.33.0  # 2.32.3 and older: known issues (.netrc credentials leak, temp file reuse)
 fastapi>=0.110
 uvicorn>=0.29
-python-multipart>=0.0.9
+python-multipart>=0.0.31  # reads the uploads; 0.0.30 and older: known denial-of-service issues
 playwright>=1.45  # real-Mind automation (app/mind_client.py, app/mind_loop.py); uses the installed Edge
 oletools>=0.60  # the model map reads the VBA (olevba)
