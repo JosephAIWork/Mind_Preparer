@@ -23,9 +23,8 @@ missing (see [Feedback](#feedback)).
 
 Open a command prompt and run:
 
-<!-- TODO: the new repository's URL -->
 ```bat
-git clone <repository URL> MindReady
+git clone https://github.com/Milliman-Tel-Aviv-Life/Mind_Ready.git MindReady
 cd MindReady\excel-upload-preparation
 python -m venv .venv
 .venv\Scripts\activate
@@ -118,7 +117,7 @@ run are deleted afterwards. Both names can be changed in the settings.
 
 ## Feedback
 
-Please send feedback to **Joseph Gestetner**, Milliman Tel Aviv: <!-- TODO: work email --> `<email>`.
+Please contact the **Milliman Tel Aviv team** with your feedback.
 
 The most useful feedback includes:
 

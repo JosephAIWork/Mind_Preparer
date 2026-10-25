@@ -51,7 +51,7 @@ Values[2]:
 
 HISTORY = """TotalRowsCount: 1
 Rows[1]{RunId,Date,User,Result,RunType,ConsistencyStatus,AreResultsLoaded}:
-  339fc7d8-d133,"2026-10-15T12:30:26.4059047",Joseph Gestetner,Success,Basic,Consistent,true"""
+  339fc7d8-d133,"2026-10-15T12:30:26.4059047",A User,Success,Basic,Consistent,true"""
 
 
 def test_the_answer_format_is_read():
