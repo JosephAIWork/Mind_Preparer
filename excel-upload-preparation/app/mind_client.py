@@ -4,7 +4,7 @@ automatically.
 
 Design notes
 ------------
-- A *separate* persistent Edge profile under %LOCALAPPDATA%\\MindReady\\edge-profile
+- A *separate* persistent Edge profile under <data folder>\\edge-profile (settings.yaml)
   (never OneDrive-synced, never committed) keeps the login session. This is
   distinct from the user's normal Edge profile, so the user's own Edge does not
   need to be closed.
@@ -27,7 +27,6 @@ unattended:
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from contextlib import contextmanager
@@ -36,15 +35,17 @@ from typing import Any, Iterator
 
 from playwright.sync_api import Page, sync_playwright
 
+from .settings import SETTINGS
+
 # --- stable, non-synced locations --------------------------------------------
-_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MindReady"
+_ROOT = SETTINGS.data_folder
 PROFILE_DIR = _ROOT / "edge-profile"
 DOWNLOAD_DIR = _ROOT / "downloads"
 RECON_DIR = _ROOT / "recon"
 SESSION_FILE = _ROOT / "mind_session.json"
 SIGNAL_FILE = _ROOT / "login_done.signal"  # optional manual "I'm logged in" marker
 
-APP_HOST_SUFFIX = "milliman-mind.com"
+APP_HOST_SUFFIX = SETTINGS.mind_host_suffix
 # URL fragments that mean "still on an identity-provider / login page"
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "/auth", "oauth", "adfs",
                 "microsoftonline", "okta", "b2clogin", "authorize", "logon", "idp")
@@ -263,10 +264,11 @@ def is_authenticated() -> dict[str, Any]:
 
 
 # --- project operations (mapped on the live site) -----------------------------
-MAIN_URL = "https://shared.milliman-mind.com/main"
+MAIN_URL = SETTINGS.mind_main_url
 MANAGER_HOST = "prod01"
 # the sandbox folder the app creates its projects in, and the only place it deletes from
-SANDBOX_FOLDER = "MindReady_Sandbox"
+SANDBOX_FOLDER = SETTINGS.mind_sandbox_folder
+PROJECT_PREFIX = SETTINGS.mind_project_prefix
 # Angular ngx-guided-tour: a full-screen mask that intercepts every click and
 # re-arms on each page load. Removed before any interaction.
 _TOUR_MASK = "ngx-guided-tour,.guided-tour-user-input-mask,.guided-tour-spotlight-overlay"
@@ -637,7 +639,7 @@ def delete_project(page: Page, name: str, folder: str = SANDBOX_FOLDER, attempts
     """Best-effort delete of a sandbox project through the tile menu and the
     type-'delete'-to-confirm modal. Refuses any name without the sandbox
     project prefix the app is allowed to create and delete. Returns 'deleted' | 'still present' | 'not found' | 'refused'."""
-    if not name.startswith("zzz_"):
+    if not name.startswith(PROJECT_PREFIX):
         return "refused"
     result = "not found"
     for _ in range(attempts):

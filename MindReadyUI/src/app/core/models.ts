@@ -138,7 +138,7 @@ export interface SessionStart {
   pivot_modes?: Record<PivotMode, string>;
 }
 
-export type PivotMode = "blocking" | "formulas" | "values";
+export type PivotMode = "formulas" | "values";
 
 export interface PendingUpload {
   pending: true;
@@ -299,6 +299,13 @@ export interface AppHealth {
   excel?: boolean | string;
   assistant?: boolean | string;
   frontend?: string;
+}
+
+/** GET/POST /api/assistant-key: never the key itself. `message`: saved but not checked (gateway unreachable). */
+export interface AssistantKey {
+  saved: boolean;
+  last4: string | null;
+  message?: string | null;
 }
 
 export function isPending(x: SessionStart | PendingUpload): x is PendingUpload {

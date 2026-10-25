@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import sys
 import tempfile
@@ -36,7 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-from app.autofix import AutoFixConfig, run_autofix  # noqa: E402
+from app.autofix import AutoFixConfig, a1, run_autofix  # noqa: E402
 from app.autofix_advisor import make_advisor  # noqa: E402
 from app.numbers_check import Moves, compare_workbooks  # noqa: E402
 from app.change_apply import convert_output_format  # noqa: E402
@@ -48,7 +49,9 @@ from app.perf import stage as perf_stage  # noqa: E402
 from app import excel_worker  # noqa: E402
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
-from app.llm import DEFAULT_MODEL_ID, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
+from app import ai_key  # noqa: E402
+from app.settings import SETTINGS  # noqa: E402
+from app.llm import DEFAULT_MODEL_ID, check_api_key, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
 from app.estimate import estimate_chain  # noqa: E402
@@ -58,9 +61,10 @@ from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Status, aggregate_status  # noqa: E402
 from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
-from app.formula_utils import formula_memo  # noqa: E402
+from app.formula_utils import col_to_num, formula_memo  # noqa: E402
 from app.prep import ASSISTANT_OPS, DEFAULT_PIVOT_MODE, PIVOT_MODES, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
+from app.validators.mind_values import environment_values  # noqa: E402
 from app.recalc import classify_against_original, classify_errors, formulas_with_broken_refs, group_errors, recalculate  # noqa: E402
 from app.prep import _cells_of as _array_cells  # noqa: E402
 from app.prep import array_size_hint  # noqa: E402
@@ -85,7 +89,9 @@ GRID_FIELDS = (
     "inner_title_cells", "formula_count",
 )
 
-app = FastAPI(title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev")
+# The API's own pages (/docs, /redoc, /openapi.json) only when settings.yaml asks for them.
+_API_PAGES = {} if SETTINGS.api_pages else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev", **_API_PAGES)
 _ENGINE: RulesEngine | None = None
 
 
@@ -129,6 +135,9 @@ class Session:
     # (sheet, cell) of the original's formulas that contain #REF!, taken from its own scan
     # (None until the original was scanned with no sheet skipped: then the baseline reads the file)
     original_ref_formulas: set[tuple[str, str]] | None = None
+    # (sheet, cell) -> what each CELL / INFO formula shows in the original upload, as the user's
+    # own Excel saved it (FRM-012 freezes these, not the app's working copy's)
+    original_environment: dict[tuple[str, str], Any] | None = None
     # Live status of the current/last Apply (GET /status, field "apply")
     apply_status: dict[str, Any] = field(default_factory=dict)
     # The model map (inputs, loop driver, run settings, outputs) of the analysed version
@@ -492,6 +501,10 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     previous = s.result["validation_report"] if s.result else None
     with formula_memo():  # the rules and the planners parse each formula once between them
         result = module.run(path, work, load_config(), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
+        analysis = result["workbook_analysis"]
+        if s.original_environment is None and Path(path) == _original_path(s):
+            s.original_environment = environment_values(analysis)
+        analysis["original_environment_values"] = _original_environment(s)
         if progress is not None:
             progress("plan", "Planning the fixes", None)
         s.plan = plan_actions(result["workbook_analysis"], result["validation_report"], s.grid_names or None, s.pivot_mode)
@@ -672,6 +685,31 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/assistant-key")
+def assistant_key() -> dict[str, Any]:
+    """Whether a gateway key is saved, and its last 4 characters (never the key)."""
+    key = ai_key.load()
+    return {"saved": key is not None, "last4": ai_key.last4(key)}
+
+
+@app.post("/api/assistant-key")
+def save_assistant_key(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Check a pasted key with the gateway, then save it encrypted for this Windows user
+    (app/ai_key.py). A key the gateway refuses is not saved."""
+    key = str(payload.get("key") or "").strip()
+    problem = ai_key.check_format(key)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    accepted, note = check_api_key(key)
+    if not accepted:
+        raise HTTPException(status_code=422, detail=note)
+    try:
+        ai_key.save(key)
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=f"The key could not be saved: {exc}") from exc
+    return {"saved": True, "last4": ai_key.last4(key), "message": note}
+
+
 @app.post("/api/sessions")
 def create_session(file: UploadFile = File(...), mode: str = Form("plan"), defer: str = Form(""), ignore_sheets: str = Form("")) -> dict[str, Any]:
     """Upload a workbook. The file is stored and *inspected* (sizes, sheet
@@ -736,9 +774,9 @@ def session_state(session_id: str) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/pivot-mode")
 def set_pivot_mode(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """What Prep does with the pivot tables -- "blocking" (leave them, convert only the ones
-    Mind cannot read), "formulas" or "values" -- and the plan made again with it (Do everything
-    applies the blocking actions of that plan)."""
+    """What Prep does with the pivot tables -- "formulas" or "values" (every one blocks Mind's
+    converter) -- and the plan made again with it (Do everything applies the blocking actions of
+    that plan)."""
     s = _session(session_id)
     mode = str(payload.get("mode") or "")
     if mode not in PIVOT_MODES:
@@ -1252,6 +1290,23 @@ def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
         path.append(by_id[vid])
         vid = by_id[vid].get("parent")
     return path[::-1]
+
+
+def _original_environment(s: Session) -> dict[str, Any] | None:
+    """What each CELL / INFO formula shows in the original upload, keyed "Sheet!A1" by where that
+    cell sits in the current version (rows / columns inserted, sheets renamed since): the values
+    FRM-012 freezes (app/prep.py). None until the original has been scanned."""
+    if s.original_environment is None:
+        return None
+    found = _original_and_moves(s)
+    moves = found[1] if found else Moves()
+    out: dict[str, Any] = {}
+    for (sheet, cell), value in s.original_environment.items():
+        m = re.match(r"([A-Z]{1,3})(\d+)$", cell)
+        if m:
+            sheet_now, row, col = moves.forward(sheet, int(m.group(2)), col_to_num(m.group(1)))
+            out[f"{sheet_now}!{a1(row, col)}"] = value
+    return out
 
 
 def _original_and_moves(s: Session) -> tuple[Path, Moves] | None:
@@ -1833,7 +1888,7 @@ def _port_is_taken(port: int) -> bool:
 def main() -> None:
     import uvicorn
 
-    port = int(os.environ.get("MIND_READY_PORT", "8600"))
+    port = int(os.environ.get("MIND_READY_PORT") or SETTINGS.port)
     url = f"http://localhost:{port}"
     # Started a second time (F5 while the .bat window is open, or the reverse): say so and
     # open the app, instead of failing on "only one usage of each socket address".
@@ -1849,7 +1904,7 @@ def main() -> None:
             return
         print(f"Whatever uses port {port} did not answer as Mind Ready.")
         print(f"- If Mind Ready is already running and busy with a large workbook, it is at {url}: wait, then reload the page.")
-        print("- Otherwise close the program that uses the port, or choose another one: set MIND_READY_PORT=8601 and start again.")
+        print("- Otherwise close the program that uses the port, or choose another one: change 'port' in settings.yaml and start again.")
         raise SystemExit(1)
     uvicorn.run("app.web.server:app", host="127.0.0.1", port=port, reload=False)
 

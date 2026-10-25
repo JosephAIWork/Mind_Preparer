@@ -10,114 +10,58 @@ Two uses, both advisory:
   every workbook change still goes through the reviewable prep plan
   (app/prep.py) and the user's explicit approval.
 
-Credentials: a `secret.key` file holding a Fernet key, with a sibling
-`config.enc` holding the Azure APIM subscription key (or a `secret.key` with
-an `AZURE_OPENAI_API_KEY=` line), searched for in the app's folder, the four
-folders above it and their subfolders (levels_up=4).
+Credentials: the gateway key the user pasted in the web app, saved encrypted
+for their Windows account (app/ai_key.py).
 
-The default model is Sonnet 5 (`MIND_READY_MODEL` overrides it), and
+The gateway and the model come from settings.yaml (`MIND_READY_MODEL` overrides the model), and
 `chat_completion(..., on_delta=)` streams the reply (server-sent events) so
 the web app can show the text as it is written (`MIND_READY_STREAM=0`
 turns streaming off).
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
-from pathlib import Path
 from typing import Any, Callable, Iterator
 
-DEFAULT_AZURE_ENDPOINT = "https://apim-aiservices-prod-01.azure-api.net"
+from . import ai_key
+from .settings import SETTINGS
+
+DEFAULT_AZURE_ENDPOINT = SETTINGS.ai_endpoint
 # /claude/invocations stopped answering (200 + empty body, 2026-09-16); the
 # native Anthropic Messages passthrough takes a top-level "system" param.
 CLAUDE_APIM_PATH = "/anthropic/v1/messages"
 # Measured through the gateway 2026-09-24 (same ~150-word answer): Sonnet 4.6
 # 7.7 s, Sonnet 5 6.2 s, Opus 4.8 6.7 s; no Haiku on the gateway.
-DEFAULT_MODEL_ID = os.environ.get("MIND_READY_MODEL", "claude-sonnet-5")
-
-_KV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\S.*?)\s*$")
+DEFAULT_MODEL_ID = os.environ.get("MIND_READY_MODEL", SETTINGS.ai_model)
 
 
-def _looks_like_fernet_key(text: str) -> bool:
-    token = text.strip()
-    if len(token) != 44:
-        return False
+def find_api_key() -> tuple[str, str] | None:
+    """(api_key, endpoint), or None while no key is saved (app/ai_key.py)."""
+    key = ai_key.load()
+    return (key, DEFAULT_AZURE_ENDPOINT) if key else None
+
+
+def check_api_key(key: str, timeout: int = 30) -> tuple[bool, str | None]:
+    """Ask the gateway whether it accepts `key`, with the smallest possible request. (False, why)
+    only when the gateway refuses the key (401 / 403); (True, None) when it answers anything else,
+    since the gateway checks the key before the model sees the request; (True, note) when the
+    gateway could not be reached, so the key is kept unchecked."""
     try:
-        return len(base64.urlsafe_b64decode(token.encode())) == 32
-    except (ValueError, TypeError):
-        return False
+        import requests
 
-
-def _candidate_secret_files(start_dir: Path, levels_up: int = 4) -> list[Path]:
-    candidates: list[Path] = []
-    seen: set[Path] = set()
-
-    def _add(path: Path) -> None:
-        try:
-            path = path.resolve()
-        except OSError:
-            return
-        if path not in seen:
-            seen.add(path)
-            candidates.append(path)
-
-    level_dirs = [start_dir]
-    current = start_dir
-    for _ in range(levels_up):
-        parent = current.parent
-        if parent == current:
-            break
-        level_dirs.append(parent)
-        current = parent
-
-    for directory in level_dirs:
-        _add(directory / "secret.key")
-        try:
-            children = sorted(
-                (c for c in directory.iterdir() if c.is_dir() and not c.name.startswith(".")),
-                key=lambda p: p.name.lower(),
-            )
-        except OSError:
-            children = []
-        for child in children:
-            _add(child / "secret.key")
-    return candidates
-
-
-def find_api_key(start_dir: Path | None = None) -> tuple[str, str] | None:
-    """Returns (api_key, endpoint) or None if no usable secret.key is found."""
-    start_dir = start_dir or Path(__file__).resolve().parent.parent
-    for candidate in _candidate_secret_files(start_dir):
-        if not candidate.is_file():
-            continue
-        try:
-            text = candidate.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-
-        kv = {}
-        for line in text.splitlines():
-            if line.strip().startswith("#"):
-                continue
-            m = _KV_LINE.match(line)
-            if m and m.group(2):
-                kv[m.group(1)] = m.group(2)
-        if kv.get("AZURE_OPENAI_API_KEY"):
-            return kv["AZURE_OPENAI_API_KEY"], kv.get("AZURE_OPENAI_ENDPOINT", DEFAULT_AZURE_ENDPOINT)
-
-        if _looks_like_fernet_key(text):
-            enc_path = candidate.parent / "config.enc"
-            if enc_path.is_file():
-                try:
-                    from cryptography.fernet import Fernet
-
-                    api_key = Fernet(text.strip().encode()).decrypt(enc_path.read_bytes()).decode()
-                    return api_key, DEFAULT_AZURE_ENDPOINT
-                except Exception:
-                    continue
-    return None
+        resp = requests.post(
+            DEFAULT_AZURE_ENDPOINT.rstrip("/") + CLAUDE_APIM_PATH,
+            headers={"Content-Type": "application/json", "api-key": key, "anthropic-version": "2023-06-01"},
+            json={"model": DEFAULT_MODEL_ID, "max_tokens": 16, "messages": [{"role": "user", "content": _text_block("Reply OK.")}]},
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return True, f"The gateway could not be reached to check the key ({type(exc).__name__})."
+    if resp.status_code in (401, 403):
+        return False, "The gateway refused this key. Check that it was copied whole."
+    return True, None
 
 
 def llm_available() -> bool:
@@ -242,7 +186,7 @@ def chat_completion(
     only sent to models that accept it (see `_takes_temperature`)."""
     found = find_api_key()
     if found is None:
-        return {"available": False, "text": None, "message": "No secret.key found nearby; the assistant isn't configured in this environment."}
+        return {"available": False, "text": None, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
     api_key, endpoint = found
     try:
         import requests

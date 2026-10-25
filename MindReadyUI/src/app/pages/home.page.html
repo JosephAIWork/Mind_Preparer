@@ -20,6 +20,7 @@
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
     <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+    <mr-key-box [onlyWhenMissing]="true"></mr-key-box>
   } @else if (phase() === "choose" && pending(); as p) {
     <h1 class="page-title">A big workbook</h1>
     <p class="page-lead">{{ p.size.message }} Leaving sheets out makes the scan shorter; {{ p.size.estimate_text ? "the whole file takes about " + p.size.estimate_text + "." : "" }}</p>

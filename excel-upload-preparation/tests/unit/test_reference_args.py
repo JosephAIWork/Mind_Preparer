@@ -1,5 +1,5 @@
 """1.7.2: formulas Excel refuses to store -- a value where a function needs a
-cell range. An assistant fix rewrote SUMIFS('BASE Polices'!#REF!, ...) to
+cell range. An assistant fix rewrote SUMIFS('Policy Data'!#REF!, ...) to
 SUMIFS(NA(), ...) in 17 cells and Excel refused every one (COM 0x800A03EC,
 reported to the user as a raw tuple). The ACCEPTED / REFUSED lists below were
 checked one by one in Excel on 2026-09-24."""
@@ -19,7 +19,7 @@ REFUSED = [
     "=SUMIF(IFERROR(A:A,B:B),1)", "=SUMIF(FILTER(A:A,A:A>0),1)", "=SUMIF(A:A,1,NA())", "=COUNTIF(NA(),1)",
     "=AVERAGEIF(NA(),1)", "=MAXIFS(NA(),A:A,1)", "=MINIFS(A:A,NA(),1)", "=AVERAGEIFS(A:A,A:A,1,NA(),2)",
     "=COUNTIFS(A:A,1,NA(),2)", "=COUNTBLANK(NA())", "=OFFSET(NA(),1,1)", "=ROW(NA())", "=COLUMN(NA())",
-    "=SUBTOTAL(9,NA())", "=AREAS(NA())", '=CELL("row",NA())', "=+SUMIF(NA(),YEAR(CALCUL!$N$6),NA())",
+    "=SUBTOTAL(9,NA())", "=AREAS(NA())", '=CELL("row",NA())', "=+SUMIF(NA(),YEAR(Calculation!$N$6),NA())",
     "=+_xlfn.MAXIFS(NA(),A:A,1)",
 ]
 ACCEPTED = [
@@ -27,7 +27,7 @@ ACCEPTED = [
     '=SUMIF(INDIRECT("A:A"),1)', "=SUMIF((A:A),1)", "=SUMIF(_xlfn.XLOOKUP(1,A:A,B:B),1)", "=SUMIF(A:A,NA(),B:B)",
     "=SUMIF(Sheet1!A:A,1)", "=SUMIF(A1:A5 A3:A9,1)", "=SUMIF(LET(x,A:A,x),1)", "=SUMIF(SWITCH(1,1,A:A),1)",
     "=SUMIFS(A:A,B:B,1,C:C,NA())", "=ROWS(NA())", "=SUMPRODUCT(NA())", "=VLOOKUP(1,NA(),2,0)", "=MATCH(1,NA(),0)",
-    "=INDEX(NA(),1)", "=SUMIF(missing_name,1)", "=+SUMIF('BASE Polices'!#REF!,YEAR(CALCUL!$N$6),'BASE Polices'!#REF!)",
+    "=INDEX(NA(),1)", "=SUMIF(missing_name,1)", "=+SUMIF('Policy Data'!#REF!,YEAR(Calculation!$N$6),'Policy Data'!#REF!)",
     "=SUMIF('P&L, x'!A:A,\"a,b\",'P&L, x'!B:B)", "=ROW()", "=SUM(NA())", "=SUMIF(#REF!,1)", '=SUMIF(A:A,"<>"&B1,C:C)',
 ]
 
@@ -43,12 +43,12 @@ def test_formulas_excel_accepts_are_not_flagged(formula):
 
 
 def test_problem_names_the_function_position_and_argument():
-    (p,) = reference_arg_problems('=+SUMIFS(NA(),OUTPUT!J:J,"<>COURTAGE")')
+    (p,) = reference_arg_problems('=+SUMIFS(NA(),OUTPUT!J:J,"<>FEES")')
     assert (p["function"], p["position"], p["arg"]) == ("SUMIFS", 1, "NA()") and p["call"].startswith("SUMIFS(")
 
 
 def test_collapse_turns_only_na_holding_calls_into_na():
-    assert collapse_na_reference_calls('=+SUMIFS(NA(),OUTPUT!J:J,"<>COURTAGE")') == "=+NA()"
+    assert collapse_na_reference_calls('=+SUMIFS(NA(),OUTPUT!J:J,"<>FEES")') == "=+NA()"
     assert collapse_na_reference_calls("=IFERROR(SUMIF(NA(),1),0)+SUM(NA())") == "=IFERROR(NA(),0)+SUM(NA())"
     assert collapse_na_reference_calls("=SUMIF(A:A,1,OFFSET(NA(),0,0))*2") == "=NA()*2"  # innermost first
     assert collapse_na_reference_calls("=SUMIF(5,1)") == "=SUMIF(5,1)"  # not an error: left for a person
@@ -59,11 +59,11 @@ def test_broken_ref_fix_handles_sheet_qualified_refs_and_range_arguments():
     """REF-001's NA() rewrite used to skip 'Sheet'!#REF! and would have
     produced SUMIFS(NA(),...) -- now every one becomes a formula Excel stores."""
     formulas = [
-        ("C20", "B7", "=+SUMIF('BASE Polices'!#REF!,YEAR(CALCUL!$N$6),'BASE Polices'!#REF!)", "=+NA()"),
-        ("C20", "B8", "=+SUM('BASE Polices'!#REF!)", "=+SUM(NA())"),
-        ("C20", "C22", "=+COUNTIFS('BASE Polices'!#REF!,1,OUTPUT!J:J,\"<>COURTAGE\")", "=+NA()"),
-        ("C20", "I37", "=SUMIFS('BASE Polices'!#REF!,OUTPUT!V:V,'C20'!G36)", "=NA()"),
-        ("C20", "K1", "=IFERROR(SUMIF(Data!#REF!,1),0)", "=IFERROR(NA(),0)"),
+        ("P20", "B7", "=+SUMIF('Policy Data'!#REF!,YEAR(Calculation!$N$6),'Policy Data'!#REF!)", "=+NA()"),
+        ("P20", "B8", "=+SUM('Policy Data'!#REF!)", "=+SUM(NA())"),
+        ("P20", "C22", "=+COUNTIFS('Policy Data'!#REF!,1,OUTPUT!J:J,\"<>FEES\")", "=+NA()"),
+        ("P20", "I37", "=SUMIFS('Policy Data'!#REF!,OUTPUT!V:V,'P20'!G36)", "=NA()"),
+        ("P20", "K1", "=IFERROR(SUMIF(Data!#REF!,1),0)", "=IFERROR(NA(),0)"),
         ("OUTPUT", "S3", "=#REF!-Q3", "=NA()-Q3"),
     ]
     analysis = {"workbooks": [{"defined_names": [], "formulas": [{"sheet": s, "cell": c, "formula": f} for s, c, f, _ in formulas]}]}
@@ -84,7 +84,7 @@ def test_assistant_proposal_with_a_refused_formula_is_sent_back_with_the_repair(
     result = plan_mode.run(plain_grid_xlsx, tmp_path / "work", load_config(), engine=RulesEngine())
     analysis = result["workbook_analysis"]
     ops, errors = validate_proposal({"operations": [
-        {"op": "set_formula", "sheet": "Data", "cell": "D7", "formula": '=+SUMIFS(NA(),A:A,"<>COURTAGE")'},
+        {"op": "set_formula", "sheet": "Data", "cell": "D7", "formula": '=+SUMIFS(NA(),A:A,"<>FEES")'},
         {"op": "set_formula", "sheet": "Data", "cell": "D8", "formula": "=SUMIF(5,1)"},
         {"op": "set_array_formula", "sheet": "Data", "range": "E7:E8", "formula": "=ROW(NA())"},
         {"op": "set_formula", "sheet": "Data", "cell": "D9", "formula": "=+SUM(NA())"},
@@ -100,7 +100,7 @@ def test_excel_refusal_is_explained_in_plain_english():
     class FakeComError(Exception):
         excepinfo = (0, None, None, None, 0, -2146827284)
 
-    msg = _com_message(FakeComError(), {"after": '=+SUMIFS(NA(),OUTPUT!J:J,"<>COURTAGE")'})
+    msg = _com_message(FakeComError(), {"after": '=+SUMIFS(NA(),OUTPUT!J:J,"<>FEES")'})
     assert msg.startswith("Excel refused this formula: SUMIFS argument 1 must be a cell range, but it is NA()")
     assert "not a formula Excel can store" in _com_message(FakeComError(), {"after": "=SUM(1"})
     assert "0x800A03EC" in _com_message(FakeComError(), {"after": 5})
@@ -115,8 +115,8 @@ def test_excel_refusal_is_explained_in_plain_english():
 def test_excel_really_refuses_and_accepts_as_the_checker_says(tmp_path, plain_grid_xlsx):
     base = {"action_id": "assistant", "rule_id": "CHAT", "sheet": "Data", "before": None}
     ops = [
-        {**base, "op": "set_formula", "cell": "D7", "after": '=+SUMIFS(NA(),A:A,"<>COURTAGE")'},  # bypasses validate_proposal on purpose
-        {**base, "op": "set_formula", "cell": "D8", "after": collapse_na_reference_calls('=+SUMIFS(NA(),A:A,"<>COURTAGE")')},
+        {**base, "op": "set_formula", "cell": "D7", "after": '=+SUMIFS(NA(),A:A,"<>FEES")'},  # bypasses validate_proposal on purpose
+        {**base, "op": "set_formula", "cell": "D8", "after": collapse_na_reference_calls('=+SUMIFS(NA(),A:A,"<>FEES")')},
     ]
     res = apply_operations(plain_grid_xlsx, tmp_path / "apply", ops)
     assert [o["cell"] for o in res["applied"]] == ["D8"]

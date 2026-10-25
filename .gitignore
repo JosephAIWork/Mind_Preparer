@@ -3,8 +3,7 @@
 *.xlsm
 *.xlsb
 *.xls
-Shlomo_*
-shlomo_result.*
+/*_result.*
 excel-upload-preparation/runs/
 excel-upload-preparation/**/*.changelog.json
 
@@ -19,7 +18,7 @@ mind_session.json
 
 # --- working copies and scratch ---
 New Text Document*.txt
-excel-upload-preparation-shlomo/
+excel-upload-preparation-*/
 New/
 *.zip
 excel-upload-preparation/PACKAGE_INVENTORY.json

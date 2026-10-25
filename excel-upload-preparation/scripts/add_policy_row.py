@@ -1,6 +1,6 @@
 """Append one policy to a loop version's input table, through Excel, to show the loop growing in Mind.
 
-    python scripts/add_policy_row.py <loop version .xlsm> <out .xlsm> [--sheet "BASE Polices"] [--copy-row 6] [--id-col A]
+    python scripts/add_policy_row.py <loop version .xlsm> <out .xlsm> --sheet "<input table sheet>" [--copy-row 6] [--id-col A]
 
 Copies the last data row of the table one row down (values only: the macro's table holds constants),
 gives the new row a new id in --id-col (the copied id with "_7" appended, or +1 for a number), saves the
@@ -23,7 +23,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
     ap.add_argument("out")
-    ap.add_argument("--sheet", default="BASE Polices")
+    ap.add_argument("--sheet", required=True, help="the sheet of the loop's input table")
     ap.add_argument("--copy-row", type=int, default=6)
     ap.add_argument("--id-col", default="A")
     a = ap.parse_args()
@@ -44,7 +44,7 @@ def main() -> int:
             ws.Range(f"{a.id_col}{n}").Value = new_id
             excel.CalculateFull()
             book.Save()
-            print(f"row {n} of {a.sheet} = row {r} with {a.id_col}{n} = {new_id!r} ({last_col} columns); CALCUL!A2 now {book.Worksheets('CALCUL').Range('A2').Value!r}")
+            print(f"row {n} of {a.sheet} = row {r} with {a.id_col}{n} = {new_id!r} ({last_col} columns)")
         finally:
             close_quietly(book)
     print("written", out)

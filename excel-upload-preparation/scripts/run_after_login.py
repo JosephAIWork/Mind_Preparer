@@ -49,7 +49,7 @@ def wait_for_login(out: Path, timeout_s: float, poll_s: float = 3.0) -> bool:
     """Headed Edge on the saved project URL until it shows an authenticated
     Mind page for 8 s in a row. Saves the resolved URL to mind_session.json."""
     sess = mc.load_session()
-    url = sess.get("project_url") or "https://shared.milliman-mind.com/main"
+    url = sess.get("project_url") or mc.MAIN_URL
     _log(out, f"opening Edge (MindReady profile) at {url} -- please sign in to Milliman Mind in that window")
     with mc.mind_session(headed=True) as (_ctx, page):
         page.goto(url, wait_until="domcontentloaded")

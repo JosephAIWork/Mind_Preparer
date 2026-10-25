@@ -1,4 +1,4 @@
-"""1.11.2: Mind's MCP server as an optional extra. The answer texts below are real ones (Horizon, 2026-10-15)."""
+"""1.11.2: Mind's MCP server as an optional extra. The answer texts below are real ones (UC-1, 2026-10-15)."""
 from __future__ import annotations
 
 import base64
@@ -12,10 +12,10 @@ from app import mind_mcp
 STRUCTURE = """Note: null
 Dimensions[2]{Name,Length,IsLoopInstance,HasLabels}:
   SIM,1,false,false
-  BASE_Polices,6,false,false
+  Policy_Data,6,false,false
 Models[1]:
   - ModelIndex: 0
-    Name: horizon_anch7
+    Name: model_a7
     Instances[1]{Id}:
       Original_Instance
     GridCount: 117
@@ -24,7 +24,7 @@ Workflow: null"""
 RESOLVE = """Note: null
 ModelIndex: 0
 InstanceId: Original_Instance
-SpreadsheetName: CALCUL
+SpreadsheetName: Calculation
 Address: AY35
 OutOfGrids: false
 GridIndex: 32
@@ -39,7 +39,7 @@ TotalValuesCount: 3
 ReturnedValuesCount: 3
 Truncated: false
 Values[4]:
-  - [2]: BASE_Polices,Values
+  - [2]: Policy_Data,Values
   - [2]: 1,1
   - [2]: 2,1.5
   - [2]: 3,"a, b\""""
@@ -56,9 +56,9 @@ Rows[1]{RunId,Date,User,Result,RunType,ConsistencyStatus,AreResultsLoaded}:
 
 def test_the_answer_format_is_read():
     dims = mind_mcp.table(STRUCTURE, "Dimensions")
-    assert dims == [{"Name": "SIM", "Length": 1, "IsLoopInstance": False, "HasLabels": False}, {"Name": "BASE_Polices", "Length": 6, "IsLoopInstance": False, "HasLabels": False}]
+    assert dims == [{"Name": "SIM", "Length": 1, "IsLoopInstance": False, "HasLabels": False}, {"Name": "Policy_Data", "Length": 6, "IsLoopInstance": False, "HasLabels": False}]
     assert mind_mcp.field(RESOLVE, "GridIndex") == 32 and mind_mcp.field(RESOLVE, "GridName") == "Untitled(34,51)" and mind_mcp.field(RESOLVE, "OutOfGrids") is False
-    assert mind_mcp.values(VALUES) == [{"BASE_Polices": 1, "Values": 1}, {"BASE_Polices": 2, "Values": 1.5}, {"BASE_Polices": 3, "Values": "a, b"}]
+    assert mind_mcp.values(VALUES) == [{"Policy_Data": 1, "Values": 1}, {"Policy_Data": 2, "Values": 1.5}, {"Policy_Data": 3, "Values": "a, b"}]
     row = mind_mcp.table(HISTORY, "Rows")[0]
     assert row["Result"] == "Success" and row["ConsistencyStatus"] == "Consistent" and row["Date"] == "2026-10-15T12:30:26.4059047"
 
@@ -75,11 +75,11 @@ class FakeMcp:
 
 def test_a_cell_is_read_per_instance_and_a_cell_without_the_loop_counts_for_every_instance():
     fake = FakeMcp({"get_project_structure": STRUCTURE, "resolve_excel_address": RESOLVE, "get_cell_values": VALUES})
-    got = mind_mcp.cell_instances(fake, "CALCUL", "AY35", "BASE_Polices")
+    got = mind_mcp.cell_instances(fake, "Calculation", "AY35", "Policy_Data")
     assert got["dimensioned"] and got["values"] == {1: 1, 2: 1.5, 3: "a, b"} and got["grid"] == "Untitled(34,51)"
     assert mind_mcp.instance_value(got, 2) == 1.5
     fake = FakeMcp({"get_project_structure": STRUCTURE, "resolve_excel_address": RESOLVE, "get_cell_values": SCALAR})
-    got = mind_mcp.cell_instances(fake, "CALCUL", "BA35", "BASE_Polices")
+    got = mind_mcp.cell_instances(fake, "Calculation", "BA35", "Policy_Data")
     assert not got["dimensioned"] and [mind_mcp.instance_value(got, k) for k in (1, 6)] == [45657, 45657]
 
 
@@ -90,9 +90,9 @@ def test_dates_compare_with_excel_serials():
 def test_the_run_errors_are_mapped_to_excel():
     log = "Run failed: Error while calculating [model_0_grid_7_R2_C3] ... MIND REFERENCE | Untitled(36,7)(37,9)"
     fake = FakeMcp({"get_run_log": log, "get_project_structure": STRUCTURE,
-                    "get_cell_excel_address": "ModelName: horizon\nSpreadsheetName: C20\nAddress: H38"})
+                    "get_cell_excel_address": "ModelName: model_a\nSpreadsheetName: P20\nAddress: H38"})
     out = mind_mcp.run_errors(fake, "run-1")
-    assert {"mind": "model_0_grid_7_R2_C3", "excel": "C20!H38"} in out["cells"] and {"mind": "Untitled(36,7)(37,9)", "excel": "I37"} in out["cells"]
+    assert {"mind": "model_0_grid_7_R2_C3", "excel": "P20!H38"} in out["cells"] and {"mind": "Untitled(36,7)(37,9)", "excel": "I37"} in out["cells"]
     assert out["lines"] and "Run failed" in out["lines"][0]
 
 

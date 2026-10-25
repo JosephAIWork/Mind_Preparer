@@ -711,10 +711,10 @@ def test_grid_naming_reports_an_unavailable_gateway_without_raising():
     from app.grid_naming import suggest_names
 
     def unavailable(messages, system_prompt, **kw):
-        return {"available": False, "text": None, "message": "no secret.key found nearby"}
+        return {"available": False, "text": None, "message": "no AI key saved"}
 
     out = suggest_names([{"id": "S!A1", "size": "1 rows x 1 cols", "flags": [], "above": [], "left": [], "sample": ["x"]}], completion=unavailable)
-    assert out["available"] is False and out["names"] == {} and "secret.key" in out["message"]
+    assert out["available"] is False and out["names"] == {} and "AI key" in out["message"]
 
 
 def test_transient_com_errors_are_recognised():

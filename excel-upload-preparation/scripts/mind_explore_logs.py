@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.mind_client import SANDBOX_FOLDER, body_text, create_blank_project, delete_project, ensure_folder, is_authenticated, mind_session, open_manager, open_project, screenshot, step_status  # noqa: E402
+from app.mind_client import PROJECT_PREFIX, SANDBOX_FOLDER, body_text, create_blank_project, delete_project, ensure_folder, is_authenticated, mind_session, open_manager, open_project, screenshot, step_status  # noqa: E402
 
 
 def names(page, role):
@@ -36,7 +36,7 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
     workbook = Path(args.workbook).resolve()
-    name = "zzz_mindready_explore_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:30]
+    name = f"{PROJECT_PREFIX}_explore_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:30]
     shots = workbook.parent / f"{workbook.stem}_explore"
     shots.mkdir(exist_ok=True)
     if not is_authenticated().get("authenticated"):

@@ -1,6 +1,6 @@
 """Upload a Mind-loop version to a sandbox project in real Mind, run it, and look for the loop.
 
-    python scripts/mind_loop_probe.py <loop version .xlsm> [--project zzz_...] [--expected check.json]
+    python scripts/mind_loop_probe.py <loop version .xlsm> [--project <prefix>_...] [--expected check.json]
         [--parts OUTPUT,Untitled] [--no-run] [--init-url <existing project link>] [--timeout 900]
 
 What it records, under <workbook>_mind_probe/:
@@ -17,7 +17,7 @@ What it records, under <workbook>_mind_probe/:
 With a Mind MCP token (app/mind_mcp.py) the run and the loop reading go through MCP after the upload:
 the loop's size and every instance of --source as data, compared with --expected; the run's errors mapped
 to Excel cells. Without one (or with --browser) the browser runs the model and reads the parts as before.
-Nothing is deleted; the project stays in Mind (sandbox names only, zzz_...).
+Nothing is deleted; the project stays in Mind (sandbox names only: the project prefix in settings.yaml).
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import mind_mcp  # noqa: E402
 from app.mind_client import (  # noqa: E402
+    PROJECT_PREFIX,
     SANDBOX_FOLDER,
     add_template,
     body_text,
@@ -294,9 +295,9 @@ def main() -> int:
     ap.add_argument("--browser", action="store_true", help="use the browser for the run and the reading even when Mind MCP is available")
     args = ap.parse_args()
     workbook = Path(args.workbook).resolve()
-    name = args.project or ("zzz_mindready_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:40])
-    if not name.startswith("zzz_"):
-        print("the project name must start with zzz_ (sandbox only)")
+    name = args.project or (f"{PROJECT_PREFIX}_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:40])
+    if not name.startswith(PROJECT_PREFIX):
+        print(f"the project name must start with {PROJECT_PREFIX} (sandbox only; settings.yaml)")
         return 2
     auth = is_authenticated()
     if not auth.get("authenticated"):

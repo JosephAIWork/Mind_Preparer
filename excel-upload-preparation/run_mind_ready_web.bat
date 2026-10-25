@@ -3,9 +3,11 @@ rem Mind Ready -- FastAPI backend + the Figma-built React front-end, one URL.
 rem Build the front-end first (once, or after UI changes):
 rem     cd "..\MindReadyUI" && npm install && npx ng build --configuration production
 cd /d "%~dp0"
-set MIND_READY_PORT=8600
 set PY=python
 if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
+rem The port: MIND_READY_PORT when it is already set, else "port" in settings.yaml.
+if not defined MIND_READY_PORT for /f "usebackq delims=" %%p in (`%PY% -c "from app.settings import SETTINGS; print(SETTINGS.port)"`) do set MIND_READY_PORT=%%p
+if not defined MIND_READY_PORT set MIND_READY_PORT=8600
 
 rem Already running (started earlier, or from VS Code)? Then only open it.
 powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:%MIND_READY_PORT%/api/health -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }"

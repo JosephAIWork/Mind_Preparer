@@ -113,7 +113,7 @@ def test_auto_enable_turns_on_opt_in_actions_whose_rule_is_an_error():
 
 def test_decide_enables_the_fix_mind_asks_for_then_gives_up_when_it_has_none():
     it = {"apply": {"status": "APPLIED"}, "numbers": {"ran": True, "match": True}, "names": {"fragmented": False},
-          "mind": {"skipped": False, "convert": {"success": False, "errors": ["Formula compilation error: #REF! in Cashflows!J5"]}}}
+          "mind": {"skipped": False, "convert": {"success": False, "errors": ["Formula compilation error: #REF! in Calc!J5"]}}}
     d = ml.decide(it, _plan(), enabled=set(), disabled=set())
     assert d["verdict"] == "retry" and d["enable"] == ["fix_broken_refs"]
     d2 = ml.decide(it, _plan(), enabled={"fix_broken_refs"}, disabled=set())

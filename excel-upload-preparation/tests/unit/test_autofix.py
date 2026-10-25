@@ -24,25 +24,25 @@ def test_relative_and_absolute_references_resolve_from_the_cell():
 
 
 def test_whole_columns_rows_sheets_and_3d_references():
-    p = parse_r1c1("=SUMIFS('BASE Polices'!#REF!,OUTPUT!C[13],'C20'!R[-1]C[-2])")
+    p = parse_r1c1("=SUMIFS('Policy Data'!#REF!,OUTPUT!C[13],'P20'!R[-1]C[-2])")
     assert p.broken
     specs = [(r[0], ref_rect(r, 20, 5)) for r in p.refs]
     assert (("sheet", "OUTPUT"), (1, autofix.MAX_ROW, 18, 18)) in specs
-    assert (("sheet", "C20"), (19, 19, 3, 3)) in specs
-    p = parse_r1c1("=SUM('LoB 1:>>'!RC)")
-    assert p.refs[0][0] == ("3d", "LoB 1", ">>") and ref_rect(p.refs[0], 7, 8) == (7, 7, 8, 8)
+    assert (("sheet", "P20"), (19, 19, 3, 3)) in specs
+    p = parse_r1c1("=SUM('Line 1:>>'!RC)")
+    assert p.refs[0][0] == ("3d", "Line 1", ">>") and ref_rect(p.refs[0], 7, 8) == (7, 7, 8, 8)
     p = parse_r1c1("=SUM(R[2]:R[3])")
     assert ref_rect(p.refs[0], 10, 4) == (12, 13, 1, autofix.MAX_COL)
 
 
 def test_external_links_names_functions_and_dynamic_references():
-    p = parse_r1c1(r"='C:\Users\a\Documents\[PVFP Inputs_v4.0.xlsx]BP by LoB'!R[-98]C[-2]")
+    p = parse_r1c1(r"='C:\Users\a\Documents\[Inputs_v4.0.xlsx]Plan by Line'!R[-98]C[-2]")
     assert p.external and p.refs[0][0] == ("ext",)
     p = parse_r1c1('=IF(INDIRECT("\'"&RC7&"\'!$Z$16")=0,0,66%*R[277]C26)')
     assert p.dynamic and "INDIRECT" in p.funcs
     assert [ref_rect(r, 10, 3) for r in p.refs] == [(10, 10, 7, 7), (287, 287, 26, 26)]  # nothing read out of the string
-    p = parse_r1c1("=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(R[-3]C,Assumption_headings,0),FALSE)")
-    assert p.names == ("ASSUMPTIONS_ARRAY", "ASSUMPTION_HEADINGS", "POLICY_TARIFF") and {"VLOOKUP", "MATCH"} <= p.funcs
+    p = parse_r1c1("=VLOOKUP(Policy_group,Assumptions_array,MATCH(R[-3]C,Assumption_headings,0),FALSE)")
+    assert p.names == ("ASSUMPTIONS_ARRAY", "ASSUMPTION_HEADINGS", "POLICY_GROUP") and {"VLOOKUP", "MATCH"} <= p.funcs
     p = parse_r1c1("=ROUND(RATE(1,2,3)*COUNT(RC[1]:RC[3]),2)+_xlfn.XLOOKUP(RC1,C1,C2)")
     assert {"ROUND", "RATE", "COUNT", "XLOOKUP"} <= p.funcs and not p.names  # RATE( / ROUND( / COUNT( are not references
     assert len(p.refs) == 4
@@ -89,7 +89,7 @@ def test_a_live_formula_is_kept_and_only_given_a_value_to_fall_back_on():
 def test_a_dead_formula_is_replaced_and_a_broken_one_loses_its_ref_literal():
     dead = candidate_fixes("=+NA()", parse_r1c1("=+NA()"), "number")
     assert [(f["kind"], f["content"]) for f in dead] == [("formula", "=IFERROR(NA(),0)"), ("formula", '=IFERROR(NA(),"")')]  # still a formula, never a bare value
-    broken = candidate_fixes("=SUM('BASE Polices'!#REF!)+RC[1]", parse_r1c1("=SUM('BASE Polices'!#REF!)+RC[1]"), "number")
+    broken = candidate_fixes("=SUM('Policy Data'!#REF!)+RC[1]", parse_r1c1("=SUM('Policy Data'!#REF!)+RC[1]"), "number")
     assert broken[0]["content"] == "=IFERROR(SUM(NA())+RC[1],0)" and "#REF!" not in broken[0]["content"]
     endpoint = candidate_fixes("=SUM(R1C1:#REF!)", parse_r1c1("=SUM(R1C1:#REF!)"), "number")
     assert [f["content"] for f in endpoint] == ["=IFERROR(NA(),0)", '=IFERROR(NA(),"")']  # the range can never be rebuilt: nothing of the #REF! is kept

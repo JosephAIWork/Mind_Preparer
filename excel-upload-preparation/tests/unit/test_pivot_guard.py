@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.excel_com import com_available
-from app.prep import _drop_pivot_targets, plan_pivot_tables, pivot_ranges
+from app.prep import DEFAULT_PIVOT_MODE, PIVOT_MODES, _drop_pivot_targets, plan_pivot_tables, pivot_ranges
 from app.validators.structure import pivot_tables
 
 needs_excel = pytest.mark.skipif(not com_available(), reason="needs a real Excel")
@@ -58,19 +58,22 @@ def test_the_scan_records_a_pivot_table_built_by_excel(tmp_path):
     assert sheet["pivot_tables"][0]["ref"].startswith("C5:")
 
 
-def test_the_rule_blocks_only_a_grouped_pivot_and_the_setting_decides_the_rest():
+def test_every_pivot_blocks_and_the_setting_says_formulas_or_values():
+    """2026-10-25: the client model with only its grouped pivot as values (plain ones kept) was
+    rejected by Mind's converter too."""
     def analysis(grouped):
         return {"workbooks": [{"sheets": [{"name": "S", "pivot_tables": [
             {"name": "Plain", "ref": "A1:C9", "grouped_fields": []},
             {"name": "Grouped", "ref": "E1:F9", "grouped_fields": ["Age"] if grouped else []},
         ]}]}]}
-    assert pivot_tables(None, analysis(True), {})["status"] == "ERROR"
-    assert pivot_tables(None, analysis(False), {})["status"] == "WARNING"
+    for grouped in (True, False):
+        f = pivot_tables(None, analysis(grouped), {})
+        assert f["status"] == "ERROR" and f["observed"]["blocking"] == 2
     assert pivot_tables(None, {"workbooks": [{"sheets": [{"name": "S"}]}]}, {})["status"] == "PASS"
-    ops, skipped = plan_pivot_tables(analysis(True), {}, "blocking")
-    assert [(o["op"], o["pivot"]) for o in ops] == [("pivot_to_formulas", "Grouped")] and "Plain" in skipped[0]
-    ops, _ = plan_pivot_tables(analysis(True), {}, "formulas")
-    assert [o["pivot"] for o in ops] == ["Plain", "Grouped"] and {o["op"] for o in ops} == {"pivot_to_formulas"}
+    assert DEFAULT_PIVOT_MODE == "formulas" and set(PIVOT_MODES) == {"formulas", "values"}
+    ops, skipped = plan_pivot_tables(analysis(True), {}, "formulas")
+    assert [o["pivot"] for o in ops] == ["Plain", "Grouped"] and {o["op"] for o in ops} == {"pivot_to_formulas"} and not skipped
+    assert "is grouped" in ops[1]["note"] and "stops on a pivot table" in ops[0]["note"]
     ops, _ = plan_pivot_tables(analysis(False), {}, "values")
     assert {o["op"] for o in ops} == {"pivot_to_values"}
     # the guard never drops the pivot operations themselves
@@ -126,13 +129,13 @@ def test_prep_turns_a_plain_pivot_into_formulas_and_a_grouped_one_into_values(tm
 
 def test_getpivotdata_anywhere_keeps_every_pivot_as_a_pivot():
     analysis = {"workbooks": [{"sheets": [{"name": "Pivot", "pivot_tables": [{"name": "PT1", "ref": "A3:C9", "grouped_fields": ["Age"]}]}],
-                               "formulas": [{"sheet": "Summary", "cell": "C5", "formula": '=GETPIVOTDATA("Sum of BEL",Pivot!$A$3,"LoB","Motor")'}]}]}
-    ops, skipped = plan_pivot_tables(analysis, {}, "blocking")
+                               "formulas": [{"sheet": "Summary", "cell": "C5", "formula": '=GETPIVOTDATA("Sum of BEL",Pivot!$A$3,"Line","Motor")'}]}]}
+    ops, skipped = plan_pivot_tables(analysis, {}, "formulas")
     assert ops == [] and "GETPIVOTDATA on Summary" in skipped[0] and "#REF!" in skipped[0]
     assert "Mind cannot read it" in skipped[0]  # a grouped pivot: the user is told it still blocks Mind
     # no GETPIVOTDATA: the grouped pivot is converted as before
     analysis["workbooks"][0]["formulas"] = [{"sheet": "Summary", "cell": "C5", "formula": "=Pivot!B4"}]
-    ops, _ = plan_pivot_tables(analysis, {}, "blocking")
+    ops, _ = plan_pivot_tables(analysis, {}, "formulas")
     assert [o["pivot"] for o in ops] == ["PT1"]
 
 
@@ -190,14 +193,14 @@ def test_convert_keeps_empty_cells_empty_the_users_formulas_and_refuses_hidden_i
         try:
             data = wb.Worksheets(1)
             data.Name = "Data"
-            rows = [("LoB", "Year", "Run", "Amount"), ("Motor", 2024, "Base", 1), ("Motor", 2025, "Base", 2), ("Home", 2024, "Base", 3),
+            rows = [("Line", "Year", "Run", "Amount"), ("Motor", 2024, "Base", 1), ("Motor", 2025, "Base", 2), ("Home", 2024, "Base", 3),
                     ("Home", 2024, "Shock", 0)]
             data.Range(data.Cells(1, 1), data.Cells(len(rows), 4)).Value2 = rows
             ws = wb.Worksheets.Add()
             ws.Name = "Pivots"
             src = f"Data!R1C1:R{len(rows)}C4"
             pt = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("A4"), "Sparse")
-            pt.PivotFields("LoB").Orientation = 1
+            pt.PivotFields("Line").Orientation = 1
             pt.PivotFields("Year").Orientation = 2  # columns: Home has no 2025
             pt.PivotFields("Run").Orientation = 3   # a report filter in A2:B2
             pt.AddDataField(pt.PivotFields("Amount"))
@@ -207,11 +210,11 @@ def test_convert_keeps_empty_cells_empty_the_users_formulas_and_refuses_hidden_i
             hidden.AddDataField(hidden.PivotFields("Amount"))
             hidden.PivotFields("Run").PivotItems("Shock").Visible = False  # adds 0 today: would match by chance
             two = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("P4"), "TwoValues")
-            two.PivotFields("LoB").Orientation = 1
+            two.PivotFields("Line").Orientation = 1
             two.AddDataField(two.PivotFields("Amount"), "Sum A", -4157)
             two.AddDataField(two.PivotFields("Year"), "Max Y", -4136)  # a "Values" field among the columns
             sliced = wb.PivotCaches().Create(1, src).CreatePivotTable(ws.Range("U4"), "Sliced")
-            sliced.PivotFields("LoB").Orientation = 1
+            sliced.PivotFields("Line").Orientation = 1
             sliced.AddDataField(sliced.PivotFields("Amount"))
             slicer = wb.SlicerCaches.Add2(sliced, "Run")  # Run is not in the layout: only the slicer filters it
             slicer.Slicers.Add(ws, Name="RunSlicer", Caption="Run", Top=10, Left=600, Width=100, Height=100)

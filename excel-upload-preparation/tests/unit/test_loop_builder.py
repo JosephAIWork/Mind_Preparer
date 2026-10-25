@@ -2,16 +2,15 @@
 
 The plans are built on small workbooks written here, with the macros the four client models
 use (read through a patched `read_vba`, since an .xlsx carries none): a row-per-record loop
-(Horizon), a counter driver with named bounds (Palermo), a list walked with Offset and a
-derived year (CNHI). Horizon itself is checked when its local copy is present."""
+(UC-1), a counter driver with named bounds (UC-2), a list walked with Offset and a derived
+year (UC-3). UC-1 itself is checked when its local copy is present."""
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import openpyxl
-import pytest
+from local_usecases import usecase_or_skip
 from openpyxl.workbook.defined_name import DefinedName
 
 from app import model_map
@@ -19,29 +18,27 @@ from app.inventory import build_analysis
 from app.loop_builder import build_loop_plan, describe, loop_name_from
 from app.model_map import build_model_map
 
-USECASES = Path(os.environ.get("LOCALAPPDATA", "")) / "MindReady" / "autofix" / "usecases"
-
-HORIZON_STYLE = '''
+ROW_LOOP_STYLE = '''
 Sub Run_All()
-num_debut = Worksheets("CALCUL").Cells(5, 20).Value
-num_fin = Worksheets("CALCUL").Cells(6, 20).Value
-Worksheets("OUTPUT").Range("A" & num_debut & ":B100000").ClearContents
-For ins = num_debut To num_fin
-    Worksheets("CALCUL").Range("A2:C2") = Worksheets("BASE Polices").Range("A" & ins & ":C" & ins).Value
-    Worksheets("OUTPUT").Range("A" & ins & ":B" & ins) = Worksheets("CALCUL").Range("E10:F10").Value
+first_row = Worksheets("Calculation").Cells(5, 20).Value
+last_row = Worksheets("Calculation").Cells(6, 20).Value
+Worksheets("OUTPUT").Range("A" & first_row & ":B100000").ClearContents
+For ins = first_row To last_row
+    Worksheets("Calculation").Range("A2:C2") = Worksheets("Policy Data").Range("A" & ins & ":C" & ins).Value
+    Worksheets("OUTPUT").Range("A" & ins & ":B" & ins) = Worksheets("Calculation").Range("E10:F10").Value
 Next
 End Sub
 '''
 
-PALERMO_STYLE = '''
+COUNTER_STYLE = '''
 Sub RunPolicies()
 Dim MacroStart As Long: MacroStart = Range("MacroStart").Value
 Dim MacroEnd As Long: MacroEnd = Range("MacroEnd").Value
-For polProcess = MacroStart To MacroEnd
-    Range("MP_ROW_SELECT").Value = polProcess
+For polNo = MacroStart To MacroEnd
+    Range("POLICY_ROW").Value = polNo
     Application.Calculate
-    Range("ByTariffPaster").Offset(0, 10 * (Temp2 - 1)).Value2 = Range("AggregateOutput").Value2
-Next polProcess
+    Range("ByGroupPaster").Offset(0, 10 * (Temp2 - 1)).Value2 = Range("AggregateOutput").Value2
+Next polNo
 End Sub
 '''
 
@@ -54,7 +51,7 @@ Next i
 End Sub
 '''
 
-CNHI_STYLE = '''
+LISTS_STYLE = '''
 Sub combined()
 For i_s = 1 To 3
     Range("active_scenario").Value2 = Range("scenario_start").Offset(0, i_s - 1).Value2
@@ -67,24 +64,24 @@ End Sub
 '''
 
 
-def _horizon_book(tmp_path: Path, last_as_formula: bool = True) -> Path:
+def _row_loop_book(tmp_path: Path, last_as_formula: bool = True) -> Path:
     wb = openpyxl.Workbook()
     base = wb.active
-    base.title = "BASE Polices"
+    base.title = "Policy Data"
     base.append(["Policy", "Loan", "Person"])
     for i in range(1, 4):
         base.append([100 + i, 10 * i, 5 + i])
-    calc = wb.create_sheet("CALCUL")
+    calc = wb.create_sheet("Calculation")
     calc["A2"], calc["B2"], calc["C2"] = 103, 30, 8
-    calc["S5"], calc["T5"] = "Ligne début", 1
-    calc["S6"], calc["T6"] = "ligne fin", "=N5" if last_as_formula else 4
-    calc["N5"] = "=COUNTA('BASE Polices'!A:A)"
+    calc["S5"], calc["T5"] = "First row", 1
+    calc["S6"], calc["T6"] = "Last row", "=N5" if last_as_formula else 4
+    calc["N5"] = "=COUNTA('Policy Data'!A:A)"
     calc["E10"], calc["F10"] = "=A2*2", "=B2+C2"
     out = wb.create_sheet("OUTPUT")
     for r in range(1, 5):
         out.append([r, r])
     out["A5"] = "left from an earlier run"
-    p = tmp_path / "horizon_like.xlsx"
+    p = tmp_path / "row_loop.xlsx"
     wb.save(p)
     wb.close()
     return p
@@ -99,49 +96,49 @@ def _plan_for(path: Path, tmp_path: Path, vba: str, monkeypatch, **kw) -> dict:
 
 
 def test_loop_names_are_plain_words():
-    assert loop_name_from("BASE Polices") == "BASE_Polices" and loop_name_from("Tariffs to run!") == "Tariffs_to_run" and loop_name_from("") == "Loop"
+    assert loop_name_from("Policy Data") == "Policy_Data" and loop_name_from("Tariffs to run!") == "Tariffs_to_run" and loop_name_from("") == "Loop"
 
 
 def test_a_row_per_record_loop_becomes_mm_loop_per_column_and_mm_result_per_row(tmp_path, monkeypatch):
     # the last bound is a formula with no stored value in a file openpyxl wrote: the plan asks
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch)
     lp = plan["loops"][0]
     assert lp["status"] == "needs_decision" and "first or last value" in lp["why"] and plan["operations"] == []
     # with the last value given, everything is placed
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch, last=4)
     lp = plan["loops"][0]
-    assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and lp["kind"] == "row_of_table" and (lp["first"], lp["last"], lp["count"]) == (2, 4, 3) and lp["header_skipped"] == 1
-    assert lp["first_from"] == {"kind": "cell", "cell": "CALCUL!T5", "name": None, "value": 1, "formula": None} and lp["last_from"]["kind"] == "chosen"
-    assert [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}2:INDEX('BASE Polices'!{col}:{col},MM_LASTROW('BASE Polices'!A2)))" for col in "ABC"]  # follows the table in Mind
-    assert [c["range_fixed"] for c in lp["cells"]] == [f"'BASE Polices'!{col}2:{col}4" for col in "ABC"] and lp["dynamic"] is True
+    assert lp["status"] == "ready" and lp["name"] == "Policy_Data" and lp["kind"] == "row_of_table" and (lp["first"], lp["last"], lp["count"]) == (2, 4, 3) and lp["header_skipped"] == 1
+    assert lp["first_from"] == {"kind": "cell", "cell": "Calculation!T5", "name": None, "value": 1, "formula": None} and lp["last_from"]["kind"] == "chosen"
+    assert [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"Policy_Data\",'Policy Data'!{col}2:INDEX('Policy Data'!{col}:{col},MM_LASTROW('Policy Data'!A2)))" for col in "ABC"]  # follows the table in Mind
+    assert [c["range_fixed"] for c in lp["cells"]] == [f"'Policy Data'!{col}2:{col}4" for col in "ABC"] and lp["dynamic"] is True
     assert any("ranges follow the table" in n for n in lp["notes"])
-    assert [c["cell"] for c in lp["cells"]] == ["CALCUL!A2", "CALCUL!B2", "CALCUL!C2"]
+    assert [c["cell"] for c in lp["cells"]] == ["Calculation!A2", "Calculation!B2", "Calculation!C2"]
     assert any("the table's header: the loop starts at 2" in n for n in lp["notes"])  # row 1 is the header: skipped by default, said
     assert any("Excel behaviour may differ from Mind behaviour" in n for n in lp["notes"]) and any("Input Manager only reach a grid flagged /Input" in n for n in lp["notes"])
     out = plan["outputs"][0]
-    assert out["status"] == "ready" and out["items"] == 3 and out["cells"] == 6 and out["loop"] == "BASE_Polices" and "written for the 3 loop values present now" in out["rows_note"]
-    assert out["example"] == 'OUTPUT!A2 =MM_RESULT(CALCUL!$E$10,"BASE_Polices",1)'
+    assert out["status"] == "ready" and out["items"] == 3 and out["cells"] == 6 and out["loop"] == "Policy_Data" and "written for the 3 loop values present now" in out["rows_note"]
+    assert out["example"] == 'OUTPUT!A2 =MM_RESULT(Calculation!$E$10,"Policy_Data",1)'
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
-    assert ops[("OUTPUT", "B4")]["after"] == '=MM_RESULT(CALCUL!$F$10,"BASE_Polices",3)' and ops[("OUTPUT", "B4")]["before"] == 4
-    assert ops[("CALCUL", "A2")]["before"] == 103 and ops[("CALCUL", "A2")]["op"] == "set_formula"
+    assert ops[("OUTPUT", "B4")]["after"] == '=MM_RESULT(Calculation!$F$10,"Policy_Data",3)' and ops[("OUTPUT", "B4")]["before"] == 4
+    assert ops[("Calculation", "A2")]["before"] == 103 and ops[("Calculation", "A2")]["op"] == "set_formula"
     assert all(o["action_id"] == "mind_loop" and o["rule_id"] == "LOOP-001" for o in plan["operations"])
     # the cleared area is listed with what an earlier run left there, but not emptied unless asked
     cl = plan["clears"][0]
     assert cl["resolved"] == "OUTPUT!A2:B100000" and cl["cells"] == 1 and cl["included"] is False and plan["counts"]["cleared"] == 0
     assert len(plan["operations"]) == 3 + 6 + 2 and plan["counts"] == {"loop_cells": 3, "result_cells": 6, "cleared": 0, "extra": 2}  # + the 2 header captions
-    assert "BASE_Polices is a loop of 3 values" in plan["how_it_runs"] and "Run_All is not needed" in plan["how_it_runs"]
+    assert "Policy_Data is a loop of 3 values" in plan["how_it_runs"] and "Run_All is not needed" in plan["how_it_runs"]
     json.dumps(plan, default=str)
     text = describe(plan)
-    assert "loop BASE_Polices  driver CALCUL!A2:C2  2 -> 4  [ready]" in text and "operations: 11" in text
+    assert "loop Policy_Data  driver Calculation!A2:C2  2 -> 4  [ready]" in text and "operations: 11" in text
 
 
 def test_bounds_name_and_clearing_can_be_chosen(tmp_path, monkeypatch):
-    plan = _plan_for(_horizon_book(tmp_path, last_as_formula=False), tmp_path, HORIZON_STYLE, monkeypatch, name="Policy", first=2, clear_old=True)
+    plan = _plan_for(_row_loop_book(tmp_path, last_as_formula=False), tmp_path, ROW_LOOP_STYLE, monkeypatch, name="Policy", first=2, clear_old=True)
     lp = plan["loops"][0]
     assert lp["status"] == "ready" and lp["name"] == "Policy" and (lp["first"], lp["last"], lp["count"]) == (2, 4, 3) and lp["last_from"]["kind"] == "cell"
-    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A2)))" and not any("header" in n for n in lp["notes"])
+    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"Policy\",'Policy Data'!A2:INDEX('Policy Data'!A:A,MM_LASTROW('Policy Data'!A2)))" and not any("header" in n for n in lp["notes"])
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
-    assert ops[("OUTPUT", "A2")]["after"] == '=MM_RESULT(CALCUL!$E$10,"Policy",1)'
+    assert ops[("OUTPUT", "A2")]["after"] == '=MM_RESULT(Calculation!$E$10,"Policy",1)'
     assert ops[("OUTPUT", "A1")]["op"] == "set_value"  # the header row above the block, completed for Mind (no MM_RESULT there)
     # the macro clears from the first value's row on (A2:B100000): row 5 is emptied, row 1 is
     # outside that area and the written rows are left
@@ -156,19 +153,19 @@ def test_a_counter_driver_with_named_bounds(tmp_path, monkeypatch):
     m["A1"], m["B1"], m["A2"], m["B2"] = "Macro Start", 1, "Macro End", 19
     pr = wb.create_sheet("Projection")
     pr["B3"], pr["C3"] = "Policy run", 7
-    for n, ref in (("MacroStart", "Macro!$B$1"), ("MacroEnd", "Macro!$B$2"), ("MP_ROW_SELECT", "Projection!$C$3"), ("ByTariffPaster", "Macro!$V$13:$AE$140"), ("AggregateOutput", "Macro!$A$11:$J$138")):
+    for n, ref in (("MacroStart", "Macro!$B$1"), ("MacroEnd", "Macro!$B$2"), ("POLICY_ROW", "Projection!$C$3"), ("ByGroupPaster", "Macro!$V$13:$AE$140"), ("AggregateOutput", "Macro!$A$11:$J$138")):
         wb.defined_names[n] = DefinedName(n, attr_text=ref)
-    p = tmp_path / "palermo_like.xlsx"
+    p = tmp_path / "counter.xlsx"
     wb.save(p)
     wb.close()
-    plan = _plan_for(p, tmp_path, PALERMO_STYLE, monkeypatch)
+    plan = _plan_for(p, tmp_path, COUNTER_STYLE, monkeypatch)
     lp = plan["loops"][0]
-    assert lp["status"] == "ready" and lp["kind"] == "counter" and lp["name"] == "MP_ROW_SELECT" and lp["cells"][0]["formula"] == '=MM_LOOP("MP_ROW_SELECT",Macro!B2)'
-    assert plan["outputs"][0]["status"] == "not_built" and "MM_RESULT(cell,\"MP_ROW_SELECT\",k)" in plan["outputs"][0]["why"]
+    assert lp["status"] == "ready" and lp["kind"] == "counter" and lp["name"] == "POLICY_ROW" and lp["cells"][0]["formula"] == '=MM_LOOP("POLICY_ROW",Macro!B2)'
+    assert plan["outputs"][0]["status"] == "not_built" and "MM_RESULT(cell,\"POLICY_ROW\",k)" in plan["outputs"][0]["why"]
     # starting elsewhere than 1: the documented IndexStart / IndexEnd form, flagged for a check in Mind
-    plan = _plan_for(p, tmp_path, PALERMO_STYLE, monkeypatch, first=3)
+    plan = _plan_for(p, tmp_path, COUNTER_STYLE, monkeypatch, first=3)
     lp = plan["loops"][0]
-    assert lp["cells"][0]["formula"] == '=MM_LOOP("MP_ROW_SELECT",Macro!B2,3,3,Macro!B2)' and any("IndexStart" in n for n in lp["notes"])
+    assert lp["cells"][0]["formula"] == '=MM_LOOP("POLICY_ROW",Macro!B2,3,3,Macro!B2)' and any("IndexStart" in n for n in lp["notes"])
     assert lp["first_from"] == {"kind": "chosen", "value": 3}
 
 
@@ -209,10 +206,10 @@ def test_nested_list_loops_and_a_block_placed_by_one_of_them(tmp_path, monkeypat
     wb.create_sheet("Out")
     for n, ref in (("active_scenario", "'Model Inputs'!$C$8"), ("scenario_start", "'Model Inputs'!$E$8"), ("active_cluster", "'Model Inputs'!$C$9"), ("Cluster1", "'Validation list'!$B$7")):
         wb.defined_names[n] = DefinedName(n, attr_text=ref)
-    p = tmp_path / "cnhi_like.xlsx"
+    p = tmp_path / "lists.xlsx"
     wb.save(p)
     wb.close()
-    plan = _plan_for(p, tmp_path, CNHI_STYLE, monkeypatch)
+    plan = _plan_for(p, tmp_path, LISTS_STYLE, monkeypatch)
     loops = {l["driver"]: l for l in plan["loops"]}
     sc, cl = loops["'Model Inputs'!C8"], loops["'Model Inputs'!C9"]
     # the two lists run to their last item: the ranges follow the lists (MM_ROW along a row, MM_COLUMN down a column)
@@ -234,20 +231,19 @@ def test_without_a_loop_there_is_nothing_to_build(tmp_path):
     assert plan["found"] is False and plan["operations"] == [] and "No run loop" in plan["notes"][0]
 
 
-def test_horizon_plan(tmp_path):
-    """The real Horizon copy, when it is here: the macro starts on the header row, the loop on row 2; 39 MM_LOOP cells
-    (the table's columns filled in rows 2..6), 50 MM_RESULT cells, 6 header captions above the block."""
-    p = USECASES / "horizon.xlsm"
-    if not p.is_file():
-        pytest.skip(f"{p} not here")
-    analysis = build_analysis(p, tmp_path / "w", "horizon")
+def test_uc1_plan(tmp_path):
+    """The real row-per-record model (UC-1), when its copy is here: the macro starts on the header row, the loop on
+    row 2; 39 MM_LOOP cells (the table's columns filled in rows 2..6), 50 MM_RESULT cells, 6 header captions above
+    the block. Its sheet and name values come from the local expectations (tests/local_usecases.py)."""
+    path, n = usecase_or_skip("UC-1")
+    analysis = build_analysis(path, tmp_path / "w", "UC-1")
     plan = build_loop_plan(analysis, build_model_map(analysis))
     lp = plan["loops"][0]
-    assert lp["status"] == "ready" and lp["name"] == "BASE_Polices" and (lp["first"], lp["last"]) == (2, 6) and lp["header_skipped"] == 1 and lp["last_from"]["formula"] == "=N5"
-    # 39 columns: D, G and AK of the table hold nothing in rows 2..6, so no loop is written for them
-    assert lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A2:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A2)))" and lp["cells"][0]["range_fixed"] == "'BASE Polices'!A2:A6" and len(lp["cells"]) == 39
+    assert lp["status"] == "ready" and lp["name"] == n["loop_name"] and (lp["first"], lp["last"]) == (2, 6) and lp["header_skipped"] == 1 and lp["last_from"]["formula"] == n["last_formula"]
+    # 39 columns: three columns of the table hold nothing in rows 2..6, so no loop is written for them
+    assert lp["cells"][0]["formula"] == n["first_loop_formula"] and lp["cells"][0]["range_fixed"] == n["first_loop_range"] and len(lp["cells"]) == 39
     out = plan["outputs"][0]
-    assert out["status"] == "ready" and out["items"] == 5 and out["cells"] == 50 and out["example"] == 'OUTPUT!A2 =MM_RESULT(CALCUL!$AY$35,"BASE_Polices",1)'
+    assert out["status"] == "ready" and out["items"] == 5 and out["cells"] == 50 and out["example"] == n["result_example"]
     assert len(plan["operations"]) == 95 and plan["counts"]["extra"] == 6  # 39 loop cells + 50 result cells + 6 header captions
 
 
@@ -255,22 +251,22 @@ def test_the_header_row_above_an_output_block_is_completed_for_mind(tmp_path, mo
     """Seen in real Mind: a grid's first row is its header, an empty cell there splits the block and the
     first pass shows as a header. With first = 2 the block starts on row 2 and row 1 holds the macro's
     header-row pass (numbers here): every such cell gets the source's caption, else the source address."""
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=2, last=4)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch, first=2, last=4)
     out = plan["outputs"][0]
     assert out["status"] == "ready" and out["items"] == 3 and out["header_cells"] == ["OUTPUT!A1", "OUTPUT!B1"]
     heads = {o["cell"]: o for o in plan["operations"] if o["op"] == "set_value" and o["sheet"] == "OUTPUT"}
     assert set(heads) == {"A1", "B1"} and heads["A1"]["before"] == 1 and heads["A1"]["after"] and heads["A1"]["rule_id"] == "LOOP-001"
     assert plan["counts"]["extra"] == 2 and any("header row 1 above the block is completed" in n for n in plan["notes"])
     # a block that starts on row 1 has no header row: said, nothing written
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=1, last=4)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch, first=1, last=4)
     assert "header_cells" not in plan["outputs"][0] and plan["counts"]["extra"] == 0 and any("no header row above it" in n for n in plan["notes"])
 
 
 def test_fixed_ranges_can_be_asked_for(tmp_path, monkeypatch):
     """`dynamic=False` (the API's fixed_ranges, the CLI's --fixed-ranges) writes the old X2:X6 ranges."""
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, last=4, dynamic=False)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch, last=4, dynamic=False)
     lp = plan["loops"][0]
-    assert lp["dynamic"] is False and [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"BASE_Polices\",'BASE Polices'!{col}2:{col}4)" for col in "ABC"]
+    assert lp["dynamic"] is False and [c["formula"] for c in lp["cells"]] == [f"=MM_LOOP(\"Policy_Data\",'Policy Data'!{col}2:{col}4)" for col in "ABC"]
     assert not any("follow the table" in n for n in lp["notes"])
 
 
@@ -279,34 +275,34 @@ def test_a_stale_loop_in_a_skipped_driver_cell_is_cleared(tmp_path, monkeypatch)
     (another length once the table grows) is cleared."""
     import openpyxl
 
-    p = _horizon_book(tmp_path)
+    p = _row_loop_book(tmp_path)
     wb = openpyxl.load_workbook(p)
     for r in range(2, 5):
-        wb["BASE Polices"].cell(r, 3).value = None  # column C of the table: empty in the loop rows
-    wb["CALCUL"]["C2"] = "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!C2:C4)"  # left by an earlier build
+        wb["Policy Data"].cell(r, 3).value = None  # column C of the table: empty in the loop rows
+    wb["Calculation"]["C2"] = "=MM_LOOP(\"Policy_Data\",'Policy Data'!C2:C4)"  # left by an earlier build
     wb.save(p)
     wb.close()
-    plan = _plan_for(p, tmp_path, HORIZON_STYLE, monkeypatch, first=2, last=4)
+    plan = _plan_for(p, tmp_path, ROW_LOOP_STYLE, monkeypatch, first=2, last=4)
     lp = plan["loops"][0]
     assert [c["ref"] for c in lp["cells"]] == ["A2", "B2"] and any("hold nothing" in n for n in lp["notes"])
     clears = [o for o in plan["operations"] if o["op"] == "clear_cell"]
-    assert len(clears) == 1 and clears[0]["sheet"] == "CALCUL" and clears[0]["cell"] == "C2" and "MM_LOOP" in clears[0]["before"]
+    assert len(clears) == 1 and clears[0]["sheet"] == "Calculation" and clears[0]["cell"] == "C2" and "MM_LOOP" in clears[0]["before"]
 
 
 def test_the_header_pass_is_kept_when_first_is_chosen_and_a_cut_short_loop_keeps_fixed_ranges(tmp_path, monkeypatch):
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=1, last=4)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch, first=1, last=4)
     lp = plan["loops"][0]
     assert lp["first"] == 1 and "header_skipped" not in lp and any("its header row" in n for n in lp["notes"])
     # the table runs to row 4: stopping at 3 keeps the rows of today only
-    plan = _plan_for(_horizon_book(tmp_path), tmp_path, HORIZON_STYLE, monkeypatch, first=2, last=3)
+    plan = _plan_for(_row_loop_book(tmp_path), tmp_path, ROW_LOOP_STYLE, monkeypatch, first=2, last=3)
     lp = plan["loops"][0]
-    assert lp["dynamic"] is False and lp["cells"][0]["formula"] == "=MM_LOOP(\"BASE_Polices\",'BASE Polices'!A2:A3)"
+    assert lp["dynamic"] is False and lp["cells"][0]["formula"] == "=MM_LOOP(\"Policy_Data\",'Policy Data'!A2:A3)"
     assert any("before the end of the table (row 4)" in n for n in lp["notes"]) and "rows_note" not in plan["outputs"][0]
 
 
 def test_a_dropdown_on_a_loop_driver_is_found_and_removed(tmp_path):
     """1.11.3: Mind drops the formula of a cell with a dropdown, so the loop builder removes the dropdown
-    (CNHI's drivers, and a probe workbook in Mind on 2026-10-16)."""
+    (UC-3's drivers, and a probe workbook in Mind on 2026-10-16)."""
     import openpyxl
     from openpyxl.workbook.defined_name import DefinedName
     from openpyxl.worksheet.datavalidation import DataValidation
@@ -354,7 +350,7 @@ def test_a_dropdown_kept_in_the_extension_block_is_found(tmp_path):
 
 
 def test_an_output_that_reads_the_cleared_area_gets_it_cleared():
-    # Palermo (1.11.11): Macro!A13 = Projection!CX15 + OFFSET(V13, 0, 10 * tariff): the block the macro
+    # UC-2 (1.11.11): Macro!A13 = Projection!CX15 + OFFSET(V13, 0, 10 * tariff): the block the macro
     # copies adds the per-tariff results it pasted earlier, which the macro clears before its loop
     from app import loop_builder
 

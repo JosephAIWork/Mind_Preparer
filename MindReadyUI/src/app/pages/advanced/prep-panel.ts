@@ -53,7 +53,6 @@ export class PrepPanel implements OnDestroy {
 
   readonly pivotSaving = signal(false);
   readonly pivotModeList = computed(() => Object.entries(this.store.pivotModes()) as [PivotMode, string][]);
-  readonly pivotBlocking = computed(() => this.store.pivots().filter((p) => p.blocking).length);
 
   /** 1.11.7: what Prep (and Do everything) does with the pivot tables: the plan is made again. */
   async setPivotMode(mode: PivotMode): Promise<void> {

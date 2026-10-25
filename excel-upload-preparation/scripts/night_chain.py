@@ -99,7 +99,7 @@ def main() -> int:
             full = requests.get(f"{B}/sessions/{sid}/auto-fix", params={"full": "1"}, timeout=300).json()
             res = full.get("result") or {}
             left = res.get("left") or []
-            # "unchanged" with no error left is fine: the workbook already recalculated clean (CNHI)
+            # "unchanged" with no error left is fine: the workbook already recalculated clean (a client model had no error)
             ok = res.get("status") == "clean" or (res.get("status") in ("partial", "unchanged") and not left and (res.get("errors_after") or 0) == 0)
             # 1.11.6, as the main screen: errors the workbook already had (no regression, no Stop) let the chain go on
             ok = ok or (res.get("status") in ("partial", "stuck", "unchanged") and not res.get("stopped") and not res.get("regression_cells"))

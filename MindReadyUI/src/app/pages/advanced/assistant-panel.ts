@@ -6,12 +6,13 @@ import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
 import { ChatMessage, FixTarget, Proposal, Version, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { KeyBox } from "./key-box";
 
 /** The assistant: questions about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
 @Component({
   selector: "mr-assistant-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox],
   templateUrl: "./assistant-panel.html",
   styleUrl: "./panels.scss",
 })

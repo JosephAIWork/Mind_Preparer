@@ -1021,6 +1021,14 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
 # returned a text without "[", FIND failed and the run stopped ("startIndex ('-1') must be a
 # non-negative value", 2026-10-08). The value such a formula shows today is written in its place.
 _ENV_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
+# The app's own session folders (tempfile.mkdtemp(prefix="mind_ready_"), app/web/server.py). Once the
+# app's Excel has saved a version there, CELL("filename") shows that folder -- the app's working copy,
+# with the Windows user's name in it, not the user's own path.
+_APP_FOLDER_MARK = "\\mind_ready_"
+
+
+def in_app_folder(value: Any) -> bool:
+    return isinstance(value, str) and _APP_FOLDER_MARK in value.lower()
 
 
 def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
@@ -1038,7 +1046,8 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         m = _COORD_RE.match(str(f.get("cell") or ""))
         stored = book.stored(f["sheet"], int(m.group(2)), col_to_num(m.group(1))) if m else None
         calls = sorted({x.upper() for x in _ENV_RE.findall(mask_strings(formula))})
-        if f.get("array_ref") and str(f["array_ref"]).replace("$", "") not in (f["cell"], f"{f['cell']}:{f['cell']}"):
+        multi_cell = bool(f.get("array_ref")) and str(f["array_ref"]).replace("$", "") not in (f["cell"], f"{f['cell']}:{f['cell']}")
+        if multi_cell:
             value, issue = None, "an array formula over several cells: rewrite it by hand"
         elif stored is None:
             value, issue = None, 'the cell shows "" or no value is stored: by hand'
@@ -1046,7 +1055,7 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
             value, issue = None, f"the cell shows {stored} in Excel: by hand"
         else:
             value, issue = stored, None
-        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": calls, "value": value, "issue": issue, "array": bool(f.get("array_ref"))})
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": calls, "value": value, "issue": issue, "array": bool(f.get("array_ref")), "multi_cell": multi_cell})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for x in sites if x["issue"] is None)}
     if not sites:
         return finding("PASS", "No formula asks Excel about itself (CELL, INFO).", observed)
@@ -1056,12 +1065,19 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         f"{len(sites)} formula(s) ask Excel about itself with {', '.join(sorted({c for x in sites for c in x['calls']}))} -- the file's name or path, the session. Mind has no file to answer with: "
         "in a real Mind conversion, MID(CELL(\"filename\",...),FIND(\"[\",...)+1,...) stopped the run (\"startIndex ('-1') must be a non-negative value\"). "
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
-        + (f" (shows {str(first['value'])[:60]!r} today)" if first["issue"] is None else f" ({first['issue']})")
+        + (f" ({first['issue']})" if first["issue"] else " (shows the app's working folder in this version)" if in_app_folder(first["value"]) else f" (shows {str(first['value'])[:60]!r} today)")
         + f". The Prep action 'Write what CELL / INFO formulas show today in their place' freezes {observed['with_proposal']} of them to the value Excel shows"
         + (f"; {len(sites) - observed['with_proposal']} by hand." if len(sites) - observed["with_proposal"] else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
+
+
+def environment_values(analysis: dict[str, Any]) -> dict[tuple[str, str], Any]:
+    """What each CELL / INFO formula shows in this workbook, by (sheet, cell); None where it shows
+    no usable value. Taken from the original upload, these are the values the user's own Excel saved."""
+    sites = (environment_formulas(None, analysis, {}, limit=None).get("observed") or {}).get("sites", [])
+    return {(x["sheet"], x["cell"]): x["value"] for x in sites}
 
 
 # --- FRM-013: an error cell kept on purpose that Mind computes ---------------------------------

@@ -19,62 +19,53 @@ asked:
 Each item carries its evidence (the macro statement, the name, the validation)
 so a person can check it; **Show** on the screen opens the cells around it.
 
-## The four models (2026-10-13)
+## Four client models (2026-10-13)
 
-**Horizon** (`Bouton2_Cliquer`): the loop copies row *n* of `BASE Polices`
-(A:NI) into `CALCUL!A2:NI2`, *n* from `CALCUL!T5` ("Ligne debut") to
-`CALCUL!T6` ("ligne fin", holds `=N5`), and writes `CALCUL!AY35:BH35` to
-`OUTPUT!A{n}:J{n}`; `OUTPUT!A{first}:I100000` is cleared first. Inputs: BASE
-Polices (one row per policy), Base Pret, BASE Personne, BASE Majo, Tarifs CRD,
-Tarifs CI, Criteres, Parametres (label | value pairs, e.g. the medical
-selection abatements). No dropdown.
+**UC-1** (a macro loop over policies): the loop copies row *n* of the policy
+table into one calculation row, *n* from a start cell ("first row") to an end
+cell ("last row", itself a formula), and writes a block of ten results to row
+*n* of the output sheet; the output area is cleared first. Inputs: one row per
+policy plus loan, person and tariff tables and label | value parameters (e.g.
+the medical selection abatements). No dropdown.
 
-**PVFP**: no run loop. `Macro1` copies `'LoB 1'` once per line of business and
-writes the LoB name into `G2` (and `E2` of a reporting sheet that no longer
-exists under that name): one sheet per item, keyed by `G2`. Switches: eight
-dropdowns on `Inputs_PVFP` (`DAC_Model` H71, `LossRatio_UPR_Model` H72,
-`GWP_Provided_Data` H73, H74, `Cost_of_Reinsurance_Model` H78 / `_Choice` I78,
-`UPR_Model` H79) and `CoC!F2` (SCR / MSR); fifty `LoBn_Boolean` VRAI/FAUX
-dropdowns (G51:G60, K, O, S, W); named settings `Last_Year_Triangle` G69
-(6,785 readers), `Threshold` G65, `Yield_Curve_First_Cell` H82. Inputs:
-Inputs_PVFP, Inputs_CoC, Yield_Curve. Outputs: the Reporting_* sheets.
+**UC-4** (no run loop): a macro copies a template sheet once per line of
+business and writes the line's name into one cell of the copy: one sheet per
+item, keyed by that cell. Switches: eight dropdowns on the input sheet (model
+choices for DAC, loss ratio / UPR, the data provided, reinsurance cost), one
+on the cost-of-capital sheet (SCR / MSR); fifty TRUE / FALSE dropdowns, one per
+line and item; named settings such as the last triangle year (6,785 readers),
+a threshold and the first cell of the yield curve. Outputs: the reporting
+sheets.
 
-**Palermo** (`UndiscountedCashflow`, entry point; calls QuickPaste and the
-e-mail macros): the loop sets `Projection!C3` (MP_ROW_SELECT, "Policy run")
-from `Macro!B1` (MacroStart_UDC2) to `Macro!B2` (MacroEnd_UDC2); per policy
-it pastes `Macro!A11:J138` (AggregateOutputByTariff) into `Macro!V13:AE140`
-(ByTariffPaster, shifted by tariff); after the loop `'Summary Output'!M9:EK48`
-is pasted as values into `'Summary Output Pasted'!A1:DY40`; `SaveTotal` saves
-that sheet to the path in `'Saved down'!C9`. Switches on `Macro!B3:B5`
-(Yes/No dropdowns the macro tests): `Del_range2`, `Full_Run?`, `SendEmails`;
-`'Tariffs to run'!C2:D28` (TarRun) says which tariffs run. Status cells the
-macro writes: `Error_detection`, `Error_Flag`, timers. Named settings:
-`Valuation_date` Control!C3, `Lapse_stress` Control!C7, `ME_applicable_months`,
-the TBR and RPM fee terms. Inputs: Data (TarRange A5:C94940), the assumption
-sheets (Lapse & PUP rates, Mortality rates, TBR inputs, Tariff mapping, Dynamic
-increase rates, Economic / Non-economic assumptions, Securis % receivable).
+**UC-2** (an entry-point macro that also calls a paste macro and e-mail
+macros): the loop sets the policy-run cell from a start cell to an end cell on
+the macro sheet; per policy it pastes a per-tariff result block into an area
+shifted by tariff; after the loop a summary block is pasted as values into
+another sheet, which a macro saves to a path held in a cell. Switches: three
+Yes / No dropdowns the macro tests (clear a range, full run, send e-mails); a
+table says which tariffs run. Status cells the macro writes: error detection,
+an error flag, timers. Named settings: the valuation date, a lapse stress, fee
+terms. Inputs: a data table of about 95,000 rows and the assumption sheets
+(lapse, mortality, tariff mapping, economic / non-economic assumptions).
 
-**CNHI** (`combined_macro` -> baseline, baseline_projections,
-specialised_services): three nested drivers on `Model Inputs`: `C8`
-active_scenario (dropdown over E8:R8), `C173` active_year (proj_year + 0..4),
-`C174` active_cluster (dropdown over the `cluster` list, Validation list!B7
-down); scenarios from `Output!G2` (start_1) to `Output!G3` (end_1). Outputs:
-`'RAC Baseline'!V12:AJ117` from `'Baseline Cost'!AB18:AP123` per cluster, the
-CatA..D blocks from `RAC Calculation`, `Output!B9:U...` (paste_output, one
-236-row block per scenario x year x cluster) from `'Output working'!AB13:AU248`,
-the SS Output and Inbound Output blocks per scenario; `Output!B9:U330408` and
-`X9:AO1408` are cleared before a run. Named settings: `proj_year`
-('Assumption Setting'!D8), `active_year`. Inputs: Assumption Setting, Model
-Inputs, Budget Inputs, Cost data, IRAT data, Population, Validation list.
+**UC-3** (one macro calling three): three nested drivers on the inputs sheet:
+the active scenario (a dropdown), the active year (projection year + 0..4) and
+the active cluster (a dropdown over a list); scenarios from a start cell to an
+end cell. Outputs: per cluster, a block copied from the baseline cost sheet;
+category blocks; one 236-row block per scenario x year x cluster pasted into
+the output sheet from a working sheet; two more output blocks per scenario;
+the output areas are cleared before a run. Named settings: the projection
+year, the active year. Inputs: assumption settings, model inputs, budget
+inputs, cost and population data, the list sheet.
 
 ## Limits
 
 - A loop driven by something other than `For ... To` (Do / While, a
   Worksheet_Change event) is not read; the key cells then stand in.
 - A per-item target written through `.Offset` of a variable that is not the
-  loop variable (Palermo's tariff offset, CNHI's `tracker`) is reported as
+  loop variable (UC-2's tariff offset, UC-3's tracker counter) is reported as
   "same place, overwritten" though it moves.
-- Sheet roles come from names: "Policy summary" is listed under outputs
-  because of "summary" though it is the calculation sheet.
+- Sheet roles come from names: a sheet called "... summary" is listed under
+  outputs because of "summary" though in one client model it is the calculation sheet.
 - `.xlsb` macros are read too; a workbook without macros has no loop section
   beyond the key cells.

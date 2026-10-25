@@ -48,17 +48,17 @@ sheets rejected, independent scenario blocks found, time projections ignored).
 
 | Workbook | Found | Against what is known |
 |---|---|---|
-| Horizon | Switch `CALCUL!B2` (loan number, 4,674 readers); the rest a time projection | The cell the macro steps through |
-| Palermo | Switch `MP_ROW_SELECT` (+ `VALUATION_DATE`, a run setting); 1 chain; 1 small block | The loop the app built from the macro |
-| Shlomo | Already 4 MM_LOOP; possible selector `CoverageDetails!L6` | Plausible |
-| Phoenix | Nothing (347,000 formulas, all filled areas) | Plausible |
-| CNHI | Switches `ACTIVE_YEAR`, `PROJ_YEAR`, `ACTIVE_CLUSTER` ("Eastern Health"), `ACTIVE_SCENARIO`; Category A-D blocks in many sheets; `Inbound Output`/`SS Output` copies (100 cells of different logic, 8,680 differing numbers: loop does not fit as is, instances fit); `Specialised Services`/`Outbound Summary` (identical formulas, data differs); 33 chains set aside | Checked against the cells: labels "Active Cluster", "Category A..D", years 2026-2030 |
+| UC-1 | Switch: the loan-number cell (4,674 readers); the rest a time projection | The cell the macro steps through |
+| UC-2 | Switch: the policy-run cell (+ the valuation date, a run setting); 1 chain; 1 small block | The loop the app built from the macro |
+| UC-6 | Already 4 MM_LOOP; one possible selector cell | Plausible |
+| UC-5 | Nothing (347,000 formulas, all filled areas) | Plausible |
+| UC-3 | Switches: the active year, the projection year, the active cluster (a region name), the active scenario; Category A-D blocks in many sheets; two output sheets that are copies (100 cells of different logic, 8,680 differing numbers: loop does not fit as is, instances fit); two more sheets with identical formulas and different data; 33 chains set aside | Checked against the cells: labels "Active Cluster", "Category A..D", years 2026-2030 |
 
-Extraction time through Excel: Palermo 76 s, CNHI 194 s.
+Extraction time through Excel: UC-2 76 s, UC-3 194 s.
 
 ## Not good enough yet
 
-1. Too many findings on a big model (CNHI: 200) -- they need merging into
+1. Too many findings on a big model (UC-3: 200) -- they need merging into
    dimensions (next step below).
 2. Items or periods: the formulas cannot tell "2026, 2027" from "Category A, B".
 3. Formula counts are not run time; Mind's speed and memory are not predicted.
@@ -79,7 +79,7 @@ when their labels say nothing or disagree. This uses the same evidence as the
 rest of the check (the formulas). Labels are shown only as names, to help the
 reader -- never as proof.
 
-Expected result on CNHI: a few named dimensions (e.g. the category table, the
+Expected result on UC-3: a few named dimensions (e.g. the category table, the
 year table, the cluster switch) instead of 200 lines.
 
 ## If it goes into the app later

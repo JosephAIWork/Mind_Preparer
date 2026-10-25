@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 import time
@@ -22,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.excel_com import close_quietly, excel_session, mm_addin_loaded, open_workbook  # noqa: E402
+from app.settings import SETTINGS  # noqa: E402
 
 
 def main() -> int:
@@ -31,7 +31,7 @@ def main() -> int:
     ap.add_argument("--no-addin", action="store_true")
     ap.add_argument("--threads", choices=("as-is", "on", "off"), default="as-is")
     ap.add_argument("--steps", default="calc,full,rebuild,read,save,reopen")
-    ap.add_argument("--work", default=str(Path(os.environ.get("LOCALAPPDATA", ".")) / "MindReady" / "perf" / "work"))
+    ap.add_argument("--work", default=str(SETTINGS.data_folder / "perf" / "work"))
     a = ap.parse_args()
     steps = [x.strip() for x in a.steps.split(",") if x.strip()]
     src = Path(a.workbook).resolve()

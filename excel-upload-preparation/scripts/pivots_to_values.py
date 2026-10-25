@@ -2,7 +2,7 @@
 
     python scripts/pivots_to_values.py <workbook> <out workbook> [--only "Sheet1!PivotTable4,CFs!PivotTable6"]
 
-Mind's converter stopped on Phoenix TVOG with "The method or operation is not implemented" -- the only
+Mind's converter stopped on a client model with "The method or operation is not implemented" -- the only
 parts no accepted workbook had were its 8 pivot tables (one with a grouped field) and a web add-in. Mind
 imports values only, so a pivot table as values is what Mind would read: each pivot's whole range (its
 report filters included) is copied as values and number formats to a scratch sheet, the pivot is

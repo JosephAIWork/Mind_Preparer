@@ -1,8 +1,8 @@
-"""1.8.3: three findings that stopped Mind on Palermo and PVFP now have a Prep action.
+"""1.8.3: three findings that stopped Mind on UC-2 and UC-4 now have a Prep action.
 
-  FRM-006  =SUM('LoB 1:>>'!E5)  -> =SUM('LoB 1'!E5,'LoB 2'!E5)   (PVFP: "Sheet '>> Reporting:>>>' not found")
-  RSK-002  headers over every column an array formula covers      (Palermo: "exceeds the grid size")
-  REF-001  a name that does not exist -> NA()                      (Palermo: "not a function : Semi_dynamic_increase_rates_array")
+  FRM-006  =SUM('Line 1:>>'!E5)  -> =SUM('Line 1'!E5,'Line 2'!E5)   (UC-4: "Sheet '>> Reporting:>>>' not found")
+  RSK-002  headers over every column an array formula covers      (UC-2: "exceeds the grid size")
+  REF-001  a name that does not exist -> NA()                      (UC-2: "not a function : Step_increase_rates_array")
 """
 from pathlib import Path
 
@@ -33,7 +33,7 @@ def _plan(analysis):
 def _three_d_model(path: Path, divider_holds_a_value: bool = False) -> Path:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-    for name, scale in (("LoB 1", 1), ("LoB 2", 10)):
+    for name, scale in (("Line 1", 1), ("Line 2", 10)):
         ws = wb.create_sheet(name)
         ws["A1"], ws["B1"] = "Line", "2024"
         ws["A2"], ws["B2"] = "Premium", 100 * scale
@@ -44,9 +44,9 @@ def _three_d_model(path: Path, divider_holds_a_value: bool = False) -> Path:
         end["B2"] = "n/a"   # text alone: still no grid for Mind, but the 3-D reference does read it
     tot = wb.create_sheet("Total")
     tot["A1"], tot["B1"] = "Line", "2024"
-    tot["A2"], tot["B2"] = "Premium", "=SUM('LoB 1:>>'!B2)"
-    tot["A3"], tot["B3"] = "Claims", "=SUM('LoB 1:>>'!B3)"
-    tot["A4"], tot["B4"] = "Lines", "=COUNT('LoB 1:>>'!B2)"
+    tot["A2"], tot["B2"] = "Premium", "=SUM('Line 1:>>'!B2)"
+    tot["A3"], tot["B3"] = "Claims", "=SUM('Line 1:>>'!B3)"
+    tot["A4"], tot["B4"] = "Lines", "=COUNT('Line 1:>>'!B2)"
     wb.save(path)
     wb.close()
     return path
@@ -59,7 +59,7 @@ def test_3d_references_are_written_out_sheet_by_sheet_and_the_numbers_stay(tmp_p
     a = _plan(analysis)["expand_3d_references"]
     assert a["level"] == "blocking" and a["count"] == 3 and not a["skipped"]
     by = {o["cell"]: o for o in a["operations"]}
-    assert by["B2"]["after"] == "=SUM('LoB 1'!B2,'LoB 2'!B2)" and by["B4"]["after"] == "=COUNT('LoB 1'!B2,'LoB 2'!B2)"
+    assert by["B2"]["after"] == "=SUM('Line 1'!B2,'Line 2'!B2)" and by["B4"]["after"] == "=COUNT('Line 1'!B2,'Line 2'!B2)"
     assert ">>" in by["B2"]["note"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED" and not out["failed"]
@@ -140,22 +140,22 @@ def test_a_name_that_does_not_exist_becomes_na_where_it_stands(tmp_path):
 
 @needs_excel
 def test_indirect_used_as_a_value_becomes_the_direct_reference(tmp_path):
-    """1.8.4 -- FRM-007 (PVFP, 4,410 formulas: 'Unable to cast AMReference to IConvertible')."""
+    """1.8.4 -- FRM-007 (UC-4, 4,410 formulas: 'Unable to cast AMReference to IConvertible')."""
     from openpyxl.workbook.defined_name import DefinedName
 
     wb = openpyxl.Workbook()
     inp = wb.active
     inp.title = "Inputs"
-    lob = wb.create_sheet("LoB 1")
+    lob = wb.create_sheet("Line 1")
     lob["Z12"], lob["Z16"] = 10, 4
-    inp["G710"], inp["G711"] = "LoB 1", "LoB 2"                 # LoB 2 is not a sheet
+    inp["G710"], inp["G711"] = "Line 1", "Line 2"                 # Line 2 is not a sheet
     inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
     inp["AA711"] = "=IFERROR(IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,1),-1)"   # the missing sheet: an error today, NA() tomorrow, -1 both ways
-    inp["B2"] = "=NOT(INDIRECT(\"LoB\"&COLUMN()-1&\"_Boolean\"))*2"
+    inp["B2"] = "=NOT(INDIRECT(\"Line\"&COLUMN()-1&\"_Boolean\"))*2"
     inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"                   # B4 is a formula with no stored value: by hand
     inp["B4"] = "=G710"
     inp["B5"] = True
-    wb.defined_names["LoB1_Boolean"] = DefinedName("LoB1_Boolean", attr_text="Inputs!$B$5")
+    wb.defined_names["Line1_Boolean"] = DefinedName("Line1_Boolean", attr_text="Inputs!$B$5")
     p = tmp_path / "indirect.xlsx"
     wb.save(p)
     wb.close()
@@ -163,9 +163,9 @@ def test_indirect_used_as_a_value_becomes_the_direct_reference(tmp_path):
     a = _plan(analysis)["direct_references"]
     by = {o["cell"]: o for o in a["operations"]}
     assert a["level"] == "blocking" and set(by) == {"AA710", "AA711", "B2"}
-    assert by["AA710"]["after"] == "=IF('LoB 1'!$Z$16=0,0,66%*'LoB 1'!$Z$12/'LoB 1'!$Z$16)"
-    assert by["AA711"]["after"] == "=IFERROR(IF(NA()=0,0,1),-1)" and "LoB 2" in by["AA711"]["note"]
-    assert by["B2"]["after"] == "=NOT(LoB1_Boolean)*2"
+    assert by["AA710"]["after"] == "=IF('Line 1'!$Z$16=0,0,66%*'Line 1'!$Z$12/'Line 1'!$Z$16)"
+    assert by["AA711"]["after"] == "=IFERROR(IF(NA()=0,0,1),-1)" and "Line 2" in by["AA711"]["note"]
+    assert by["B2"]["after"] == "=NOT(Line1_Boolean)*2"
     assert len(a["skipped"]) == 1 and "B3" in a["skipped"][0] and "cannot be worked out" in a["skipped"][0]
     out = apply_operations(p, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED" and not out["failed"]
@@ -177,17 +177,17 @@ def test_indirect_used_as_a_value_becomes_the_direct_reference(tmp_path):
 
 
 def test_a_lone_text_cell_that_formulas_read_gets_a_title_of_its_own(tmp_path):
-    """1.8.8 -- STR-008 (PVFP, 'LoB 1'!G2: Mind imports no loose text cell; "GWP_Retained#"&$G$2 came back empty)."""
+    """1.8.8 -- STR-008 (UC-4, 'Line 1'!G2: Mind imports no loose text cell; "Premium_Retained#"&$G$2 came back empty)."""
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "LoB 1"
-    ws["E2"], ws["G2"] = "Nom Onglet :", "LoB 1"          # a label, a gap, the value: G2 stands alone
+    ws.title = "Line 1"
+    ws["E2"], ws["G2"] = "Sheet name :", "Line 1"          # a label, a gap, the value: G2 stands alone
     ws["C6"] = 42                                           # a number standing alone: Mind imports it
     ws["J2"] = "unused"                                     # a lone text no formula reads
     ws["B10"] = "Note"                                      # a lone text on row... read, and nothing above? B9 is empty
     ws["E5"], ws["F5"] = "Line", "2024"
     ws["E6"], ws["F6"] = "Premium", 100
-    ws["A20"] = '="GWP_Retained#"&$G$2'
+    ws["A20"] = '="Premium_Retained#"&$G$2'
     ws["A21"] = "=C6*2"
     ws["A22"] = "=B10&C6"
     p = tmp_path / "lone.xlsx"
@@ -199,9 +199,9 @@ def test_a_lone_text_cell_that_formulas_read_gets_a_title_of_its_own(tmp_path):
     a = _plan(analysis)["title_lone_text_cells"]
     assert a["level"] == "blocking" and not a["skipped"]
     by = {o["cell"]: o for o in a["operations"]}
-    assert by["G1"]["after"] == "#Nom Onglet value" and by["B9"]["after"] == "#LoB 1 B10"
+    assert by["G1"]["after"] == "#Sheet name value" and by["B9"]["after"] == "#Line 1 B10"
     out = apply_operations(p, tmp_path / "prep", a["operations"], prefer_excel=False)
     assert out["status"] == "APPLIED"
     after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
     assert _finding(after, "STR-008")["status"] == "PASS"
-    assert any(g["sheet"] == "LoB 1" and g["ref"] == "G2" and g["name"] == "Nom Onglet value" for g in all_grids(after))
+    assert any(g["sheet"] == "Line 1" and g["ref"] == "G2" and g["name"] == "Sheet name value" for g in all_grids(after))

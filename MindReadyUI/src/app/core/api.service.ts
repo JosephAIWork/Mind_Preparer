@@ -2,7 +2,7 @@ import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import {
-  ApplyOutcome, AppHealth, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -17,6 +17,16 @@ export class ApiService {
 
   health(): Promise<AppHealth> {
     return firstValueFrom(this.http.get<AppHealth>(`${this.base}/health`));
+  }
+
+  /** Whether an AI gateway key is saved, and its last 4 characters (the key itself never comes back). */
+  assistantKey(): Promise<AssistantKey> {
+    return firstValueFrom(this.http.get<AssistantKey>(`${this.base}/assistant-key`));
+  }
+
+  /** Checked with the gateway, then saved encrypted for this Windows user; a refused key is not saved. */
+  saveAssistantKey(key: string): Promise<AssistantKey> {
+    return firstValueFrom(this.http.post<AssistantKey>(`${this.base}/assistant-key`, { key }));
   }
 
   upload(file: File, mode: Mode = "plan", defer = true): Promise<SessionStart | PendingUpload> {

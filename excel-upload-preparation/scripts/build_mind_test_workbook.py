@@ -1,5 +1,5 @@
 """A small test workbook for Mind (no client data): the three constructs that came back different
-on Horizon, each next to candidate rewrites. Column C is the formula, column D the value Excel
+on a client model, each next to candidate rewrites. Column C is the formula, column D the value Excel
 computed (typed in), so the difference list Mind gives says which construct behaves differently.
 
     python build_probe.py <output.xlsx>      (run from excel-upload-preparation)
@@ -31,7 +31,7 @@ ORIG = 'SUMIFS(Loans!D:D,Loans!A:A,%s,Loans!C:C,">="&DATE(%s,1,1),Loans!C:C,"<"&
 
 TESTS = [
     # --- A: SUMIFS with a comparison criterion built from a date
-    ("A00", "Horizon's formula: whole columns, criterion \">=\"&DATE()", "=" + ORIG),
+    ("A00", "the client model's formula: whole columns, criterion \">=\"&DATE()", "=" + ORIG),
     ("A01", "the same on the table's rows only", '=SUMIFS(Loans!$D$2:$D$%d,Loans!$A$2:$A$%d,%s,Loans!$C$2:$C$%d,">="&DATE(%s,1,1),Loans!$C$2:$C$%d,"<"&DATE(%s,12,31))' % (N, N, ID, N, YEAR_, N, YEAR_)),
     ("A02", "control: loan id only", "=SUMIFS(Loans!D:D,Loans!A:A,%s)" % ID),
     ("A03", "date criterion alone: \">=\"&DATE()", '=SUMIFS(Loans!D:D,Loans!C:C,">="&DATE(2023,1,1))'),
@@ -49,12 +49,12 @@ TESTS = [
     ("A16", "candidate 1 on a row after the end (the year is \"\")", "=SUMIFS(Loans!D:D,Loans!A:A,%s,Loans!F:F,%s)" % (ID, BLANK)),
     ("A17", "candidate 1 on a row after the end (\"\"+1)", "=SUMIFS(Loans!D:D,Loans!A:A,%s,Loans!F:F,%s+1)" % (ID, BLANK)),
     # --- B: arithmetic and functions on a cell whose formula returns ""
-    ("B00", "Horizon column E: IFERROR(1+INT((\"\"-1)/12),\"\")", '=IFERROR(1+INT((%s-1)/12),"")' % BLANK),
-    ("B01", "Horizon column F: IFERROR(51+\"\"-2022,\"\")", '=IFERROR(51+%s-2022,"")' % BLANK),
+    ("B00", "the model's column E: IFERROR(1+INT((\"\"-1)/12),\"\")", '=IFERROR(1+INT((%s-1)/12),"")' % BLANK),
+    ("B01", "the model's column F: IFERROR(51+\"\"-2022,\"\")", '=IFERROR(51+%s-2022,"")' % BLANK),
     ("B02", "candidate: IF(x=\"\",\"\",...) in front", '=IF(%s="","",IFERROR(1+INT((%s-1)/12),""))' % (BLANK, BLANK)),
     ("B03", "N(\"\")", "=N(%s)" % BLANK),
     ("B04", "MIN(90,\"\")", "=MIN(90,%s)" % BLANK),
-    ("B05", "Horizon column C: 14+N(\"\")-N(64)", "=14+N(%s)-N(%s)" % (BLANK, NUM)),
+    ("B05", "the model's column C: 14+N(\"\")-N(64)", "=14+N(%s)-N(%s)" % (BLANK, NUM)),
     ("B06", "candidate for column C: IF(x=\"\",0,x)", '=14+IF(%s="",0,%s)-IF(%s="",0,%s)' % (BLANK, BLANK, NUM, NUM)),
     ("B07", "candidate for column O: IF(x=\"\",90,MIN(90,x))", '=IF(%s="",90,MIN(90,%s))' % (BLANK, BLANK)),
     ("B08", "\"\">=156 inside IF", "=IF(%s>=156,0,1)" % BLANK),
@@ -63,8 +63,8 @@ TESTS = [
     ("B11", "x=\"\"", '=%s=""' % BLANK),
     ("B12", "ISNUMBER(\"\")", "=ISNUMBER(%s)" % BLANK),
     # --- C: a comparison with a reference to an empty cell
-    ("C00", "Horizon C20!C15: =+(an empty cell)", "=+%s" % EMPTY),
-    ("C01", "Horizon C20!C18: 2311+0-2311 = that cell", "=+2311+0-2311={C00}"),
+    ("C00", "the model's check cell C15: =+(an empty cell)", "=+%s" % EMPTY),
+    ("C01", "the model's check cell C18: 2311+0-2311 = that cell", "=+2311+0-2311={C00}"),
     ("C02", "0 = (an empty cell), directly", "=0=%s" % EMPTY),
     ("C03", "candidate a: N(empty cell)", "=N(%s)" % EMPTY),
     ("C04", "the check against candidate a", "=+2311+0-2311={C03}"),
@@ -74,9 +74,9 @@ TESTS = [
     ("C08", "the check against candidate c", "=+2311+0-2311={C07}"),
     ("C09", "(empty cell)=\"\"", '=%s=""' % EMPTY),
     ("C10", "candidate d: N() on the check's side", "=+2311+0-2311=N({C00})"),
-    # --- D (round 2): a lookup that lands on an empty cell, then compared (Horizon CALCUL!H9 and column I)
-    ("D00", "Horizon H9: VLOOKUP that lands on an empty cell", "=VLOOKUP(%s,Loans!A:H,8,0)" % ID),
-    ("D01", "Horizon column I: IF(1<=that cell,0,1)*60000", "=IF(1<={D00},0,1)*60000"),
+    # --- D (round 2): a lookup that lands on an empty cell, then compared (the model's H9 and column I)
+    ("D00", "the model's H9: VLOOKUP that lands on an empty cell", "=VLOOKUP(%s,Loans!A:H,8,0)" % ID),
+    ("D01", "the model's column I: IF(1<=that cell,0,1)*60000", "=IF(1<={D00},0,1)*60000"),
     ("D02", "candidate: N(VLOOKUP(...))", "=N(VLOOKUP(%s,Loans!A:H,8,0))" % ID),
     ("D03", "the same IF against the N() cell", "=IF(1<={D02},0,1)*60000"),
     ("D04", "candidate: VLOOKUP(...)+0", "=VLOOKUP(%s,Loans!A:H,8,0)+0" % ID),
@@ -96,7 +96,7 @@ def build(excel):
     loans.Range("A1:H1").Value = (("Loan id", "Purpose", "Date", "Capital", "Payment", "Year", "Date as number", "Deferral"),)
     for i, (lid, purpose, (y, m, d), capital, payment) in enumerate(LOANS, start=2):
         if lid == 1:
-            loans.Range(f"H{i}").Value = 12        # loan 2 has none: the cell stays empty, as in Horizon
+            loans.Range(f"H{i}").Value = 12        # loan 2 has none: the cell stays empty, as in the client model
         loans.Range(f"A{i}:E{i}").Value = ((lid, purpose, serial(y, m, d), capital, payment),)
         loans.Range(f"F{i}").Formula = f"=IF(AND(MONTH(C{i})=12,DAY(C{i})=31),0,YEAR(C{i}))"
         loans.Range(f"G{i}").Formula = f"=C{i}+0"

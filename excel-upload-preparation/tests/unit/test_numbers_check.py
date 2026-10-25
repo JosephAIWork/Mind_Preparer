@@ -1,6 +1,6 @@
 """1.8.0: did the preparation change what the model computes? (app/numbers_check.py)
 
-Found on a real model (PVFP): the standard Prep inserted title rows on sheets a
+Found on a real model (UC-4): the standard Prep inserted title rows on sheets a
 3-D reference reads by position, and 2,462 computed values changed -- 1,781 of
 them into errors. Nothing in the app said so."""
 from pathlib import Path
@@ -33,7 +33,7 @@ def test_a_cell_is_followed_through_inserts_and_renames_apply_after_apply():
 def _model(path: Path) -> Path:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-    for name, scale in (("LoB 1", 1), ("LoB 2", 10)):
+    for name, scale in (("Line 1", 1), ("Line 2", 10)):
         ws = wb.create_sheet(name)
         ws["A1"], ws["B1"] = "Line", "2024"
         ws["A2"], ws["B2"] = "Premium", 100 * scale
@@ -42,10 +42,10 @@ def _model(path: Path) -> Path:
     end = wb.create_sheet(">>")
     end["A1"] = "end of the lines of business"
     tot = wb.create_sheet("Total")
-    tot["A2"], tot["B2"] = "Premium", "=SUM('LoB 1:>>'!B2)"
-    tot["A3"], tot["B3"] = "Claims", "=SUM('LoB 1:>>'!B3)"
+    tot["A2"], tot["B2"] = "Premium", "=SUM('Line 1:>>'!B2)"
+    tot["A3"], tot["B3"] = "Claims", "=SUM('Line 1:>>'!B3)"
     tot["A4"], tot["B4"] = "Ratio", "=B3/B2"
-    tot["A6"], tot["B6"] = "Lines", "=COUNT('LoB 1:>>'!B4)"
+    tot["A6"], tot["B6"] = "Lines", "=COUNT('Line 1:>>'!B4)"
     wb.save(path)
     wb.close()
     return path
@@ -54,13 +54,13 @@ def _model(path: Path) -> Path:
 @needs_excel
 def test_a_row_inserted_under_a_3d_reference_is_caught_and_a_harmless_one_is_not(tmp_path):
     src = _model(tmp_path / "model.xlsx")
-    # a title row on top of 'LoB 1' only: Total still sums B2 and B3 of every sheet -- other lines now, on 'LoB 1'
-    bad = apply_operations(src, tmp_path / "bad", [{"op": "insert_row", "sheet": "LoB 1", "row": 1, "action_id": "t", "rule_id": "T"}])
+    # a title row on top of 'Line 1' only: Total still sums B2 and B3 of every sheet -- other lines now, on 'Line 1'
+    bad = apply_operations(src, tmp_path / "bad", [{"op": "insert_row", "sheet": "Line 1", "row": 1, "action_id": "t", "rule_id": "T"}])
     res = compare_workbooks(src, Path(bad["output_path"]), Moves([bad["applied"]]))
     assert res["ran"] and res["clean"] is False and res["counts"]["good_to_other"] >= 2 and res["moves"]["row_inserts"] == 1
     assert "changed" in res["verdict"] and res["by_sheet"]["Total"]["good_to_other"] >= 2
     moved = {s["original"]: (s["was"], s["is"]) for s in res["samples"]["good_to_other"]}
-    assert moved["Total!B3"] == ("660", "700")  # Claims: 60 + 600 before; now 'LoB 1'!B3 is the Premium line (100) + 600
+    assert moved["Total!B3"] == ("660", "700")  # Claims: 60 + 600 before; now 'Line 1'!B3 is the Premium line (100) + 600
     # the same row on 'Total', which nothing reads by position: every value is where it was, one row lower
     good = apply_operations(src, tmp_path / "good", [{"op": "insert_row", "sheet": "Total", "row": 1, "action_id": "t", "rule_id": "T"}])
     res = compare_workbooks(src, Path(good["output_path"]), Moves([good["applied"]]))
@@ -72,11 +72,11 @@ def test_a_row_inserted_under_a_3d_reference_is_caught_and_a_harmless_one_is_not
 @needs_excel
 def test_an_error_the_preparation_made_is_not_given_a_fallback_by_the_fixer(tmp_path):
     src = _model(tmp_path / "model.xlsx")
-    # "Prep" empties the premium of LoB 1 (stands for any change that breaks a formula): its ratio becomes #DIV/0!
-    broken = apply_operations(src, tmp_path / "broken", [{"op": "set_value", "sheet": "LoB 1", "cell": "B2", "after": 0, "action_id": "t", "rule_id": "T"}])
+    # "Prep" empties the premium of Line 1 (stands for any change that breaks a formula): its ratio becomes #DIV/0!
+    broken = apply_operations(src, tmp_path / "broken", [{"op": "set_value", "sheet": "Line 1", "cell": "B2", "after": 0, "action_id": "t", "rule_id": "T"}])
     out = Path(broken["output_path"])
     numbers = compare_workbooks(src, out, Moves([broken["applied"]]))
-    assert numbers["counts"]["good_to_error"] == 1 and numbers["regressions"] == [("LoB 1", 4, 2, 0.6)]
+    assert numbers["counts"]["good_to_error"] == 1 and numbers["regressions"] == [("Line 1", 4, 2, 0.6)]
     res = run_autofix(out, tmp_path / "fix", AutoFixConfig(regressions=numbers["regressions"]))
     assert res["status"] == "stuck" and res["regression_cells"] == 1 and res["errors_after"] == 1 and res["output_path"] is None
     assert "it was 0.6 in the original workbook" in res["left"][0]["why"] and "preparation broke" in res["summary"]
@@ -86,12 +86,12 @@ def test_an_error_the_preparation_made_is_not_given_a_fallback_by_the_fixer(tmp_
 
 def test_a_value_that_only_holds_the_workbooks_own_folder_is_not_a_change():
     """=CELL("filename") and the paths built on it differ between the original and
-    its copy only because they sit in different folders (Palermo: 'Saved down'!C2)."""
+    its copy only because they sit in different folders (UC-2)."""
     from app.numbers_check import _without_location
 
-    original = Path(r"C:\Users\x\usecases\palermo.xlsm")
-    copy = Path(r"C:\Temp\mind_ready_b1\apply\v3\palermo.xlsm")
+    original = Path(r"C:\Users\x\usecases\model.xlsm")
+    copy = Path(r"C:\Temp\mind_ready_b1\apply\v3\model.xlsm")
     assert _without_location("C:\\Users\\x\\usecases\\", original) == _without_location("C:\\Temp\\mind_ready_b1\\apply\\v3\\", copy)
-    assert _without_location(r"C:\Users\x\usecases\[palermo.xlsm]Control", original) == _without_location(r"C:\Temp\mind_ready_b1\apply\v3\[palermo.xlsm]Control", copy)
+    assert _without_location(r"C:\Users\x\usecases\[model.xlsm]Control", original) == _without_location(r"C:\Temp\mind_ready_b1\apply\v3\[model.xlsm]Control", copy)
     assert _without_location("Premium", original) == "Premium" and _without_location(12.5, original) == 12.5
     assert _without_location("Total 2024", original) != _without_location("Total 2025", copy)

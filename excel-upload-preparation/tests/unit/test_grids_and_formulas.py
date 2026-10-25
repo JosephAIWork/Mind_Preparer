@@ -91,12 +91,12 @@ def test_a_data_table_holding_error_values_stays_one_grid():
 
 
 def test_range_length_keeps_quoted_sheet_names():
-    """1.10.2: `'BASE Polices'!A2:A6` is 5 cells, not unresolvable (LOOP-003 flagged every
-    Mind-loop version of Horizon as needing a decision)."""
+    """1.10.2: `'Policy Data'!A2:A6` is 5 cells, not unresolvable (LOOP-003 flagged every
+    Mind-loop version of UC-1 as needing a decision)."""
     from app.formula_utils import range_length
 
-    assert range_length("'BASE Polices'!A2:A6") == 5
-    assert range_length("'BASE Polices'!$AP$1:$AP$6") == 6
+    assert range_length("'Policy Data'!A2:A6") == 5
+    assert range_length("'Policy Data'!$AP$1:$AP$6") == 6
     assert range_length("Sheet1!A1:A3") == 3 and range_length("A1") == 1
     assert range_length("MyName") is None and range_length("") is None and range_length("A1:A5+0") is None
 

@@ -1,0 +1,75 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+.key {
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$support-warning;
+  padding: $spacing-04 $spacing-05;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+  max-width: 40rem;
+  margin-top: $spacing-05;
+
+  &__title {
+    @include type.type-style("heading-compact-01");
+    margin: 0;
+  }
+
+  &__hint {
+    @include type.type-style("helper-text-01");
+    color: theme.$text-helper;
+    margin: 0;
+  }
+
+  &__row {
+    display: flex;
+    gap: $spacing-03;
+    align-items: center;
+    flex-wrap: wrap;
+
+    input {
+      font: inherit;
+      font-size: 0.875rem;
+      color: theme.$text-primary;
+      background: theme.$field-01;
+      border: 0;
+      border-bottom: 1px solid theme.$border-strong-01;
+      padding: $spacing-03 $spacing-04;
+      flex: 1;
+      min-width: 12rem;
+    }
+  }
+
+  &__error {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-error;
+    margin: 0;
+  }
+
+  &__line,
+  &__done {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+    margin: 0;
+  }
+
+  &__done {
+    color: theme.$support-success;
+  }
+
+  &__mono {
+    font-family: "IBM Plex Mono", monospace;
+  }
+
+  &__link {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-left: $spacing-03;
+    color: theme.$link-primary;
+    cursor: pointer;
+    font: inherit;
+  }
+}

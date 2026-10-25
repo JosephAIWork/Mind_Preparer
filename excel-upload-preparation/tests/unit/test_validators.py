@@ -273,7 +273,7 @@ def test_every_function_accepted_beyond_the_kb_page_names_its_evidence():
 
 def test_filter_is_treated_as_mind_supported():
     """FILTER is a native function the KB scrape omits but real Mind conversion accepts
-    (proven by uploading the Shlomo model); FRM-002 must not flag it as unsupported."""
+    (proven by uploading UC-6); FRM-002 must not flag it as unsupported."""
     from app.validators.formula import _supported_native_functions, MIND_CONFIRMED_SUPPORTED
 
     supported = _supported_native_functions()
@@ -297,7 +297,7 @@ def test_rep_001_parse_total_recognises_pure_totals():
 
 # --- 1.7.3: two refusals Mind reported on a real model that the app had let through ------------
 def test_a_name_that_does_not_exist_is_a_broken_reference(tmp_path, engine, config):
-    """Mind: "No function found ... (not a function : Semi_dynamic_increase_rates_array)"
+    """Mind: "No function found ... (not a function : Step_increase_rates_array)"
     -- the formula referred to a name the workbook does not define (a misspelling
     of an existing one). Names of any alphabet, '?' in a name, table names,
     sheet-qualified references and LET variables are not names to flag."""
@@ -309,21 +309,21 @@ def test_a_name_that_does_not_exist_is_a_broken_reference(tmp_path, engine, conf
     ws = wb.active
     ws.title = "Calc"
     ws["A1"], ws["A2"], ws["A3"] = "h", 1, 2
-    for name, ref in (("Semi_dynamic_increase_rates", "Calc!$A$2:$A$3"), ("Rate_λG", "Calc!$A$2"), ("Full_Run?", "Calc!$A$3")):
+    for name, ref in (("Step_increase_rates", "Calc!$A$2:$A$3"), ("Rate_λX", "Calc!$A$2"), ("Run_All?", "Calc!$A$3")):
         wb.defined_names[name] = DefinedName(name, attr_text=ref)
     ws["C1"], ws["D1"], ws["C2"], ws["D2"] = "K", "V", 1, 2
     ws.add_table(Table(displayName="Rates", ref="C1:D2"))
-    ws["F1"] = "=HLOOKUP(1,Semi_dynamic_increase_rates_array,1,FALSE)"  # misspelt
-    ws["F2"] = "=Rate_λG+Full_Run?+SUM(Rates[V])+ROWS(Rates)+Calc!A2+TRUE"  # all fine
+    ws["F1"] = "=HLOOKUP(1,Step_increase_rates_array,1,FALSE)"  # misspelt
+    ws["F2"] = "=Rate_λX+Run_All?+SUM(Rates[V])+ROWS(Rates)+Calc!A2+TRUE"  # all fine
     ws["F3"] = "=LET(x,A2,x*Nope)"  # LET variables: not workbook names (RSK-004)
     p = tmp_path / "names.xlsx"
     wb.save(p)
     wb.close()
     f = _finding(engine, config, build_analysis(p, tmp_path / "w", "n"), "REF-001")
     assert f["status"] == "ERROR"
-    assert f["observed"]["undefined_names"] == {"Semi_dynamic_increase_rates_array": {"cells": 1, "closest": "Semi_dynamic_increase_rates"}}
+    assert f["observed"]["undefined_names"] == {"Step_increase_rates_array": {"cells": 1, "closest": "Step_increase_rates"}}
     assert [s["cell"] for s in f["observed"]["sites"]] == ["F1"]
-    assert "closest existing name: Semi_dynamic_increase_rates" in f["message"] and "#NAME?" in f["message"]
+    assert "closest existing name: Step_increase_rates" in f["message"] and "#NAME?" in f["message"]
 
 
 def test_a_merged_header_spans_its_columns_and_an_array_past_it_exceeds_the_grid(tmp_path, engine, config):
@@ -448,7 +448,7 @@ def test_circular_references_are_found_and_reported_as_chains(tmp_path, engine, 
     w = _finding(engine, config, build_analysis(p3, tmp_path / "w3", "s"), "FRM-005")
     assert w["status"] == "WARNING" and w["observed"]["conditional_cycles"] == 1 and "not documented" in w["message"]
     # 1.8.4: a cycle that closes only through the table of a lookup -- a lookup reads one cell of it,
-    # and Excel reports no circular reference (PVFP, once INDIRECT had become direct references)
+    # and Excel reports no circular reference (UC-4, once INDIRECT had become direct references)
     look = openpyxl.Workbook()
     ws = look.active
     ws.title = "S"
@@ -470,16 +470,16 @@ def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_p
     wb = openpyxl.Workbook()
     first = wb.active
     first.title = ">> Reporting"  # a divider tab: empty, so Mind creates no spreadsheet for it
-    for name in ("LoB A", "LoB B", ">>>"):
+    for name in ("Line A", "Line B", ">>>"):
         wb.create_sheet(name)
-    total = wb.create_sheet("Reporting_LoB Total")
+    total = wb.create_sheet("Reporting_Line Total")
     for ws in wb.worksheets[1:3]:
         ws["E5"] = 1
     wb[">>>"]["D13"] = "end of section"  # one text cell alone: no grid either
     total["E5"] = "=SUM('>> Reporting:>>>'!E5)"
     total["E19"] = "=AVERAGE('>> Reporting:>>>'!E5:E7)/2"
     total["G37"] = "=SUM('>> Reporting:Nope'!G37)"  # an endpoint that does not exist
-    total["H1"] = "=SUM('LoB A'!E5)"  # an ordinary sheet reference: not 3-D
+    total["H1"] = "=SUM('Line A'!E5)"  # an ordinary sheet reference: not 3-D
     total["H2"] = "='>> Reporting'!A1+1"  # reads a sheet Mind does not import
     p = tmp_path / "3d.xlsx"
     wb.save(p)
@@ -488,11 +488,11 @@ def test_three_d_references_are_flagged_with_the_explicit_formula_proposed(tmp_p
     assert f["status"] == "ERROR"
     sites = {s["cell"]: s for s in f["observed"]["sites"]}
     assert set(sites) == {"E5", "E19", "G37"}
-    assert sites["E5"]["references"][0]["sheets"] == [">> Reporting", "LoB A", "LoB B", ">>>"]
+    assert sites["E5"]["references"][0]["sheets"] == [">> Reporting", "Line A", "Line B", ">>>"]
     assert sites["E5"]["references"][0]["omitted_empty"] == [">> Reporting", ">>>"]
     # the proposal leaves the grid-less divider tabs out: Mind imports none of them, and they add nothing
-    assert sites["E5"]["suggested_formula"] == "=SUM('LoB A'!E5,'LoB B'!E5)"
-    assert sites["E19"]["suggested_formula"] == "=AVERAGE('LoB A'!E5:E7,'LoB B'!E5:E7)/2"
+    assert sites["E5"]["suggested_formula"] == "=SUM('Line A'!E5,'Line B'!E5)"
+    assert sites["E19"]["suggested_formula"] == "=AVERAGE('Line A'!E5:E7,'Line B'!E5:E7)/2"
     assert sites["G37"]["suggested_formula"] is None and "Nope" in sites["G37"]["issue"]
     assert f["observed"]["gridless_sheets"] == [">> Reporting", ">>>"]
     assert [(g["cell"], g["sheets"]) for g in f["observed"]["formulas_reading_gridless_sheets"]] == [("H2", [">> Reporting"])]
@@ -511,19 +511,19 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     wb = openpyxl.Workbook()
     inp = wb.active
     inp.title = "Inputs"
-    lob = wb.create_sheet("LoB 1")
+    lob = wb.create_sheet("Line 1")
     lob["Z12"], lob["Z16"] = 10, 4
-    inp["G710"], inp["G711"] = "LoB 1", "LoB 2"  # LoB 2 is not a sheet
+    inp["G710"], inp["G711"] = "Line 1", "Line 2"  # Line 2 is not a sheet
     inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
     inp["AA711"] = "=IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G711&\"'!$Z$12\")/INDIRECT(\"'\"&$G711&\"'!$Z$16\"))"
     inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # a reference context: Mind handles it, not flagged
     inp["B7"] = "=INDIRECT(\"'\"&$G710&\"'!$Z$12\")"  # alone in the cell: a reference, not a value -- not flagged
-    inp["B2"] = "=NOT(INDIRECT(\"LoB\"&COLUMN()-1&\"_Boolean\"))*2"  # a defined name built from COLUMN()
+    inp["B2"] = "=NOT(INDIRECT(\"Line\"&COLUMN()-1&\"_Boolean\"))*2"  # a defined name built from COLUMN()
     inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"  # B4 is a formula with no stored value: by hand
     inp["B4"] = "=G710"
     inp["B5"] = True
-    inp["B6"] = "=IF(LEFT(RIGHT($G710,2),1)=\" \",INDIRECT(\"LoB\"&RIGHT($G710,1)&\"_Boolean\")=TRUE,INDIRECT(\"LoB\"&RIGHT($G710,2)&\"_Boolean\")=TRUE)"  # one branch dead
-    wb.defined_names["LoB1_Boolean"] = DefinedName("LoB1_Boolean", attr_text="Inputs!$B$5")
+    inp["B6"] = "=IF(LEFT(RIGHT($G710,2),1)=\" \",INDIRECT(\"Line\"&RIGHT($G710,1)&\"_Boolean\")=TRUE,INDIRECT(\"Line\"&RIGHT($G710,2)&\"_Boolean\")=TRUE)"  # one branch dead
+    wb.defined_names["Line1_Boolean"] = DefinedName("Line1_Boolean", attr_text="Inputs!$B$5")
     p = tmp_path / "indirect.xlsx"
     wb.save(p)
     wb.close()
@@ -531,11 +531,11 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     assert f["status"] == "ERROR"
     sites = {s["cell"]: s for s in f["observed"]["sites"]}
     assert set(sites) == {"AA710", "AA711", "B2", "B3", "B6"}
-    assert sites["B6"]["suggested_formula"] == "=IF(LEFT(RIGHT($G710,2),1)=\" \",LoB1_Boolean=TRUE,NA()=TRUE)"
-    assert sites["AA710"]["suggested_formula"] == "=IF('LoB 1'!$Z$16=0,0,66%*'LoB 1'!$Z$12/'LoB 1'!$Z$16)"
+    assert sites["B6"]["suggested_formula"] == "=IF(LEFT(RIGHT($G710,2),1)=\" \",Line1_Boolean=TRUE,NA()=TRUE)"
+    assert sites["AA710"]["suggested_formula"] == "=IF('Line 1'!$Z$16=0,0,66%*'Line 1'!$Z$12/'Line 1'!$Z$16)"
     # the missing target becomes NA() where it stands, never the whole formula (it may sit in a branch never taken)
-    assert sites["AA711"]["suggested_formula"] == "=IF(NA()=0,0,66%*NA()/NA())" and "LoB 2" in sites["AA711"]["issue"]
-    assert sites["B2"]["suggested_formula"] == "=NOT(LoB1_Boolean)*2"
+    assert sites["AA711"]["suggested_formula"] == "=IF(NA()=0,0,66%*NA()/NA())" and "Line 2" in sites["AA711"]["issue"]
+    assert sites["B2"]["suggested_formula"] == "=NOT(Line1_Boolean)*2"
     assert sites["B3"]["suggested_formula"] is None and "cannot be worked out" in sites["B3"]["issue"]
     assert f["observed"]["with_proposal"] == 2 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
     assert "AMReference" in f["message"] and "writes the proposals" in f["message"]

@@ -6,7 +6,7 @@ project as data: its loops and their sizes, every instance's cell values, the ru
 cells mapped back to Excel addresses. Without one, nothing here is required: `available()` says why and
 the callers fall back to the browser automation (app/mind_client.py).
 
-Token: env MIND_MCP_TOKEN, else %LOCALAPPDATA%\\MindReady\\mind_mcp_token (one line; never in the repo).
+Token: env MIND_MCP_TOKEN, else `mind_mcp_token` in the data folder (settings.yaml) (one line; never in the repo).
 The company network re-signs TLS, so the Windows certificate store is used (truststore) when present.
 """
 from __future__ import annotations
@@ -17,12 +17,13 @@ import os
 import re
 import ssl
 import time
-from pathlib import Path
 from typing import Any
 
-MCP_URL = os.environ.get("MIND_MCP_URL", "https://vm-prod.milliman-mind.com/api/chatbot/mcp")
+from .settings import SETTINGS
+
+MCP_URL = os.environ.get("MIND_MCP_URL", SETTINGS.mind_mcp_url)
 TOKEN_ENV = "MIND_MCP_TOKEN"
-TOKEN_FILE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MindReady" / "mind_mcp_token"
+TOKEN_FILE = SETTINGS.data_folder / "mind_mcp_token"
 _INIT_RE = re.compile(r"/init/\d+/([0-9a-fA-F-]{36})")
 
 

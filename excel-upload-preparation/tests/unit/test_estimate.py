@@ -5,8 +5,8 @@ from app.estimate import CAVEAT, OPEN_S_PER_MB, RECALC_AHEAD_S, SAVE_S_PER_MB, e
 from app.web import server
 
 
-def test_phoenix_numbers_give_the_range_it_took():
-    # Phoenix TVOG (1.11.10, two sheets skipped so the stored errors are unknown): 170 MB, scan 270 s, 852
+def test_uc5_numbers_give_the_range_it_took():
+    # UC-5 (1.11.10, two sheets skipped so the stored errors are unknown): 170 MB, scan 270 s, 852
     # Prep changes, 8 pivot tables to values -- Fix all issues took 661 s, the whole Do everything 1,189 s
     r = estimate_chain(170, 270, 305_785, None, 852, True, worker=True, baseline_mb=170, pivots=[("pivot_to_values", 0)] * 8)
     fix = next(s for s in r["steps"] if s["id"] == "fixAll")

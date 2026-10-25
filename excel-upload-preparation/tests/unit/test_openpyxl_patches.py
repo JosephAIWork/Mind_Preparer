@@ -12,7 +12,7 @@ GROUPED = (
 
 
 def test_a_grouped_pivot_field_reads_and_writes_back():
-    # Phoenix TVOG: "Nested.from_tree() missing 1 required positional argument: 'node'"
+    # UC-5: "Nested.from_tree() missing 1 required positional argument: 'node'"
     fg = FieldGroup.from_tree(fromstring(GROUPED))
     assert [i.v for i in fg.discretePr] == [0, 1, 0]
     out = tostring(fg.to_tree()).decode()

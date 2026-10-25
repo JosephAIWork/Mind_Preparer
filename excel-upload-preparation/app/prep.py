@@ -62,12 +62,12 @@ from .validators.kb import documented_flags
 STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values"}
 PIVOT_OPS = {"pivot_to_formulas", "pivot_to_values"}
 # What Prep does with the pivot tables (Advanced > Prep actions; Do everything follows it)
+# (every pivot table blocks Mind's converter -- validators/structure.blocking_pivot -- so none is left)
 PIVOT_MODES = {
-    "blocking": "Leave them, turn only the blocking ones into formulas",
     "formulas": "Turn every pivot table into formulas",
     "values": "Turn every pivot table into plain values",
 }
-DEFAULT_PIVOT_MODE = "blocking"
+DEFAULT_PIVOT_MODE = "formulas"
 CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula"}
 HIDE_MARKER = "&&Hide"
 EXCEL_SHEET_NAME_MAX = 31
@@ -1429,28 +1429,47 @@ def plan_line_breaks_as_char(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-012: a formula that calls CELL(...) or INFO(...) becomes the value it shows today,
+    """FRM-012: a formula that calls CELL(...) or INFO(...) becomes the value it shows,
     written as a formula (="<the path>" or =12): Mind cannot answer what those ask, and the value
-    is what the model carries in Excel."""
-    from .validators.mind_values import environment_formulas
+    is what the model carries in Excel.
+
+    The value is the one the original upload shows when the caller supplies it
+    (`analysis["original_environment_values"]`, "Sheet!A1" -> value, keyed by where each cell sits
+    in this version; app/web/server.py): those are what the user's own Excel saved. A version the
+    app's Excel has saved shows the app's working folder instead (in a client model the folder cell
+    held the app's temporary folder, and the save folder built from it came out empty), and such a
+    value is never written."""
+    from .external_links import _literal
+    from .validators.mind_values import environment_formulas, in_app_folder
 
     ops, skipped = [], []
     try:
         finding = environment_formulas(None, analysis, {}, limit=None)
     except Exception as exc:
         return ops, [f"planner error: {exc}"]
+    original = analysis.get("original_environment_values")
     for s in (finding.get("observed") or {}).get("sites", []):
-        if s["issue"]:
-            skipped.append(f"{s['sheet']}!{s['cell']}: {s['issue']}")
+        where = f"{s['sheet']}!{s['cell']}"
+        if s.get("multi_cell"):
+            skipped.append(f"{where}: {s['issue']}")
             continue
-        from .external_links import _literal
-
-        note = f"{', '.join(s['calls'])} asks Excel about itself; the value shown today is written in its place (as a formula, so the numbers check still follows the cell)"
+        if original is not None and where in original:
+            value, whose = original[where], "the original upload"
+            issue = None if value is not None else 'the original upload shows "", an error or no value: by hand'
+        else:
+            value, whose, issue = s["value"], "this version", s["issue"]
+        if issue:
+            skipped.append(f"{where}: {issue}")
+            continue
+        if in_app_folder(value):
+            skipped.append(f"{where}: shows the app's working folder, not the user's own: by hand")
+            continue
+        note = f"{', '.join(s['calls'])} asks Excel about itself; the value {whose} shows is written in its place (as a formula, so the numbers check still follows the cell)"
         if s.get("array"):
             # a single-cell array formula: written back as a one-cell array so Excel accepts the overwrite
-            ops.append(_op("set_array_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after="=" + _literal(s["value"]), note=note))
+            ops.append(_op("set_array_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
         else:
-            ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(s["value"]), note=note))
+            ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
     return ops, skipped
 
 
@@ -1517,9 +1536,9 @@ def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
 # `caution` says why a blocking action still deserves a look before Apply.
 BLOCKING, OPTIONAL = "blocking", "optional"
 def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple[list[dict], list[str]]:
-    """STR-009: one operation per pivot table to convert -- the blocking ones always, the
-    others when the pivot setting says so. To formulas (each falls back to values in Excel when its
-    formulas would not give the same numbers) unless the setting is "values"."""
+    """STR-009: one operation per pivot table (every one blocks Mind's converter). To formulas (each
+    falls back to values in Excel when its formulas would not give the same numbers) unless the pivot
+    setting is "values"."""
     from .validators.structure import blocking_pivot
 
     ops: list[dict] = []
@@ -1535,20 +1554,17 @@ def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple
         for p in s.get("pivot_tables", []) or []:
             why = blocking_pivot(p)
             if gpd:
-                mind = f"; Mind cannot read it as it is ({why}): replace the GETPIVOTDATA by hand first" if why else ""
-                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table -- GETPIVOTDATA on {', '.join(gpd)} reads pivot tables and would become #REF!{mind}")
+                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table -- GETPIVOTDATA on {', '.join(gpd)} reads pivot tables and would become #REF!; "
+                               f"Mind cannot read it as it is ({why}): replace the GETPIVOTDATA by hand first")
                 continue
-            if not why and mode == "blocking":
-                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table (the pivot setting); Mind reads its cells as values")
-                continue
-            note = f"blocking: {why}" if why else f"the pivot setting: {PIVOT_MODES.get(mode, mode)}"
+            note = f"blocking: {why}"
             ops.append(_op(to, "pivot_tables", "STR-009", s["name"], cell=p["ref"].split(":")[0], range=p["ref"], pivot=p["name"],
                            before=f"pivot table {p['name']}", after="formulas over its source" if to == "pivot_to_formulas" else "plain values", note=note))
     return ops, skipped
 
 
 ACTIONS: list[dict[str, Any]] = [
-    {"id": "pivot_tables", "title": "Pivot tables: turn the ones Mind cannot read (or all, per the pivot setting) into formulas over their source", "rule_ids": ["STR-009"], "default_on": True, "level": BLOCKING,
+    {"id": "pivot_tables", "title": "Pivot tables: turn them into formulas over their source (or plain values, per the pivot setting)", "rule_ids": ["STR-009"], "default_on": True, "level": BLOCKING,
      "caution": "a pivot table becomes plain cells with formulas (SUMIFS ...) that give the same numbers -- values where they cannot; it no longer refreshes from its source as a pivot", "planner": plan_pivot_tables},
     {"id": "fix_broken_refs", "title": "Replace broken (#REF!) references with NA() so Mind can compile", "rule_ids": ["REF-001"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a broken reference becomes NA(); the cell already returned an error, so no valid result changes", "planner": plan_fix_broken_refs},

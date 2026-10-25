@@ -10,6 +10,7 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+from local_usecases import usecase
 from openpyxl.workbook.defined_name import DefinedName
 
 from app import sizing
@@ -17,8 +18,6 @@ from app.config import load_config
 from app.inventory import build_analysis, cell_window, load_workbook_selective
 from app.modes import plan_mode
 from app.progress import overall_progress
-
-SHLOMO_DIR = Path(__file__).resolve().parents[3]  # Mind Copilot Skill/
 
 
 def _three_sheet_book(tmp_path: Path) -> Path:
@@ -137,12 +136,12 @@ def test_xlsb_sheet_list_is_read_from_the_binary_workbook_part(tmp_path):
 
 
 @pytest.mark.skipif(
-    not (SHLOMO_DIR / "Shlomo_IFRS_Risk_Mind_CopilotEdited.xlsb").is_file() or not (SHLOMO_DIR / "Shlomo_IFRS_Risk_Mind_CopilotEdited.xlsm").is_file(),
-    reason="needs the real Shlomo .xlsb/.xlsm pair next to the package",
+    usecase("UC-6.xlsb") is None or usecase("UC-6.xlsm") is None,
+    reason="needs a client model's local .xlsb/.xlsm pair (UC-6, tests/local_usecases.py)",
 )
 def test_real_xlsb_sheet_list_matches_its_xlsm_twin():
-    b = sizing.inspect_container(SHLOMO_DIR / "Shlomo_IFRS_Risk_Mind_CopilotEdited.xlsb")
-    x = sizing.inspect_container(SHLOMO_DIR / "Shlomo_IFRS_Risk_Mind_CopilotEdited.xlsm")
+    b = sizing.inspect_container(usecase("UC-6.xlsb"))
+    x = sizing.inspect_container(usecase("UC-6.xlsm"))
     assert b["sheet_list_source"] == "xl/workbook.bin" and x["sheet_list_source"] == "xl/workbook.xml"
     assert [(s["name"], s["state"]) for s in b["sheets"]] == [(s["name"], s["state"]) for s in x["sheets"]]
     assert all(s["bytes"] > 0 for s in b["sheets"])

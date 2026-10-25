@@ -13,9 +13,9 @@
   @if (store.pivots().length) {
     <div class="card">
       <div class="card__head">
-        <span class="card__title">Pivot tables ({{ store.pivots().length }}{{ pivotBlocking() ? ", " + pivotBlocking() + " blocking Mind" : "" }})</span>
+        <span class="card__title">Pivot tables ({{ store.pivots().length }}, each one blocks Mind)</span>
       </div>
-      <p class="hint">Mind reads a pivot table's cells as values, which do not follow their source in a Mind loop; one with a grouped field stopped Mind's converter. This choice applies here and to Do everything.</p>
+      <p class="hint">Mind's converter stops on pivot tables, so every one is turned into cells. This choice applies here and to Do everything.</p>
       @for (m of pivotModeList(); track m[0]) {
         <label class="check">
           <input type="radio" name="pivot-mode" [checked]="store.pivotMode() === m[0]" (change)="setPivotMode(m[0])" [disabled]="pivotSaving() || running()" />

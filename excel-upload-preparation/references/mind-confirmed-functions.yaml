@@ -15,7 +15,7 @@ kb_page:
 functions:
 - function: FILTER
   evidence: MIND_CONVERSION
-  detail: the Shlomo_IFRS model converted cleanly using FILTER (Cashflows!M4)
+  detail: a client model using FILTER converted cleanly in a real Mind conversion
   date: '2026-08-30'
 - function: IFNA
   evidence: USER_PROVIDED

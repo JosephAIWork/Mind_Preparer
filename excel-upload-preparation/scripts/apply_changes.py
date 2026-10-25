@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""CLI for the narrow, real fixers in app/change_apply.py (see CHANGELOG.md
-1.2.0 for scope -- these are the only genuinely automatic corrections the
+"""CLI for the narrow, real fixers in app/change_apply.py (.xlsb / format
+conversion and loop-name casing -- the only genuinely automatic corrections the
 mined rule set permits; everything else needs a human decision and is
 surfaced instead as a one-click apply in the UI)."""
 from __future__ import annotations

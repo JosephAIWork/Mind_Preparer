@@ -2,7 +2,7 @@
 
 Every slow step (starting Excel, opening, writing, recalculating, saving, the check that the file opens,
 the scan) is timed with `stage(name)` and appended as one JSON line to
-`%LOCALAPPDATA%\\MindReady\\perf\\timings.jsonl` (`MINDREADY_PERF_LOG` overrides the file;
+`perf\\timings.jsonl` in the data folder (settings.yaml) (`MINDREADY_PERF_LOG` overrides the file;
 `MINDREADY_PERF_LOG=0` turns it off). Writing the line never fails the step it measures.
 """
 from __future__ import annotations
@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from .settings import SETTINGS
+
 _LOCK = threading.Lock()
 
 
@@ -24,7 +26,7 @@ def log_path() -> Path | None:
         if env.strip().lower() in ("", "0", "off", "no", "false"):
             return None
         return Path(env)
-    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady" / "perf" / "timings.jsonl"
+    return SETTINGS.data_folder / "perf" / "timings.jsonl"
 
 
 def record(name: str, seconds: float, **facts: Any) -> None:

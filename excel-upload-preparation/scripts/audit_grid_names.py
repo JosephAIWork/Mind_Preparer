@@ -48,7 +48,7 @@ def render_context(context: dict) -> str:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("input")
-    p.add_argument("--suggest", action="store_true", help="also ask the APIM assistant for names (needs a secret.key nearby)")
+    p.add_argument("--suggest", action="store_true", help="also ask the APIM assistant for names (needs the AI key saved in the web app)")
     p.add_argument("--context", help="write the surrounding cells of every unnamed/weak grid to this file")
     p.add_argument("--output", help="write the full audit as JSON to this file (default: summary to stdout)")
     p.add_argument("--work-dir", help="where to place the immutable copy (default: a temp dir)")

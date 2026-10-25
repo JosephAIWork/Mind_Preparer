@@ -1,0 +1,34 @@
+@if (status(); as s) {
+  @if (s.saved && !editing()) {
+    @if (done()) {
+      <p class="key__done">{{ done() }}</p>
+    } @else if (!onlyWhenMissing) {
+      <p class="key__line">AI key saved for your Windows account: <span class="key__mono">••••{{ s.last4 }}</span> <button class="key__link" (click)="replace()">Replace</button></p>
+    }
+  } @else {
+    <div class="key">
+      <p class="key__title">{{ s.saved ? "Replace the AI key" : "The assistant is off: no AI key is saved" }}</p>
+      <p class="key__hint">Paste your key for the Milliman AI gateway. It is checked with the gateway, then saved encrypted for your Windows account on this computer. Everything else in the app works without it.</p>
+      <div class="key__row">
+        <input
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="AI gateway key"
+          placeholder="Paste the key"
+          [value]="draft()"
+          (input)="draft.set(value($event))"
+          (keydown.enter)="save()"
+          [disabled]="saving()"
+        />
+        <button cdsButton="primary" size="md" (click)="save()" [disabled]="saving() || !draft().trim()">{{ saving() ? "Checking…" : "Save" }}</button>
+        @if (s.saved) {
+          <button cdsButton="ghost" size="md" (click)="cancel()" [disabled]="saving()">Cancel</button>
+        }
+      </div>
+      @if (error()) {
+        <p class="key__error">{{ error() }}</p>
+      }
+    </div>
+  }
+}

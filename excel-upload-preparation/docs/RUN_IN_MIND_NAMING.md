@@ -15,7 +15,7 @@ It reproduces, step by step, the audit that produced Mind Ready **1.6.7**.
 
 Why it matters: Mind lists every grid by name in the `work ▾` template selector.
 A grid with no `#Title` above it is listed as **`Untitled(60,8)`** — the row and
-column of its first cell. A grid the app could only call `Cashflows C4` is no
+column of its first cell. A grid the app could only call `Calc C4` is no
 better. Neither stops the model converting or running; both make it unreadable.
 
 ---
@@ -26,7 +26,7 @@ better. Neither stops the model converting or running; both make it unreadable.
 |---|---|
 | App running, 1.6.7 or later | <http://localhost:8600/api/health> → `"version":"1.6.7"` |
 | Excel installed | the same endpoint → `"excel":true` (grid titles are written through Excel) |
-| Assistant reachable (optional) | the same endpoint → `"assistant":true` (a `secret.key` is found nearby) |
+| Assistant reachable (optional) | the same endpoint → `"assistant":true` (the AI key is saved in the web app) |
 | Workbook is `.xlsx` / `.xlsm` | Mind rejects `.xlsb`; *Save As* → Excel Macro-Enabled Workbook first |
 
 Start the app with `run_mind_ready_web.bat` in `excel-upload-preparation`.
@@ -62,7 +62,7 @@ Read them like this:
 - **`unnamed`** — grids with no `#Title` at all. **This is your `Untitled(r,c)`
   count in Mind.**
 - **`weak`** — grids whose name carries no meaning: the `<Sheet> <Anchor>`
-  fallback (`Cashflows C4`), or a scrap of a header row (`I`, `I I ...`).
+  fallback (`Calc C4`), or a scrap of a header row (`I`, `I I ...`).
   Judged by `prep.is_weak_name()`.
 - **`title_operations`** — how many titles the prep plan can write on its own.
 - **`blocked`** — grids it *cannot* title, each with the reason, printed below
@@ -84,12 +84,12 @@ cells to its left, and its first rows, with **formulas shown as
 `formula => computed value`** so a column of `=INDEX(...)` is readable:
 
 ```
---- Cashflows!C27:E39  (13 rows x 3 cols)  current=None
+--- Calc!C27:E39  (13 rows x 3 cols)  current=None
  ABOVE:
-   B25=#Cashflows B24 | B26==MAX($B$3:B25)+1 => 2 | C26=Demographic Assumptions
+   B25=#Calc B24 | B26==MAX($B$3:B25)+1 => 2 | C26=Demographic Assumptions
  DATA:
-   Gender | =INDEX(CoverageDetails!A:CE, => ... | =IF(D27="זכר","M","F") => M
-   Smoker | =INDEX(CoverageDetails!A:CE, => ... | =IF(D28="מעשן","S","NS") => NS
+   Gender | =INDEX(Policies!A:CE, => ... | =IF(D27="Male","M","F") => M
+   Smoker | =INDEX(Policies!A:CE, => ... | =IF(D28="Smoker","S","NS") => NS
 ```
 
 This is exactly what a person (or the assistant) reads to name a grid. Naming
@@ -104,7 +104,7 @@ python scripts/audit_grid_names.py "YourModel.xlsm" --suggest --output audit.jso
 
 Each weak grid gains a `"suggested"` field. The assistant is asked in **batches
 of 25** through the Milliman APIM gateway (`app/grid_naming.py`), so a whole
-workbook costs a handful of calls. If no `secret.key` is found it says so on
+workbook costs a handful of calls. If no AI key is saved it says so on
 stderr and the deterministic names stand — naming never hard-depends on the
 network.
 
@@ -119,7 +119,7 @@ network.
 
    | Grid | From the cells around it | Assistant |
    |---|---|---|
-   | `Cashflows!C43:D47` `5x2` | *Cashflows C43* (sheet name + position) | Sum Assured And Inflation |
+   | `Calc!C43:D47` `5x2` | *Calc C43* (sheet name + position) | Sum Assured And Inflation |
 
    Names in italics are the meaningless fallback. Accepted names are folded
    into the plan below — **nothing is written yet.**
@@ -142,7 +142,7 @@ Re-run Part A against the file you just downloaded:
 python scripts/audit_grid_names.py "YourModel_v2.xlsm"
 ```
 
-`unnamed` should drop sharply (60 → 39 on the Shlomo model) and `grids` should
+`unnamed` should drop sharply (60 → 39 on one client model) and `grids` should
 stay roughly flat. **If the grid count jumps, stop** — see “When it goes wrong”.
 
 ---
@@ -154,7 +154,7 @@ stay roughly flat. **If the grid count jumps, stop** — see “When it goes wro
 2. After **Add template to Milliman Mind**, click the **`work ▾`** selector in
    the middle of the top bar. It lists every template and grid by name.
 3. Scan the list for **`Untitled(row,col)`** entries and for names like
-   `Cashflows C4`. Each one is a grid Part A predicted; the row/column in
+   `Calc C4`. Each one is a grid Part A predicted; the row/column in
    `Untitled(60,8)` maps to row 60, column 8 (= `H60`).
 
 That comparison — Mind's own list against the audit — is what proves the audit
@@ -201,8 +201,8 @@ limits, not bugs:
 - **“the cell above (D4) is not free and inserting a row would cut *X*”** — a
   title must sit directly above its grid. Here the row above holds the grid's
   own header row, and a whole-row insert would slice a neighbouring wide table.
-  On the Shlomo model this is most of the `Assumptions` lookup tables
-  (Mortality, Lapses, Discount Curves, Taarif …): their **header row and their
+  On one client model this is most of its assumption lookup tables
+  (mortality, lapses, discount curves, tariffs …): their **header row and their
   data are read as two separate grids**, because the label column beside the
   data is empty so the block is not rectangular. Merging header and data into
   one block is a modelling decision for a human — the app will not restructure

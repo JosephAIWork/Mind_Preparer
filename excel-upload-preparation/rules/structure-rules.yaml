@@ -256,11 +256,11 @@ rules:
   version: 1.0.0
   status: active
   category: structure
-  description: 'Pivot table -- Mind imports values only; its converter stopped on a pivot table with a grouped field ("The method or operation is not implemented"). A blocking pivot is turned into formulas (or values) by Prep; the others follow the pivot setting in Advanced (leave them, formulas, values).'
+  description: 'Pivot table -- Mind''s converter stops on pivot tables ("The method or operation is not implemented"), plain ones too, not only one with a grouped field. Prep turns every pivot table into formulas or values, per the pivot setting in Advanced.'
   confidence: MEDIUM
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-18, a client model -- rejected with its 8 pivot tables, accepted with them as values)
+    document: real Mind conversion testing (2026-10-18 and 2026-10-25, a client model -- rejected with its 8 pivot tables, rejected with only the grouped one as values, accepted with all of them as values)
     article: STR-009
   validation:
     deterministic: true

@@ -5,6 +5,7 @@ import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModu
 import { ApiService, errorText } from "../core/api.service";
 import { ChainEstimate, FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, ScanStatus, appliedCount, failedCount, failedText, isPending } from "../core/models";
 import { SessionStore } from "../core/session.store";
+import { KeyBox } from "./advanced/key-box";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
 type Tone = "idle" | "ok" | "warn" | "error";
@@ -71,7 +72,7 @@ const STEPS: { id: StepId; label: string; check: string }[] = [
 @Component({
   selector: "mr-home",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule],
+  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox],
   templateUrl: "./home.page.html",
   styleUrl: "./home.page.scss",
 })

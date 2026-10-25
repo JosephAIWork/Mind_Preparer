@@ -39,22 +39,22 @@ the two honest cases below.
   macro writes per pass -- previewed with its bounds and name, then written
   through Excel as a new version. What the two functions cannot say is
   listed as not built, with why. `scripts/check_loop_plan.py` proves the
-  wiring in Excel against the macro (Horizon: 60 of 60 cells the same).
+  wiring in Excel against the macro (a client model: 60 of 60 cells the same).
 
 - **Model map** (1.9.0): a screen (and `GET .../model-map`, `python -m
   app.model_map`) that says where a model's inputs are, which cell the run
   loop sets and what bounds it, which settings stay for a run but change
   between runs and how they are toggled, and where the outputs land -- read
   off the macros, names, dropdowns, sheet names and formulas, each line with
-  its evidence. Checked on Horizon, PVFP, Palermo and CNHI.
+  its evidence. Checked on four client models.
 
-- **Palermo and CNHI in Mind** (1.8.12): CNHI without inserted title rows
-  agrees with Mind (5,043 lines, all comparison artefacts). Palermo converts
+- **Two more client models in Mind** (1.8.12): one, without inserted title rows,
+  agrees with Mind (5,043 lines, all comparison artefacts). The other converts
   and runs once FRM-009 follows defined names into a lookup that lands on an
-  empty cell (the `ME_Table=0` switch was FALSE in Mind), and FRM-012 freezes
+  empty cell (a switch tested with `=0` was FALSE in Mind), and FRM-012 freezes
   a one-cell array formula.
 
-- **PVFP agrees with Mind** (1.8.11): the prepared PVFP converts and runs in
+- **A client model agrees with Mind** (1.8.11): the prepared model converts and runs in
   Mind with no real difference left. FRM-008 also guards `IF(ISNUMBER(X),X,"")`
   and `IF(ISERROR(X),"",X)` on a `""` cell (test workbook 7); a lone text cell
   that feeds INDIRECT's sheet name made Mind read the formula's own sheet
@@ -63,10 +63,10 @@ the two honest cases below.
 - **A `""` cell inside a range** (1.8.10): FRM-008 also guards array
   arithmetic (`IFERROR(SUMPRODUCT(row*weights),"")`) whose range holds a
   `""` cell, naming the cells one by one -- no range test tells `""` from a
-  number in Mind (test workbook 6); PVFP's last 8 real differences.
+  number in Mind (test workbook 6); that model's last 8 real differences.
 
 - **Lone text cells** (1.8.8): a text cell standing alone that formulas read
-  gets a `#` title above it (STR-008) -- Mind imports no loose text cell; PVFP's
+  gets a `#` title above it (STR-008) -- Mind imports no loose text cell; a client model's
   20,000 differences came from one such cell.
 
 - **Uploads to Mind by itself** (1.8.7): `scripts/mind_upload.py` converts and
@@ -77,26 +77,26 @@ the two honest cases below.
 
 - **External links frozen** (1.8.6): a formula that reads another workbook
   gets the copy Excel kept of that cell, and the link is broken (REF-002) --
-  PVFP's 20,934 such formulas were every one an error in Mind.
+  a client model's 20,934 such formulas were every one an error in Mind.
 
 - **INDIRECT used as a value** (1.8.4): the Prep action writes the direct
-  reference the finding worked out (FRM-007), PVFP's last blocker.
+  reference the finding worked out (FRM-007), that model's last blocker.
 
 - **Three more fixes done by Prep** (1.8.3): 3-D references written out sheet
   by sheet (FRM-006), the header row extended over array formulas wider than
   their grid (RSK-002), and a name that does not exist replaced by NA()
-  (REF-001) -- the three findings on which Mind refused Palermo and PVFP after
+  (REF-001) -- the three findings on which Mind refused two client models after
   1.8.2. Excel's values stay the same; "Check the numbers" proves it.
 
 - **Same numbers in Mind as in Excel** (1.8.1): two rules for formulas that
   recalculate clean in Excel and still come out different in Mind -- found by
-  uploading Horizon, each confirmed in Mind with a small test workbook
+  uploading a client model, each confirmed in Mind with a small test workbook
   (`docs/MIND_VS_EXCEL.md`). **FRM-008**: arithmetic on a cell that holds `""`
   inside IFERROR (Excel returns the fallback, Mind computes a number).
   **FRM-009**: a number compared with an empty cell, directly or through a
   reference / VLOOKUP that lands on one (0 in Excel, not 0 in Mind). Each has
   a Prep action that rewrites the formulas without changing Excel's values;
-  after both, Mind reported no difference for Horizon. **FRM-010** (1.8.2): an
+  after both, Mind reported no difference for that model. **FRM-010** (1.8.2): an
   exact lookup whose key holds `""` over a table Prep gave a title -- Mind
   matches the empty header cell; same action.
 
@@ -107,11 +107,11 @@ the two honest cases below.
   (`=IFERROR(<formula>, 0)` -- the assistant says which value fits and why),
   recalculates, and **undoes any fix that changed a value that was good**;
   what cannot be fixed that way stays, listed for a person with the reason.
-  The manual Fix panel is unchanged. On the four test models: Horizon (721
-  errors) and Palermo (511) come out clean with no good value changed, CNHI
-  has no error to begin with; PVFP (65,883 errors from a dead external link)
-  goes down to the 887 its own formulas hide on purpose, and comes out clean
-  when the owner's rule is lifted for it -- see `docs/AUTOFIX_USE_CASES.md`.
+  The manual Fix panel is unchanged. On four client models: two (721 and 511
+  errors) come out clean with no good value changed, one has no error to
+  begin with, and the fourth (65,883 errors from a dead external link) goes
+  down to the 887 its own formulas hide on purpose, and comes out clean when
+  the owner's rule is lifted for it.
 
 - **The numbers check** (1.8.0): *did the preparation change what the model
   computes?* `app/numbers_check.py` recalculates the original and the current
@@ -119,7 +119,7 @@ the two honest cases below.
   (`POST /api/sessions/{id}/numbers-check`, "Check the numbers" on the Prep
   screen, `scripts/compare_versions.py`). It exists because an ordinary Prep
   changed 2,462 computed values on one test model: title rows inserted on
-  sheets that a 3-D reference (`=SUM('LoB 1:>>'!K65)`) or an INDIRECT address
+  sheets that a 3-D reference (`=SUM('Line 1:>>'!K65)`) or an INDIRECT address
   reads by position. Prep now refuses those inserts and says why.
 
 - **Theme colours in seconds** (1.8.0): "Replace theme colours with explicit
@@ -141,10 +141,10 @@ the two honest cases below.
   their rule's priority and Prep actions a `level`: **blocking** (Mind
   refuses the file without it) or **optional** (Mind reads the file as it
   is). A Prep gauge tracks the planned repairs per version and flags a
-  stalled run. See CHANGELOG 1.7.2 for the two endless-round causes fixed.
+  stalled run.
 
 - **Assistant speed** (1.7.2): the assistant runs on `claude-sonnet-5`
-  (env `MIND_READY_MODEL` overrides) at `effort: low` (env
+  (`ai_gateway.model` in settings.yaml; env `MIND_READY_MODEL` overrides) at `effort: low` (env
   `MIND_READY_EFFORT`; Sonnet 5's default thinking made answers slow and cut
   them off) and its replies stream -- the web app
   shows the text as it is written, with a status line during lookups and
@@ -216,8 +216,8 @@ the two honest cases below.
 - **Recalculation** (real): `scripts/recalculate_workbook.py` / `app/recalc.py`
   drives your installed Excel via COM, with the MM for Excel add-in loaded
   into it (1.10.1: automation-started Excel never loads startup add-ins by
-  itself, so the app registers the XLL; `MINDREADY_MM_XLL` overrides the
-  path or turns it off). **On a machine without the add-in, every `MM_`
+  itself, so the app registers the XLL; `mm_for_excel_addin` in settings.yaml
+  names another path, env `MINDREADY_MM_XLL` overrides both or turns it off). **On a machine without the add-in, every `MM_`
   function call shows `#NAME?`** -- the adapter detects this and reports
   `NOT_SUPPORTED` with an explanation rather than a false `ERROR`. It's a
   deliberate, separate step (not run automatically during analysis).
@@ -244,8 +244,8 @@ the two honest cases below.
   up cells it hasn't seen). Ask questions, or tell it to change anything:
   it proposes the exact operations, you click Apply, Excel writes them to
   a fresh copy, the file is verified and re-analyzed, and the conversation
-  continues on the changed workbook. Needs the shared gateway key
-  (secret.key / config.enc).
+  continues on the changed workbook. Needs the gateway key, pasted once
+  in the web app (saved encrypted for the Windows user, `app/ai_key.py`).
 - **Web app** (1.6.0): the Figma-built React front-end in
   `../MindReadyUI` served by `app/web/server.py` (FastAPI) -- an Angular 22 +
   Carbon app with Mind's own look (1.11.0; the React app in `FigmaOutput` is
@@ -265,7 +265,8 @@ MMForExcel installed it will only ever be `NOT_SUPPORTED`, `WARNING`, or
 
 Setup: `pip install -r requirements.txt` to run the app; `pip install -r requirements-dev.txt`
 for the tests, then `python -m pytest tests` (the Excel-backed ones skip without Excel).
-Run the app: `run_mind_ready_web.bat`.
+Run the app: `run_mind_ready_web.bat`. Settings (port, data folder, AI gateway, Mind addresses, sandbox
+folder and project prefix, MM for Excel add-in): `settings.yaml`; the AI key is pasted in the app.
 
 ## Implementation note
 
@@ -274,5 +275,5 @@ Rules are mined from `01_Mind_Readiness_Standard.md` and
 and `tools/mine_function_registry.py`, and the KB references from
 `CompleteMindDocn.docx` via `tools/mine_kb_docx.py` -- deterministic parsers,
 safe to re-run against updated source docs. `rules/kb-rules.yaml` is the one
-hand-authored rule file (8 rules citing their KB articles). See CHANGELOG.md for what's implemented
-vs. registered-but-`NOT_SUPPORTED`.
+hand-authored rule file (8 rules citing their KB articles). CHANGELOG.md lists the changes between
+versions.

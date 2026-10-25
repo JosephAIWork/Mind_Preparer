@@ -1,9 +1,10 @@
 """Upload one workbook to real Milliman Mind, convert it, optionally run it, and print what Mind said.
 
-    python scripts/mind_upload.py <workbook> [--project zzz_mindready_<stem>] [--run] [--headed] [--keep]
+    python scripts/mind_upload.py <workbook> [--project <prefix>_<stem>] [--run] [--headed] [--keep]
 
 Uses the saved sign-in of app/mind_client.py (python -m app.mind_client check / login <init url>).
-Projects are created in the sandbox folder with a name starting with zzz_ and deleted afterwards
+Projects are created in the sandbox folder with a name starting with the project prefix (both in
+settings.yaml) and deleted afterwards
 unless --keep is given. Nothing else in Mind is touched.
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.mind_client import (  # noqa: E402
+    PROJECT_PREFIX,
     SANDBOX_FOLDER,
     add_template,
     create_blank_project,
@@ -70,9 +72,9 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the conversion")
     args = ap.parse_args()
     workbook = Path(args.workbook).resolve()
-    name = args.project or ("zzz_mindready_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:40])
-    if not name.startswith("zzz_"):
-        print("the project name must start with zzz_ (sandbox only)")
+    name = args.project or (f"{PROJECT_PREFIX}_" + re.sub(r"[^A-Za-z0-9]+", "_", workbook.stem)[:40])
+    if not name.startswith(PROJECT_PREFIX):
+        print(f"the project name must start with {PROJECT_PREFIX} (sandbox only; settings.yaml)")
         return 2
     auth = is_authenticated()
     if not auth.get("authenticated"):

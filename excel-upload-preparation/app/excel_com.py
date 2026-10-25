@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from typing import Any, Iterator
 
+from .settings import SETTINGS
+
 FILE_FORMAT_CODES = {"xlsx": 51, "xlsm": 52, "xlsb": 50}  # xlOpenXMLWorkbook / MacroEnabled / Binary
 XL_CELL_TYPE_FORMULAS = -4123
 
@@ -41,12 +43,16 @@ MM_ADDIN_MARKERS = ("xlldistributions", "mm for excel", "mmforexcel")
 
 def mm_for_excel_xll() -> Path | None:
     """The MM for Excel XLL on this machine (the one Excel's own startup list names, else the
-    default install path), or None. `MINDREADY_MM_XLL` overrides: a path, or `0` / `off`."""
+    default install path), or None. `mm_for_excel_addin` in settings.yaml names a path instead;
+    `MINDREADY_MM_XLL` overrides both: a path, or `0` / `off`."""
     env = os.environ.get(MM_XLL_ENV)
     if env is not None:
         if env.strip().lower() in ("", "0", "off", "no", "none", "false"):
             return None
         path = Path(env.strip().strip('"'))
+        return path if path.is_file() else None
+    if SETTINGS.mm_for_excel_addin:
+        path = Path(SETTINGS.mm_for_excel_addin.strip('"'))
         return path if path.is_file() else None
     candidates: list[Path] = []
     if sys.platform == "win32":

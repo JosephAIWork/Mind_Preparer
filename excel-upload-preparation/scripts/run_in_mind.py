@@ -4,14 +4,14 @@ good and the numbers match (app/mind_loop.py). No person and no assistant is
 in the loop while it runs.
 
     python scripts/run_in_mind.py model.xlsm
-    python scripts/run_in_mind.py model.xlsm --work-dir runs\\shlomo --max-iterations 4
+    python scripts/run_in_mind.py model.xlsm --work-dir runs\\model --max-iterations 4
     python scripts/run_in_mind.py model.xlsm --no-run          # convert only, no model run
     python scripts/run_in_mind.py model.xlsm --skip-mind       # local gates only (no browser)
     python scripts/run_in_mind.py model.xlsm --enable fix_broken_refs
 
 Needs: Excel (the prep and the numbers gate go through it), a Mind session
-(`python -m app.mind_client check` -> authenticated: true), and the APIM
-secret.key nearby for assistant grid names (optional; deterministic names
+(`python -m app.mind_client check` -> authenticated: true), and the AI key
+saved in the web app for assistant grid names (optional; deterministic names
 otherwise). Writes <work-dir>/loop_report.json after every iteration.
 Exit code: 0 converged, 1 stuck/exhausted, 2 bad input.
 """
@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
+from app.settings import SETTINGS  # noqa: E402
 
 
 def main() -> int:
@@ -33,7 +34,7 @@ def main() -> int:
     p.add_argument("input")
     p.add_argument("--work-dir", help="where iterations, copies, screenshots and loop_report.json go (default: runs/<stem>_<stamp>)")
     p.add_argument("--max-iterations", type=int, default=4)
-    p.add_argument("--project-prefix", default="zzz_mindready", help="sandbox project names start with this (must start with zzz_)")
+    p.add_argument("--project-prefix", default=SETTINGS.mind_project_prefix, help="sandbox project names start with this (must start with the prefix in settings.yaml)")
     p.add_argument("--enable", action="append", default=[], help="opt-in prep action to force on (repeatable)")
     p.add_argument("--disable", action="append", default=[], help="prep action never to use (repeatable)")
     p.add_argument("--no-assistant", action="store_true", help="deterministic grid names only")
@@ -51,8 +52,8 @@ def main() -> int:
     if source.suffix.lower() not in (".xlsx", ".xlsm", ".xlsb"):
         print(json.dumps({"status": "ERROR", "message": "expected an .xlsx / .xlsm / .xlsb workbook (.xlsb is converted through Excel first)"}, indent=2))
         return 2
-    if not args.project_prefix.startswith("zzz_"):
-        print(json.dumps({"status": "ERROR", "message": "--project-prefix must start with zzz_ (sandbox convention)"}, indent=2))
+    if not args.project_prefix.startswith(SETTINGS.mind_project_prefix):
+        print(json.dumps({"status": "ERROR", "message": f"--project-prefix must start with {SETTINGS.mind_project_prefix} (settings.yaml: the only projects the app may delete)"}, indent=2))
         return 2
 
     work = Path(args.work_dir) if args.work_dir else Path("runs") / f"{source.stem}_{time.strftime('%Y%m%d_%H%M%S')}"

@@ -6,7 +6,7 @@ audits grid names. This one covers the **autonomous loop** (Mind Ready 1.6.8):
 you point the app at a raw model and walk away; it comes back with a converged
 workbook and a report, or with the exact reason it could not get there.
 
-It reproduces the run that took the raw Shlomo model to *converged* on
+It reproduces the run that took a raw client model (UC-6) to *converged* on
 2026-08-30 with nobody in the loop.
 
 ---
@@ -46,7 +46,7 @@ Two rules you should know before reading any result:
 | App at 1.6.8 or later | <http://localhost:8600/api/health> → `"version":"1.6.8"` |
 | Excel installed | same endpoint → `"excel":true` (prep, and both recalculations of the numbers gate, go through it) |
 | A Mind session | `python -m app.mind_client check` → `"authenticated": true`. If not: `python -m app.mind_client login <your /init/… link>` opens Edge; sign in once; the session persists for about a week. Nobody around to sign in? `python scripts/run_after_login.py <workbook>` opens the login window, waits for the sign-in, then runs the loop by itself (Part B2) |
-| Assistant (optional) | health → `"assistant":true` (a `secret.key` found nearby). Without it grid names are deterministic |
+| Assistant (optional) | health → `"assistant":true` (the AI key saved in the web app). Without it grid names are deterministic |
 | The source | `.xlsx` / `.xlsm` / `.xlsb` (`.xlsb` is converted through Excel first) |
 | Disk | about 70 MB per iteration for a 13 MB model (analysis copy, prepared copy, re-analysis copy, two recalculated copies). Put `--work-dir` outside OneDrive |
 | Leave it alone | while it runs it owns the Excel COM session and the Mind browser profile — do not use the Prep / Recalculate screens or `run_in_mind` twice at once |
@@ -59,7 +59,7 @@ The source workbook is never modified. Everything is done on immutable copies.
 
 ```bash
 cd excel-upload-preparation
-python scripts/run_in_mind.py "C:\path\Shlomo_IFRS_Risk_Mind_Copilot.xlsm" --work-dir "C:\loops\shlomo" --max-iterations 4
+python scripts/run_in_mind.py "C:\path\Model.xlsm" --work-dir "C:\loops\model" --max-iterations 4
 ```
 
 Options:
@@ -76,7 +76,7 @@ Options:
 | `--skip-mind` | local gates only; never opens a browser (dry run) | Mind used |
 | `--keep-projects` | do not try to delete sandbox projects afterwards | delete what can be deleted |
 | `--headed` | show the Edge window | headless |
-| `--project-prefix P` | sandbox project name prefix; must start with `zzz_` | `zzz_mindready` |
+| `--project-prefix P` | sandbox project name prefix; must start with `mind.project_prefix` of settings.yaml | that prefix (`zzz_mindready`) |
 
 Exit code: **0** converged · **1** stuck / exhausted · **2** bad input.
 
@@ -92,7 +92,7 @@ What you see, line by line (times are real, from the reference run):
 [13:39:49] iteration 1: recalculating source and prepared copies in Excel
 [13:40:02] iteration 1: numbers match (63174 cells compared, 0 differ, 1 volatile skipped)
 [13:40:03] iteration 1: creating sandbox project zzz_mindready_20260830_133744_i1
-[13:40:40] iteration 1: uploading Shlomo_pristine.xlsm and waiting for Upload / Convert / Test
+[13:40:40] iteration 1: uploading Model.xlsm and waiting for Upload / Convert / Test
 [13:41:12] iteration 1: convert succeeded {'Upload': 'Complete', 'Convert': 'Complete', 'Test': 'Complete'}
 [13:41:24] iteration 1: Mind lists 160 template entries, 51 Untitled; app predicted 75, unexplained 8, app-only 32
 [13:41:24] iteration 1: running the model
@@ -152,12 +152,12 @@ killed run still leaves a record).
 
 ```
 verdict: converged -- every gate passed; Mind lists 51 Untitled grid(s), the app predicted 75: 8 Mind-only, 32 app-only (see detection_gaps)
-source: ...\Shlomo_pristine.xlsm
+source: ...\Model.xlsm
   iter 1: actions=fix_broken_refs,create_grid_titles,explicit_colors | apply=APPLIED | grids 181->155 unnamed=75 blocked=55 | numbers=match | convert=ok run=ok audit=ok | converged: ...
 untitled grids left: app 75 (of which 55 the app cannot title safely), Mind shows 51
 detection gaps vs Mind: 8 untitled grid(s) only Mind sees (AB2, D158, ...), 32 only the app sees
 leftover Mind projects (delete by hand): zzz_mindready_20260830_133744_i1
-final workbook: ...\iter_1\prep\Shlomo_pristine.xlsm
+final workbook: ...\iter_1\prep\Model.xlsm
 ```
 
 ### The three verdicts
@@ -188,7 +188,7 @@ final workbook: ...\iter_1\prep\Shlomo_pristine.xlsm
 - **`detection_gaps`** — `mind_only`: grids Mind lists as `Untitled` that the
   app did not know about; `app_only`: grids the app split that Mind reads as
   part of a larger block. Mind's grid detection differs from the app's in some
-  layouts (on Shlomo, Mind starts several blocks one column later than the app
+  layouts (on one client model, Mind starts several blocks one column later than the app
   does). This is a limitation of the app's detection, not of your workbook.
 - **`leftover_projects`** — sandbox projects that were *run*; Mind's
   automation cannot delete those (Part F).
@@ -220,7 +220,7 @@ Mind's *consistent with the audit trail* only says that Mind computed what the
 prepared workbook still computes what the **original** did. The first
 unattended run showed the difference: titling had changed **790 values** —
 a `#Title` written into column A of the policy table was counted by
-`Cashflows!D5 =COUNTA(CoverageDetails!A:A)`, the `MATCH` over `$C:$C` shifted,
+`Calc!D5 =COUNTA(Policies!A:A)`, the `MATCH` over `$C:$C` shifted,
 and the model priced a *different policy* — and Mind ran that workbook and
 called it consistent.
 
@@ -249,9 +249,9 @@ The rules that came out of that first run now live in the planner and fire
 before anything is written — each refusal appears in `names.blocked` with the
 reading formula:
 
-- `... is read by Cashflows!D5 -- a title there would change that result`
-- `... inserting a row would shift what Cashflows!M4 counts or indexes over whole columns of this sheet`
-- `... label kept in place (its text became the title of ...) because CoverageDetails!A1 reads it`
+- `... is read by Calc!D5 -- a title there would change that result`
+- `... inserting a row would shift what Calc!M4 counts or indexes over whole columns of this sheet`
+- `... label kept in place (its text became the title of ...) because Policies!A1 reads it`
 - `... the caption is read by ... -- turning it into a title would change that result`
 
 ---
@@ -270,7 +270,7 @@ every sandbox project is deletable and nothing is left behind.
 
 ---
 
-## Reference run — the raw Shlomo model, 2026-08-30
+## Reference run — a raw client model (UC-6), 2026-08-30
 
 | | Run 1 | Run 2 (after the fixes run 1 forced) |
 |---|---|---|
@@ -278,7 +278,7 @@ every sandbox project is deletable and nothing is left behind.
 | Iteration 2 | numbers match; Convert ✓ Run ✓ audit ✓; `stuck` on counts (Mind 154 Untitled vs app 181) | — |
 | Outcome | two app changes: reference-safety rules in the planner; counts gate reported, not enforced | **converged** in one iteration |
 | Untitled in Mind | 154 | 51 (8 Mind-only, 32 app-only detection gaps) |
-| Kept under | — | `runs/shlomo_20260830_converged/` |
+| Kept under | — | a local `runs/` folder (not in the repository) |
 
 ---
 
@@ -287,7 +287,7 @@ every sandbox project is deletable and nothing is left behind.
 | Symptom | Cause / fix |
 |---|---|
 | `authenticated: false` | `python -m app.mind_client login <init link>`; sign in in the Edge window once |
-| The log says `assistant unavailable` | no `secret.key` nearby; names are deterministic — the run is still valid |
+| The log says `assistant unavailable` | no AI key saved (paste it in the web app); names are deterministic — the run is still valid |
 | `409 a Mind loop is already running` | one loop at a time; wait for it or restart the server |
 | Convert waits the full 7 minutes then fails | Mind's wizard never finished; check `iter_N/mind/convert.png` |
 | `Mind lists 0 template entries (selector could not be read)` | the `<stem> ▾` selector did not open; the counts gate is skipped for that iteration, nothing else is affected |

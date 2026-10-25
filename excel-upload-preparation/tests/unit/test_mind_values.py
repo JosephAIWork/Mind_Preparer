@@ -1,11 +1,11 @@
 """1.8.1: two places where Mind computes another value than Excel (app/validators/mind_values.py).
 
-Found by uploading a model that recalculates clean in Excel (Horizon) and
+Found by uploading a model that recalculates clean in Excel (UC-1) and
 confirmed in Mind with a 49-cell test workbook:
 
   FRM-008  =IFERROR(1+INT((D192-1)/12),"") with D192 = "": blank in Excel, a number in Mind
   FRM-009  =IF(D35<=$H$9,0,1) with H9 = a VLOOKUP that lands on an empty cell: 1 in Excel, 0 in Mind
-  FRM-010  =1+(...)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),...) with F192 = "": Excel finds nothing,
+  FRM-010  =1+(...)*IFERROR(VLOOKUP(F192,Criteria!$N$11:$O$33,2,0),...) with F192 = "": Excel finds nothing,
            Mind matches the empty header cell N11 and returns the header text -- NaN
 """
 from pathlib import Path
@@ -59,12 +59,12 @@ def _model(path: Path) -> Path:
     c["M8"], c["M9"], c["M10"] = '=IF(B1=2,"",0)', "=1/0", 6                     # "" on row 8, an error on row 9
     for r in range(5, 11):
         c[f"L{r}"] = f"=IFERROR(M{r}*2,0)"                                     # one block: row 8 needs the test, row 9 must be left alone
-    rates = wb.create_sheet("Rates")                            # a table whose first header cell is empty, as Horizon's Criteres!N11:O33
+    rates = wb.create_sheet("Rates")                            # a table whose first header cell is empty, as in UC-1
     rates["B1"] = "Loading"
     for i, (age, loading) in enumerate(((50, 1.08), (51, 1.09), (52, 1.1), (53, 1.11), (54, 1.12), (55, 1.15)), start=2):
         rates[f"A{i}"], rates[f"B{i}"] = age, loading
     for r in range(5, 11):
-        c[f"J{r}"] = f"=1+($B$1=9)*IFERROR(VLOOKUP(E{r},Rates!$A$1:$B$7,2,0),IF(E{r}<50,Rates!$B$2,Rates!$B$7))"   # Horizon's column T: the key E is "" on rows 8-10
+        c[f"J{r}"] = f"=1+($B$1=9)*IFERROR(VLOOKUP(E{r},Rates!$A$1:$B$7,2,0),IF(E{r}<50,Rates!$B$2,Rates!$B$7))"   # as in UC-1: the key E is "" on rows 8-10
         c[f"K{r}"] = f"=IFERROR(VLOOKUP(E{r},Loans!A:C,2,0),0)"                                                  # the same key, but no empty cell in Loans!A to match
     wb.save(path)
     wb.close()
@@ -106,7 +106,7 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     # the three rows where D is "", the rest of that filled-down block, and the IFERROR inside a larger formula
     assert set(sites) == {"E5", "E6", "E7", "E8", "E9", "E10", "H9", "L5", "L6", "L7", "L8", "L9", "L10"}   # not the lookups: those are FRM-010's
     assert [c for c, s in sites.items() if s["blank_now"]] == ["E8", "E9", "E10", "H9", "L8"]
-    # row 9 of the L block reads an error: IF(#DIV/0!="",...) would be #DIV/0! where IFERROR gave 0 -- left alone (PVFP, 19 values changed)
+    # row 9 of the L block reads an error: IF(#DIV/0!="",...) would be #DIV/0! where IFERROR gave 0 -- left alone (UC-4, 19 values changed)
     assert sites["L9"]["suggested_formula"] is None and "holds an error" in sites["L9"]["issue"]
     assert sites["L8"]["suggested_formula"] == '=IF(M8="",0,IFERROR(M8*2,0))' and sites["L10"]["suggested_formula"] == '=IF(M10="",0,IFERROR(M10*2,0))'
     assert sites["E8"]["suggested_formula"] == '=IF(D8="","",IFERROR(1+INT((D8-1)/12),""))'
@@ -179,7 +179,7 @@ def test_the_test_for_empty_text_goes_in_front_of_each_iferror():
 
 
 def test_a_line_break_inside_a_string_literal_is_written_as_char10():
-    """1.8.5 -- FRM-011 (CNHI, Wave!P38: another text in Mind; with CHAR(10) the same)."""
+    """1.8.5 -- FRM-011 (UC-3: another text in Mind; with CHAR(10) the same)."""
     assert mind_values.line_breaks_as_char('=BB62&"\n/ Beneficiary - "&D8') == '=BB62&"&CHAR(10)&"/ Beneficiary - "&D8'.replace('"&CHAR(10)&"/', 'CHAR(10)&"/') or True
     assert mind_values.line_breaks_as_char('=BB62&"\n/ Beneficiary - "&D8') == '=BB62&CHAR(10)&"/ Beneficiary - "&D8'
     assert mind_values.line_breaks_as_char('="a\nb\r\nc"') == '="a"&CHAR(10)&"b"&CHAR(13)&CHAR(10)&"c"'
@@ -213,13 +213,13 @@ def test_the_line_break_rewrite_gives_the_same_text_in_excel(tmp_path):
 
 @needs_excel
 def test_a_formula_that_asks_excel_about_itself_is_frozen_to_what_it_shows(tmp_path):
-    """1.8.7 -- FRM-012 (Palermo, 'Saved down'!C5: CELL("filename") stopped Mind's run)."""
+    """1.8.7 -- FRM-012 (UC-2: CELL("filename") stopped Mind's run)."""
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Saved down"
+    ws.title = "Saved paths"
     from openpyxl.worksheet.formula import ArrayFormula
 
-    ws["B2"], ws["C2"] = "Directory", ArrayFormula("C2", '=LEFT(CELL("filename",A1),FIND("[",CELL("filename",A1))-1)')  # a one-cell array, as in Palermo (1.8.12)
+    ws["B2"], ws["C2"] = "Directory", ArrayFormula("C2", '=LEFT(CELL("filename",A1),FIND("[",CELL("filename",A1))-1)')  # a one-cell array, as in UC-2 (1.8.12)
     ws["B5"], ws["C5"] = "Spreadsheet", '=MID(CELL("filename",A1),FIND("[",CELL("filename",A1))+1,FIND("]",CELL("filename",A1))-FIND("[",CELL("filename",A1))-1)'
     ws["C6"] = "=C2&C5"
     ws["C7"] = "=LEN(C5)"
@@ -240,9 +240,64 @@ def test_a_formula_that_asks_excel_about_itself_is_frozen_to_what_it_shows(tmp_p
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-012")["status"] == "PASS"
 
 
+def _environment_workbook(folder: Path) -> Path:
+    """CELL("filename") cells as in UC-2: the folder (C2) and the file name (C5),
+    calculated by Excel where the file lies."""
+    folder.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Saved paths"
+    ws["C2"] = '=LEFT(CELL("filename",A1),FIND("[",CELL("filename",A1))-1)'
+    ws["C5"] = '=MID(CELL("filename",A1),FIND("[",CELL("filename",A1))+1,FIND("]",CELL("filename",A1))-FIND("[",CELL("filename",A1))-1)'
+    ws["C6"] = "=C2&C5"
+    p = folder / "env.xlsx"
+    wb.save(p)
+    wb.close()
+    return _calculated(p)
+
+
+@needs_excel
+def test_frm012_never_writes_the_apps_working_folder_and_prefers_the_originals_values(tmp_path):
+    """1.11.10's leftover: 'Saved paths'!C2 was frozen to the app's temporary folder (with the Windows
+    user's name in it), because the app's Excel had saved the version there."""
+    src = _environment_workbook(tmp_path / "mind_ready_abc" / "apply")  # where the app's Excel saves versions
+    analysis = build_analysis(src, tmp_path / "w", "e")
+    f = _finding(analysis, "FRM-012")
+    assert "working folder" in f["message"] and "mind_ready_abc" not in f["message"]
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["freeze_environment_formulas"]
+    assert [o["cell"] for o in a["operations"]] == ["C5"]
+    assert any(x.startswith("Saved paths!C2") and "working folder" in x for x in a["skipped"])
+    # what the original upload shows (the user's own Excel saved it) wins
+    analysis["original_environment_values"] = {"Saved paths!C2": "L:\\Models\\", "Saved paths!C5": "model v1.xlsx"}
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["freeze_environment_formulas"]
+    assert {o["cell"]: o["after"] for o in a["operations"]} == {"C2": '="L:\\Models\\"', "C5": '="model v1.xlsx"'}
+
+
+@needs_excel
+def test_the_server_freezes_cell_filename_to_what_the_original_upload_shows(tmp_path):
+    """The original's values follow their cells into later versions (a row inserted above them),
+    whatever the version the app's Excel saved in its own folder shows."""
+    from fastapi.testclient import TestClient
+
+    from app.web import server
+
+    src = _environment_workbook(tmp_path / "user folder")
+    shown = str(tmp_path / "user folder") + "\\"
+    client = TestClient(server.app)
+    with open(src, "rb") as fh:
+        body = client.post("/api/sessions", files={"file": (src.name, fh, "application/octet-stream")}, data={"mode": "plan"}).json()
+    plan = {a["id"]: a for a in body["plan"]}["freeze_environment_formulas"]
+    assert {o["cell"]: o["after"] for o in plan["operations"]} == {"C2": f'="{shown}"', "C5": '="env.xlsx"'}
+    out = client.post(f"/api/sessions/{body['sessionId']}/apply", json={"operations": [{"op": "insert_row", "sheet": "Saved paths", "row": 1}], "reanalyze": True}).json()
+    assert out["result"]["status"] == "APPLIED"
+    plan = {a["id"]: a for a in out["plan"]}["freeze_environment_formulas"]
+    assert {o["cell"]: o["after"] for o in plan["operations"]} == {"C3": f'="{shown}"', "C6": '="env.xlsx"'}
+    assert all("original upload" in o["note"] for o in plan["operations"])
+
+
 @needs_excel
 def test_an_error_cell_kept_on_purpose_stays_an_error_in_mind(tmp_path):
-    """1.8.9 -- FRM-013 (PVFP, 'LoB 1'!AB78 = AB77-AB84: #VALUE! in Excel, a number in Mind)."""
+    """1.8.9 -- FRM-013 (UC-4, 'Line 1'!AB78 = AB77-AB84: #VALUE! in Excel, a number in Mind)."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Calc"
@@ -270,7 +325,7 @@ def test_an_error_cell_kept_on_purpose_stays_an_error_in_mind(tmp_path):
 
 @needs_excel
 def test_a_blank_text_inside_a_range_in_array_arithmetic_is_named_in_the_test(tmp_path):
-    """1.8.10 -- FRM-008 on a range (PVFP, 'LoB 1'!H57 = IFERROR(SUMPRODUCT(I53:DL53*(...)),"")); test workbook 6:
+    """1.8.10 -- FRM-008 on a range (UC-4, 'Line 1'!H57 = IFERROR(SUMPRODUCT(I53:DL53*(...)),"")); test workbook 6:
     no range test tells "" from empty in Mind, a cell="" test does."""
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -300,7 +355,7 @@ def test_a_blank_text_inside_a_range_in_array_arithmetic_is_named_in_the_test(tm
 
 
 def test_an_isnumber_or_iserror_guard_counts_like_iferror(tmp_path):
-    """1.8.11 -- PVFP, Reporting_General!I23 = IF(ISNUMBER('LoB 1'!H171*NOT(LoB3_Boolean)),...,""): "" in Excel
+    """1.8.11 -- UC-4, Reporting!I23 = IF(ISNUMBER('Line 1'!H171*NOT(Line3_Boolean)),...,""): "" in Excel
     (the product is #VALUE!, ISNUMBER says FALSE), 0 in Mind (test workbook 7)."""
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -329,8 +384,8 @@ def test_an_isnumber_or_iserror_guard_counts_like_iferror(tmp_path):
 
 
 def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin(tmp_path):
-    """1.8.12 -- Palermo, 'Non-economic assumptions'!D67 = VLOOKUP(Policy_tariff,Assumptions_array,MATCH(B67,
-    Assumption_headings,0),FALSE) lands on an empty cell: 0 in Excel, empty in Mind; ME_Table=0 (a name on a cell
+    """1.8.12 -- UC-2, 'Other assumptions'!D67 = VLOOKUP(Policy_group,Assumptions_array,MATCH(B67,
+    Assumption_headings,0),FALSE) lands on an empty cell: 0 in Excel, empty in Mind; Switch_Table=0 (a name on a cell
     that reads it) is then FALSE in Mind, and the run stops in the branch Excel never takes."""
     from openpyxl.workbook.defined_name import DefinedName
 
@@ -338,15 +393,15 @@ def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin
     inp = wb.active
     inp.title = "Inputs"
     inp["B3"], inp["C3"] = "Tariff", "A"
-    for c, h in zip("BCD", ("Tariff", "X", "ME table")):
+    for c, h in zip("BCD", ("Tariff", "X", "Switch table")):
         inp[f"{c}5"] = h
     inp["B6"], inp["C6"] = "A", 1                                  # D6 stays empty
     inp["B7"], inp["C7"], inp["D7"] = "B", 2, 5
     calc = wb.create_sheet("Calc")
-    calc["A3"], calc["B3"] = "ME table", '=VLOOKUP(Policy_tariff,Assumptions_array,MATCH(A3,Assumption_headings,0),FALSE)'
-    calc["A4"], calc["B4"] = "copy", "=ME_Table"
-    calc["A5"], calc["B5"] = "switch", "=IF(ME_Table=0,0,1)"
-    for name, ref in (("Policy_tariff", "Inputs!$C$3"), ("Assumptions_array", "Inputs!$B$6:$D$7"), ("Assumption_headings", "Inputs!$B$5:$D$5"), ("ME_Table", "Calc!$B$3")):
+    calc["A3"], calc["B3"] = "Switch table", '=VLOOKUP(Policy_group,Assumptions_array,MATCH(A3,Assumption_headings,0),FALSE)'
+    calc["A4"], calc["B4"] = "copy", "=Switch_Table"
+    calc["A5"], calc["B5"] = "switch", "=IF(Switch_Table=0,0,1)"
+    for name, ref in (("Policy_group", "Inputs!$C$3"), ("Assumptions_array", "Inputs!$B$6:$D$7"), ("Assumption_headings", "Inputs!$B$5:$D$5"), ("Switch_Table", "Calc!$B$3")):
         wb.defined_names[name] = DefinedName(name, attr_text=ref)
     p = tmp_path / "names.xlsx"
     wb.save(p)
@@ -356,8 +411,8 @@ def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin
     f = _finding(analysis, "FRM-009")
     origins = {s["cell"]: s for s in f["observed"]["sites"] if s["kind"] == "lands_on_empty"}
     assert set(origins) == {"B3"} and origins["B3"]["lands_on"] == "Inputs!D6"   # B4 lands there too but nothing reads B4
-    assert origins["B3"]["suggested_formula"] == "=N(VLOOKUP(Policy_tariff,Assumptions_array,MATCH(A3,Assumption_headings,0),FALSE))"
-    assert origins["B3"]["first_reader"]["cell"] == "name ME_Table"
+    assert origins["B3"]["suggested_formula"] == "=N(VLOOKUP(Policy_group,Assumptions_array,MATCH(A3,Assumption_headings,0),FALSE))"
+    assert origins["B3"]["first_reader"]["cell"] == "name Switch_Table"
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["empty_cells_as_zero"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED"

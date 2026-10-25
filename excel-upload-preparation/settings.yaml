@@ -1,0 +1,28 @@
+# Mind Ready settings. Change a value, then restart the app (close the server window, start it again).
+# A line left out means the value shown here.
+
+# The app opens at http://localhost:<port>
+port: 8600
+
+# Where the app keeps its own files on this machine: the saved AI key, the Mind sign-in, timing logs.
+data_folder: "%LOCALAPPDATA%\\MindReady"
+
+# The API's technical pages (/docs, /openapi.json): for developers only.
+api_pages: false
+
+# The Milliman AI gateway, used by the assistant. The key is pasted in the app, never written here.
+ai_gateway:
+  endpoint: https://apim-aiservices-prod-01.azure-api.net
+  model: claude-sonnet-5
+
+# Milliman Mind, used by Run in Mind.
+mind:
+  site: https://shared.milliman-mind.com
+  mcp_url: https://vm-prod.milliman-mind.com/api/chatbot/mcp
+  # The app creates its test projects only in this folder, and only with names starting with the prefix.
+  # It deletes only projects whose name starts with the prefix.
+  sandbox_folder: MindReady_Sandbox
+  project_prefix: zzz_mindready
+
+# The MM for Excel add-in (.xll). Empty: the one in Excel's own add-in list, else the default install folder.
+mm_for_excel_addin: ""

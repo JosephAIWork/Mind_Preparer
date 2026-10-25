@@ -93,7 +93,7 @@ class LoopConfig:
     source: Path
     work_dir: Path
     max_iterations: int = 4
-    project_prefix: str = "zzz_mindready"
+    project_prefix: str = mc.PROJECT_PREFIX
     folder: str = mc.SANDBOX_FOLDER
     headed: bool = False
     use_assistant: bool = True

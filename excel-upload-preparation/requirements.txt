@@ -4,7 +4,6 @@ pydantic>=2.9
 jsonschema>=4.20
 pywin32>=306; sys_platform == "win32"
 requests>=2.31
-cryptography>=42.0
 fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9

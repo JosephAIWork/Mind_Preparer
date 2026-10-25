@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Run every active rule against one xlsx/xlsm file and print a schema-valid
-ValidationReport. Deterministic-only in this MVP -- see CHANGELOG.md 1.1.0
-for what is/isn't implemented yet (unimplemented rules report NOT_SUPPORTED,
-never a silently-skipped PASS).
+ValidationReport. Deterministic only: a rule without a real check reports
+NOT_SUPPORTED, never a silently-skipped PASS.
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """Check a Mind loop as DATA through Mind's MCP server (optional; needs a token, see app/mind_mcp.py).
 
-    python scripts/mind_mcp_loop_check.py <project link or GUID> --source "CALCUL!AY35:BH35" [--loop BASE_Polices]
+    python scripts/mind_mcp_loop_check.py <project link or GUID> --source "Calc!AY35:BH35" [--loop Policies]
         [--check check.json] [--expect-size N] [--no-run] [--save] [--out result.json]
 
 By default it starts a classic run first (a project's saved results are often none: the browser runs have

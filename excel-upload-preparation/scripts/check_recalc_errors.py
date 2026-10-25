@@ -8,7 +8,6 @@ cells both ways, timing each. Exit 0 when both ways find the same cells, in the 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 import time
@@ -18,11 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.excel_com import close_quietly, excel_session, open_workbook  # noqa: E402
 from app.recalc import _error_cells, _errors_in_block  # noqa: E402
+from app.settings import SETTINGS  # noqa: E402
 
 
 def main() -> int:
     src = Path(sys.argv[1]).resolve()
-    work = Path(os.environ.get("LOCALAPPDATA", ".")) / "MindReady" / "perf" / "work"
+    work = SETTINGS.data_folder / "perf" / "work"
     work.mkdir(parents=True, exist_ok=True)
     copy = work / f"errors_{src.name}"
     shutil.copy2(src, copy)

@@ -2,7 +2,7 @@ c# Runbook — prep a workbook and run it in Milliman Mind
 
 End-to-end: take a raw model workbook, fix it with the local **Mind Ready** app,
 then upload it to **Milliman Mind**, convert it, and run it. This reproduces the
-result achieved on `Shlomo_IFRS_Risk_Mind_Copilot` (converts + runs cleanly).
+result achieved on a client IFRS risk model (converts + runs cleanly).
 
 Two rules to remember up front:
 - **Mind only accepts `.xlsx` / `.xlsm`** (not `.xlsb`). If your model is `.xlsb`,
@@ -19,7 +19,7 @@ Two rules to remember up front:
    (Header check: it's v1.6.6 / 96 rules.)
 2. **Workbook screen → upload** your `.xlsm` (drag it onto the drop zone or
    *Load workbook*). The app analyses it and lands on **Findings**.
-3. **Findings** — review what it caught. On the Shlomo model you'll see, among
+3. **Findings** — review what it caught. On that model you'll see, among
    others: **REF-001** (broken `#REF!` references — the conversion blocker),
    **REP-001** (value reconciliation), plus WARNINGs. No `FILTER` error anymore.
 4. **Prep screen → turn on the fixes and Apply.** In the prep action list, make

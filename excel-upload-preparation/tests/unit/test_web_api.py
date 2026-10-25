@@ -358,7 +358,7 @@ def test_grid_names_endpoint_proposes_names_and_folds_them_into_the_plan(client,
 
 def test_grid_names_endpoint_survives_an_unavailable_assistant(client, section_heading_grids_xlsx, monkeypatch):
     body = _upload(client, section_heading_grids_xlsx)
-    monkeypatch.setattr(server, "suggest_names", lambda contexts, **kw: {"available": False, "names": {}, "message": "no secret.key found nearby"})
+    monkeypatch.setattr(server, "suggest_names", lambda contexts, **kw: {"available": False, "names": {}, "message": "no AI key saved"})
     out = client.post(f"/api/sessions/{body['sessionId']}/grid-names", json={}).json()
     assert out["available"] is False and out["names"] == [] and out["applied"] is False
 
@@ -677,10 +677,10 @@ def test_mind_loop_plan_route_previews_and_writes_the_loop(client, tmp_path, mon
     import openpyxl
 
     from app import model_map
-    from tests.unit.test_loop_builder import HORIZON_STYLE, _horizon_book
+    from tests.unit.test_loop_builder import ROW_LOOP_STYLE, _row_loop_book
 
-    path = _horizon_book(tmp_path, last_as_formula=False)
-    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("Module1", HORIZON_STYLE)])
+    path = _row_loop_book(tmp_path, last_as_formula=False)
+    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("Module1", ROW_LOOP_STYLE)])
     sid = _upload(client, path)["sessionId"]
     body = client.get(f"/api/sessions/{sid}/mind-loop-plan").json()
     plan = body["plan"]
@@ -699,8 +699,8 @@ def test_mind_loop_plan_route_previews_and_writes_the_loop(client, tmp_path, mon
     # 1.10.1: saved with the MM for Excel add-in loaded, the file stores the call as `_xll.MM_LOOP(` (Excel's storage prefix, stripped on read)
     from app.formula_utils import STORAGE_PREFIX_RE
 
-    assert STORAGE_PREFIX_RE.sub("", written["CALCUL"]["A2"].value) == "=MM_LOOP(\"Policy\",'BASE Polices'!A2:INDEX('BASE Polices'!A:A,MM_LASTROW('BASE Polices'!A2)))"
-    assert STORAGE_PREFIX_RE.sub("", written["OUTPUT"]["A2"].value) == '=MM_RESULT(CALCUL!$E$10,"Policy",1)'
+    assert STORAGE_PREFIX_RE.sub("", written["Calculation"]["A2"].value) == "=MM_LOOP(\"Policy\",'Policy Data'!A2:INDEX('Policy Data'!A:A,MM_LASTROW('Policy Data'!A2)))"
+    assert STORAGE_PREFIX_RE.sub("", written["OUTPUT"]["A2"].value) == '=MM_RESULT(Calculation!$E$10,"Policy",1)'
     written.close()
     assert client.get("/api/sessions/nope/mind-loop-plan").status_code == 404
 

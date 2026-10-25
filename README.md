@@ -1,108 +1,143 @@
-# Mind Preparer
+# Mind Ready
 
-Gets an actuarial Excel model ready for **Milliman Mind** — and proves it.
+Gets an Excel model ready for **Milliman Mind**. It fixes the formula errors, makes the formulas and the
+structure acceptable to Mind, and turns the model's macro run loop into a Mind loop (`MM_LOOP` /
+`MM_RESULT`). After each step it recalculates in Excel to show that the model's numbers did not change.
 
-The app reads a workbook, checks it against 96 readiness rules mined from the
-Mind knowledge base, applies the fixes you approve through Excel itself (so real
-workbooks with data models and VBA survive), recalculates to prove nothing
-changed, names grids from their context, and — if you let it — uploads the
-result to real Mind, converts it, runs it, and reports back, with nobody in the
-loop.
+Your original file is never changed. Every step writes a new version that you download.
+
+This is a first version shared for feedback. Please tell us what works, what does not, and what is
+missing (see [Feedback](#feedback)).
+
+## What you need
+
+- **Windows** with **desktop Excel**. The app writes workbooks through Excel itself, because saving a
+  real model any other way can damage it.
+- The **MM for Excel add-in**. The app loads it into its own Excel session. Without it, every `MM_`
+  formula shows `#NAME?` and the app cannot confirm the workbook is ready.
+- **Python 3.11 or later** (tested on 3.13). When installing it, tick *Add python.exe to PATH*.
+- **Microsoft Edge**, only for running in Mind from the app.
+- **A key for the Milliman AI gateway**, only for the assistant (see [The AI key](#the-ai-key)).
+
+## Install (once)
+
+Open a command prompt and run:
+
+<!-- TODO: the new repository's URL -->
+```bat
+git clone <repository URL> MindReady
+cd MindReady\excel-upload-preparation
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+## Start
+
+Double-click `excel-upload-preparation\run_mind_ready_web.bat`. A server window opens and then the app
+opens in your browser at <http://localhost:8600>. The browser tab shows the version, for example
+*Mind Ready 1.11.10*.
+
+To stop the app, close the server window. If port 8600 is taken, change `port` in the settings (below).
+
+The app runs only on your machine (`127.0.0.1`). Nothing is sent anywhere except the assistant's
+questions to the AI gateway and, when you choose it, your workbook to Mind.
+
+## Settings
+
+Everything you might need to change is in `excel-upload-preparation\settings.yaml`, each line explained
+in the file: the port, the folder where the app keeps its own files, the AI gateway, the Mind addresses,
+the Mind folder and project names it uses, and where the MM for Excel add-in is. The values in the file
+work as they are. After a change, restart the app. If a line is wrong, the app does not start and the
+server window names the line.
+
+## Use it
+
+1. **Open a workbook** (`.xlsx`, `.xlsm` or `.xlsb`). For a large file the app first asks whether to
+   skip some sheets. Skipped sheets are left exactly as they are.
+2. Click **Do everything**. It runs four steps, each followed by its check, and stops at the first check
+   that fails:
+   - **Fix all issues**: finds the cells where errors start, gives each a value to fall back on, and
+     undoes any fix that changed a value that was correct. Errors it cannot fix are listed with the
+     reason.
+   - **Fix the formulas** and the structure: every change Mind needs before it accepts the file, such
+     as grid titles starting with `#`, frozen external links and pivot tables turned into values.
+   - **Build the Mind loop**: the loop the workbook's macro runs, written as `MM_LOOP` / `MM_RESULT`.
+   - **Recalculate** in Excel with the MM for Excel add-in, and compare the numbers with the original.
+
+   You can also run the steps one at a time with their own buttons.
+3. **Download this version**. You can also download the report on its own, or the workbook with the
+   report added as sheets.
+
+Everything else is under **Advanced**: the findings rule by rule, the individual fixes to tick or untick,
+the Mind loop choices, the Model map (where the inputs, the loop and the outputs are), the Grid Namer, the
+assistant, Run in Mind, and every version made so far.
+
+## The AI key
+
+The assistant (grid names from context, the chat, explaining and suggesting fixes) uses the Milliman AI
+gateway with your own key. The app does **not** need it for the main steps.
+
+When no key is saved, the main screen and **Advanced > Assistant** show a box to paste it in. The app
+first checks the key with the gateway and does not save a key the gateway refuses. It saves the key
+encrypted for your Windows account in the app's data folder (`%LOCALAPPDATA%\MindReady` unless the
+settings say otherwise), so only you on this machine can read
+it. After that the app shows only the key's last 4 characters, with a button to replace it.
+
+The assistant only advises. Nothing it suggests is applied until you click Apply.
+
+## Run in Mind (optional)
+
+The app can upload a prepared workbook to Mind, convert it, run it and report back. First sign in once
+from the `excel-upload-preparation` folder:
+
+```bat
+python -m app.mind_client login <the /init/ link of any Mind project you can open>
+python -m app.mind_client check
+```
+
+`check` should say `"authenticated": true`. The sign-in lasts about a week. When it expires, run `login`
+again.
+
+The app works only inside a folder called `MindReady_Sandbox`, which it creates if needed. It names its
+projects `zzz_mindready_…` and never touches any other project. Test projects that never got as far as a
+run are deleted afterwards. Both names can be changed in the settings.
+
+## Known limits
+
+- **Windows and desktop Excel only.**
+- **The Mind loop is built only from a loop the macro already runs.** The app does not invent loops or
+  decide where a loop or instances would help.
+- **`MM_INSTANCE(cell, k)` with k above 1** shows 0 in Mind's upload check before the first run. That is
+  a false alarm: after a run, Mind shows the right values.
+- **Pivot tables:** Mind does not accept them, so the app turns them into values. The choice is under
+  Advanced, on the Prep screen.
+- **External links** are frozen to the values Excel last kept for them.
+- **Large models** take several minutes per step. The largest ones tested needed about 7 GB of free
+  memory on top of Excel.
+
+## Feedback
+
+Please send feedback to **Joseph Gestetner**, Milliman Tel Aviv: <!-- TODO: work email --> `<email>`.
+
+The most useful feedback includes:
+
+- the version shown on the browser tab;
+- what you did, what you expected, and what happened, with a screenshot;
+- the report (**Download the report**), and the workbook if you are allowed to share it.
 
 ## What is in this repository
 
 | Folder | What it is |
 |---|---|
-| `excel-upload-preparation/` | The app: FastAPI backend, rules, validators, prep engine, Excel/Mind automation, tests, docs. **Start here.** |
-| `MindReadyUI/` | The Angular + Carbon front-end (1.11.0). Its built `dist/` is committed, so you do not need Node to run the app. |
-| `FigmaOutput/` | The retired React front-end, kept for reference (`MIND_READY_DIST` can still serve its `dist/`). |
-| `0*_*.md` | The Mind knowledge-base documents the rules were mined from. Reference only — the app does not read them at runtime. |
+| `excel-upload-preparation/` | The app: server, rules, checks, fixes, Excel and Mind automation. |
+| `MindReadyUI/` | The screens (Angular, Carbon). The built version is included, so you do not need Node. |
+| `0*_*.md` | The Mind knowledge-base documents the rules were drawn from. The app does not read them while it runs. |
 
-The backend serves the front-end from `../MindReadyUI/dist/mind-ready-ui/browser`, which is why the
-two folders ship together.
+### For developers
 
-## Run it (Windows)
-
-Requirements on the machine: **Windows**, **Microsoft Excel**, **Python 3.11+**.
-For the Mind automation, **Microsoft Edge** as well. Node is not required.
-
-```bat
-git clone https://github.com/JosephAIWork/Mind_Preparer.git
-cd Mind_Preparer\excel-upload-preparation
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-run_mind_ready_web.bat
-```
-
-That opens <http://localhost:8600>. Check <http://localhost:8600/api/health>:
-
-```json
-{"version":"1.7.0","excel":true,"assistant":false,"rules":96,"frontend":true}
-```
-
-- `excel:true` — Excel is reachable through COM. Without it the app analyses
-  and reports but will not write workbooks (a pure-Python save corrupts real
-  models, so it refuses rather than guesses).
-- `frontend:true` — the built UI was found. If it says `false`, set
-  `MIND_READY_DIST` to the path of the build, or rebuild it with
-  `cd MindReadyUI && npm install && npx ng build --configuration production`.
-- `assistant:false` — expected on a fresh machine; see the next section.
-
-Then: **Workbook** → upload → **Findings** → **Prep** (tick what you approve,
-Apply) → **Download** in the sidebar. To name grids yourself, **Grid Namer**:
-drag over an area of the sheet, type a name, tick flags, Submit — everything
-you did not touch is named by the usual conventions. Full walkthrough:
-[`excel-upload-preparation/docs/RUN_IN_MIND.md`](excel-upload-preparation/docs/RUN_IN_MIND.md).
-
-## Optional pieces
-
-**The assistant** (grid names from context, the chat, formula-fix suggestions)
-uses the Milliman APIM Claude gateway. It needs a `secret.key` (a Fernet key)
-with a sibling `config.enc` (the encrypted APIM subscription key), placed in
-the repository root or any folder up to four levels above `excel-upload-preparation`.
-Without it, every feature still works with deterministic names and the
-assistant reports itself unavailable. Never commit these files — they are in
-`.gitignore`.
-
-**Real Mind** (the *Mind* screen and `scripts/run_in_mind.py`) drives the
-Milliman Mind web app through its own Edge profile. Log in once:
-
-```bat
-python -m app.mind_client login https://shared.milliman-mind.com/init/71/<your-project-id>
-python -m app.mind_client check      # -> "authenticated": true
-```
-
-The session is kept under `%LOCALAPPDATA%\MindReady` on that machine. What the
-autonomous loop does and how to read its report:
-[`docs/RUN_IN_MIND_LOOP.md`](excel-upload-preparation/docs/RUN_IN_MIND_LOOP.md).
-
-## Tests
-
-```bat
-cd excel-upload-preparation
-python -m pytest tests -q
-```
-
-135 tests. The ones that write through Excel or recalculate skip themselves on
-a machine without Excel (so the suite also runs on Linux — it just proves less
-there).
-
-## Working on it without Excel or Mind (e.g. a cloud sandbox)
-
-Everything in Python is editable and unit-testable anywhere; the front-end
-builds anywhere with Node. What cannot run outside Windows-with-Excel: applying
-prep to a workbook, the recalculation gate, and the Mind loop. Treat green
-tests on Linux as "the logic holds", not as "the workbook is proven" — that
-proof needs Excel.
-
-## Documents worth reading
-
-- `excel-upload-preparation/README.md` — architecture, rule set, what each phase does
-- `excel-upload-preparation/CHANGELOG.md` — every change with the reasoning, newest first
-- `docs/RUN_IN_MIND.md`, `docs/RUN_IN_MIND_NAMING.md`, `docs/RUN_IN_MIND_LOOP.md` — the three runbooks
-
-## What is deliberately not here
-
-Client workbooks, run outputs, change logs, secrets and Mind sessions are
-excluded by `.gitignore`. Keep it that way.
+- **Tests:** `pip install -r requirements-dev.txt`, then `python -m pytest tests -q` from
+  `excel-upload-preparation`. With Excel the full run takes about 50 minutes. Without Excel, the tests
+  that need it skip themselves.
+- **Rebuilding the screens:** `npm install` and then `npx ng build --configuration production` in
+  `MindReadyUI`.

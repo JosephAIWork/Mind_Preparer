@@ -9,32 +9,32 @@ value, it is the reading that fits every cell of those lists.
 
 ## The case
 
-Horizon, after "Fix all automatically" (1.8.0): zero error cells in Excel,
+A client model with a macro loop over loans (UC-1), after "Fix all automatically" (1.8.0): zero error cells in Excel,
 verdict "Acceptable by Mind". Uploaded to Mind: **4,352 cells differ**, in 22
 groups. They come down to two causes.
 
 | | Where | Cells | Cause |
 |---|---|---|---|
-| 1 | CALCUL rows 192-812 (after the loan ends), columns E, F, then C, O, P | 3,105 | empty text in arithmetic (FRM-008) |
-| 2 | CALCUL rows 35-191 (the live months), columns H, I, J, then G, R, S, Z, AA and eight totals; C20!C18 | 1,247 | an empty cell compared with a number (FRM-009) |
+| 1 | the calculation sheet, rows 192-812 (after the loan ends), columns E, F, then C, O, P | 3,105 | empty text in arithmetic (FRM-008) |
+| 2 | the calculation sheet, rows 35-191 (the live months), columns H, I, J, then G, R, S, Z, AA and eight totals; C18 of a check sheet | 1,247 | an empty cell compared with a number (FRM-009) |
 
 1. `E192 = IFERROR(1+INT((D192-1)/12),"")` and `F192 = IFERROR($C$6+A192-YEAR($H$6),"")`,
    where D192 and A192 hold `""`. Excel: blank. Mind: a value. C, O and P read F.
-2. `H9 = VLOOKUP(B2,'Base Pret'!A:K,11,0)`; column K (the deferral period) is
+2. `H9 = VLOOKUP(B2,<the loan table>!A:K,11,0)`; column K (the deferral period) is
    empty for this loan, so Excel shows 0. `I35 = IF(D35<=$H$9,0,1)*SUMIFS(...)`
    is 145,000 in Excel and 0 in Mind; J the same; H is multiplied by `(I35>0)`.
-   `C20!C15 = +OUTPUT!P4` (an empty cell) and `C18 = +C3+C7-C11=C15`: TRUE in
+   On the check sheet, `C15 = +<an empty cell of the output sheet>` and `C18 = +C3+C7-C11=C15`: TRUE in
    Excel, 0 in Mind.
 
 The first explanation for cause 2 was wrong, and the test workbook is what
 showed it: the SUMIFS with `">="&DATE(...)` criteria was suspected, a helper
 column was built to avoid it, Mind still returned 0 -- and the same SUMIFS
 matched in the test workbook. H9 had been ruled out because it was not in the
-difference list; neither was C20!C15, which does behave differently. **A cell
+difference list; neither was the check sheet's C15, which does behave differently. **A cell
 that is absent from Mind's difference list can still be the cause**: an empty
 cell that Excel shows as 0 is not reported as a difference.
 
-After the rewrite of both (`Horizon_v4`): Mind reports no difference.
+After the rewrite of both (the model's v4): Mind reports no difference.
 
 ## The test workbook
 
@@ -46,7 +46,7 @@ difference list: *same* = not in the list.
 
 | Cell | What it tests | Formula | Excel | Mind |
 |---|---|---|---|---|
-| C2 | Horizon's formula: whole columns, criterion ">="&DATE() | `=SUMIFS(Loans!D:D,Loans!A:A,Params!$B$1,Loans!C:C,">="&DATE(Params!$B$2,1,1),Loans!C:C,"<"&DATE(Params!$B$2,12,31))` | 60000 | same |
+| C2 | the client model's formula: whole columns, criterion ">="&DATE() | `=SUMIFS(Loans!D:D,Loans!A:A,Params!$B$1,Loans!C:C,">="&DATE(Params!$B$2,1,1),Loans!C:C,"<"&DATE(Params!$B$2,12,31))` | 60000 | same |
 | C3 | the same on the table's rows only | `=SUMIFS(Loans!$D$2:$D$13,Loans!$A$2:$A$13,Params!$B$1,Loans!$C$2:$C$13,">="&DATE(Params!$B$2,1,1),Loans!$C$2:$C$13,"<"&DATE(Params!$B$2,12,31))` | 60000 | same |
 | C4 | control: loan id only | `=SUMIFS(Loans!D:D,Loans!A:A,Params!$B$1)` | 255000 | same |
 | C5 | date criterion alone: ">="&DATE() | `=SUMIFS(Loans!D:D,Loans!C:C,">="&DATE(2023,1,1))` | 620000 | same |
@@ -68,12 +68,12 @@ difference list: *same* = not in the list.
 
 | Cell | What it tests | Formula | Excel | Mind |
 |---|---|---|---|---|
-| C19 | Horizon column E: IFERROR(1+INT((""-1)/12),"") | `=IFERROR(1+INT((Params!$B$7-1)/12),"")` | (blank) | **different** |
-| C20 | Horizon column F: IFERROR(51+""-2022,"") | `=IFERROR(51+Params!$B$7-2022,"")` | (blank) | **different** |
+| C19 | the model's column E: IFERROR(1+INT((""-1)/12),"") | `=IFERROR(1+INT((Params!$B$7-1)/12),"")` | (blank) | **different** |
+| C20 | the model's column F: IFERROR(51+""-2022,"") | `=IFERROR(51+Params!$B$7-2022,"")` | (blank) | **different** |
 | C21 | candidate: IF(x="","",...) in front | `=IF(Params!$B$7="","",IFERROR(1+INT((Params!$B$7-1)/12),""))` | (blank) | same |
 | C22 | N("") | `=N(Params!$B$7)` | 0 | same |
 | C23 | MIN(90,"") | `=MIN(90,Params!$B$7)` | 90 | same |
-| C24 | Horizon column C: 14+N("")-N(64) | `=14+N(Params!$B$7)-N(Params!$B$9)` | -50 | same |
+| C24 | the model's column C: 14+N("")-N(64) | `=14+N(Params!$B$7)-N(Params!$B$9)` | -50 | same |
 | C25 | candidate for column C: IF(x="",0,x) | `=14+IF(Params!$B$7="",0,Params!$B$7)-IF(Params!$B$9="",0,Params!$B$9)` | -50 | same |
 | C26 | candidate for column O: IF(x="",90,MIN(90,x)) | `=IF(Params!$B$7="",90,MIN(90,Params!$B$7))` | 90 | same |
 | C27 | "">=156 inside IF | `=IF(Params!$B$7>=156,0,1)` | 0 | same |
@@ -86,8 +86,8 @@ difference list: *same* = not in the list.
 
 | Cell | What it tests | Formula | Excel | Mind |
 |---|---|---|---|---|
-| C32 | Horizon C20!C15: =+(an empty cell) | `=+Params!$B$8` | 0 | same |
-| C33 | Horizon C20!C18: 2311+0-2311 = that cell | `=2311+0-2311=C32` | TRUE | **different** |
+| C32 | the model's check cell C15: =+(an empty cell) | `=+Params!$B$8` | 0 | same |
+| C33 | the model's check cell C18: 2311+0-2311 = that cell | `=2311+0-2311=C32` | TRUE | **different** |
 | C34 | 0 = (an empty cell), directly | `=0=Params!$B$8` | TRUE | **different** |
 | C35 | candidate a: N(empty cell) | `=N(Params!$B$8)` | 0 | same |
 | C36 | the check against candidate a | `=2311+0-2311=C35` | TRUE | same |
@@ -102,8 +102,8 @@ difference list: *same* = not in the list.
 
 | Cell | What it tests | Formula | Excel | Mind |
 |---|---|---|---|---|
-| C43 | Horizon H9: VLOOKUP that lands on an empty cell | `=VLOOKUP(Params!$B$1,Loans!A:H,8,0)` | 0 | same |
-| C44 | Horizon column I: IF(1<=that cell,0,1)*60000 | `=IF(1<=C43,0,1)*60000` | 60000 | **different** |
+| C43 | the model's H9: VLOOKUP that lands on an empty cell | `=VLOOKUP(Params!$B$1,Loans!A:H,8,0)` | 0 | same |
+| C44 | the model's column I: IF(1<=that cell,0,1)*60000 | `=IF(1<=C43,0,1)*60000` | 60000 | **different** |
 | C45 | candidate: N(VLOOKUP(...)) | `=N(VLOOKUP(Params!$B$1,Loans!A:H,8,0))` | 0 | same |
 | C46 | the same IF against the N() cell | `=IF(1<=C45,0,1)*60000` | 60000 | same |
 | C47 | candidate: VLOOKUP(...)+0 | `=VLOOKUP(Params!$B$1,Loans!A:H,8,0)+0` | 0 | same |
@@ -132,29 +132,29 @@ The same in Mind, so there is nothing to rewrite:
   bounds held in cells; SUMPRODUCT over a range (C2-C18).
 - `N("")`, `MIN(90,"")`, `""` compared with a number, `x=""`, `ISNUMBER("")`
   (C22-C31).
-- `cell=""` on an empty cell (C41), and arithmetic on an empty cell (Horizon:
+- `cell=""` on an empty cell (C41), and arithmetic on an empty cell (the client model:
   `C11 = C3+C7-C15` matched).
 
 ## The third difference: a lookup with a "" key, after Prep's titles
 
 Mind reported no difference for the file above (the v2 rewritten by a script).
 The same model **through the app** -- Prep with its grid titles, the fixer, Prep
-again -- came back with one group: `CALCUL!T192:T812`, "Mind returns NaN", on
+again -- came back with one group: `T192:T812` of the calculation sheet, "Mind returns NaN", on
 the rows after the loan ends, where the key F is `""`:
 
-    T192 = 1+($C$10=1)*IFERROR(VLOOKUP(F192,Criteres!$N$11:$O$33,2,0),IF(F192<50,Criteres!$O$12,Criteres!$O$33))
+    T192 = 1+($C$10=1)*IFERROR(VLOOKUP(F192,Criteria!$N$11:$O$33,2,0),IF(F192<50,Criteria!$O$12,Criteria!$O$33))
 
 The formula is identical in both files. Four more uploads found the cause:
 
-- Taking back Prep's 29 title cells on `CALCUL`: still NaN. Taking back the 29
-  on `Criteres`: clean. Testing for `""` before the lookup (column T only): clean.
+- Taking back Prep's 29 title cells on the calculation sheet: still NaN. Taking back the 29
+  on the criteria sheet: clean. Testing for `""` before the lookup (column T only): clean.
 - A sheet `Diag` with each part of the formula in its own cell, in three
   versions of the file (D: as the app made it; E: the two titles around the
-  table T looks up taken back -- `Criteres!N8`, `O10`; F: the other 27 taken back):
+  table T looks up taken back -- `N8`, `O10` of the criteria sheet; F: the other 27 taken back):
 
 | Cell | What it shows | Excel | D: the app's output | E: N8, O10 taken back | F: the other 27 taken back |
 |---|---|---|---|---|---|
-| C2 | the key: CALCUL!F192 ("" in Excel) | (blank) | same | same | same |
+| C2 | the key: F192 of the calculation sheet ("" in Excel) | (blank) | same | same | same |
 | C3 | is the key ""? | TRUE | same | same | same |
 | C4 | the lookup with that key | not found | **Mind: text** | same | **Mind: text** |
 | C5 | the fallback alone | 1.15 | same | same | same |
@@ -162,25 +162,25 @@ The formula is identical in both files. Four more uploads found the cause:
 | C7 | 0 times that | 0 | **Mind: NaN** | same | **Mind: NaN** |
 | C8 | the lookup with the number 51 | 1.0942 | same | same | same |
 | C9 | the lookup with the number 71 (last row) | 1.15 | same | same | same |
-| C10 | the lookup with CALCUL!F35 (51) | 1.0942 | same | same | same |
-| C11 | Criteres!O12 | 1.0879 | same | same | same |
-| C12 | Criteres!O33 | 1.15 | same | same | same |
-| C13 | Criteres!N12 | 50 | same | same | same |
-| C14 | is Criteres!O33 a number? | TRUE | same | same | same |
-| C15 | is Criteres!N11 (no header) ""? | TRUE | same | same | same |
-| C16 | Criteres!O11 (the header) | AT - Âge atteint | same | same | same |
+| C10 | the lookup with F35 of the calculation sheet (51) | 1.0942 | same | same | same |
+| C11 | criteria O12 | 1.0879 | same | same | same |
+| C12 | criteria O33 | 1.15 | same | same | same |
+| C13 | criteria N12 | 50 | same | same | same |
+| C14 | is criteria O33 a number? | TRUE | same | same | same |
+| C15 | is criteria N11 (no header) ""? | TRUE | same | same | same |
+| C16 | criteria O11 (the header) | an age header | same | same | same |
 | C17 | the lookup with "" typed in the formula | not found | **Mind: text** | same | **Mind: text** |
 | C18 | the lookup with that key, table without its header row | not found | same | same | same |
-| C19 | the same key on the other table (Criteres E:F) | not found | **Mind: text** | **Mind: text** | same |
-| C20 | CALCUL!T192 | 100% | **Mind: NaN** | same | **Mind: NaN** |
-| C21 | CALCUL!T35 | 100% | same | same | same |
+| C19 | the same key on the other table (criteria E:F) | not found | **Mind: text** | **Mind: text** | same |
+| C20 | T192 of the calculation sheet | 100% | **Mind: NaN** | same | **Mind: NaN** |
+| C21 | T35 of the calculation sheet | 100% | same | same | same |
 | C22 | T192's formula rebuilt here | 1 | **Mind: NaN** | same | **Mind: NaN** |
 | C23 | does the key match anything in the first column? | not found | **Mind: differs** | same | **Mind: differs** |
 | C24 | is the lookup's result a number? | FALSE | same | same | same |
 | C25 | is the lookup's result text? | FALSE | **Mind: differs** | same | **Mind: differs** |
 
-So: **a titled table whose first header cell is empty** (`Criteres!N11`; the
-header `AT - Âge atteint` sits in O11 only) makes Mind match a `""` key to
+So: **a titled table whose first header cell is empty** (`N11` of the criteria sheet; the
+header text sits in O11 only) makes Mind match a `""` key to
 that empty header cell. The lookup returns the header text (C4, C6, C17, C25),
 `0 * text` is NaN (C7, C20, C22), and MATCH returns a row (C23). Without the
 title, and in Excel, `""` finds nothing. Number keys are not affected (C8-C10).
@@ -193,15 +193,15 @@ Rule **FRM-010** flags an exact VLOOKUP / HLOOKUP / MATCH inside IFERROR whose
 key is a cell that holds `""` and whose looked-up column or row has an empty
 cell; the Prep action puts the test for `""` in front, as for FRM-008.
 
-## CNHI: a diagnostic sheet on the app's output (2026-10-08)
+## A second client model: a diagnostic sheet on the app's output (2026-10-08)
 
-CNHI converted and ran in Mind, with value differences on nine sheets. A
+A health-cost model (UC-3) converted and ran in Mind, with value differences on nine sheets. A
 `Diag` sheet with 57 cells, each one part of the formulas concerned, was
 added to the app's output and uploaded:
 
 | Cell | What it shows | Excel | Mind |
 |---|---|---|---|
-| C2 | RAC Baseline!H15 as it is | 4.322152 | same |
+| C2 | H15 of the baseline sheet as it is | 4.322152 | same |
 | C3 | its numerator: SUMPRODUCT(row, weights, --(labels=H7)) | 13688209 | same |
 | C4 | its denominator: SUMPRODUCT(weights, --(labels=H7)) | 3166989 | same |
 | C5 | the same with (labels=H7)*1 | 3166989 | same |
@@ -212,25 +212,25 @@ added to the app's output and uploaded:
 | C10 | how many labels equal H7 (SUMPRODUCT --) | 20 | **differs** |
 | C11 | the label H7 | AF | same |
 | C12 | SUMPRODUCT of two rows (no condition) | 3.42E+11 | same |
-| C13 | RAC Baseline!E15 as it is | 4.083767 | **differs** |
-| C14 | RAC Baseline!I11 (a weight) | 3166989 | same |
+| C13 | E15 of the baseline sheet as it is | 4.083767 | **differs** |
+| C14 | I11 of the baseline sheet (a weight) | 3166989 | same |
 | C15 | YEAR of the projection midpoint | 2026 | same |
 | C16 | proj_year | 2026 | same |
 | C17 | the row offset (year difference x 117) | 0 | same |
-| C18 | OFFSET(RAC Baseline!H15, 0, 0) | 4.322152 | **differs** |
-| C19 | OFFSET(RAC Baseline!H15, 117, 0) | 3.989483 | same |
-| C20 | RAC Baseline!H132 (117 rows below H15) | 3.989483 | same |
-| C21 | RAC Calculation!E15 as it is | 4.322152 | **differs** |
-| C22 | Baseline!P76 as it is (a column offset) | 0 | same |
+| C18 | OFFSET(baseline H15, 0, 0) | 4.322152 | **differs** |
+| C19 | OFFSET(baseline H15, 117, 0) | 3.989483 | same |
+| C20 | baseline H132 (117 rows below H15) | 3.989483 | same |
+| C21 | E15 of the calculation sheet as it is | 4.322152 | **differs** |
+| C22 | P76 of a second baseline sheet as it is (a column offset) | 0 | same |
 | C23 | MATCH of the chosen column | 1 | same |
 | C24 | MATCH of the first column | 1 | same |
-| C25 | OFFSET(RAC Baseline!E19, 0, P76) | 36.70534 | **differs** |
-| C26 | OFFSET(RAC Baseline!E19, 0, 0) | 36.70534 | **differs** |
-| C27 | RAC Baseline!E19 as it is | 36.70534 | **differs** |
-| C28 | Baseline!O80 as it is | 36.70534 | **differs** |
-| C29 | the chosen column label | Combined All | same |
-| C30 | RAC Baseline!E12 | Combined All | same |
-| C31 | Validation list!D16 (holds 80+) | 80+ | **text** |
+| C25 | OFFSET(baseline E19, 0, P76) | 36.70534 | **differs** |
+| C26 | OFFSET(baseline E19, 0, 0) | 36.70534 | **differs** |
+| C27 | baseline E19 as it is | 36.70534 | **differs** |
+| C28 | O80 of the second baseline sheet as it is | 36.70534 | **differs** |
+| C29 | the chosen column label | (a total label) | same |
+| C30 | baseline E12 | (the same label) | same |
+| C31 | a cell of the list sheet (holds 80+) | 80+ | **text** |
 | C32 | is it text? | TRUE | same |
 | C33 | its length | 3 | same |
 | C34 | the text 80+ typed in the formula | 80+ | **text** |
@@ -239,26 +239,26 @@ added to the app's output and uploaded:
 | C37 | MATCH(79, age limits, 1) | 8 | same |
 | C38 | INDEX(age_band, MATCH(80,...,1)) | 80+ | **text** |
 | C39 | INDEX(age_band, MATCH(79,...,1)) | 70-79 | same |
-| C40 | Age-Gender Mix!J16 (holds 80+) | 80+ | **text** |
-| C41 | Age-Gender Mix!J15 (holds 70-79) | 70-79 | same |
-| C42 | Exhibits!Z24 (holds 80+) | 80+ | **text** |
-| C43 | IRAT data!K6385 as it is | 80+ | **text** |
-| C44 | Validation list!D16 & "" | 80+ | **text** |
-| C45 | Wave!BB62 & a line break & text | HBP Category
+| C40 | a cell of a mix sheet (holds 80+) | 80+ | **text** |
+| C41 | the cell above it (holds 70-79) | 70-79 | same |
+| C42 | a cell of an exhibit sheet (holds 80+) | 80+ | **text** |
+| C43 | a cell of a data sheet as it is | 80+ | **text** |
+| C44 | the list sheet's cell & "" | 80+ | **text** |
+| C45 | a label cell & a line break & text | Category
 x | same |
-| C46 | Wave!BB62 & "/x" | HBP Category/x | same |
-| C47 | Wave!P38 as it is | HBP Category
-/ Beneficiary - Combined All | **text** |
-| C48 | Baseline Cost!G151 as it is | 0 | **differs** |
+| C46 | the label cell & "/x" | Category/x | same |
+| C47 | a label formula with a line break typed in its string, as it is | Category
+/ Beneficiary | **text** |
+| C48 | G151 of the cost sheet as it is | 0 | **differs** |
 | C49 | the SUMIFS inside it | 1.75E+10 | same |
 | C50 | COUNTIFS on the first criterion | 231 | same |
 | C51 | COUNTIFS on the second criterion | 32 | same |
 | C52 | the first criterion | Category A | same |
-| C53 | the second criterion | Wave 2 | same |
+| C53 | the second criterion | Group 2 | same |
 | C54 | SUM of the whole H column | 1.19E+11 | same |
 | C55 | the SUMIFS with the criterion typed in | 9.01E+10 | same |
 | C56 | COUNTA of the F column | 674 | same |
-| C57 | Baseline Cost!G150 as it is | 1.75E+10 | same |
+| C57 | G150 of the cost sheet as it is | 1.75E+10 | same |
 
 What it settles:
 
@@ -271,28 +271,28 @@ What it settles:
 - A line break typed inside a string literal gives another text (C47);
   written as `CHAR(10)` it gives the same (C45) -- rule FRM-011.
 - `OFFSET(cell,0,0)` differs from the cell itself (C18 vs C2), and the
-  weighted averages `E15`, `E19` on `RAC Baseline` differ while every input
+  weighted averages `E15`, `E19` on the baseline sheet differ while every input
   tested matches: not explained by the parts. Every sheet with numeric
   differences is one where Prep inserted title rows; a run with the two
   row-inserting actions off is the next test.
 
-## PVFP: a lone text cell, and what came after (2026-10-08)
+## A third client model: a lone text cell, and what came after (2026-10-08)
 
-PVFP with its external links frozen (1.8.6) converts and runs in Mind -- with
-20,000 deterministic differences, all from one cell: `'LoB 1'!A122 =
-"GWP_Retained#"&$G$2` came back as `GWP_Retained#`, Mind's `$G$2` being
-empty though it holds `LoB 1`. Prep had moved the label beside it (`E2`,
-`Nom Onglet :`) into a grid title, leaving `G2` alone. Test workbook 5:
+A model with one sheet per line of business (UC-4), its external links frozen (1.8.6), converts and runs in Mind -- with
+20,000 deterministic differences, all from one cell: `'Line 1'!A122 =
+"Retained#"&$G$2` came back as `Retained#`, Mind's `$G$2` being
+empty though it holds `Line 1`. Prep had moved the label beside it (`E2`,
+a "sheet name" label) into a grid title, leaving `G2` alone. Test workbook 5:
 
 | Cell | What it tests | Excel | Mind |
 |---|---|---|---|
-| C2 | a text cell standing alone (Lone!C3 = 'LoB 1'), read by a formula | x#LoB 1 | **empty (x#)** |
+| C2 | a text cell standing alone (Lone!C3 = 'Line 1'), read by a formula | x#Line 1 | **empty (x#)** |
 | C3 | the same cell, is it empty? | FALSE | **TRUE** |
 | C4 | a number cell standing alone (Lone!C6 = 42) | 84 | same |
-| C5 | a text cell under a '#' title with no header (Lone!C9 = 'LoB 2', title at C8) | x#LoB 2 | same |
-| C6 | a text cell inside a titled 2-column grid (Grid!B4 = 'LoB 3') | x#LoB 3 | same |
-| C7 | a label next to a value, no title (Lone!F3 'Name', G3 'LoB 4') | x#LoB 4 | same |
-| C8 | a label above a value, no title (Lone!F6 'Name', F7 'LoB 5') | x#LoB 5 | same |
+| C5 | a text cell under a '#' title with no header (Lone!C9 = 'Line 2', title at C8) | x#Line 2 | same |
+| C6 | a text cell inside a titled 2-column grid (Grid!B4 = 'Line 3') | x#Line 3 | same |
+| C7 | a label next to a value, no title (Lone!F3 'Name', G3 'Line 4') | x#Line 4 | same |
+| C8 | a label above a value, no title (Lone!F6 'Name', F7 'Line 5') | x#Line 5 | same |
 | C9 | a text cell in the header row of a titled grid (Grid!B3 'Name') | x#Name | same |
 
 So Mind imports grids and loose *numbers*, but not a loose text cell. Rule
@@ -334,7 +334,7 @@ Other!H2 = `Other` standing alone; Probe!C5 = 99 on the probe's own sheet):
 
 | Cell | What it tests | Excel | Mind |
 |---|---|---|---|
-| L2 | `IF(ISNUMBER(C3*1),C3*1,"")` on the `""` cell (PVFP, Reporting_General!I23) | "" | **0** |
+| L2 | `IF(ISNUMBER(C3*1),C3*1,"")` on the `""` cell (the client model, a reporting sheet) | "" | **0** |
 | L3 | guard `IF(C3="","",IF(ISNUMBER(C3*1),C3*1,""))` | "" | same |
 | L4 | the ISNUMBER form on a number | 5 | same |
 | L5 | `ISNUMBER(C3*1)` alone | FALSE | **TRUE** |
@@ -352,21 +352,21 @@ Other!H2 = `Other` standing alone; Probe!C5 = 99 on the probe's own sheet):
 So (1) ISNUMBER / ISERROR hide the `""` arithmetic like IFERROR does, and
 FRM-008 (1.8.11) guards those forms too; (2) a lone text cell that feeds
 INDIRECT's sheet name is empty in Mind, and an empty sheet name means the
-formula's own sheet there (`Reporting_LoB Total!E32` read its own H31,
-36,209, where Excel read `LoB_Total!H31`, empty): STR-008's title above F2
+formula's own sheet there (E32 of a reporting sheet read its own H31,
+36,209, where Excel read H31 of the total sheet, empty): STR-008's title above F2
 fixes it. A sheet that holds only lone cells has no grid and does not exist
-in Mind at all ("Sheet not found" on compile). The PVFP 1.8.11 trial: 59
+in Mind at all ("Sheet not found" on compile). The 1.8.11 trial on that model: 59
 lines, all the boolean rendering -- no real difference left.
 
-## Palermo and CNHI through the app (2026-10-08)
+## Two client models through the app (2026-10-08)
 
-**CNHI** (title actions unticked, so no title rows inserted): 5,043 lines,
-all artefacts -- `80+` read as 80 by the comparison's Excel side (Exhibits,
-Age-Gender Mix, IRAT data), five cells of rounding noise on Baseline Cost
-row 128. The 1.8.2 numeric differences (RAC Baseline, `--($V$7:$MU$7=H$7)`
+**UC-3** (title actions unticked, so no title rows inserted): 5,043 lines,
+all artefacts -- `80+` read as 80 by the comparison's Excel side (three
+sheets), five cells of rounding noise on one row of the cost sheet. The 1.8.2
+numeric differences (the baseline sheet, `--($V$7:$MU$7=H$7)`
 TRUE on 178 empty cells) do not appear without the title rows.
 
-**Palermo**: the run stopped on `'Policy summary'!Z6` ("Index was outside
+**UC-2** (a macro loop over model points): the run stopped on Z6 of the calculation sheet ("Index was outside
 the bounds of the array"). Test workbook 8 (Data!C3 = 0 as the lookup text,
 Data!C4 = 0 as the switch):
 
@@ -380,15 +380,15 @@ Data!C4 = 0 as the switch):
 | C15 | `INDEX(INDIRECT("Data!C5:D6"),2,2)` reached | 4 | same |
 
 So Mind does not evaluate the branch an IF does not take, and the run
-completed. The cause was the switch itself: `ME_Table` names
-`'Policy summary'!C36 = ME_charge_table_ME_lookup`, which names
-`'Non-economic assumptions'!D67 = VLOOKUP(Policy_tariff,Assumptions_array,
-MATCH(B67,Assumption_headings,0),FALSE)`, and that lookup lands on the
-empty cell P7: 0 in Excel, empty in Mind, so `ME_Table=0` is FALSE in Mind
+completed. The cause was the switch itself: the switch's defined name
+points to C36 of the calculation sheet, itself another defined name for
+`D67 = VLOOKUP(<tariff>,<assumptions table>,MATCH(B67,<headings>,0),FALSE)`
+on an assumptions sheet, and that lookup lands on the
+empty cell P7: 0 in Excel, empty in Mind, so `<switch>=0` is FALSE in Mind
 and Z6 computes `INDEX(INDIRECT(<empty>),...)`. The 1.8.9 scan missed it
 because every argument is a defined name; 1.8.12 reads them. With `N()`
-around 21 such lookups (no computed value changed), Palermo converts and
-runs; the five cells left were the `Saved down` file paths fed by the
+around 21 such lookups (no computed value changed), the model converts and
+runs; the five cells left were the file paths on its save sheet, fed by the
 one-cell array formula `{=LEFT(CELL("filename",A1),...)}`, now frozen by
 FRM-012 as well.
 
@@ -398,8 +398,8 @@ FRM-012 as well.
 `1_Central` (an `/InstanceKeys` grid listing Product A, B, C under the header
 `2_Product`, plus a data table), `2_Product` (the workbook to copy, its name
 from `MM_INSTANCEKEY`) and `3_Summary` (a plain link to `2_Product`, and one
-row per copy with `MM_INSTANCE(cell, 1 / 2 / 3)`). Uploaded to Mind as
-**testy1** (folder MindReady_Sandbox). Mind's log:
+row per copy with `MM_INSTANCE(cell, 1 / 2 / 3)`). Uploaded to Mind as a
+test project (folder MindReady_Sandbox). Mind's log:
 
     3_Summary > Summary > D12: Excel value: 1000 Mind value: 0
     3_Summary > Summary > D13: Excel value: 1000 Mind value: 0
@@ -456,14 +456,14 @@ which is exactly what the model should give.
    yet looked at: the plain link C6 at 3,000 (Excel 1,000). These are not
    errors.
 
-The demo files are in `PyCodes\MindInstancesDemo` (outside the app).
+The demo files are kept outside the app.
 
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all
-  REQUIRED. On the files above they flag exactly what Mind listed: Horizon v2
-  -- 1,242 cells for FRM-008 (E192:E812, F192:F812), H9 and C20!C15 for
-  FRM-009; Horizon v4 -- nothing; the test workbook -- C19, C20, and C33, C34,
+  REQUIRED. On the files above they flag exactly what Mind listed: UC-1 v2
+  -- 1,242 cells for FRM-008 (E192:E812, F192:F812), H9 and the check cell C15 for
+  FRM-009; UC-1 v4 -- nothing; the test workbook -- C19, C20, and C33, C34,
   C44, C49 (through C32 and C43).
 - Prep actions **Test for empty text before the arithmetic or lookup** (FRM-008,
   FRM-010) and **Read empty cells as 0 where they are compared** (FRM-009) write
