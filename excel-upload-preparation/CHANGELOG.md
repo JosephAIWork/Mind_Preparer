@@ -11,6 +11,10 @@
   references, text and numbers taken out), and never a file name, a sheet name, a cell address or a
   value. Each problem is kept in the data folder (`feedback\incidents.jsonl`, the last 300). The codes
   are hashes: the app holds no table of what they mean (`app/feedback.py`, `POST /api/feedback`).
+- **No hidden Excel stays behind.** The app writes down every Excel it starts until it quits it. Closing
+  the app's window ends its Excels first, and the next start ends any left by an app that was stopped
+  another way (a crash, Task Manager). Only an Excel the app itself started is ever ended
+  (`app/excel_com.py`).
 - **The AI key is pasted in the app.** When no key is saved, the main screen and Advanced > Assistant
   show a box for it. The key is checked with the gateway (a key the gateway refuses is not saved), then
   saved encrypted for the Windows user (DPAPI) in the data folder; the page only ever shows its last 4

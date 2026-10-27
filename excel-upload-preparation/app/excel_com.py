@@ -14,14 +14,23 @@ reduced-fidelity fallback.
 Every session: hidden, alerts off, macros force-disabled
 (`AutomationSecurity = 3`), links never updated, events off, and the
 MM for Excel add-in loaded when the machine has it (`mm_for_excel_xll`).
+
+Every Excel the app starts is written down (`excel_started.json` in the data folder) until it is
+quit. An app stopped abruptly -- its window closed, a crash, Task Manager -- would otherwise leave
+its hidden Excels running with nothing to quit them: the next start ends those
+(`clean_leftover_excels`), and closing the window ends the app's own first (`kill_own_excels`). Only
+an Excel written down here is ever ended, and only while its process is still that same Excel.
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import gc
+import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -131,6 +140,7 @@ def start_excel(mm_addin: bool = True) -> Any:
 
     with stage("excel_start", mm_addin=mm_addin):
         excel = win32com.client.DispatchEx("Excel.Application")
+        _remember(excel_pid(excel))  # first: an error in the set-up below must not leave it unlisted
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
@@ -152,6 +162,7 @@ def quit_excel(excel: Any) -> None:
     (harmless but alarming). Callers keep proxies inside an inner function scope and we
     collect here."""
     gc.collect()
+    pid = excel_pid(excel) if excel is not None else None
     try:
         if excel is not None:
             excel.Quit()
@@ -159,6 +170,7 @@ def quit_excel(excel: Any) -> None:
         pass
     excel = None
     gc.collect()
+    _forget(pid)
 
 
 @contextlib.contextmanager
@@ -202,6 +214,11 @@ def excel_pid(excel: Any) -> int | None:
 def kill_excel(pid: int | None) -> None:
     if not pid:
         return
+    _terminate(int(pid))
+    _forget(pid)
+
+
+def _terminate(pid: int) -> None:
     try:
         import ctypes
 
@@ -211,6 +228,143 @@ def kill_excel(pid: int | None) -> None:
             ctypes.windll.kernel32.CloseHandle(handle)
     except Exception:
         pass
+
+
+# --- the Excels this app started (see the module's docstring) ----------------------------------
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _started_path() -> Path:
+    return SETTINGS.data_folder / "excel_started.json"
+
+
+def _process(pid: int) -> tuple[str, int] | None:
+    """(program path, creation time) of a process still running, else None. The creation time tells
+    the same process from a later one that got the same id."""
+    try:
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            code = ctypes.c_ulong()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:  # STILL_ACTIVE
+                return None
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.c_ulong(1024)
+            name = buf.value if k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) else ""
+            times = [ctypes.c_ulonglong() for _ in range(4)]  # creation, exit, kernel, user (FILETIMEs)
+            if not k32.GetProcessTimes(handle, *(ctypes.byref(x) for x in times)):
+                return None
+            return name, int(times[0].value)
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _load_started() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(_started_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_started(data: dict[str, dict[str, Any]]) -> None:
+    path = _started_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass  # the list is a safety net: a step never fails on it
+
+
+def _remember(pid: int | None) -> None:
+    excel, me = (_process(pid), _process(os.getpid())) if pid else (None, None)
+    if excel is None:
+        return
+    with _REGISTRY_LOCK:
+        data = _load_started()
+        data[str(pid)] = {"excel_created": excel[1], "app": os.getpid(), "app_created": me[1] if me else 0}
+        _save_started(data)
+
+
+def _forget(pid: int | None) -> None:
+    if not pid:
+        return
+    with _REGISTRY_LOCK:
+        data = _load_started()
+        if data.pop(str(pid), None) is not None:
+            _save_started(data)
+
+
+def _still_that_excel(pid: int, entry: dict[str, Any]) -> bool:
+    found = _process(pid)
+    return found is not None and found[1] == entry.get("excel_created") and found[0].lower().endswith("excel.exe")
+
+
+def clean_leftover_excels() -> int:
+    """End the Excels a Mind Ready that no longer runs left behind; returns how many. An Excel whose
+    app still runs (another Mind Ready window) is left alone."""
+    ended = 0
+    with _REGISTRY_LOCK:
+        data = _load_started()
+        keep: dict[str, dict[str, Any]] = {}
+        for pid, entry in data.items():
+            owner = _process(int(entry.get("app") or 0))
+            if owner is not None and owner[1] == entry.get("app_created"):
+                keep[pid] = entry
+                continue
+            if _still_that_excel(int(pid), entry):
+                _terminate(int(pid))
+                ended += 1
+        if keep != data:
+            _save_started(keep)
+    return ended
+
+
+def kill_own_excels() -> int:
+    """End every Excel this process started and has not quit (the app is being closed)."""
+    if not _REGISTRY_LOCK.acquire(timeout=2):
+        return 0
+    try:
+        data = _load_started()
+        mine = {pid: e for pid, e in data.items() if e.get("app") == os.getpid()}
+        for pid, entry in mine.items():
+            if _still_that_excel(int(pid), entry):
+                _terminate(int(pid))
+        if mine:
+            _save_started({pid: e for pid, e in data.items() if pid not in mine})
+        return len(mine)
+    finally:
+        _REGISTRY_LOCK.release()
+
+
+def on_window_close() -> None:
+    """Closing the app's window (or logging off) ends the process at once: its Excels go first."""
+    if sys.platform != "win32":
+        return
+    try:
+        import win32api
+        import win32con
+
+        def handler(event: int) -> bool:
+            if event in (win32con.CTRL_CLOSE_EVENT, win32con.CTRL_LOGOFF_EVENT, win32con.CTRL_SHUTDOWN_EVENT):
+                kill_own_excels()
+            return False  # then the usual: the process ends
+
+        win32api.SetConsoleCtrlHandler(handler, True)
+    except Exception:
+        pass
+
+
+# A normal end of the process (after the Excel workers quit theirs): whatever is still running goes
+atexit.register(kill_own_excels)
 
 
 def excel_gone(exc: BaseException) -> bool:

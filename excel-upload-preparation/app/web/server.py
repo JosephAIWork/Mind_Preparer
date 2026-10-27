@@ -17,6 +17,7 @@ served from the same process with an SPA fallback, so one URL does it all:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -93,7 +94,20 @@ GRID_FIELDS = (
 
 # The API's own pages (/docs, /redoc, /openapi.json) only when settings.yaml asks for them.
 _API_PAGES = {} if SETTINGS.api_pages else {"docs_url": None, "redoc_url": None, "openapi_url": None}
-app = FastAPI(title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev", **_API_PAGES)
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """At start: end the hidden Excels a Mind Ready stopped abruptly left behind, and make closing the
+    window end this one's first (app/excel_com.py)."""
+    from app.excel_com import clean_leftover_excels, on_window_close
+
+    ended = clean_leftover_excels()
+    if ended:
+        print(f"Closed {ended} hidden Excel(s) left behind the last time Mind Ready was stopped.", flush=True)
+    on_window_close()
+    yield
+
+
+app = FastAPI(lifespan=_lifespan, title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev", **_API_PAGES)
 _ENGINE: RulesEngine | None = None
 
 
