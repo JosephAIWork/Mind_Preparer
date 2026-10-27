@@ -16,6 +16,13 @@
         <input type="file" accept=".xlsx,.xlsm,.xlsb" (change)="onFileInput($event)" hidden />
       </label>
     </div>
+    <label class="autorun">
+      <input type="checkbox" [checked]="autoRun()" (change)="setAutoRun($any($event.target).checked)" />
+      <span>
+        Do everything right after the upload
+        <span class="autorun__hint">No stops: every sheet is read, then every step runs. Keep the computer awake: if it sleeps, the run waits.</span>
+      </span>
+    </label>
     @if (uploadError()) {
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
@@ -59,7 +66,7 @@
           </li>
         }
       </ul>
-      <p class="trust">A large model takes a minute or two.</p>
+      <p class="trust">A large model takes a minute or two.{{ autoRun() ? " Do everything starts as soon as this is done." : "" }}</p>
     </div>
   } @else {
     <header class="file">

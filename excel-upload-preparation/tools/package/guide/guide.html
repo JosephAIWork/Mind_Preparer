@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mind Ready guide</title>
+<style>
+  @page { size: A4; margin: 16mm 16mm 18mm 16mm; }
+  :root { --ink: #161616; --soft: #525252; --line: #e0e0e0; --blue: #0f62fe; --blue-bg: #edf5ff; --green: #198038; --green-bg: #defbe6; --amber: #8e6a00; --amber-bg: #fcf4d6; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); font-size: 10.5pt; line-height: 1.45; margin: 0; background: #fff; }
+  h1 { font-size: 24pt; font-weight: 600; margin: 0; letter-spacing: -0.3px; }
+  h2 { font-size: 14pt; font-weight: 600; margin: 18px 0 6px; padding-bottom: 4px; border-bottom: 2px solid var(--blue); }
+  h3 { font-size: 11pt; font-weight: 600; margin: 12px 0 4px; }
+  p { margin: 4px 0 8px; }
+  ol, ul { margin: 4px 0 8px; padding-left: 20px; }
+  li { margin: 2px 0; }
+  .sub { color: var(--soft); font-size: 11pt; margin-top: 4px; }
+  .tag { display: inline-block; font-size: 8.5pt; font-weight: 600; padding: 1px 7px; border-radius: 10px; vertical-align: middle; }
+  .beta { background: var(--blue-bg); color: var(--blue); margin-left: 8px; font-size: 10pt; }
+  .done { background: var(--green-bg); color: var(--green); }
+  .mind { background: var(--blue-bg); color: var(--blue); }
+  .next { background: var(--amber-bg); color: var(--amber); }
+  .flow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 10px 0 4px; }
+  .flow .box { border: 1px solid var(--blue); background: var(--blue-bg); border-radius: 4px; padding: 3px 7px; font-size: 8.5pt; font-weight: 600; }
+  .flow .arrow { color: var(--blue); font-weight: 700; }
+  .note { border-left: 3px solid var(--blue); background: #f4f4f4; padding: 6px 10px; margin: 8px 0; }
+  .warn { border-left-color: var(--amber); }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5pt; }
+  th { text-align: left; font-weight: 600; background: #f4f4f4; border-bottom: 1px solid #c6c6c6; padding: 5px 6px; }
+  td { border-bottom: 1px solid var(--line); padding: 5px 6px; vertical-align: top; }
+  td:first-child { font-weight: 600; width: 27%; }
+  td.st { width: 12%; white-space: nowrap; }
+  code { font-family: Consolas, monospace; font-size: 9pt; background: #f4f4f4; padding: 0 3px; }
+  .msg { font-family: Consolas, monospace; font-size: 8.5pt; background: #f4f4f4; border: 1px solid var(--line); padding: 8px 10px; white-space: pre-wrap; margin: 6px 0 10px; }
+  h2, h3 { break-after: avoid; }
+  tr, .note, .msg, li { break-inside: avoid; }
+  .newpage { break-before: page; }
+  .two { display: flex; gap: 18px; }
+  .two > div { flex: 1; }
+  .small { font-size: 9pt; color: var(--soft); }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <h1>Mind Ready <span class="tag beta">Beta</span></h1>
+  <div class="sub">Gets an Excel model ready for Milliman Mind &middot; version {{VERSION}} &middot; {{DATE}} &middot; from the Milliman Tel Aviv team</div>
+
+  <h2>What it does</h2>
+  <p>You give it an Excel model. It finds what Mind would refuse or read differently, fixes what it can through Excel itself,
+  turns the model's macro run loop into a Mind loop, and recalculates to show that the model's numbers did not change.
+  Your original file is never changed: every step makes a new version that you download.</p>
+  <div class="flow">
+    <span class="box">1 Upload</span><span class="arrow">&rarr;</span>
+    <span class="box">2 Check against Mind's rules</span><span class="arrow">&rarr;</span>
+    <span class="box">3 Fix the formula errors</span><span class="arrow">&rarr;</span>
+    <span class="box">4 Fix formulas and structure for Mind</span><span class="arrow">&rarr;</span>
+    <span class="box">5 Build the Mind loop</span><span class="arrow">&rarr;</span>
+    <span class="box">6 Recalculate and compare every number</span><span class="arrow">&rarr;</span>
+    <span class="box">7 Download</span>
+  </div>
+  <p class="small">Steps 3 to 6 run with one button: <b>Do everything</b>.</p>
+
+  <h2>What you need</h2>
+  <ul>
+    <li><b>Windows</b> with <b>desktop Excel</b>. The app writes workbooks through Excel, because saving a real model any other way can damage it.</li>
+    <li>The <b>MM for Excel add-in</b>. Without it every <code>MM_</code> formula shows <code>#NAME?</code> and the app cannot confirm the model is ready.</li>
+    <li>For a large model, memory: the largest models tested needed about 7 GB free on top of Excel.</li>
+    <li>Optional: a key for the <b>Milliman AI gateway</b>, for the assistant. Every main step works without it.</li>
+  </ul>
+
+  <h2>Start</h2>
+  <ol>
+    <li>Download <b>MindReady.exe</b> from the link and double-click it.<br>
+      <span class="small">If Windows says &ldquo;Windows protected your PC&rdquo;, click <b>More info</b>, then <b>Run anyway</b>.</span></li>
+    <li>A black window opens. <b>Keep it open</b>: closing it stops the app. The first start takes about 20 seconds,
+      then the app opens in your browser at <code>http://localhost:8600</code>.</li>
+    <li>The first time, if you have an AI gateway key, paste it in the box on the main screen and click <b>Save</b>.
+      It is saved encrypted for your Windows account; the app then shows only its last 4 characters.</li>
+  </ol>
+  <p class="small">The app runs only on your machine. Nothing is sent anywhere except the assistant's questions to the AI gateway
+  and, when you choose it, your workbook to Mind. To change the port or the folders, put a <code>settings.yaml</code> next to the exe
+  (every line is explained in the file) and restart.</p>
+
+  <h2>Use it</h2>
+  <ol>
+    <li><b>Drop a workbook</b> (<code>.xlsx</code>, <code>.xlsm</code> or <code>.xlsb</code>).</li>
+    <li>Click <b>Do everything</b>. It runs the fixes, each followed by its check, and stops at the first check that fails.<br>
+      <span class="small">Or tick <b>Do everything right after the upload</b> before you drop the file: it then runs from start to end without stopping to ask anything.</span></li>
+    <li>Read the verdict on the main screen: <b>ready for Mind</b>, or the problems left, each with where it is and why it was not fixed.</li>
+    <li>Click <b>Download this version</b>. You can also download the report, or the workbook with the report added as sheets.</li>
+  </ol>
+  <div class="note warn"><b>Keep the computer awake during a long run.</b> A small model takes a few minutes. A model with about
+  1.4 million formulas took about 1 hour 35 minutes. If the computer sleeps, the run waits until it wakes up.</div>
+  <p class="small">Everything else is under <b>Advanced</b>: the findings rule by rule, each fix to tick or untick, the Mind loop choices,
+  the Model map (where the inputs, the loop and the outputs are), the Grid Namer, the assistant, and every version made so far.</p>
+</div>
+
+<div class="page">
+  <h2>When something goes wrong</h2>
+  <p>If a step fails, a red box under the header says in one plain sentence what stopped and why, for example
+  <i>&ldquo;Fix the formulas: Excel did not accept 2 of the changes (rule FRM-012). The other changes were made.&rdquo;</i>
+  Next to it is the button <b>Send feedback to the Tel Aviv team</b>. The same button is at the top of every screen,
+  for anything else you want to tell us.</p>
+  <ol>
+    <li>Click the button. You can add a line about what you were doing, then click <b>Prepare the message</b>. The message appears: you can read it.</li>
+    <li>Click <b>Copy and open email</b>. The message and the log are copied, and an email to <b>{{EMAIL}}</b> opens.</li>
+    <li>Paste into the email (<b>Ctrl+V</b>) and send. If the email program cuts the text short, click <b>Save as a file</b> and attach the file.</li>
+  </ol>
+  <p>The message is written in codes that point us to the exact place in the app, with the kind of formula involved and why it
+  failed. For example:</p>
+  <div class="msg">Mind Ready 1.12.0 (exe) &middot; ref 7K2Q-0915 &middot; 27 Oct 2026 14:02
+
+What happened
+  FRM-012 not written at stage SS852, during "Fix the formulas"
+  1 change(s) not written: FRM-012 set_formula x1
+  FRM-012 set_formula &middot; error EM551 &middot; Excel code 0x800A03EC &middot; Unable to set the Formula2 property of the Range class
+    trace KD310:2213 &gt; BB123:2290
+    before: =MID(CELL("filename",&lt;cell&gt;),FIND("]",CELL("filename",&lt;cell&gt;))+1,&lt;n&gt;)
+    after:  ="&lt;text&gt;" &middot; one-cell array</div>
+  <div class="note"><b>Nothing from your workbook is in it:</b> no file name, no sheet names, no cell addresses, no values and no text
+  from your cells. References show only as <code>&lt;cell&gt;</code>, <code>&lt;range&gt;</code> or <code>&lt;name&gt;</code>.
+  Read it before you send it: it is all there in plain text.</div>
+  <p>When the assistant is on (an AI key is saved), it writes the first lines of the message in plain English.</p>
+
+  <h2>Good to know</h2>
+  <ul>
+    <li><b>The Mind loop is built only from a loop the macro already runs.</b> The app does not invent loops or decide where a loop or instances would help.</li>
+    <li><b><code>MM_INSTANCE(cell, k)</code> with k above 1</b> shows 0 in Mind's upload check before the first run. That is a false alarm: after a run Mind shows the right values.</li>
+    <li><b>Pivot tables</b>: Mind refuses every pivot table, so the app turns them into values (or formulas, under Advanced, on the Prep screen).</li>
+    <li><b>External links</b> are frozen to the values Excel last kept for them.</li>
+    <li><b>Some problems stay for a person</b>, each listed with the reason: for example an array formula over several cells, or a text cell that a lookup reads inside a range.</li>
+  </ul>
+
+  <h2 class="newpage">What is done</h2>
+  <p class="small"><span class="tag mind">Checked in Mind</span> means a real Mind conversion confirmed the behaviour the rule or the fix is built on.</p>
+  <table>
+    <tr><th>Area</th><th>What it does</th><th>Status</th></tr>
+    <tr><td>Reading a model</td><td>.xlsx, .xlsm and .xlsb (converted through Excel). 108 rules drawn from Mind's knowledge base and from real Mind conversions, each one deterministic. Large models: up to 1.4 million formulas tested. A big file can leave sheets out of the check.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Fix all issues</td><td>Finds the cells where formula errors start, gives each a value to fall back on, and undoes any fix that changed a value that was correct.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Values Mind reads differently</td><td><code>""</code> used in arithmetic (Mind reads it as 0), empty cells compared with numbers, <code>CELL</code> / <code>INFO</code> (they stop a Mind run), line breaks in text, text cells standing alone (a title, a label, or a move to a free column).</td><td class="st"><span class="tag mind">Checked in Mind</span></td></tr>
+    <tr><td>Formulas and structure</td><td>Grid titles starting with <code>#</code>, flags, broken references, 3-D references, <code>INDIRECT</code> used as a value, frozen external links.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Pivot tables</td><td>Turned into values (or formulas). Formulas that read them through <code>GETPIVOTDATA</code> are pointed at the cells first; custom pivot styles that Mind refuses are removed.</td><td class="st"><span class="tag mind">Checked in Mind</span></td></tr>
+    <tr><td>Excel 365 formulas</td><td>Formulas Excel 365 stores as one-cell arrays are fixed like any other and stay one-cell arrays. A formula filled down a column is written as one fill (64,000 cells in about a second).</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Mind loop</td><td>The loop the model's macro runs, written as <code>MM_LOOP</code> / <code>MM_RESULT</code>. One model: the same values as the macro in Excel, and in Mind (19 instances, no difference).</td><td class="st"><span class="tag mind">Checked in Mind</span></td></tr>
+    <tr><td>Recalculate and compare</td><td>Recalculates in Excel with the MM for Excel add-in and compares every formula cell with the original, following any rows inserted.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Do everything</td><td>The steps in order, each with its check; the box to start it right after the upload.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Assistant</td><td>Grid names from context, questions about the model, explaining and suggesting fixes. It only advises: nothing is applied until you click Apply.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Feedback</td><td>The button above, with the coded message.</td><td class="st"><span class="tag done">New</span></td></tr>
+  </table>
+</div>
+
+<div class="page">
+  <h2 class="newpage">In the pipeline</h2>
+  <table>
+    <tr><th>What</th><th>Why it matters</th><th>Status</th></tr>
+    <tr><td>Faster checks on very large models</td><td>On a model with 1.4 million formulas each full check takes 10 to 20 minutes, and Do everything runs about five of them. The aim is to check again only what changed.</td><td class="st"><span class="tag next">Next</span></td></tr>
+    <tr><td>Do everything keeps going when the computer sleeps</td><td>Today the browser page drives the run, so a sleeping computer pauses it. The aim is to run it inside the app.</td><td class="st"><span class="tag next">Next</span></td></tr>
+    <tr><td>Run in Mind from the exe</td><td>The app can upload, convert, run and read back from Mind, but signing in to Mind needs the source install today. A sign-in button is planned.</td><td class="st"><span class="tag next">Next</span></td></tr>
+    <tr><td>Text cells a lookup reads inside a range</td><td>A heading in a row that <code>MATCH</code> searches cannot move without breaking the lookup. Still left to a person.</td><td class="st"><span class="tag next">Planned</span></td></tr>
+    <tr><td>Array formulas over several cells</td><td>Fixed one at a time by a person today.</td><td class="st"><span class="tag next">Planned</span></td></tr>
+    <tr><td>Loop and instance checks</td><td>Read the macro's loop keywords, check grid names and flags, and point to where Mind instances or loops would help. A prototype exists.</td><td class="st"><span class="tag next">Prototype</span></td></tr>
+    <tr><td><code>MM_INSTANCE</code> checks</td><td>The app does not check instance formulas yet.</td><td class="st"><span class="tag next">Planned</span></td></tr>
+    <tr><td>More real Mind conversions</td><td>The latest pivot and Excel 365 fixes are checked in Excel (same values); a Mind conversion of a large model with them is still to do.</td><td class="st"><span class="tag next">Next</span></td></tr>
+  </table>
+  <p>Tell us what you need most: your feedback decides the order.</p>
+
+  <h2>Versions</h2>
+  <p>The browser tab shows the version (for example <i>Mind Ready Beta {{VERSION}}</i>). Please say it in any feedback;
+  the coded message already includes it.</p>
+</div>
+
+</body>
+</html>

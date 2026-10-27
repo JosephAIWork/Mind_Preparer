@@ -11,6 +11,11 @@ The formulas are written only where they give back exactly what the pivot showed
 recalculates and every cell is compared with the pivot's value. A single difference (a grouped field, a
 hidden item, a value filter, a calculated field, "show values as" ...) puts the whole pivot back as
 values, and the reason is reported. Labels are always plain cells.
+
+GETPIVOTDATA that reads the pivot would give #REF! once the pivot is cells: first, each such call
+becomes a reference to the cell it returns today (that cell keeps its value, as a formula or a value).
+A pivot with a custom style ("Results") stopped Mind too, with "Requested value 'Results' was not
+found" (2026-10-26): the style goes once no pivot or table uses it.
 """
 from __future__ import annotations
 
@@ -36,7 +41,10 @@ TOLERANCE = 1e-9
 ERRORS = {-2146826281: "#DIV/0!", -2146826246: "#N/A", -2146826259: "#NAME?", -2146826288: "#NULL!",
           -2146826252: "#NUM!", -2146826265: "#REF!", -2146826273: "#VALUE!"}
 
+XL_FORMULAS, XL_PART = -4123, 2  # Range.Find: look in formulas, part of the text
+
 _NUMBER_RE = re.compile(r"[+-]?\d+(\.\d+)?([eE][+-]?\d+)?")
+_GETPIVOTDATA_RE = re.compile(r"GETPIVOTDATA\(", re.I)
 _SOURCE_RE = re.compile(r"^(?:'?(?P<sheet>(?:[^'!]|'')+)'?!)?R(?P<r1>\d+)C(?P<c1>\d+):R(?P<r2>\d+)C(?P<c2>\d+)$")
 
 
@@ -207,9 +215,162 @@ def _set_formula(cell: Any, formula: str) -> None:
         cell.Formula = formula
 
 
+def getpivotdata_calls(formula: str) -> list[tuple[int, int, list[str]]]:
+    """(start, end, arguments as written) of every GETPIVOTDATA(...) in `formula`; commas inside
+    quotes or inner brackets do not split an argument."""
+    out = []
+    for m in _GETPIVOTDATA_RE.finditer(formula):
+        i, depth, args, cur, quoted = m.end(), 1, [], "", False
+        while i < len(formula):
+            ch = formula[i]
+            if quoted:
+                quoted = ch != '"'
+            elif ch == '"':
+                quoted = True
+            elif ch in "({":
+                depth += 1
+            elif ch in ")}":
+                depth -= 1
+                if depth == 0:
+                    args.append(cur.strip())
+                    break
+            elif ch == "," and depth == 1:
+                args.append(cur.strip())
+                cur = ""
+                i += 1
+                continue
+            cur += ch
+            i += 1
+        else:
+            continue  # no closing bracket: not a call Excel would have parsed
+        out.append((m.start(), i + 1, args))
+    return out
+
+
+def _pivot_of(value: Any) -> Any:
+    """The pivot table a GETPIVOTDATA argument (a Range from Evaluate) lies in, or None."""
+    if isinstance(value, (str, int, float, bool, tuple)) or value is None:
+        return None
+    try:
+        return value.PivotTable
+    except Exception:  # a cell outside every pivot table
+        return None
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool, tuple)) or value is None:
+        return value
+    try:
+        return value.Value2
+    except Exception:
+        return value
+
+
+def _shows_same(a: Any, b: Any) -> bool:
+    if type(a) is int and type(b) is int and a in ERRORS and b in ERRORS:
+        return True  # an error before and after (#REF! becomes #N/A)
+    return _same(a, b)
+
+
+def point_getpivotdata_at_cells(wb: Any, pt: Any, pivot_sheet: Any) -> list[dict[str, Any]]:
+    """Every GETPIVOTDATA in `wb` that reads the pivot `pt` becomes a reference to the cell it returns
+    today, before the pivot becomes cells (it would give #REF! after). A call that gives an error today
+    (an item the pivot does not have, or a second argument that is no pivot table) becomes NA(): an
+    error still. Calls reading another pivot are left for that pivot's turn. Each changed cell must
+    show what it showed; otherwise every cell goes back and ValueError leaves the pivot as it is.
+    -> [{sheet, cell, before, after, calls: [[call as written, what replaced it]]}]"""
+    key = (str(pt.Name), str(pivot_sheet.Name))
+    changed: list[tuple[Any, Any, str, str, Any, list[list[str]]]] = []
+    try:
+        for ws in wb.Worksheets:
+            hit = ws.Cells.Find(What="GETPIVOTDATA(", LookIn=XL_FORMULAS, LookAt=XL_PART, MatchCase=False)
+            seen: set[tuple[int, int]] = set()
+            while hit is not None and (int(hit.Row), int(hit.Column)) not in seen:
+                seen.add((int(hit.Row), int(hit.Column)))
+                cell, hit = hit, ws.Cells.FindNext(hit)
+                text = str(cell.Formula)
+                new, pos, calls = "", 0, []
+                for start, end, args in getpivotdata_calls(text):
+                    vals = [ws.Evaluate(a) for a in args] if len(args) >= 2 else []
+                    target = _pivot_of(vals[1]) if vals else None
+                    if target is not None and (str(target.Name), str(target.Parent.Name)) != key:
+                        continue  # another pivot's
+                    reference = "NA()"
+                    if target is not None:
+                        try:
+                            got = target.GetPivotData(_plain(vals[0]), *[_plain(v) for v in vals[2:]])
+                            reference = f"{_quote_sheet(str(got.Worksheet.Name))}!{got.Address}"
+                        except Exception:  # GETPIVOTDATA gives #REF! for it today
+                            pass
+                    new += text[pos:start] + reference
+                    calls.append([text[start:end], reference])
+                    pos = end
+                if not calls:
+                    continue
+                new += text[pos:]
+                where = f"{ws.Name}!{str(cell.Address).replace('$', '')}"
+                if cell.HasArray:
+                    raise ValueError(f"{where} reads the pivot through GETPIVOTDATA inside an array formula: change it by hand first")
+                changed.append((where, cell, text, new, cell.Value2, calls))
+                cell.Formula = new
+        for where, cell, text, new, shown, _ in changed:
+            cell.Calculate()
+            if not _shows_same(shown, cell.Value2):
+                raise ValueError(f"{where}: GETPIVOTDATA pointed at a cell gives {cell.Value2!r}, not {shown!r} -- the pivot is left as it is")
+    except Exception:
+        for where, cell, text, new, shown, _ in reversed(changed):
+            cell.Formula = text
+        raise
+    return [{"sheet": where.rsplit("!", 1)[0], "cell": where.rsplit("!", 1)[1], "before": text, "after": new, "calls": calls}
+            for where, cell, text, new, shown, calls in changed]
+
+
+def _style_name(style: Any) -> str:
+    return str(getattr(style, "Name", style) or "")
+
+
+def drop_unused_styles(wb: Any, name: str) -> list[str]:
+    """Delete the custom table / pivot style `name` when no pivot table or Excel table uses it any more;
+    once no pivot table is left, every custom style no Excel table uses. -> the styles deleted."""
+    try:
+        used, pivots = set(), 0
+        for ws in wb.Worksheets:
+            for k in range(1, int(ws.PivotTables().Count) + 1):
+                used.add(_style_name(ws.PivotTables(k).TableStyle2))
+                pivots += 1
+            for k in range(1, int(ws.ListObjects.Count) + 1):
+                used.add(_style_name(ws.ListObjects(k).TableStyle))
+        styles = [wb.TableStyles(k) for k in range(1, int(wb.TableStyles.Count) + 1)]
+    except Exception:
+        return []
+    removed = []
+    for style in styles:
+        try:
+            if bool(style.BuiltIn) or str(style.Name) in used or (pivots and str(style.Name) != name):
+                continue
+            label = str(style.Name)
+            style.Delete()
+            removed.append(label)
+        except Exception:  # Excel refused: the style stays, unused
+            pass
+    return removed
+
+
 def convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str, Any]:
     """Turn the pivot `pivot_name` of `ws` into plain cells (to="values") or formulas (to="formulas",
-    falling back to values when the formulas would not give the same numbers). -> what was done."""
+    falling back to values when the formulas would not give the same numbers), the GETPIVOTDATA that
+    read it pointed at its cells first, its custom style deleted after. -> what was done."""
+    pt = ws.PivotTables(pivot_name)
+    style = _style_name(pt.TableStyle2)
+    linked = point_getpivotdata_at_cells(wb, pt, ws)
+    pt = None
+    out = _convert(excel, wb, ws, pivot_name, to)
+    out["getpivotdata"] = linked
+    out["styles_removed"] = drop_unused_styles(wb, style)
+    return out
+
+
+def _convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str, Any]:
     pt = ws.PivotTables(pivot_name)
     rng = pt.TableRange2
     address = str(rng.Address).replace("$", "")

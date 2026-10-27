@@ -6,6 +6,20 @@ its README). Nothing in `app/` imports them; they import the app's R1C1 parser
 (`app.autofix.parse_r1c1`) read-only. Their `data/` folder holds client formulas
 and is git-ignored. Start the implementation from these scripts.
 
+## Plan (order agreed 2026-10-26)
+
+1. **Next: the other VBA loop keywords in the loop builder.** Today it recognises only
+   `For i = ... To ... Next` (`app/model_map.py`, `app/loop_builder.py`); a macro that loops
+   any other way gets no Mind loop and no reason why. To add: `Do While ... Loop` /
+   `Do Until ... Loop` / `Do ... Loop While|Until` and `While ... Wend` with a counter
+   raised by hand (`i = i + 1`) that run until a cell is empty -- an `MM_LOOP` over the
+   filled rows of the table, like `For`; `For Each c In Range(...)` -- an `MM_LOOP` over
+   that range. A loop that stops on a computed condition is listed as not built, with the
+   reason. Every new form with a test, as the `For` loops have. About 2-3 h.
+2. **Grid naming and flags.**
+3. **Where instances and loops would help** -- this prototype; its first part is the merge
+   below ("Next step: merge findings by the input they step through").
+
 ## Purpose
 
 Check a workbook for structure that a Mind loop or Mind instances would express,
@@ -67,7 +81,7 @@ Extraction time through Excel: UC-2 76 s, UC-3 194 s.
    the model map reads dropdowns and macros.
 6. Copies across separate workbooks are not covered.
 
-## Next step (not done): merge findings by the input they step through
+## Next step for plan item 3 (not done): merge findings by the input they step through
 
 Header labels are only what the author typed: they can be missing, wrong or
 inconsistent ("Cat A" / "Category A"), or formulas. So do not merge on labels.

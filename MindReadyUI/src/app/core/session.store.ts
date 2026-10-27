@@ -22,7 +22,7 @@ export class SessionStore {
   readonly reports = signal<ReportBuild | null>(null);
   readonly advancedTab = signal<AdvancedTab>("findings");
   /** 1.11.7: what Prep (and Do everything) does with the pivot tables */
-  readonly pivotMode = signal<PivotMode>("formulas");
+  readonly pivotMode = signal<PivotMode>("values");
   readonly pivotModes = signal<Record<string, string>>({});
   /** STR-009's pivots: [{sheet, name, ref, blocking}] (empty when the workbook has none) */
   readonly pivots = computed(() => {
@@ -55,7 +55,7 @@ export class SessionStore {
     this.readiness.set(start.readiness ?? null);
     this.prepProgress.set(start.prep_progress ?? null);
     this.delta.set(start.delta ?? null);
-    this.pivotMode.set(start.pivot_mode ?? "formulas");
+    this.pivotMode.set(start.pivot_mode ?? "values");
     if (start.pivot_modes) this.pivotModes.set(start.pivot_modes);
     this.recalc.set(null);
     this.chatHistory.set([]);

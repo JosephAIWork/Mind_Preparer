@@ -80,6 +80,17 @@ def test_broken_ref_fix_handles_sheet_qualified_refs_and_range_arguments():
     assert ops == [] and len(skipped) == 1
 
 
+def test_a_broken_name_goes_with_its_sheet():
+    """2026-10-26: =IFERROR(+Projn!IndxAsst4,0), the name pointing to #REF!, became
+    =IFERROR(+Projn!NA(),0) and Excel refused it."""
+    from app.prep import _na_fix_formula
+
+    names = ["IndxAsst4", "Bad"]
+    assert _na_fix_formula("=IFERROR(+Projn!IndxAsst4,0)", names)[0] == "=IFERROR(+NA(),0)"
+    assert _na_fix_formula("='LH 3'!Bad*2+'it''s'!Bad", names)[0] == "=NA()*2+NA()"
+    assert _na_fix_formula("=Bad+IndxAsst4x+Sheet1!A1", names)[0] == "=NA()+IndxAsst4x+Sheet1!A1"
+
+
 def test_assistant_proposal_with_a_refused_formula_is_sent_back_with_the_repair(tmp_path, plain_grid_xlsx):
     result = plan_mode.run(plain_grid_xlsx, tmp_path / "work", load_config(), engine=RulesEngine())
     analysis = result["workbook_analysis"]

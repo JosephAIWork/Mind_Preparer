@@ -26,3 +26,7 @@ mind:
 
 # The MM for Excel add-in (.xll). Empty: the one in Excel's own add-in list, else the default install folder.
 mm_for_excel_addin: ""
+
+# "Send feedback to the Tel Aviv team": the address the email goes to.
+feedback:
+  email: Joseph.Gestetner@Milliman.com

@@ -135,7 +135,10 @@ def test_empty_text_in_arithmetic_and_empty_cells_in_comparisons_are_found_and_r
     assert "Read empty cells as 0 where they are compared" in empty["message"]
 
     plan = {a["id"]: a for a in plan_actions(analysis, {"findings": [blank, lookup, empty]})}
-    assert plan["guard_blank_arithmetic"]["level"] == "blocking" and plan["guard_blank_arithmetic"]["count"] == 18
+    # 18 cells, written as 5 operations: a formula filled down is one fill (2026-10-26)
+    guard = plan["guard_blank_arithmetic"]
+    assert guard["level"] == "blocking" and {o["cell"] for o in guard["operations"]} == {"E5:E10", "H9", "J5:J10", "L5:L8", "L10"}
+    assert sum(o.get("block_cells", 1) for o in guard["operations"]) == 18
     assert len(plan["guard_blank_arithmetic"]["skipped"]) == 1 and "L9" in plan["guard_blank_arithmetic"]["skipped"][0]
     assert {o["rule_id"] for o in plan["guard_blank_arithmetic"]["operations"]} == {"FRM-008", "FRM-010"}
     assert plan["empty_cells_as_zero"]["count"] == 3 and not plan["empty_cells_as_zero"]["skipped"]

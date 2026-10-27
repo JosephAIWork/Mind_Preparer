@@ -39,6 +39,7 @@ import openpyxl
 
 from .change_apply import append_change_log, plan_loop_case_fix
 from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place, verify_opens_in_excel
+from .feedback import failed_op_facts
 from .formula_utils import (
     cell_refs_in_formula,
     col_to_num,
@@ -59,15 +60,15 @@ from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
 
-STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values"}
+STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values", "move_cell"}
 PIVOT_OPS = {"pivot_to_formulas", "pivot_to_values"}
 # What Prep does with the pivot tables (Advanced > Prep actions; Do everything follows it)
 # (every pivot table blocks Mind's converter -- validators/structure.blocking_pivot -- so none is left)
 PIVOT_MODES = {
-    "formulas": "Turn every pivot table into formulas",
     "values": "Turn every pivot table into plain values",
+    "formulas": "Turn every pivot table into formulas",
 }
-DEFAULT_PIVOT_MODE = "formulas"
+DEFAULT_PIVOT_MODE = "values"
 CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula"}
 HIDE_MARKER = "&&Hide"
 EXCEL_SHEET_NAME_MAX = 31
@@ -995,7 +996,8 @@ def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool, bool]:
     a range)."""
     fixed = formula
     for nm in sorted(broken_names, key=len, reverse=True):
-        fixed = re.sub(r"(?<![A-Za-z0-9_.])" + re.escape(nm) + r"(?![A-Za-z0-9_.])", "NA()", fixed)
+        # with its sheet, if it has one: Projn!Name -> NA(), not Projn!NA() (Excel refuses that)
+        fixed = re.sub(r"(?<![A-Za-z0-9_.\]])(?:(?:'(?:[^']|'')+'|[\w.]+)!)?" + re.escape(nm) + r"(?![A-Za-z0-9_.])", "NA()", fixed)
     fixed = _SHEET_REF_ERROR_RE.sub("NA()", fixed)
     fixed = re.sub(r"(?<![:!\w])#REF!(?![:\w])", "NA()", fixed)  # standalone #REF! only
     swapped = fixed
@@ -1473,11 +1475,62 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
     return ops, skipped
 
 
+def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int) -> dict[str, Any] | None:
+    """A lone cell right under a grid whose first column -- its labels -- stops one row above
+    (Base!J414 = 'N' under I406:J413, labels in I, I414 empty; 2026-10-26): a label in that first
+    column makes the grid one row longer, the cell part of it. Only when the grid's last label is a
+    text, the label's cell lies in no grid, and the cell under it is empty -- the grid then takes
+    this row alone."""
+    for g in grids:
+        first = g["first_col"]
+        if g["last_row"] != row - 1 or not (first < col <= g["last_col"]):
+            continue
+        if not _is_text(cell_value(analysis, s["sheet"], row - 1, first)):
+            return None
+        if cell_value(analysis, s["sheet"], row, first) is not None or grid_containing(grids, row, first) or cell_value(analysis, s["sheet"], row + 1, first) is not None:
+            return None
+        return _op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(first, row), before=None, after=f"Value in {s['cell']}",
+                   note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just under the grid {g['ref']}, whose labels in column "
+                        f"{num_to_col(first)} stop one row above; with a label beside it the grid takes this row and Mind imports the cell with it")
+    return None
+
+
+def _move_to_free_column(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int, free: dict[str, int]) -> tuple[dict[str, Any], str] | None:
+    """No room for a title above and no grid to join (Base!J414 = 'N', read by LH3!I103, under a row of
+    numbers, flags and dates; 2026-10-26): the cell moves -- Excel's cut and paste, so every formula and
+    name that reads it follows -- to a column of its own right of everything the sheet holds, with its
+    title above it. Only when every reader reads this one cell: a range or a name over several cells would
+    lose it (and an INDIRECT or a 3-D reference on the sheet may name it by its address).
+    -> (the move, the cell its title goes in), else None."""
+    index = reference_index(analysis)
+    sheet = s["sheet"]
+    if index["whole_cols"].get(sheet, {}).get(col) or index["whole_rows"].get(sheet, {}).get(row) or sheet in index["positional"] or sheet in index["text_addressed"]:
+        return None
+    if any(r1 <= row <= r2 and c1 <= col <= c2 and (r1, c1) != (r2, c2) for r1, r2, c1, c2, _ in index["rects"].get(sheet, ())):
+        return None
+    if sheet not in free:
+        info = next((x for x in analysis["workbooks"][0]["sheets"] if x["name"] == sheet), {})
+        dims = parse_ref(str(info.get("dimensions") or "").replace("$", ""))
+        free[sheet] = max([dims["c2"] if dims else 1] + [g["last_col"] for g in grids]) + 2
+    target = free[sheet]
+    if target > 16384:  # Excel's last column
+        return None
+    free[sheet] = target + 2
+    at = max(row, 2)
+    return (
+        _op("move_cell", "title_lone_text_cells", "STR-008", sheet, cell=s["cell"], to=ref_text(target, at), before=f"{s['cell']} = {s['text'][:40]!r}", after=ref_text(target, at),
+            note=f"{s['cell']} is read by {s['read_by']} but has no room for a title above it; moved (cut and paste: what reads it follows) to {ref_text(target, at)}, a column of its own"),
+        ref_text(target, at - 1),
+    )
+
+
 def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]:
     """STR-008: a '#' title in the empty cell above a text cell that stands alone and is read
     by a formula, so that Mind imports it as a one-cell grid. Named after the label to its
     left on the same row when there is one ('Nom Onglet :' -> '#Nom Onglet value'), else after
-    the cell. A cell with no empty cell above it is left for a person."""
+    the cell. With no empty cell above it: a label joining it to the grid just above
+    (_label_joining_grid_above), else the cell moves to a free column with its title
+    (_move_to_free_column), else it is left for a person."""
     from .validators.structure import lone_text_cells_read
 
     ops, skipped = [], []
@@ -1490,16 +1543,9 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         return ops, skipped
     used = {g["name"].strip().lower() for g in all_grids(analysis) if g.get("name")}
     grids = all_grids(analysis)
-    for s in sites:
-        ref = parse_ref(s["cell"])
-        row, col = ref["r1"], ref["c1"]
-        if row == 1:
-            skipped.append(f"{s['sheet']}!{s['cell']}: on the first row, no cell above for a title -- by hand (move the cell down one row, or write its value into the formulas)")
-            continue
-        above = cell_value(analysis, s["sheet"], row - 1, col)
-        if above is not None or grid_containing([g for g in grids if g["sheet"] == s["sheet"]], row - 1, col):
-            skipped.append(f"{s['sheet']}!{s['cell']}: the cell above ({ref_text(col, row - 1)}) is taken -- by hand")
-            continue
+    free: dict[str, int] = {}  # per sheet, the next free column a cell can move to
+
+    def title(s: dict[str, Any], row: int, col: int) -> str:
         label = None
         for c in range(col - 1, max(0, col - 5), -1):
             v = cell_value(analysis, s["sheet"], row, c)
@@ -1509,7 +1555,27 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         base = (_clean_name(str(label).rstrip(": ").strip()) + " value") if label else f"{s['sheet']} {s['cell']}"
         name = _unique_name(base, used)
         used.add(name.lower())
-        ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(col, row - 1), before=None, after=f"#{name}",
+        return f"#{name}"
+
+    for s in sites:
+        ref = parse_ref(s["cell"])
+        row, col = ref["r1"], ref["c1"]
+        on_sheet = [g for g in grids if g["sheet"] == s["sheet"]]
+        if row == 1 or cell_value(analysis, s["sheet"], row - 1, col) is not None or grid_containing(on_sheet, row - 1, col):
+            joined = _label_joining_grid_above(analysis, on_sheet, s, row, col) if row > 1 else None
+            moved = None if joined else _move_to_free_column(analysis, on_sheet, s, row, col, free)
+            if joined:
+                ops.append(joined)
+            elif moved:
+                move, title_cell = moved
+                ops.append(move)
+                ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=title_cell, before=None, after=title(s, row, col),
+                               note=f"the title of {s['sheet']}!{s['cell']}, moved to {move['to']}: a one-cell grid Mind imports"))
+            else:
+                where = "on the first row, no cell above for a title" if row == 1 else f"the cell above ({ref_text(col, row - 1)}) is taken"
+                skipped.append(f"{s['sheet']}!{s['cell']}: {where}, and a range or a name over several cells reads it (it cannot move) -- by hand")
+            continue
+        ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(col, row - 1), before=None, after=title(s, row, col),
                        note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
     return ops, skipped
 
@@ -1536,28 +1602,22 @@ def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
 # `caution` says why a blocking action still deserves a look before Apply.
 BLOCKING, OPTIONAL = "blocking", "optional"
 def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple[list[dict], list[str]]:
-    """STR-009: one operation per pivot table (every one blocks Mind's converter). To formulas (each
-    falls back to values in Excel when its formulas would not give the same numbers) unless the pivot
-    setting is "values"."""
+    """STR-009: one operation per pivot table (every one blocks Mind's converter). To plain values
+    unless the pivot setting is "formulas" (each falls back to values in Excel when its formulas would
+    not give the same numbers). GETPIVOTDATA reading a pivot is pointed at the cell it returns today
+    before the pivot becomes cells (app/pivots.point_getpivotdata_at_cells)."""
     from .validators.structure import blocking_pivot
 
     ops: list[dict] = []
     skipped: list[str] = []
-    to = "pivot_to_values" if mode == "values" else "pivot_to_formulas"
-    # GETPIVOTDATA reads a pivot table: once the pivot is cells it returns #REF! (and so does every
-    # cell built on it). Which pivot each one reads is not recorded, so none is converted (as
-    # scripts/pivots_to_values.py refuses such a workbook).
+    to = "pivot_to_formulas" if mode == "formulas" else "pivot_to_values"
     # Only looked for when there is a pivot: a big model has hundreds of thousands of formulas.
     has_pivots = any(s.get("pivot_tables") for s in analysis["workbooks"][0].get("sheets", []))
     gpd = sorted({f["sheet"] for f in analysis["workbooks"][0].get("formulas", []) or [] if isinstance(f.get("formula"), str) and "GETPIVOTDATA(" in f["formula"].upper()}) if has_pivots else []
     for s in analysis["workbooks"][0].get("sheets", []):
         for p in s.get("pivot_tables", []) or []:
             why = blocking_pivot(p)
-            if gpd:
-                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table -- GETPIVOTDATA on {', '.join(gpd)} reads pivot tables and would become #REF!; "
-                               f"Mind cannot read it as it is ({why}): replace the GETPIVOTDATA by hand first")
-                continue
-            note = f"blocking: {why}"
+            note = f"blocking: {why}" + (f"; GETPIVOTDATA on {', '.join(gpd)} will read the cells it reads today" if gpd else "")
             ops.append(_op(to, "pivot_tables", "STR-009", s["name"], cell=p["ref"].split(":")[0], range=p["ref"], pivot=p["name"],
                            before=f"pivot table {p['name']}", after="formulas over its source" if to == "pivot_to_formulas" else "plain values", note=note))
     return ops, skipped
@@ -1700,6 +1760,61 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
     return kept
 
 
+# The Mind-value actions plan one rewrite per cell. An output table can hold the same formula on
+# 64,099 rows of 8 columns (512,792 cells of one model, 2026-10-26): one write per cell is ~8 COM
+# calls each, over an hour. Cells next to each other in a column holding the same formula filled
+# down, before and after the rewrite, are written in one assignment instead.
+FILL_DOWN_ACTIONS = {"guard_blank_arithmetic", "keep_error_cells", "line_breaks_as_char", "empty_cells_as_zero"}
+# what a fill moves but relative_form keeps as written: whole rows (2:2), another workbook's cells ([1]Data!A5)
+_UNSEEN_IN_A_FILL = re.compile(r"(?<![A-Za-z0-9_.$])\$?\d+:\$?\d+(?![\d(])|\[")
+
+
+def _fill_down_blocks(ops: list[dict[str, Any]], analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """One set_formula per block of cells holding the same formula filled down: `cell` is the block
+    (BK133:BK64231), `before` / `after` its top cell's formulas, `before_last` / `after_last` its last
+    cell's, `block_cells` how many. Two cells join only when their formulas before AND after are the same
+    once every reference is written relative to its own cell (mind_values.relative_form), so the top
+    formula written over the block -- Excel moves the relative references down as a fill does -- gives
+    every cell what its own operation said. A one-cell array formula is marked `one_cell_array` (the
+    writer keeps it one) and joins only other one-cell arrays. A formula with GETPIVOTDATA stays alone
+    (a pivot turned into cells rewrites its calls cell by cell)."""
+    from .validators.mind_values import relative_form
+
+    if not ops:
+        return ops
+    arrays = {(f["sheet"], str(f["cell"]).upper()) for f in analysis["workbooks"][0].get("formulas", []) if f.get("array_ref")}
+    out: list[dict[str, Any]] = []
+    cells: list[tuple[tuple, int, dict[str, Any]]] = []
+    for o in ops:
+        ref = parse_ref(str(o.get("cell") or "")) if o["op"] == "set_formula" and not o.get("after_inserts") and not o.get("range") else None
+        if not ref or ref.get("sheet") or (ref["r1"], ref["c1"]) != (ref["r2"], ref["c2"]):
+            out.append(o)
+            continue
+        if (o["sheet"], str(o["cell"]).upper()) in arrays:
+            o = {**o, "one_cell_array": True}
+        before, after = str(o.get("before") or ""), str(o.get("after") or "")
+        if not (before.startswith("=") and after.startswith("=")) or "GETPIVOTDATA" in before.upper() or _UNSEEN_IN_A_FILL.search(mask_strings(before + after)):
+            out.append(o)
+            continue
+        key = (o["sheet"], ref["c1"], o["rule_id"], bool(o.get("one_cell_array")), relative_form(before, ref["r1"], ref["c1"]), relative_form(after, ref["r1"], ref["c1"]))
+        cells.append((key, ref["r1"], o))
+    cells.sort(key=lambda t: (t[0][0], t[0][1], t[1]))
+    run: list[dict[str, Any]] = []
+    for i, (key, row, o) in enumerate(cells):
+        run.append(o)
+        if i + 1 < len(cells) and cells[i + 1][0] == key and cells[i + 1][1] == row + 1:
+            continue
+        if len(run) == 1:
+            out.append(o)
+        else:
+            first = run[0]
+            fill = f"the same formula down to {o['cell']} ({len(run):,} cells), written as one fill"
+            out.append({**first, "cell": f"{first['cell']}:{o['cell']}", "block_cells": len(run), "before_last": o["before"], "after_last": o["after"],
+                        "note": f"{first['note']} -- {fill}" if first.get("note") else fill})
+        run = []
+    return out
+
+
 def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None = None, pivot_mode: str = DEFAULT_PIVOT_MODE) -> list[dict[str, Any]]:
     """Every action with its planned operations and skip notes -- no file is touched.
 
@@ -1727,6 +1842,8 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
                 ops, skipped = a["planner"](analysis, validation_report)
             ops = _drop_merged_targets(list(ops), skipped, merged)
             ops = _drop_pivot_targets(ops, skipped, pivots)
+            if a["id"] in FILL_DOWN_ACTIONS:
+                ops = _fill_down_blocks(ops, analysis)
             kept = []
             for o in ops:
                 # two actions filling the same EMPTY cell (a header over an array, a grid title): the first keeps it.
@@ -1765,7 +1882,7 @@ def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # sheet protection comes off first: a protected sheet refuses the pivot conversion and every write
     unprotect = [o for o in operations if o["op"] == "unprotect_sheet"]
     phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # the pivot tables first, so their cells can be written
-    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "remove_validation"} and not o.get("after_inserts")]
+    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "remove_validation", "move_cell"} and not o.get("after_inserts")]
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
     phase2 = [_resolve_insert_at(o, row_inserts, col_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
@@ -1893,6 +2010,49 @@ def _read_back_guard(rng: Any, o: dict[str, Any], sheet: str, target: str) -> No
             raise ValueError(f"{sheet}!{target}: Excel accepted the write but the cell is still empty (protected, merged or otherwise refused)")
 
 
+def _same_formula(a: Any, b: Any) -> bool:
+    """Excel's read-back against the planned text, the function prefixes a file keeps (_xlfn.) and spacing aside."""
+    def norm(x: Any) -> str:
+        return re.sub(r"\s+", "", re.sub(r"_xl(?:fn|ws|pm)\.", "", str(x or ""), flags=re.IGNORECASE)).upper()
+
+    return norm(a) == norm(b)
+
+
+def _write_formulas(rng: Any, o: dict[str, Any], sheet: str, target: str) -> None:
+    """set_formula on a one-cell array formula, or on a block of cells holding the same formula filled
+    down (one operation for BK133:BK64231, planned by _fill_down_blocks).
+
+    A one-cell array stays one. Excel 365 stores most formulas with INDEX, OFFSET... as a one-cell
+    dynamic array (HasArray is False); .Formula would write it back as a plain formula with an @ --
+    =IF(N($O133)>0,+@INDEX(...)...), implicit intersection, another formula (seen 2026-10-26).
+    Formula2 keeps it as it was; a single Ctrl+Shift+Enter cell (HasArray) gets FormulaArray again
+    (in a block it comes out a one-cell dynamic array: the same value).
+    A block is one assignment: Excel moves the relative references down as a fill does (64,099 cells
+    in about a second). Its last cell is read back against the plan; when it differs, the block gets
+    its old formula back and the operation fails."""
+    arrays = bool(o.get("one_cell_array"))
+    if ":" not in target:
+        if arrays and rng.HasArray:
+            rng.FormulaArray = o["after"]
+        else:
+            rng.Formula2 = o["after"]
+        return
+    prop = "Formula2" if arrays else "Formula"
+    setattr(rng, prop, o["after"])
+    if o.get("after_last"):
+        last = rng.Cells(rng.Rows.Count, rng.Columns.Count)
+        try:
+            got = getattr(last, prop)
+        finally:
+            last = None
+        if not _same_formula(got, o["after_last"]):
+            setattr(rng, prop, o["before"])
+            raise ValueError(
+                f"{sheet}!{target}: the formula filled down came out as {str(got)[:120]} in its last cell, where "
+                f"{str(o['after_last'])[:120]} was planned -- the block was put back as it was"
+            )
+
+
 def _op_target(o: dict[str, Any]) -> str:
     """'Sheet!Cell' (or row / column / the sheet alone) an operation writes to, for progress messages."""
     where = o.get("range") or o.get("cell") or (f"row {o['row']}" if o.get("row") is not None else None) or (f"column {o['column']}" if o.get("column") else None)
@@ -1914,6 +2074,9 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             for c in _cells_of(o.get("range") or o.get("cell")):
                 covered.add((o["sheet"], c))
     dismantled: set[tuple[str, str]] = set()
+    # (sheet, cell) -> [[GETPIVOTDATA call, the reference it became]] when a pivot was turned into cells:
+    # a later formula planned from the old text gets the same references, not a call giving #REF!
+    relinked: dict[tuple[str, str], list[list[str]]] = {}
 
     def _array_of(ws: Any, target: str) -> str | None:
         """Address (e.g. 'C7:C9') of the multi-cell array formula containing the
@@ -1974,7 +2137,9 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                 area = rng.Cells(1, 1).MergeArea
                 rng = None
                 rng = area
-            if o["op"] == "set_formula":
+            if o["op"] == "set_formula" and (o.get("one_cell_array") or ":" in target):
+                _write_formulas(rng, o, sheet, target)
+            elif o["op"] == "set_formula":
                 if rng.HasArray:  # single-cell array formula: replace it entirely
                     rng.ClearContents()
                 rng.Formula = o["after"]
@@ -2046,7 +2211,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                             raise
                     applied.append(record)
                 except Exception as exc:
-                    failed.append({**o, "error": _com_message(exc, o)[:300]})
+                    failed.append({**o, "error": _com_message(exc, o)[:300], **failed_op_facts(exc)})
                 finally:
                     ws = None
             perf_record("apply_writes", time.perf_counter() - t_write, file=copy_path.name, operations=total)
@@ -2065,6 +2230,11 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
     def _write_one(wb: Any, ws: Any, o: dict[str, Any], i: int, total: int) -> dict[str, Any]:
         """One operation on its sheet; returns the record to log as applied."""
         record = o
+        if o["op"] == "set_formula" and (o["sheet"], str(o["cell"]).replace("$", "").upper()) in relinked:
+            after = str(o["after"])
+            for call, reference in relinked[(o["sheet"], str(o["cell"]).replace("$", "").upper())]:
+                after = after.replace(call, reference)
+            o = {**o, "after": after}
         if o["op"] in ("set_formula", "set_value", "clear_cell"):
             record = _write_cell(ws, o)
         elif o["op"] == "set_array_formula":
@@ -2086,7 +2256,20 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             from .pivots import convert
 
             done = convert(wb.Application, wb, ws, str(o["pivot"]), "formulas" if o["op"] == "pivot_to_formulas" else "values")
-            record = {**o, "result": done, "after": f"{done['formulas']} formulas" if done["to"] == "formulas" else "plain values" + (f" ({done['why_values']})" if done.get("why_values") else "")}
+            after = f"{done['formulas']} formulas" if done["to"] == "formulas" else "plain values" + (f" ({done['why_values']})" if done.get("why_values") else "")
+            for g in done.get("getpivotdata") or []:
+                relinked[(g["sheet"], g["cell"])] = relinked.get((g["sheet"], g["cell"]), []) + g["calls"]
+            calls = [c for g in done.get("getpivotdata") or [] for c in g["calls"]]
+            if any(ref != "NA()" for _, ref in calls):
+                after += f"; {sum(ref != 'NA()' for _, ref in calls)} GETPIVOTDATA call(s) now read its cells"
+            if any(ref == "NA()" for _, ref in calls):
+                after += f"; {sum(ref == 'NA()' for _, ref in calls)} GETPIVOTDATA call(s) giving an error today became NA()"
+            record = {**o, "result": done, "after": after}
+        elif o["op"] == "move_cell":
+            # Excel's cut and paste: every formula and name that reads the cell follows it
+            ws.Range(o["cell"]).Cut(ws.Range(o["to"]))
+            if ws.Range(o["to"]).Value2 is None:
+                raise ValueError(f"{o['sheet']}!{o['cell']}: Excel did not move it to {o['to']}")
         elif o["op"] == "rename_sheet":
             ws.Name = o["after"]
         elif o["op"] == "break_external_link":
@@ -2266,11 +2449,23 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
                 _remove_validation_openpyxl(ws, o["cell"])
                 applied.append(o)
                 continue
+            if o["op"] == "set_formula" and o.get("block_cells"):
+                # a formula filled down (_fill_down_blocks): each cell gets it moved to its own row, as Excel's fill does
+                from openpyxl.formula.translate import Translator
+
+                cells = _range_cells(o["cell"])
+                moved = [Translator(o["after"], origin=cells[0]).translate_formula(c) for c in cells]
+                if not _same_formula(moved[-1], o.get("after_last")):
+                    raise ValueError(f"the formula filled down would be {moved[-1][:120]} in its last cell, where {str(o.get('after_last'))[:120]} was planned")
+                for c, formula in zip(cells, moved):
+                    ws[c].value = formula
+                applied.append(o)
+                continue
             for cell in _range_cells(o["cell"]):
                 ws[cell].value = None if o["op"] == "clear_cell" else o["after"]
             applied.append(o)
         except Exception as exc:
-            failed.append({**o, "error": str(exc)[:200]})
+            failed.append({**o, "error": str(exc)[:200], **failed_op_facts(exc)})
     if progress is not None:
         progress("apply_save", "Saving the copy", None, done=total, total=total)
     wb.save(copy_path)

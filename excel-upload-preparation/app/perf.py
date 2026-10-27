@@ -42,12 +42,33 @@ def record(name: str, seconds: float, **facts: Any) -> None:
         pass
 
 
+_STAGES = threading.local()
+
+
+def current_stage() -> str | None:
+    """The innermost stage this thread is in (for a problem report)."""
+    stack = getattr(_STAGES, "stack", None)
+    return stack[-1] if stack else None
+
+
 @contextlib.contextmanager
 def stage(name: str, **facts: Any) -> Iterator[dict[str, Any]]:
-    """Times the block; the caller may add facts to the yielded dict (they are logged with it)."""
+    """Times the block; the caller may add facts to the yielded dict (they are logged with it).
+    An error leaving the block carries the innermost stage it left (`mind_ready_stage`), for the
+    problem report (app/feedback.py)."""
     extra: dict[str, Any] = {}
+    stack = _STAGES.__dict__.setdefault("stack", [])
+    stack.append(name)
     t = time.perf_counter()
     try:
         yield extra
+    except BaseException as exc:
+        if getattr(exc, "mind_ready_stage", None) is None:
+            try:
+                exc.mind_ready_stage = name  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        raise
     finally:
+        stack.pop()
         record(name, time.perf_counter() - t, **facts, **extra)

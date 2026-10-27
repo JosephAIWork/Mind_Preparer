@@ -31,8 +31,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PACKAGE_ROOT))
@@ -49,7 +51,7 @@ from app.perf import stage as perf_stage  # noqa: E402
 from app import excel_worker  # noqa: E402
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
-from app import ai_key  # noqa: E402
+from app import ai_key, feedback  # noqa: E402
 from app.settings import SETTINGS  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, check_api_key, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
@@ -662,6 +664,122 @@ def _validate_ops(raw_ops: Any) -> list[dict[str, Any]]:
     return ops
 
 
+# --- problem reports (app/feedback.py) ---------------------------------------------------
+# The step a route belongs to, in the words of the screens (the route's path, as declared)
+_STEPS = {
+    "/api/sessions": "Upload",
+    "/api/sessions/{session_id}/analyze": "Check the workbook",
+    "/api/sessions/{session_id}/reanalyze": "Check the workbook",
+    "/api/sessions/{session_id}/apply": "Fix the formulas",
+    "/api/sessions/{session_id}/auto-fix": "Fix all issues",
+    "/api/sessions/{session_id}/mind-loop-plan": "Build the Mind loop",
+    "/api/sessions/{session_id}/mind-loop-plan/apply": "Build the Mind loop",
+    "/api/sessions/{session_id}/recalculate": "Recalculate",
+    "/api/sessions/{session_id}/numbers-check": "Compare the numbers",
+    "/api/sessions/{session_id}/chat": "Assistant",
+    "/api/sessions/{session_id}/chat/stream": "Assistant",
+    "/api/sessions/{session_id}/suggest": "Assistant",
+    "/api/sessions/{session_id}/grid-names": "Grid Namer",
+    "/api/sessions/{session_id}/grid-namer": "Grid Namer",
+    "/api/sessions/{session_id}/mind-loop": "Run in Mind",
+    "/api/sessions/{session_id}/model-map": "Model map",
+    "/api/sessions/{session_id}/reports": "Download the report",
+    "/api/sessions/{session_id}/files/{file_name}": "Download",
+    "/api/sessions/{session_id}/pivot-mode": "Pivot table setting",
+    "/api/sessions/{session_id}/sheet-cells": "Workbook view",
+    "/api/sessions/{session_id}/cells": "Workbook view",
+    "/api/sessions/{session_id}/estimate": "Time estimate",
+    "/api/sessions/{session_id}/readiness": "Verdict",
+    "/api/assistant-key": "AI key",
+}
+
+
+def _workbook_names(s: Session | None) -> list[str]:
+    """The workbook's own names (file, sheets, defined names): masked in every problem report."""
+    if s is None:
+        return []
+    names: list[str] = []
+    for p in list(s.paths.values())[:1]:
+        names.append(Path(p).stem)
+    names += [sh.get("name", "") for sh in (s.size or {}).get("sheets", [])]
+    if s.result:
+        wb = s.result["workbook_analysis"]["workbooks"][0]
+        names += [sh.get("name", "") for sh in wb.get("sheets", [])]
+        names += [str(d.get("name", "")).split("!")[-1] for d in wb.get("defined_names", [])]
+    return [n for n in dict.fromkeys(names) if n]
+
+
+def _report_problem(exc: BaseException | None, step: str, s: Session | None = None, **kw: Any) -> dict[str, Any]:
+    """One incident for the Tel Aviv team, with the rule and the stage the scan or the Apply was
+    in when it failed, when the session knows them."""
+    if s is not None:
+        if not kw.get("rule_id") and (s.scan or {}).get("state") in ("error", "running"):
+            kw["rule_id"] = s.scan.get("rule_id")
+        if not kw.get("stage"):
+            busy = s.apply_status if (s.apply_status or {}).get("state") in ("error", "running") else s.scan if (s.scan or {}).get("state") in ("error", "running") else {}
+            if busy.get("stage"):
+                kw["stage"] = str(busy["stage"])
+    try:
+        counts = feedback.workbook_counts(_summary(s.result["workbook_analysis"]) if s and s.result else None, s.size if s else None)
+    except Exception:
+        counts = None
+    incident = feedback.record(exc, step=step, workbook=counts, names=_workbook_names(s), **kw)
+    incident["plain"] = _plain_problem(exc, step, kw.get("failed_ops"))  # for this screen only, never sent
+    return incident
+
+
+def _plain_problem(exc: BaseException | None, step: str, failed_ops: list[dict[str, Any]] | None) -> str:
+    """What stopped the user's work, in one plain sentence, for the box on their own screen (their
+    workbook's words may appear here: it is not part of the message to the team)."""
+    if failed_ops:
+        rules = sorted({str(o.get("rule_id")) for o in failed_ops if o.get("rule_id")})
+        return (
+            f"{step}: Excel did not accept {len(failed_ops)} of the changes" + (f" (rule {', '.join(rules[:4])})" if rules else "")
+            + ". The other changes were made. The ones left out are listed with Excel's reason, and the check that follows shows what still blocks Mind."
+        )
+    said = ""
+    if exc is not None:
+        info = getattr(exc, "excepinfo", None)
+        said = str(info[2]) if info and len(info) > 2 and info[2] else str(getattr(exc, "detail", "") or exc or type(exc).__name__)
+    said = re.sub(r"\s+", " ", said).strip().rstrip(".")[:220]
+    who = "The app" if step == "Other" else step
+    return f"{who} stopped on an error" + (f": {said}" if said else "") + ". Your original file is not changed."
+
+
+def _problem_fields(incident: dict[str, Any] | None) -> dict[str, Any]:
+    """The `incident` ref (for the message to the team) and the plain sentence (for the screen)."""
+    return {"incident": incident["ref"], "problem": incident.get("plain")} if incident else {}
+
+
+def _problem_from_request(request: Request, exc: BaseException) -> dict[str, Any] | None:
+    try:
+        route = request.scope.get("route")
+        step = _STEPS.get(getattr(route, "path", ""), "Other")
+        s = SESSIONS.get(str(request.path_params.get("session_id") or ""))
+        return _report_problem(exc, step, s)
+    except Exception:
+        return None  # the report must never hide the error itself
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error(request: Request, exc: StarletteHTTPException):
+    """As FastAPI answers; a 5xx also gets an incident (its `ref` as `incident`), the error it
+    wraps (`raise HTTPException(...) from exc`) reported rather than the wrapper."""
+    if exc.status_code < 500:
+        return await http_exception_handler(request, exc)
+    incident = _problem_from_request(request, exc.__cause__ or exc)
+    body: dict[str, Any] = {"detail": exc.detail, **_problem_fields(incident)}
+    return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(Exception)
+async def _crash(request: Request, exc: Exception):
+    """An error no route caught: a 500 with its incident."""
+    incident = _problem_from_request(request, exc)
+    body: dict[str, Any] = {"detail": f"{type(exc).__name__}: {exc}"[:400], **_problem_fields(incident)}
+    return JSONResponse(body, status_code=500)
+
+
 # --- API ----------------------------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict[str, Any]:
@@ -708,6 +826,29 @@ def save_assistant_key(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail=f"The key could not be saved: {exc}") from exc
     return {"saved": True, "last4": ai_key.last4(key), "message": note}
+
+
+@app.post("/api/feedback")
+def compose_feedback(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """The message for "Send feedback to the Tel Aviv team": the incident `ref` (none from the
+    header), the user's `note`, `useAssistant` (the assistant writes the opening lines when a key
+    is saved), `sessionId` (the workbook's counts when no incident holds them). In codes, with
+    nothing from the workbook: the screen shows it, then copies it and opens an email."""
+    ref = str(payload.get("ref") or "").strip()
+    incident = feedback.find(ref) if ref else None
+    note = str(payload.get("note") or "")[:2000]
+    s = SESSIONS.get(str(payload.get("sessionId") or ""))
+    ai_text = None
+    if payload.get("useAssistant", True):
+        rule = engine().get(str((incident or {}).get("rule_id") or "").split(",")[0].strip())
+        try:
+            ai_text = feedback.assistant_lines(incident, note, (rule or {}).get("title"))
+        except Exception:
+            ai_text = None
+    counts = None
+    if incident is None and s is not None and s.result:
+        counts = feedback.workbook_counts(_summary(s.result["workbook_analysis"]), s.size)
+    return feedback.compose(incident, note, ai_text, counts)
 
 
 @app.post("/api/sessions")
@@ -876,6 +1017,9 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
         out["scan_error"] = scan_error
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
+    if res.get("failed"):
+        step = {"loop": "Build the Mind loop", "assistant": "Assistant", "formula": "Formula fix"}.get(source, "Fix the formulas")
+        out.update(_problem_fields(_report_problem(None, step, s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
     return out
 
 
@@ -1003,6 +1147,7 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
         except Exception as exc:  # the thread must never die silently
             state["error"] = str(exc)[:300]
             state["state"] = "error"
+            state.update(_problem_fields(_report_problem(exc, "Run in Mind", s)))
             progress({"event": "done", "verdict": "error", "message": f"loop crashed: {exc}"[:300]})
 
     threading.Thread(target=worker, name=f"mind-loop-{session_id}", daemon=True).start()
@@ -1026,7 +1171,7 @@ def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
             except Exception:
                 report = None
     events = st["events"][after:]
-    return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None}
+    return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "incident": st.get("incident"), "problem": st.get("problem"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None}
 
 
 def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]], str, str | None]:
@@ -1352,7 +1497,7 @@ def _refuse_while_fixing(session_id: str) -> None:
     if state and state.get("state") == "running":
         raise HTTPException(status_code=409, detail="the automatic fixer is running on this workbook: wait for it to finish, or stop it")
 
-_AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values")
+_AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values", "incident", "problem")
 _AUTOFIX_TITLES = {
     "start": "Starting", "compare": "Comparing with the original", "read": "Reading the workbook", "find": "Finding where the errors start", "advise": "Asking the assistant",
     "fix": "Fixing", "pass": "Fixing", "confirm": "Confirming", "save": "Saving", "verify": "Checking the file opens", "reanalyze": "Re-analyzing the fixed version", "done": "Done",
@@ -1458,8 +1603,11 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             state.update(state="done", stage="done", title="Done", message=res.get("summary") or "", finished=time.time(), updated=time.time())
         except HTTPException as exc:  # the re-analysis refused (a scan already running)
             state.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+            if exc.status_code >= 500:
+                state.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Fix all issues", s)))
         except Exception as exc:  # the thread must never die silently
             state.update(state="error", error=f"{type(exc).__name__}: {exc}"[:400], finished=time.time(), updated=time.time())
+            state.update(_problem_fields(_report_problem(exc, "Fix all issues", s, stage=str(state.get("stage") or ""))))
 
     threading.Thread(target=worker, name=f"autofix-{session_id}", daemon=True).start()
     return _autofix_public(s, state, full=False)
@@ -1801,6 +1949,8 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         out.update(_run_scan(s, output))
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
+    if res.get("failed"):
+        out.update(_problem_fields(_report_problem(None, "Grid Namer", s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
     return out
 
 

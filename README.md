@@ -35,7 +35,7 @@ pip install -r requirements.txt
 
 Double-click `excel-upload-preparation\run_mind_ready_web.bat`. A server window opens and then the app
 opens in your browser at <http://localhost:8600>. The browser tab shows the version, for example
-*Mind Ready 1.11.10*.
+*Mind Ready Beta 1.12.0*.
 
 To stop the app, close the server window. If port 8600 is taken, change `port` in the settings (below).
 
@@ -117,13 +117,18 @@ run are deleted afterwards. Both names can be changed in the settings.
 
 ## Feedback
 
-Please contact the **Milliman Tel Aviv team** with your feedback.
+When a step fails, a box under the header says what stopped and why, with the button **Send feedback
+to the Tel Aviv team**. The same button is in the header, for anything else you want to tell us.
 
-The most useful feedback includes:
+1. Click it, add a line about what you were doing if you like, and click **Prepare the message**.
+2. Read the message if you like, then click **Copy and open email**: the message is copied and an email
+   to the Tel Aviv team opens (the address is `feedback.email` in the settings).
+3. Paste it into the email (**Ctrl+V**) and send. If the email cuts it short, click **Save as a file**
+   and attach the file.
 
-- the version shown on the browser tab;
-- what you did, what you expected, and what happened, with a screenshot;
-- the report (**Download the report**), and the workbook if you are allowed to share it.
+The message is written in codes that tell us where in the app it stopped and why, with the kind of
+formula involved. Nothing from your workbook is in it: no file name, no sheet names, no cell addresses,
+no values.
 
 ## What is in this repository
 

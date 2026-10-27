@@ -16,7 +16,9 @@ from urllib.parse import urlparse
 import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-SETTINGS_FILE = PACKAGE_ROOT / "settings.yaml"
+# MIND_READY_SETTINGS names another file: the single-file program sets it to a settings.yaml placed
+# next to MindReady.exe (mind_ready_app.py), its own copy being unpacked out of sight.
+SETTINGS_FILE = Path(os.environ.get("MIND_READY_SETTINGS") or PACKAGE_ROOT / "settings.yaml")
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class Settings:
     mind_sandbox_folder: str = "MindReady_Sandbox"
     mind_project_prefix: str = "zzz_mindready"
     mm_for_excel_addin: str = ""
+    feedback_email: str = "Joseph.Gestetner@Milliman.com"
 
     @property
     def mind_main_url(self) -> str:
@@ -55,6 +58,7 @@ _KEYS: dict[str, tuple[str, type]] = {
     "mind.sandbox_folder": ("mind_sandbox_folder", str),
     "mind.project_prefix": ("mind_project_prefix", str),
     "mm_for_excel_addin": ("mm_for_excel_addin", str),
+    "feedback.email": ("feedback_email", str),
 }
 
 

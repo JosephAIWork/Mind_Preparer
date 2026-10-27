@@ -100,6 +100,20 @@ def _one_cell(text: str) -> dict | None:
     return None
 
 
+# A formula Excel stores as an array over several cells (Ctrl+Shift+Enter, or a spill) can only be
+# changed as a whole: those are left for a person. An array over its own cell alone is rewritten like
+# any formula -- Excel 365 stores most formulas with INDEX, OFFSET... that way (a one-cell dynamic
+# array, <f t="array" ref="J222"> with cm="1"): 513,663 cells of one model, all left by hand before
+# (2026-10-26). The writer keeps it a one-cell array (app/prep.py, Formula2).
+SEVERAL_CELLS = "an array formula over several cells: rewrite it by hand"
+
+
+def several_cells(f: dict[str, Any]) -> bool:
+    """The formula is an array formula over more than its own cell."""
+    ref = str(f.get("array_ref") or "").replace("$", "").upper()
+    return bool(ref) and ref not in (str(f["cell"]).upper(), f"{str(f['cell']).upper()}:{str(f['cell']).upper()}")
+
+
 class _Book:
     """What each cell holds (formula text or constant) and the value Excel stored for it."""
 
@@ -491,6 +505,13 @@ def _relative_form(formula: str, masked: str, refs: list[re.Match], row: int, co
     return "".join(out)
 
 
+def relative_form(formula: str, row: int, col: int) -> str:
+    """_relative_form for a formula alone: equal for two cells of the same formula filled down."""
+    masked = mask_strings(formula) if ('"' in formula or "'" in formula) else formula
+    refs = [m for m in REF_RE.finditer(masked) if not (m.start() and masked[m.start() - 1] == "]")]
+    return _relative_form(formula, masked, refs, row, col)
+
+
 def _guarded(formula: str, refs: list[re.Match], calls: list, guards: dict[int, set[int]], extra: dict[int, list[str]] | None = None) -> str:
     """IFERROR(X, fallback) -> IF(cell="", fallback, IFERROR(X, fallback)) for each call in `guards`;
     `extra` adds tests written as text (the "" cells found inside a range operand)."""
@@ -553,7 +574,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         m = _COORD_RE.match(str(f.get("cell") or ""))
         if m and isinstance(f.get("formula"), str) and not f.get("data_table") and f["sheet"] in book.sheets:
             formulas.append((f, int(m.group(2)), col_to_num(m.group(1))))
-            if f.get("array_ref"):
+            if several_cells(f):
                 array_cells.add((f["sheet"], int(m.group(2)), col_to_num(m.group(1))))
     out: dict[str, Any] = {"checked": True, "formulas": len(formulas), "blank_arithmetic": [], "origins": [], "direct": [], "readers": 0, "blank_errors": []}
     if not any(book.stored(f["sheet"], row, col) is not None for f, row, col in formulas):
@@ -615,10 +636,10 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                 fixed = formula
                 for s, e, _ in sorted(spans, reverse=True):
                     fixed = fixed[:s] + "N(" + fixed[s:e] + ")" + fixed[e:]
-                array = bool(f.get("array_ref"))
+                array = several_cells(f)
                 out["direct"].append({
                     "sheet": sheet, "cell": f["cell"], "formula": formula, "empty_cells": sorted({c for _, _, c in spans}),
-                    "suggested_formula": None if array else fixed, "issue": "an array formula: rewrite it by hand" if array else None,
+                    "suggested_formula": None if array else fixed, "issue": SEVERAL_CELLS if array else None,
                 })
 
         own = book.stored(sheet, row, col)
@@ -640,9 +661,9 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     if t not in tests:
                         tests.append(t)
                 test = tests[0] if len(tests) == 1 else "OR(" + ",".join(tests) + ")"
-                array = bool(f.get("array_ref"))
+                array = several_cells(f)
                 out["blank_errors"].append({"sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": [formula[refs[k].start():refs[k].end()] for k in blanks],
-                                            "suggested_formula": None if array else f"=IF({test},NA(),{formula[1:]})", "issue": "an array formula: rewrite it by hand" if array else None})
+                                            "suggested_formula": None if array else f"=IF({test},NA(),{formula[1:]})", "issue": SEVERAL_CELLS if array else None})
         if has_iferror:
             iferror_by_column.setdefault((sheet, col), []).append((f, row, col))
             calls = _guard_calls(masked)
@@ -722,11 +743,11 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     range_blanks.pop(ci, None)
             if range_blanks and not guards:
                 # a site of its own (no filled-down-block treatment: each row names its own "" cells)
-                array = bool(f.get("array_ref"))
+                array = several_cells(f)
                 cells = sorted({t[:-3] for ts in range_blanks.values() for t in ts})
                 out["blank_arithmetic"].append({
                     "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": True, "arithmetic": True, "lookup_key": False,
-                    "suggested_formula": None if array else _guarded(formula, refs, calls, {}, range_blanks), "issue": "an array formula: rewrite it by hand" if array else None,
+                    "suggested_formula": None if array else _guarded(formula, refs, calls, {}, range_blanks), "issue": SEVERAL_CELLS if array else None,
                 })
             elif guards:
                 if range_blanks:
@@ -758,7 +779,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             continue
         formula = f["formula"]
         calls = _guard_calls(masked)
-        array = bool(f.get("array_ref"))
+        array = several_cells(f)
         cells = sorted({formula[refs[k].start():refs[k].end()] for ks in union.values() for k in ks})
         kinds = pattern_kinds.get((sheet, col, rel), set())
         # A cell the new test reads must not hold an error: IF(#REF!="", ...) is #REF!, where the
@@ -769,7 +790,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             for ks in union.values() for k in ks
             if _is_error_value(book.value(_ref_sheet(formula, refs[k], sheet), *_ref_cell(refs[k])))
         })
-        issue = "an array formula: rewrite it by hand" if array else (f"{', '.join(errors[:3])} holds an error: the IFERROR already returns its fallback in Excel and in Mind; left as it is" if errors else None)
+        issue = SEVERAL_CELLS if array else (f"{', '.join(errors[:3])} holds an error: the IFERROR already returns its fallback in Excel and in Mind; left as it is" if errors else None)
         out["blank_arithmetic"].append({
             "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": (sheet, row, col) in blank_flagged,
             "arithmetic": "arithmetic" in kinds, "lookup_key": "lookup" in kinds,
@@ -803,7 +824,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         array = key in array_cells
         body = _bare(o["formula"][1:])
         o["suggested_formula"] = None if array else f"=N({body})"
-        o["issue"] = "an array formula: rewrite it by hand" if array else None
+        o["issue"] = SEVERAL_CELLS if array else None
         out["origins"].append(o)
     return out
 
@@ -840,7 +861,7 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks, "
         "so each column keeps one formula; Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
@@ -881,7 +902,7 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks; Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
@@ -927,7 +948,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
         + " ".join(p + "." for p in parts)
         + f" The Prep action 'Read empty cells as 0 where they are compared' puts N() around {with_fix} of them (N of an empty cell is 0 in both; N of a number is the number); "
         "Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
@@ -997,8 +1018,8 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
         fixed = line_breaks_as_char(formula)
         if fixed is None:
             continue
-        array = bool(f.get("array_ref"))
-        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed, "issue": "an array formula: rewrite it by hand" if array else None})
+        array = several_cells(f)
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed, "issue": SEVERAL_CELLS if array else None})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for s in sites if s["suggested_formula"])}
     if not sites:
         return finding("PASS", "No formula holds a line break inside a string literal.", observed)
@@ -1046,9 +1067,9 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         m = _COORD_RE.match(str(f.get("cell") or ""))
         stored = book.stored(f["sheet"], int(m.group(2)), col_to_num(m.group(1))) if m else None
         calls = sorted({x.upper() for x in _ENV_RE.findall(mask_strings(formula))})
-        multi_cell = bool(f.get("array_ref")) and str(f["array_ref"]).replace("$", "") not in (f["cell"], f"{f['cell']}:{f['cell']}")
+        multi_cell = several_cells(f)
         if multi_cell:
-            value, issue = None, "an array formula over several cells: rewrite it by hand"
+            value, issue = None, SEVERAL_CELLS
         elif stored is None:
             value, issue = None, 'the cell shows "" or no value is stored: by hand'
         elif _is_error_value(stored):

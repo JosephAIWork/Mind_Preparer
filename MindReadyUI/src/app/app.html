@@ -4,15 +4,27 @@
     <cds-header-item routerLink="/advanced" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current">Advanced</cds-header-item>
   </cds-header-navigation>
   <cds-header-global>
+    <button class="shell__feedback" (click)="feedback.open()">Send feedback</button>
     <span class="shell__version">{{ version() ? "v" + version() : "" }}{{ rules() ? " · " + rules() + " rules" : "" }}</span>
   </cds-header-global>
 </cds-header>
 <ng-template #brand>
   <a class="cds--header__name" routerLink="/" [queryParams]="sessionQuery()">
-    <span class="cds--header__name--prefix">Milliman&nbsp;</span>Mind Ready
+    <span class="cds--header__name--prefix">Milliman&nbsp;</span>Mind Ready<span class="shell__beta">Beta</span>
   </a>
 </ng-template>
 
 <main class="shell__content">
+  @if (feedback.incident(); as problem) {
+    <div class="shell__problem" role="alert">
+      <span class="shell__problem-text">
+        <b>{{ problem.text || "Something went wrong." }}</b>
+        <span class="shell__problem-hint">You can send the details to the Tel Aviv team: where it stopped and why, with nothing from your workbook.</span>
+      </span>
+      <button class="shell__problem-send" (click)="feedback.open(problem.ref)">Send feedback to the Tel Aviv team</button>
+      <button class="shell__problem-close" (click)="feedback.dismiss()" aria-label="Dismiss">Dismiss</button>
+    </div>
+  }
   <router-outlet></router-outlet>
 </main>
+<mr-feedback-dialog></mr-feedback-dialog>

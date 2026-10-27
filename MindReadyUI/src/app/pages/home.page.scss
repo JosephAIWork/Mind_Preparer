@@ -45,6 +45,24 @@
   }
 }
 
+.autorun {
+  display: flex;
+  align-items: flex-start;
+  gap: $spacing-03;
+  @include type.type-style("body-compact-01");
+  cursor: pointer;
+
+  input {
+    margin-top: $spacing-01;
+  }
+
+  &__hint {
+    display: block;
+    @include type.type-style("helper-text-01");
+    color: theme.$text-helper;
+  }
+}
+
 .trust {
   @include type.type-style("helper-text-01");
   color: theme.$text-helper;

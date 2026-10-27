@@ -1,14 +1,16 @@
 import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
+import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
 @Injectable({ providedIn: "root" })
 export class ApiService {
   private http = inject(HttpClient);
+  private feedbackBox = inject(FeedbackService);
   private base = "/api";
 
   private s(id: string): string {
@@ -27,6 +29,11 @@ export class ApiService {
   /** Checked with the gateway, then saved encrypted for this Windows user; a refused key is not saved. */
   saveAssistantKey(key: string): Promise<AssistantKey> {
     return firstValueFrom(this.http.post<AssistantKey>(`${this.base}/assistant-key`, { key }));
+  }
+
+  /** The message for the Tel Aviv team: the incident `ref` (null from the header), the user's note. */
+  feedback(body: { ref: string | null; note: string; useAssistant: boolean; sessionId: string | null }): Promise<FeedbackMessage> {
+    return firstValueFrom(this.http.post<FeedbackMessage>(`${this.base}/feedback`, body));
   }
 
   upload(file: File, mode: Mode = "plan", defer = true): Promise<SessionStart | PendingUpload> {
@@ -141,6 +148,7 @@ export class ApiService {
     const res = await fetch(`${this.s(id)}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => null);
+      this.feedbackBox.report(err?.incident, err?.problem);
       throw new Error(typeof err?.detail === "string" ? err.detail : `${res.status} ${res.statusText}`);
     }
     const reader = res.body.getReader();

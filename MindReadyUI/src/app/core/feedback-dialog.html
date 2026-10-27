@@ -1,0 +1,47 @@
+@if (feedback.dialog(); as d) {
+  <div class="fb__backdrop" (click)="close()"></div>
+  <section class="fb" role="dialog" aria-modal="true" aria-labelledby="fb-title">
+    <h2 id="fb-title" class="fb__title">Send feedback to the Tel Aviv team</h2>
+    @if (message(); as m) {
+      @if (!sent()) {
+        <p class="fb__text">Here is the message. Read it if you like: nothing from your workbook is in it. Then click <b>Copy and open email</b>.</p>
+      } @else {
+        <ol class="fb__steps">
+          <li>{{ copied() ? "The message is copied." : "The message could not be copied: click Copy again." }} An email to <b>{{ m.email }}</b> should be open.</li>
+          <li>Paste it into the email (<b>Ctrl+V</b>) and send.</li>
+        </ol>
+      }
+      <pre class="fb__message">{{ m.text }}</pre>
+      <div class="fb__actions">
+        @if (!sent()) {
+          <button cdsButton="primary" size="md" (click)="send()">Copy and open email</button>
+          <button cdsButton="ghost" size="md" (click)="back()">Back</button>
+        } @else {
+          <button cdsButton="primary" size="md" (click)="close()">Done</button>
+          <button cdsButton="ghost" size="md" (click)="copyAgain()">Copy again</button>
+          <button cdsButton="ghost" size="md" (click)="saveAsFile()">Save as a file</button>
+        }
+      </div>
+    } @else {
+      <p class="fb__text">
+        {{ d.ref ? "Something went wrong. The message says where in the app it stopped and why, in codes the team reads." : "Tell us what works, what does not, and what is missing." }}
+        Nothing from your workbook is in it: no file name, no sheet names, no cell addresses, no values.
+      </p>
+      <label class="fb__label" for="fb-note">{{ d.ref ? "What were you doing? (optional)" : "Your feedback" }}</label>
+      <textarea id="fb-note" class="fb__note" rows="4" [value]="note()" (input)="note.set(value($event))" [disabled]="busy()"></textarea>
+      @if (assistantOn()) {
+        <label class="fb__check">
+          <input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set($any($event.target).checked)" [disabled]="busy()" />
+          <span>Let the assistant write the opening lines in plain English</span>
+        </label>
+      }
+      @if (error()) {
+        <p class="fb__error">{{ error() }}</p>
+      }
+      <div class="fb__actions">
+        <button cdsButton="primary" size="md" (click)="prepare()" [disabled]="busy() || (!d.ref && !note().trim())">{{ busy() ? "Preparing…" : "Prepare the message" }}</button>
+        <button cdsButton="ghost" size="md" (click)="close()" [disabled]="busy()">Cancel</button>
+      </div>
+    }
+  </section>
+}

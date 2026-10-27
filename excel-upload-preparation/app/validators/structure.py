@@ -385,13 +385,58 @@ from .references import external_links_in_formulas  # noqa: E402,F401  (REF-002)
 
 
 
+_NAME_CHARS = r"A-Za-z0-9_.\\"
+
+
+def _names_in_use(analysis: dict[str, Any]) -> Any:
+    """name -> whether some formula reads that defined name, directly or through another name a
+    formula reads (lower case; a name written inside a text counts too: INDIRECT("LH2_calc") reads it)."""
+    wb = analysis["workbooks"][0]
+    blob = "\n".join(str(f.get("formula") or "") for f in wb.get("formulas", [])).lower()
+    defs: dict[str, str] = {}
+    for d in wb.get("defined_names", []):
+        defs.setdefault(str(d.get("name") or "").lower(), "")
+        defs[str(d.get("name") or "").lower()] += "\n" + str(d.get("value") or "").lower()
+    known: dict[str, bool] = {}
+
+    def mentions(text: str, name: str) -> bool:
+        return name in text and re.search(rf"(?<![{_NAME_CHARS}]){re.escape(name)}(?![{_NAME_CHARS}])", text) is not None
+
+    def used(name: str, seen: frozenset = frozenset()) -> bool:
+        name = name.lower()
+        if name not in known:
+            known[name] = mentions(blob, name) or any(
+                other not in seen and other != name and mentions(value, name) and used(other, seen | {name}) for other, value in defs.items()
+            )
+        return known[name]
+
+    return used
+
+
+def _reader_in_use(index: dict[str, Any], used: Any, sheet: str, row: int, col: int) -> str | None:
+    """referenced_by, with the defined names no formula reads left out."""
+    def counts(owner: str | None) -> bool:
+        return bool(owner) and (not owner.startswith("name ") or used(owner[5:]))
+
+    for owner in (index["whole_cols"].get(sheet, {}).get(col), index["whole_rows"].get(sheet, {}).get(row)):
+        if counts(owner):
+            return owner
+    for r1, r2, c1, c2, owner in index["rects"].get(sheet, ()):
+        if r1 <= row <= r2 and c1 <= col <= c2 and counts(owner):
+            return owner
+    return None
+
+
 def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
     """STR-008: a text cell with nothing around it (no grid, no title above, no label beside it)
     that a formula reads. Mind imports grids; a text cell standing alone is not in the model,
     and the formula gets nothing (seen in a real Mind conversion: a lone text cell G2 that
     Prep had separated from its label; "Name#"&$G$2 came back as "Name#" and 20,000 cells
     followed). A number standing alone is imported; so is a text under a '#' title, next to
-    or under a label, or inside a grid (test workbook, 2026-10-08)."""
+    or under a label, or inside a grid (test workbook, 2026-10-08).
+    A defined name counts as a reader only when some formula reads it: a name over a whole
+    sheet ('LH2'!A1:OW909) that no formula uses -- a macro's -- flagged 9 labels of one model
+    (2026-10-26), and Mind runs no macro."""
     from ..prep import reference_index, referenced_by, standalone_labels
 
     try:
@@ -399,8 +444,12 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     except Exception as exc:
         return finding("NOT_SUPPORTED", f"The references could not be indexed ({type(exc).__name__}: {str(exc)[:120]}).", {"sites": []})
     sites = []
+    used = None
     for lab in standalone_labels(analysis):
         owner = referenced_by(index, lab["sheet"], lab["row"], lab["col"])
+        if owner and owner.startswith("name "):
+            used = used or _names_in_use(analysis)
+            owner = _reader_in_use(index, used, lab["sheet"], lab["row"], lab["col"])
         if owner:
             sites.append({"sheet": lab["sheet"], "cell": lab["cell"], "text": str(lab["text"])[:80], "read_by": owner})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites)}
@@ -413,6 +462,8 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
         "not loose text cells: the formula gets nothing (confirmed in a real Mind conversion: \"Name#\"&$G$2, with G2 a lone text cell, came back as \"Name#\" "
         f"and 20,000 cells followed). First: {first['sheet']}!{first['cell']} = {first['text']!r}, read by {first['read_by']}. "
         "The Prep action 'Give a lone text cell that formulas read a title of its own' writes a '#' title in the empty cell above it, which makes it a one-cell grid Mind imports "
+        "-- or, with no room above: a label beside it when it sits just under a grid of labels (the grid takes its row), else the cell moves to a column "
+        "of its own, Excel's cut and paste taking every formula that reads it along "
         "(a number standing alone is imported as it is; a text next to or under a label too).",
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
@@ -444,8 +495,10 @@ def pivot_tables(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict
         "ERROR",
         f"{len(pivots)} pivot table(s), first {first['sheet']}!{first['ref']} ({first['name']}): Mind's converter stops on a pivot table. "
         "In a real Mind conversion a workbook was refused (\"The method or operation is not implemented\") with its pivot tables, again with only the one with a grouped field "
-        "turned into values (2026-10-18, 2026-10-25), and accepted once all of them were plain cells. "
-        "The Prep action 'Pivot tables' turns them into formulas over their source (values where formulas cannot give the same numbers), or into plain values.",
+        "turned into values (2026-10-18, 2026-10-25), and accepted once all of them were plain cells. A pivot with a custom style stops it with "
+        "\"Requested value '<style name>' was not found\" (2026-10-26). "
+        "The Prep action 'Pivot tables' turns them into plain values, or into formulas over their source (values where formulas cannot give the same numbers); "
+        "a GETPIVOTDATA reading a pivot then reads the cell it returned.",
         observed,
         location={"sheet": first["sheet"], "cell": first["ref"].split(":")[0]},
     )

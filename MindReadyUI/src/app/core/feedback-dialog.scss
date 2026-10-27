@@ -1,0 +1,107 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+.fb__backdrop {
+  position: fixed;
+  inset: 0;
+  background: theme.$overlay;
+  z-index: 9000;
+}
+
+.fb {
+  position: fixed;
+  z-index: 9001;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  background: theme.$layer-01;
+  border-top: 3px solid theme.$interactive;
+  padding: $spacing-06;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-04;
+
+  &__title {
+    @include type.type-style("heading-03");
+    margin: 0;
+  }
+
+  &__text,
+  &__steps {
+    @include type.type-style("body-01");
+    margin: 0;
+
+    b {
+      font-weight: 600;
+    }
+  }
+
+  &__steps {
+    padding-left: $spacing-06;
+
+    b {
+      font-weight: 600;
+    }
+
+    li {
+      margin: $spacing-02 0;
+    }
+  }
+
+  &__label {
+    @include type.type-style("label-01");
+    color: theme.$text-secondary;
+    margin: 0;
+  }
+
+  &__note {
+    font: inherit;
+    font-size: 0.875rem;
+    color: theme.$text-primary;
+    background: theme.$field-01;
+    border: 0;
+    border-bottom: 1px solid theme.$border-strong-01;
+    padding: $spacing-03 $spacing-04;
+    resize: vertical;
+
+    &:focus {
+      outline: 2px solid theme.$focus;
+      outline-offset: -2px;
+    }
+  }
+
+  &__check {
+    display: flex;
+    gap: $spacing-03;
+    align-items: center;
+    @include type.type-style("body-compact-01");
+    cursor: pointer;
+  }
+
+  &__message {
+    @include type.type-style("code-01");
+    background: theme.$field-01;
+    padding: $spacing-04;
+    margin: 0;
+    max-height: 16rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  &__error {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-error;
+    margin: 0;
+  }
+
+  &__actions {
+    display: flex;
+    gap: $spacing-03;
+    flex-wrap: wrap;
+  }
+}

@@ -205,3 +205,84 @@ def test_a_lone_text_cell_that_formulas_read_gets_a_title_of_its_own(tmp_path):
     after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
     assert _finding(after, "STR-008")["status"] == "PASS"
     assert any(g["sheet"] == "Line 1" and g["ref"] == "G2" and g["name"] == "Sheet name value" for g in all_grids(after))
+
+
+def test_a_lone_cell_under_a_grid_joins_it_and_a_name_no_formula_reads_reads_nothing(tmp_path):
+    """2026-10-26 (a client model): Base!J414 = 'N', read by a formula, under the grid I406:J413 whose labels
+    in I stop at 413 -- a label in I414 makes the grid take the row. And 9 labels were flagged only because
+    a name over the whole sheet covers them, a name no formula reads (a macro's): Mind runs no macro."""
+    from openpyxl.workbook.defined_name import DefinedName
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Base"
+    for r, label in ((2, "Include RM"), (3, "Include CAT"), (4, "Include lapse")):
+        ws[f"I{r}"], ws[f"J{r}"] = label, "N"
+    ws["J5"] = "N"                                  # under the grid I2:J4, no label beside it
+    ws["L20"] = "a label"                           # inside a name no formula reads
+    ws["L30"] = "read through a name"
+    ws["L40"] = "read through two names"
+    ws["A50"] = '=IF(J5="N",1,0)'
+    ws["A51"] = "=flag_cell&1"
+    ws["A52"] = "=outer"
+    for name, ref in (("calc_area", "Base!$A$1:$Z$25"), ("flag_cell", "Base!$L$30"), ("inner", "Base!$L$40"), ("outer", "inner")):
+        wb.defined_names[name] = DefinedName(name, attr_text=ref)
+    p = tmp_path / "base.xlsx"
+    wb.save(p)
+    wb.close()
+    analysis = build_analysis(p, tmp_path / "w", "b")
+    f = _finding(analysis, "STR-008")
+    assert {s["cell"]: s["read_by"] for s in f["observed"]["sites"]} == {"J5": "Base!A50", "L30": "name flag_cell", "L40": "name inner"}
+    a = _plan(analysis)["title_lone_text_cells"]
+    by = {o["cell"]: o for o in a["operations"]}
+    assert set(by) == {"I5", "L29", "L39"} and not a["skipped"]
+    assert by["I5"]["after"] == "Value in J5" and "the grid I2:J4" in by["I5"]["note"]
+    out = apply_operations(p, tmp_path / "prep", a["operations"], prefer_excel=False)
+    assert out["status"] == "APPLIED"
+    after = build_analysis(Path(out["output_path"]), tmp_path / "after", "a")
+    assert _finding(after, "STR-008")["status"] == "PASS"
+    assert any(g["sheet"] == "Base" and g["ref"] == "I2:J5" for g in all_grids(after))
+
+
+@needs_excel
+def test_a_lone_cell_with_no_room_above_moves_and_what_reads_it_follows(tmp_path):
+    """2026-10-26: Base!J414 = 'N' under a row of numbers, flags and dates (no label column to join): it
+    moves, by Excel's cut and paste, to a column of its own with its title; LH3's formula follows it.
+    A cell read through a range keeps its place: the range would lose it."""
+    from app.excel_com import close_quietly, excel_session, open_for_write, save_in_place
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Base"
+    ws["I1"], ws["J1"] = "Years", "Flag"
+    for r, years in ((2, 2), (3, 10), (4, 30)):
+        ws[f"I{r}"], ws[f"J{r}"] = years, "N"
+    ws["J5"] = "N"                                    # under the grid I1:J4, whose first column holds numbers
+    ws["P1"] = "x"                                    # on the first row, read through a range
+    lh3 = wb.create_sheet("LH3")
+    lh3["A1"] = '=IF(Base!J5="N",1,0)'
+    lh3["A2"] = '=COUNTIF(Base!P1:P2,"x")'
+    p = tmp_path / "base.xlsx"
+    wb.save(p)
+    wb.close()
+    with excel_session() as excel:
+        book = open_for_write(excel, p)
+        try:
+            excel.CalculateFullRebuild()
+            save_in_place(book, p)
+        finally:
+            close_quietly(book)
+
+    analysis = build_analysis(p, tmp_path / "w", "b")
+    a = _plan(analysis)["title_lone_text_cells"]
+    by = {(o["op"], o["cell"]): o for o in a["operations"]}
+    assert set(by) == {("move_cell", "J5"), ("set_value", "R4")} and by[("move_cell", "J5")]["to"] == "R5" and by[("set_value", "R4")]["after"] == "#Base J5"
+    assert a["skipped"] == ["Base!P1: on the first row, no cell above for a title, and a range or a name over several cells reads it (it cannot move) -- by hand"]
+    out = apply_operations(p, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED" and not out["failed"]
+    done = Path(out["output_path"])
+    book = openpyxl.load_workbook(done)
+    assert book["LH3"]["A1"].value == '=IF(Base!R5="N",1,0)' and book["Base"]["R5"].value == "N" and book["Base"]["J5"].value is None
+    assert compare_workbooks(p, done, Moves())["clean"] is True
+    after = build_analysis(done, tmp_path / "after", "a")
+    assert [s["cell"] for s in _finding(after, "STR-008")["observed"]["sites"]] == ["P1"]

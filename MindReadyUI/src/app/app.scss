@@ -13,6 +13,16 @@
   background: theme.$background;
 }
 
+.shell__beta {
+  @include type.type-style("label-01");
+  margin-left: $spacing-03;
+  padding: 0 $spacing-02;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.32px;
+}
+
 .shell__version {
   @include type.type-style("code-01");
   color: theme.$text-on-color;
@@ -20,4 +30,73 @@
   display: flex;
   align-items: center;
   padding: 0 $spacing-05;
+}
+
+.shell__feedback {
+  @include type.type-style("body-compact-01");
+  color: theme.$text-on-color;
+  background: transparent;
+  border: 0;
+  padding: 0 $spacing-05;
+  cursor: pointer;
+
+  &:hover {
+    background: theme.$background-hover;
+  }
+
+  &:focus {
+    outline: 2px solid theme.$focus-inverse;
+    outline-offset: -2px;
+  }
+}
+
+.shell__problem {
+  display: flex;
+  align-items: center;
+  gap: $spacing-05;
+  flex-wrap: wrap;
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$support-error;
+  padding: $spacing-04 $spacing-05;
+  @include type.type-style("body-compact-01");
+}
+
+.shell__problem-text {
+  flex: 1 1 20rem;
+
+  b {
+    display: block;
+    font-weight: 600;
+  }
+}
+
+.shell__problem-hint {
+  @include type.type-style("helper-text-01");
+  color: theme.$text-secondary;
+}
+
+.shell__problem-send,
+.shell__problem-close {
+  @include type.type-style("body-compact-01");
+  border: 0;
+  padding: $spacing-03 $spacing-05;
+  cursor: pointer;
+}
+
+.shell__problem-send {
+  background: theme.$interactive;
+  color: theme.$text-on-color;
+
+  &:hover {
+    background: theme.$link-primary-hover;
+  }
+}
+
+.shell__problem-close {
+  background: transparent;
+  color: theme.$link-primary;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }

@@ -23,6 +23,17 @@ interface ActionState {
 
 const idle = (): ActionState => ({ running: false, fraction: null, line: "", detail: "", tone: "idle" });
 
+/** The "Do everything right after the upload" box, remembered in this browser. */
+const AUTO_RUN_KEY = "mindReady.autoRun";
+
+function readAutoRun(): boolean {
+  try {
+    return localStorage.getItem(AUTO_RUN_KEY) === "1";
+  } catch {
+    return false; // storage blocked: the box starts unticked
+  }
+}
+
 /** "under a minute", "12 min", "1 h 25 min" */
 function minutes(seconds: number): string {
   if (seconds < 60) return "under a minute";
@@ -94,6 +105,9 @@ export class HomePage implements OnDestroy {
   readonly prepare = signal<ActionState>(idle());
   readonly loopPlan = signal<LoopPlan | null>(null);
   readonly steps = signal<Step[]>([]);
+  /** Ticked: once an uploaded workbook is read, Do everything starts by itself -- and a big workbook is
+   *  read whole, without stopping to ask which sheets to leave out. */
+  readonly autoRun = signal(readAutoRun());
   readonly chainRunning = signal(false);
   readonly chainLine = signal("");
   /** 1.11.6: the estimate for "Do everything" (shown before the click) and the countdown while it runs */
@@ -283,8 +297,9 @@ export class HomePage implements OnDestroy {
     try {
       const started = await this.api.upload(file, "plan", true);
       if (isPending(started)) {
-        // A big workbook with several sheets: let the user leave sheets out before the scan.
-        if (started.size?.above_threshold && started.size.sheets?.length > 1) {
+        // A big workbook with several sheets: let the user leave sheets out before the scan
+        // (not when Do everything is to follow on its own: nothing stops the run).
+        if (started.size?.above_threshold && started.size.sheets?.length > 1 && !this.autoRun()) {
           this.pending.set(started);
           this.skip.set(new Set());
           this.phase.set("choose");
@@ -327,7 +342,18 @@ export class HomePage implements OnDestroy {
     this.steps.set([]);
     this.chainLine.set("");
     void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
-    void this.loadLoopPlan();
+    const loop = this.loadLoopPlan();
+    // the chain needs the loop plan first: it decides whether the loop step runs
+    if (this.autoRun()) void loop.then(() => this.runAll());
+  }
+
+  setAutoRun(on: boolean): void {
+    this.autoRun.set(on);
+    try {
+      localStorage.setItem(AUTO_RUN_KEY, on ? "1" : "0");
+    } catch {
+      /* storage blocked: the box holds for this visit only */
+    }
   }
 
   private pollScan(id: string): { stop: () => void } {
