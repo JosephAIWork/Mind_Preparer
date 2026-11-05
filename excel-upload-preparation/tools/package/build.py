@@ -14,6 +14,7 @@ starts are quick) and reads a settings.yaml placed next to it (mind_ready_app.py
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -69,7 +70,18 @@ def main() -> int:
         # unpacked once per build (a rebuild of the same version must not reuse an older unpacking)
         cmd += ["--onefile", f"--onefile-tempdir-spec={{CACHE_DIR}}/MindReady-program/{version}-{time.strftime('%Y%m%d-%H%M')}"]
     print(" ".join(cmd), flush=True)
-    rc = subprocess.call(cmd, cwd=str(APP))
+    # A fresh compiler cache for every build. Zig (Nuitka's C compiler here) caches an object by its C
+    # source, and the files that embed the program's constants and the onefile payload (`#embed
+    # "blobs/..."`) read the same every time: on 2026-11-05 it handed back the previous build's objects,
+    # so the program carried old constants with new code (a segmentation fault at start) and the
+    # onefile exe unpacked the previous version. Costs the compiler's own runtime once per build.
+    env = dict(os.environ)
+    zig = out / "zig-cache"
+    if zig.exists():
+        shutil.rmtree(zig, ignore_errors=True)
+    env["ZIG_LOCAL_CACHE_DIR"] = str(zig / "local")
+    env["ZIG_GLOBAL_CACHE_DIR"] = str(zig / "global")
+    rc = subprocess.call(cmd, cwd=str(APP), env=env)
     if rc:
         return rc
     if onefile:
