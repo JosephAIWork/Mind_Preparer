@@ -244,12 +244,49 @@ def login(init_url: str, timeout_s: int = 900, poll_s: float = 3.0) -> dict[str,
     return result
 
 
+def sign_in(timeout_s: int = 600, progress: Any = None, should_stop: Any = None) -> dict[str, Any]:
+    """The app's own "Sign in to Mind" (1.12.1; before, only `login <init link>` from a command line,
+    which the packaged program does not have). Opens Edge, visible, with the app's profile at Mind's
+    main page and waits until the user has signed in: the page is on the Mind host, not an
+    identity-provider page, for 8 s in a row. Saves the main page as the URL later checks load, then
+    closes the window. -> {"ok", "reason", "url"}. `progress(message)` hears what happens;
+    `should_stop()` ends the wait early (the window is closed either way)."""
+    tell = progress or (lambda _m: None)
+    stop = should_stop or (lambda: False)
+    _ensure_dirs()
+    with mind_session(headed=True) as (_ctx, page):
+        page.goto(MAIN_URL, wait_until="domcontentloaded")
+        tell("An Edge window is open on Mind: sign in there (it closes by itself when you are in).")
+        deadline = time.time() + timeout_s
+        stable_since: float | None = None
+        while time.time() < deadline:
+            if stop():
+                return {"ok": False, "reason": "stopped", "url": None}
+            try:
+                url = page.url
+            except Exception:  # the user closed the window
+                return {"ok": False, "reason": "the Edge window was closed before the sign-in finished", "url": None}
+            if _looks_authenticated(page, None):
+                stable_since = stable_since or time.time()
+                if time.time() - stable_since >= 8:
+                    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    _save_session({"project_url": MAIN_URL, "last_login": stamp})
+                    tell("Signed in to Mind.")
+                    return {"ok": True, "reason": None, "url": url, "last_login": stamp}
+            else:
+                stable_since = None
+            try:
+                page.wait_for_timeout(2000)
+            except Exception:
+                return {"ok": False, "reason": "the Edge window was closed before the sign-in finished", "url": None}
+        return {"ok": False, "reason": f"no sign-in within {timeout_s // 60} minutes", "url": None}
+
+
 def is_authenticated() -> dict[str, Any]:
-    """Headless check that the saved project URL loads without bouncing to login."""
+    """Headless check that the saved project URL (Mind's main page when none was saved) loads
+    without bouncing to a sign-in page."""
     sess = load_session()
-    url = sess.get("project_url")
-    if not url:
-        return {"authenticated": False, "reason": "no saved project_url; run login first"}
+    url = sess.get("project_url") or MAIN_URL
     with mind_session(headed=False) as (_ctx, page):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45_000)

@@ -1,6 +1,21 @@
 <div class="panel">
   <p class="hint">The app runs itself against real Mind: make the changes you tick below on a copy, check the numbers and the structure, upload, convert, run, then decide what to change and try again. Needs a Mind sign-in. One run at a time.</p>
 
+  <!-- the Mind sign-in: the app's own Edge profile, signed in once (about a week) -->
+  <div class="result" [class.result--ok]="signedIn()" [class.result--warn]="signIn()?.state === 'failed' || signIn()?.checked?.signed_in === false">
+    <strong>Mind sign-in</strong>
+    <span>{{ signInLine() }}</span>
+    <div class="row">
+      @if (signIn()?.state === "waiting") {
+        <button cdsButton="secondary" size="sm" (click)="stopSignIn()">Close the sign-in window</button>
+      } @else {
+        <button cdsButton="secondary" size="sm" (click)="openSignIn()" [disabled]="running() || signIn()?.state === 'checking'">Sign in to Mind</button>
+        <button cdsButton="ghost" size="sm" (click)="loadSignIn(true)" [disabled]="running() || signIn()?.state === 'checking'">Check the sign-in</button>
+      }
+    </div>
+    @if (signInError()) { <span class="card__caution">{{ signInError() }}</span> }
+  </div>
+
   @if (!running()) {
     <!-- before the click: what goes up, what changes first, how long -->
     @if (options(); as o) {

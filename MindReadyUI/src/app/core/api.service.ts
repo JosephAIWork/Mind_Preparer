@@ -3,7 +3,7 @@ import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -129,6 +129,17 @@ export class ApiService {
 
   startMindLoop(id: string, opts: MindLoopOptions): Promise<{ state: string; work_dir?: string }> {
     return firstValueFrom(this.http.post<{ state: string; work_dir?: string }>(`${this.s(id)}/mind-loop`, opts));
+  }
+
+  /** The Mind sign-in; `check` also loads Mind (headless) to see whether it still works. */
+  mindSignIn(check = false): Promise<MindSignIn> {
+    const params = new HttpParams().set("check", String(check));
+    return firstValueFrom(this.http.get<MindSignIn>(`${this.base}/mind/sign-in`, { params }));
+  }
+
+  /** Open the Edge window to sign in to Mind (or `stop` closes it). */
+  startMindSignIn(stop = false): Promise<MindSignIn> {
+    return firstValueFrom(this.http.post<MindSignIn>(`${this.base}/mind/sign-in`, stop ? { stop: true } : {}));
   }
 
   /** What Run in Mind will upload, the changes it can make first, what must finish first, the time estimate. */

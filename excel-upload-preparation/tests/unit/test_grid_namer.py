@@ -136,7 +136,9 @@ def test_automatic_pass_respects_manual_names_and_grids(tmp_path):
     assert f2["after"] == "#H2 K2 (2)"  # the user's name is reserved
 
 
-def test_two_areas_sharing_row_one_share_a_single_row_insert(tmp_path):
+def test_two_areas_sharing_row_one_each_shift_only_their_own_columns(tmp_path):
+    # 1.12.1: the grids beside each other each get their own insert (columns A and C only) --
+    # the same cells move as with one whole row, and nothing else on the row does
     analysis = _analysis(tmp_path, {"Q": {"A1": "a", "A2": 1, "C1": "b", "C2": 2}})
     out = prep.plan_named_areas(analysis, [
         {"sheet": "Q", "ref": "A1:A2", "name": "Left", "flags": []},
@@ -144,8 +146,26 @@ def test_two_areas_sharing_row_one_share_a_single_row_insert(tmp_path):
     ])
     inserts = [o for o in out["ops"] if o["op"] == "insert_row"]
     writes = [o for o in out["ops"] if o["op"] == "set_value"]
-    assert len(inserts) == 1 and inserts[0]["row"] == 1
+    assert sorted((o["row"], o["columns"]) for o in inserts) == [(1, "A:A"), (1, "C:C")]
     assert {w["cell"] for w in writes} == {"A1", "C1"} and all(w.get("after_inserts") for w in writes)
+    assert out["banded_rows"] == {"Q": [(1, 1, 1), (1, 3, 3)]} and not out["inserted_rows"]
+
+
+def test_a_named_area_beside_a_taller_grid_shifts_only_its_own_columns(tmp_path):
+    # both grids start on row 1: before 1.12.1 the whole row inserted for 'Rates' title pushed the
+    # taller grid beside it down too
+    analysis = _analysis(tmp_path, {"R": {"B1": "Year", "C1": "Rate", "B2": 1, "C2": 0.5, "B3": 2, "C3": 0.6,
+                                          "E1": "Age", "F1": "Qx", **{f"E{r}": 40 + r for r in range(2, 9)}, **{f"F{r}": 0.001 * r for r in range(2, 9)}}})
+    out = prep.plan_named_areas(analysis, [{"sheet": "R", "ref": "B1:C3", "name": "Rates", "flags": []}])
+    inserts = [o for o in out["ops"] if o["op"] == "insert_row"]
+    assert len(inserts) == 1 and inserts[0]["row"] == 1 and inserts[0]["columns"] == "B:C", out
+    # the automatic titles that follow know the row is taken in those columns only
+    auto_ops, _ = prep.plan_create_grid_titles(
+        analysis, {"findings": []}, None, exclude=out["exclude"], reserved=out["reserved"],
+        pre_titled=out["titled_cells"], pre_inserted=out["inserted_rows"], pre_banded=out["banded_rows"],
+    )
+    assert not any(o["op"] == "insert_row" and o["row"] == 1 and o.get("columns") == "B:C" for o in auto_ops)
+    assert all(o.get("cell") != "B1" for o in auto_ops)  # the user's title is left alone
 
 
 # --- the endpoints behind the Grid Namer screen ----------------------------------------

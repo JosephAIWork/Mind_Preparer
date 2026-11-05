@@ -710,7 +710,7 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                 pass
             progress({"event": "mind", "stage": "mind_open", "message": f"iteration {n}: creating sandbox project {name}"})
             if not mc.open_manager(page):
-                out["error"] = "could not reach the Project manager (not logged in?)"
+                out["error"] = "could not reach Mind's Project manager: the Mind sign-in is missing or has expired (Run in Mind > Sign in to Mind)"
                 return out
             mc.ensure_folder(page, cfg.folder)
             init = mc.create_blank_project(page, name)

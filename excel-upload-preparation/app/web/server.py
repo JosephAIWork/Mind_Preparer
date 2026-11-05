@@ -1220,6 +1220,8 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
         busy = _loop_running()
         if busy:
             raise HTTPException(status_code=409, detail=f"a Mind loop is already running (session {busy})")
+        if MIND_SIGN_IN["state"] in ("waiting", "checking") and not bool(payload.get("skipMind", False)):
+            raise HTTPException(status_code=409, detail="Finish signing in to Mind first (the Edge window), then start Run in Mind")
         work = s.work_dir / "mind_loop" / time.strftime("%Y%m%d_%H%M%S")
         state: dict[str, Any] = {
             "state": "running", "events": [], "report": None, "started": time.time(), "work_dir": str(work), "error": None,
@@ -1264,6 +1266,79 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
 
     threading.Thread(target=worker, name=f"mind-loop-{session_id}", daemon=True).start()
     return {"state": "running", "work_dir": str(work), "version": state["version"], "estimate": estimate}
+
+
+# --- signing in to Mind (the browser profile the loop uses) ------------------------------
+MIND_SIGN_IN: dict[str, Any] = {"state": "idle", "message": None, "started": None, "finished": None, "stop": False, "checked": None}
+
+
+def _sign_in_public() -> dict[str, Any]:
+    from app import mind_client as mc
+
+    sess = mc.load_session()
+    st = MIND_SIGN_IN
+    return {"state": st["state"], "message": st["message"], "last_login": sess.get("last_login"), "checked": st.get("checked"),
+            "elapsed_s": round((st.get("finished") or time.time()) - st["started"]) if st.get("started") else None}
+
+
+@app.get("/api/mind/sign-in")
+def mind_sign_in_status(check: bool = False) -> dict[str, Any]:
+    """The Mind sign-in: state (idle | waiting = the Edge window is open | done | failed), its last
+    message, when the last sign-in was saved. `check=true` also loads Mind headless with the saved
+    sign-in (10-40 s) and says whether it still works (`checked`: {signed_in, at})."""
+    if check:
+        with _MIND_LOOP_LOCK:
+            busy = _loop_running()
+            if busy or MIND_SIGN_IN["state"] == "waiting":
+                raise HTTPException(status_code=409, detail="Mind is in use (Run in Mind or the sign-in window): check again when it has finished")
+            MIND_SIGN_IN["state_before_check"] = MIND_SIGN_IN["state"]
+            MIND_SIGN_IN["state"] = "checking"
+        try:
+            from app import mind_client as mc
+
+            res = mc.is_authenticated()
+            MIND_SIGN_IN["checked"] = {"signed_in": bool(res.get("authenticated")), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        except Exception as exc:  # no Edge, no Playwright driver...
+            MIND_SIGN_IN["checked"] = {"signed_in": False, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": f"{type(exc).__name__}: {exc}"[:200]}
+        finally:
+            MIND_SIGN_IN["state"] = MIND_SIGN_IN.pop("state_before_check", "idle")
+    return _sign_in_public()
+
+
+@app.post("/api/mind/sign-in")
+def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Open Edge (visible) on Mind with the app's profile and wait in the background for the user to
+    sign in (app/mind_client.sign_in). Poll GET. `{"stop": true}` closes a waiting window."""
+    if payload.get("stop"):
+        MIND_SIGN_IN["stop"] = True
+        return _sign_in_public()
+    with _MIND_LOOP_LOCK:
+        busy = _loop_running()
+        if busy:
+            raise HTTPException(status_code=409, detail="Run in Mind is using Mind right now: sign in when it has finished")
+        if MIND_SIGN_IN["state"] in ("waiting", "checking"):
+            raise HTTPException(status_code=409, detail="the sign-in window is already open")
+        MIND_SIGN_IN.update(state="waiting", message="Opening Edge on Mind...", started=time.time(), finished=None, stop=False)
+
+    def tell(message: str) -> None:
+        MIND_SIGN_IN["message"] = message
+
+    def worker() -> None:
+        from app import mind_client as mc
+
+        try:
+            res = mc.sign_in(timeout_s=int(payload.get("timeout_s", 600)), progress=tell, should_stop=lambda: bool(MIND_SIGN_IN["stop"]))
+            if res.get("ok"):
+                MIND_SIGN_IN.update(state="done", message="Signed in to Mind.", checked={"signed_in": True, "at": res.get("last_login")})
+            else:
+                MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {res.get('reason')}.")
+        except Exception as exc:  # no Edge, the profile in use...
+            MIND_SIGN_IN.update(state="failed", message=f"The sign-in window could not open: {type(exc).__name__}: {exc}"[:300])
+        finally:
+            MIND_SIGN_IN["finished"] = time.time()
+
+    threading.Thread(target=worker, name="mind-sign-in", daemon=True).start()
+    return _sign_in_public()
 
 
 def _mind_loop_timing(st: dict[str, Any]) -> dict[str, Any]:
@@ -2070,7 +2145,7 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         auto_ops, auto_skipped = plan_create_grid_titles(
             analysis, report, s.grid_names or None,
             exclude=manual["exclude"], reserved=manual["reserved"],
-            pre_titled=manual["titled_cells"], pre_inserted=manual["inserted_rows"],
+            pre_titled=manual["titled_cells"], pre_inserted=manual["inserted_rows"], pre_banded=manual.get("banded_rows"),
         )
         ops += auto_ops
         skipped += auto_skipped

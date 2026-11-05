@@ -668,6 +668,7 @@ def plan_create_grid_titles(
     reserved: set[str] | list[str] | None = None,
     pre_titled: set[tuple[str, str]] | None = None,
     pre_inserted: dict[str, set[int]] | None = None,
+    pre_banded: dict[str, list[tuple[int, int, int]]] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """STR-004 / STR-002 / STR-001: every untitled grid gets exactly one
     '#Name' title with a name taken from its surroundings.
@@ -708,7 +709,7 @@ def plan_create_grid_titles(
     consumed: set[tuple[str, str]] = set()
     titled_cells: set[tuple[str, str]] = set(pre_titled or ())
     inserted_rows: dict[str, set[int]] = {k: set(v) for k, v in (pre_inserted or {}).items()}
-    banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns: (row, first, last)
+    banded: dict[str, list[tuple[int, int, int]]] = {k: list(v) for k, v in (pre_banded or {}).items()}  # row inserts that shift only some columns: (row, first, last)
     by_sheet: dict[str, list[dict[str, Any]]] = {}
     for g in grids:
         by_sheet.setdefault(g["sheet"], []).append(g)
@@ -861,6 +862,7 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
     reserved: list[str] = []
     titled_cells: set[tuple[str, str]] = set()
     inserted_rows: dict[str, set[int]] = {}
+    banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns: (row, first, last)
     grids = all_grids(analysis)
     index = reference_index(analysis)
     docs = documented_flags()
@@ -997,9 +999,10 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
             titled_cells.add((g["sheet"], above_cell))
         else:
             reason = "starts on row 1" if r0 == 1 else f"the cell above ({above_cell}) is not free"
-            already = r0 in inserted_rows.get(g["sheet"], set())
+            already = r0 in inserted_rows.get(g["sheet"], set()) or any(r == r0 and b1 <= c0 <= b2 for r, b1, b2 in banded.get(g["sheet"], []))
+            band = None
             if not already:
-                cutting = _row_insert_is_safe(grids, g["sheet"], r0, own=g)
+                band, cutting = plan_row_insert(analysis, grids, g["sheet"], r0, g)
                 if cutting:
                     skipped.append(f"{gkey}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
                     continue
@@ -1013,14 +1016,17 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
                 continue
             if not already:
                 before = f"grid {g['ref']} starts on row 1" if r0 == 1 else f"'{above_val}' sits directly above grid {g['ref']}"
-                ops.append(_op("insert_row", "named_areas", "STR-004", g["sheet"], row=r0, before=before, after=f"empty row {r0} inserted (the grid moves down one row)", note="makes room for the user-chosen title; Excel shifts every reference automatically"))
-                inserted_rows.setdefault(g["sheet"], set()).add(r0)
+                ops.append(_op("insert_row", "named_areas", "STR-004", g["sheet"], row=r0, before=before, after=f"{_insert_words(r0, band)} (the grid moves down one row)", note="makes room for the user-chosen title; Excel shifts every reference automatically", **_insert_fields(r0, band)))
+                if band is None:
+                    inserted_rows.setdefault(g["sheet"], set()).add(r0)
+                else:
+                    banded.setdefault(g["sheet"], []).append((r0, band[0], band[1]))
             ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=ref_text(c0, r0), before=None, after=title, note=f"user-chosen name and flags{suffix}; written after the row insert", after_inserts=True, insert_at=r0))
             titled_cells.add((g["sheet"], ref_text(c0, r0)))
         named.append(gkey)
         reserved.append(unique)
 
-    return {"ops": ops, "skipped": skipped, "named": named, "exclude": exclude, "reserved": reserved, "titled_cells": titled_cells, "inserted_rows": inserted_rows}
+    return {"ops": ops, "skipped": skipped, "named": named, "exclude": exclude, "reserved": reserved, "titled_cells": titled_cells, "inserted_rows": inserted_rows, "banded_rows": banded}
 
 
 def plan_explicit_colors(analysis, report) -> tuple[list[dict], list[str]]:

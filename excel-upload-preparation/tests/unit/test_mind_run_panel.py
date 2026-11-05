@@ -108,3 +108,69 @@ def test_ticked_changes_are_the_only_ones_made(client, section_heading_grids_xls
     assert st["state"] == "done", st.get("error")
     it = st["report"]["iterations"][0]
     assert [a["id"] for a in it["actions"]] == pick
+
+
+def _wait_sign_in(client, t=50):
+    for _ in range(t):
+        st = client.get("/api/mind/sign-in").json()
+        if st["state"] not in ("waiting", "checking"):
+            return st
+        time.sleep(0.1)
+    raise AssertionError("the sign-in did not finish")
+
+
+def test_sign_in_opens_the_window_in_the_background_and_reports_back(client, monkeypatch):
+    from app import mind_client as mc
+
+    calls = []
+
+    def fake_sign_in(timeout_s, progress, should_stop):
+        calls.append(timeout_s)
+        progress("An Edge window is open on Mind")
+        time.sleep(0.3)
+        return {"ok": True, "reason": None, "url": mc.MAIN_URL, "last_login": "2026-11-05T12:00:00Z"}
+
+    monkeypatch.setattr(mc, "sign_in", fake_sign_in)
+    monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
+    st = client.post("/api/mind/sign-in", json={}).json()
+    assert st["state"] == "waiting"
+    assert client.post("/api/mind/sign-in", json={}).status_code == 409  # one window at a time
+    st = _wait_sign_in(client)
+    assert st["state"] == "done" and st["checked"]["signed_in"] is True and calls == [600]
+
+
+def test_a_failed_or_impossible_sign_in_says_why(client, monkeypatch):
+    from app import mind_client as mc
+
+    monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
+    monkeypatch.setattr(mc, "sign_in", lambda **_k: {"ok": False, "reason": "the Edge window was closed before the sign-in finished"})
+    client.post("/api/mind/sign-in", json={})
+    st = _wait_sign_in(client)
+    assert st["state"] == "failed" and "window was closed" in st["message"]
+
+    def no_edge(**_k):
+        raise RuntimeError("Chromium distribution 'msedge' is not found")
+
+    monkeypatch.setattr(mc, "sign_in", no_edge)
+    client.post("/api/mind/sign-in", json={})
+    st = _wait_sign_in(client)
+    assert st["state"] == "failed" and "could not open" in st["message"] and "msedge" in st["message"]
+
+
+def test_check_loads_mind_headless_and_says_whether_the_sign_in_still_works(client, monkeypatch):
+    from app import mind_client as mc
+
+    monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
+    monkeypatch.setattr(mc, "is_authenticated", lambda: {"authenticated": False, "url": "https://login.example/authorize"})
+    st = client.get("/api/mind/sign-in", params={"check": True}).json()
+    assert st["checked"]["signed_in"] is False and st["state"] == "idle"
+    monkeypatch.setattr(mc, "is_authenticated", lambda: {"authenticated": True})
+    assert client.get("/api/mind/sign-in", params={"check": True}).json()["checked"]["signed_in"] is True
+
+
+def test_run_in_mind_waits_while_the_sign_in_window_is_open(client, section_heading_grids_xlsx, monkeypatch):
+    sid = _upload(client, section_heading_grids_xlsx)
+    monkeypatch.setitem(server.MIND_SIGN_IN, "state", "waiting")
+    res = client.post(f"/api/sessions/{sid}/mind-loop", json={"maxIterations": 1})
+    assert res.status_code == 409 and "signing in" in res.json()["detail"]
+    assert client.get("/api/mind/sign-in", params={"check": True}).status_code == 409

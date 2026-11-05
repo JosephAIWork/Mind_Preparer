@@ -25,7 +25,14 @@
   must move as one: a grid below, a merged range, a pivot table, a range a formula reads across them.
   When nothing sits beside the grid, or the sheet has an Excel table or a formula reading whole rows,
   a whole row is inserted as before. The numbers check and Run in Mind follow the moved cells
-  (`app/prep.py` `plan_row_insert`).
+  (`app/prep.py` `plan_row_insert`). The grid names chosen by hand in Advanced (Grid Namer) insert their
+  title rows the same way.
+- **Sign in to Mind from the app.** Run in Mind has a "Mind sign-in" box: "Sign in to Mind" opens
+  Edge with the app's own profile on Mind; once you are in, it saves the sign-in and closes by itself
+  (the sign-in lasts about a week). "Check the sign-in" loads Mind without a window and says whether it
+  still works. Before, signing in needed a command line, which the program does not have
+  (`GET`/`POST /api/mind/sign-in`, `app/mind_client.py` `sign_in`). Run in Mind and the sign-in window
+  wait for each other: they share the profile.
 
 ## 1.12.0 (27 October 2026): the hand-over to the Mind team
 

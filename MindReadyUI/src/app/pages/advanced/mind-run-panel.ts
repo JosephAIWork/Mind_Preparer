@@ -2,7 +2,7 @@ import { CommonModule } from "@angular/common";
 import { Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from "@angular/core";
 import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
-import { MindLoopEvent, MindLoopIteration, MindLoopReport, MindRunOptionsInfo, MindRunTiming, MindRunVersion } from "../../core/models";
+import { MindLoopEvent, MindLoopIteration, MindLoopReport, MindRunOptionsInfo, MindRunTiming, MindRunVersion, MindSignIn } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** The app running itself against real Mind: prepare, gates, upload, convert, run, decide; one run at a time.
@@ -32,6 +32,9 @@ export class MindRunPanel implements OnInit, OnDestroy {
   readonly timing = signal<MindRunTiming | null>(null);
   readonly runVersion = signal<MindRunVersion | null>(null);
   readonly showLog = signal(false);
+  readonly signIn = signal<MindSignIn | null>(null);
+  readonly signInError = signal("");
+  private signInTimer: ReturnType<typeof setTimeout> | null = null;
   /** seconds since the last status answer, so the clock moves every second between polls */
   readonly drift = signal(0);
   private next = 0;
@@ -68,6 +71,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     void this.poll();
+    void this.loadSignIn(false);
     this.clock = setInterval(() => this.drift.update((d) => d + 1), 1000);
   }
 
@@ -75,6 +79,69 @@ export class MindRunPanel implements OnInit, OnDestroy {
     this.live = false;
     if (this.timer) clearTimeout(this.timer);
     if (this.clock) clearInterval(this.clock);
+    if (this.signInTimer) clearTimeout(this.signInTimer);
+  }
+
+  // ---- the Mind sign-in ------------------------------------------------------------------
+  /** One line on the sign-in: signed in / not / never, and when. */
+  signInLine(): string {
+    const s = this.signIn();
+    if (!s) return "";
+    if (s.state === "waiting") return s.message || "An Edge window is open on Mind: sign in there.";
+    if (s.state === "checking") return "Checking the Mind sign-in…";
+    if (s.state === "failed" && s.message) return s.message;
+    const when = (t: string | null | undefined) => (t ? new Date(t).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "");
+    if (s.checked) return s.checked.signed_in ? `Signed in to Mind (checked ${when(s.checked.at)}).` : "Not signed in to Mind, or the sign-in has expired: sign in again.";
+    if (s.last_login) return `Last signed in ${when(s.last_login)}. A sign-in lasts about a week: check it, or sign in again.`;
+    return "Not signed in to Mind yet: Run in Mind needs it once (about a week).";
+  }
+
+  signedIn(): boolean {
+    return !!this.signIn()?.checked?.signed_in;
+  }
+
+  async loadSignIn(check: boolean): Promise<void> {
+    this.signInError.set("");
+    try {
+      if (check) this.signIn.update((s) => (s ? { ...s, state: "checking" } : s));
+      this.signIn.set(await this.api.mindSignIn(check));
+    } catch (e) {
+      this.signInError.set(errorText(e));
+      void this.loadSignIn(false).catch(() => undefined);
+    }
+    this.watchSignIn();
+  }
+
+  async openSignIn(): Promise<void> {
+    this.signInError.set("");
+    try {
+      this.signIn.set(await this.api.startMindSignIn());
+    } catch (e) {
+      this.signInError.set(errorText(e));
+    }
+    this.watchSignIn();
+  }
+
+  async stopSignIn(): Promise<void> {
+    try {
+      this.signIn.set(await this.api.startMindSignIn(true));
+    } catch {
+      /* the next poll shows where it is */
+    }
+  }
+
+  /** while the Edge window is open, look every 2 s */
+  private watchSignIn(): void {
+    if (this.signInTimer) clearTimeout(this.signInTimer);
+    if (!this.live || this.signIn()?.state !== "waiting") return;
+    this.signInTimer = setTimeout(async () => {
+      try {
+        this.signIn.set(await this.api.mindSignIn(false));
+      } catch {
+        /* try again */
+      }
+      this.watchSignIn();
+    }, 2000);
   }
 
   async loadOptions(): Promise<void> {

@@ -484,6 +484,15 @@ export interface MindRunOptionsInfo {
   estimate: MindRunEstimate;
 }
 
+/** The Mind sign-in the app's own browser profile keeps (GET/POST /api/mind/sign-in). */
+export interface MindSignIn {
+  state: "idle" | "waiting" | "checking" | "done" | "failed";
+  message: string | null;
+  last_login: string | null;
+  checked: { signed_in: boolean; at: string | null; error?: string } | null;
+  elapsed_s: number | null;
+}
+
 export interface MindRunTiming {
   elapsed_s: number;
   remaining_s: number;
