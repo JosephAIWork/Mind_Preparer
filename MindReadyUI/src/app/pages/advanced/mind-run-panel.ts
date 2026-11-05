@@ -1,11 +1,13 @@
 import { CommonModule } from "@angular/common";
-import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular/core";
+import { Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from "@angular/core";
 import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
-import { MindLoopEvent, MindLoopIteration, MindLoopReport } from "../../core/models";
+import { MindLoopEvent, MindLoopIteration, MindLoopReport, MindRunOptionsInfo, MindRunTiming, MindRunVersion } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
-/** The app running itself against real Mind: prepare, gates, upload, convert, run, decide; one run at a time. */
+/** The app running itself against real Mind: prepare, gates, upload, convert, run, decide; one run at a time.
+ *  Before the click: which version goes up (always the latest), the changes to make first (ticks) and a
+ *  conservative time estimate. While it runs: the stages, the one going on now, time spent and time left. */
 @Component({
   selector: "mr-mind-run-panel",
   standalone: true,
@@ -25,8 +27,16 @@ export class MindRunPanel implements OnInit, OnDestroy {
   readonly report = signal<MindLoopReport | null>(null);
   readonly summary = signal("");
   readonly error = signal("");
+  readonly options = signal<MindRunOptionsInfo | null>(null);
+  readonly ticked = signal<Set<string>>(new Set());
+  readonly timing = signal<MindRunTiming | null>(null);
+  readonly runVersion = signal<MindRunVersion | null>(null);
+  readonly showLog = signal(false);
+  /** seconds since the last status answer, so the clock moves every second between polls */
+  readonly drift = signal(0);
   private next = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private clock: ReturnType<typeof setInterval> | null = null;
   private live = true;
 
   readonly iterations = computed<MindLoopIteration[]>(() => this.report()?.iterations ?? []);
@@ -34,29 +44,82 @@ export class MindRunPanel implements OnInit, OnDestroy {
     const v = this.report()?.verdict;
     return v === "converged" ? "chip chip--ok" : v === "stuck" || v === "exhausted" ? "chip chip--warn" : "chip";
   });
+  readonly running = computed(() => this.state() === "running");
+  readonly tickedCount = computed(() => this.ticked().size);
+  /** the estimate before the click (the ticks change only the short 'making the changes' stage) */
+  readonly estimateText = computed(() => {
+    const o = this.options();
+    if (!o) return "";
+    return `about ${this.minutes(o.estimate.first_s)}`;
+  });
+  readonly elapsed = computed(() => (this.timing()?.elapsed_s ?? 0) + (this.running() ? this.drift() : 0));
+  readonly remaining = computed(() => Math.max(0, (this.timing()?.remaining_s ?? 0) - (this.running() ? this.drift() : 0)));
+
+  constructor() {
+    // a new version (Fix all issues, Prep...) changes what goes up and what can be ticked
+    effect(() => {
+      this.store.currentVersion();
+      this.store.plan();
+      untracked(() => {
+        if (!this.running()) void this.loadOptions();
+      });
+    });
+  }
 
   ngOnInit(): void {
     void this.poll();
+    this.clock = setInterval(() => this.drift.update((d) => d + 1), 1000);
   }
 
   ngOnDestroy(): void {
     this.live = false;
     if (this.timer) clearTimeout(this.timer);
+    if (this.clock) clearInterval(this.clock);
+  }
+
+  async loadOptions(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id) return;
+    try {
+      const o = await this.api.mindLoopOptions(id, { useAssistant: this.useAssistant(), runModel: this.runModel() });
+      this.options.set(o);
+      this.ticked.set(new Set(o.choices.filter((c) => c.default_on).map((c) => c.id)));
+    } catch {
+      /* the panel still works without it: the loop then chooses by itself */
+    }
+  }
+
+  toggle(id: string): void {
+    this.ticked.update((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
+  tickAll(on: boolean): void {
+    this.ticked.set(new Set(on ? (this.options()?.choices ?? []).map((c) => c.id) : []));
   }
 
   async start(): Promise<void> {
     const id = this.store.sessionId();
-    if (!id || this.state() === "running") return;
+    if (!id || this.running()) return;
     this.error.set("");
     try {
-      await this.api.startMindLoop(id, { maxIterations: this.maxIterations(), runModel: this.runModel(), useAssistant: this.useAssistant() });
+      const opts = { maxIterations: this.maxIterations(), runModel: this.runModel(), useAssistant: this.useAssistant() };
+      const out = await this.api.startMindLoop(id, this.options() ? { ...opts, actions: [...this.ticked()] } : opts);
       this.events.set([]);
       this.report.set(null);
+      this.timing.set(null);
+      this.runVersion.set((out as { version?: MindRunVersion }).version ?? null);
       this.next = 0;
+      this.drift.set(0);
       this.state.set("running");
       void this.poll();
     } catch (e) {
       this.error.set(errorText(e));
+      void this.loadOptions();
     }
   }
 
@@ -71,10 +134,22 @@ export class MindRunPanel implements OnInit, OnDestroy {
       if (s.report) this.report.set(s.report);
       if (s.summary) this.summary.set(s.summary);
       if (s.error) this.error.set(s.error);
+      if (s.timing) {
+        this.timing.set(s.timing);
+        this.drift.set(0);
+      }
+      if (s.version) this.runVersion.set(s.version);
     } catch {
       /* the next tick tries again */
     }
-    if (this.live && this.state() === "running") this.timer = setTimeout(() => void this.poll(), 3000);
+    if (this.live && this.state() === "running") this.timer = setTimeout(() => void this.poll(), 2000);
+  }
+
+  /** the newest line of the run, in plain words (no "iteration n:" prefix) */
+  latestLine(): string {
+    const e = this.events();
+    const last = e.length ? e[e.length - 1] : null;
+    return (last?.message ?? "").replace(/^iteration \d+:\s*/, "");
   }
 
   gate(it: MindLoopIteration, which: "apply" | "numbers" | "names" | "convert" | "run"): { label: string; cls: string } {
@@ -100,5 +175,26 @@ export class MindRunPanel implements OnInit, OnDestroy {
   when(t: number): string {
     const d = new Date(t * 1000);
     return isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
+  }
+
+  /** 754 -> "12:34" */
+  clockText(s: number): string {
+    const t = Math.max(0, Math.round(s));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const sec = t % 60;
+    return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m)) + ":" + String(sec).padStart(2, "0");
+  }
+
+  /** 754 -> "13 min" (rounded up: the estimate stays on the long side) */
+  minutes(s: number): string {
+    const m = Math.max(1, Math.ceil(s / 60));
+    return m >= 90 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+  }
+
+  /** Clock time when it should be done, e.g. "14:35" */
+  doneBy(): string {
+    const d = new Date(Date.now() + this.remaining() * 1000);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 }

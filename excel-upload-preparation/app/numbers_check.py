@@ -45,11 +45,15 @@ class Moves:
         self.batches: list[dict[str, Any]] = []
         for ops in batches:
             rows: dict[str, list[int]] = {}
+            banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns
             cols: dict[str, list[int]] = {}
             renames: dict[str, str] = {}
             for op in ops:
                 kind = op.get("op")
-                if kind == "insert_row":
+                if kind == "insert_row" and op.get("columns"):
+                    a, _, b = str(op["columns"]).partition(":")
+                    banded.setdefault(op["sheet"], []).append((int(op["row"]), col_to_num(a), col_to_num(b or a)))
+                elif kind == "insert_row":
                     rows.setdefault(op["sheet"], []).append(int(op["row"]))
                 elif kind == "insert_column":
                     cols.setdefault(op["sheet"], []).append(col_to_num(str(op["column"])))
@@ -57,22 +61,23 @@ class Moves:
                     renames[op["sheet"]] = op["after"]
             for v in list(rows.values()) + list(cols.values()):
                 v.sort()
-            if rows or cols or renames:
-                self.batches.append({"rows": rows, "cols": cols, "renames": renames})
+            if rows or banded or cols or renames:
+                self.batches.append({"rows": rows, "banded": banded, "cols": cols, "renames": renames})
 
     def forward(self, sheet: str, row: int, col: int) -> tuple[str, int, int]:
         """An original cell -> the same cell in the prepared version. Inside one
         Apply the rows are inserted bottom-up at the coordinates of the version
-        it started from, so a row moves down by one for every insert at or above it."""
+        it started from, so a row moves down by one for every insert at or above it (an insert that
+        shifts only some columns: when the cell's column is one of them)."""
         for b in self.batches:
-            row += bisect.bisect_right(b["rows"].get(sheet, ()), row)
+            row += bisect.bisect_right(b["rows"].get(sheet, ()), row) + sum(1 for k, c1, c2 in b.get("banded", {}).get(sheet, ()) if k <= row and c1 <= col <= c2)
             col += bisect.bisect_right(b["cols"].get(sheet, ()), col)
             sheet = b["renames"].get(sheet, sheet)
         return sheet, row, col
 
     def summary(self) -> dict[str, int]:
         return {
-            "row_inserts": sum(len(v) for b in self.batches for v in b["rows"].values()),
+            "row_inserts": sum(len(v) for b in self.batches for v in list(b["rows"].values()) + list(b.get("banded", {}).values())),
             "column_inserts": sum(len(v) for b in self.batches for v in b["cols"].values()),
             "sheet_renames": sum(len(b["renames"]) for b in self.batches),
         }

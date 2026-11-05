@@ -57,7 +57,7 @@ from app.settings import SETTINGS  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, check_api_key, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
-from app.estimate import estimate_chain  # noqa: E402
+from app.estimate import MIND_STAGE_TITLES, estimate_chain, estimate_mind_run, mind_run_remaining  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.model_map import build_model_map
 from app.loop_builder import build_loop_plan  # noqa: E402
@@ -1122,36 +1122,132 @@ def _loop_running() -> str | None:
     return None
 
 
+def _busy_with(s: Session) -> str | None:
+    """What is still changing this session's workbook, in words (None = nothing): Run in Mind must
+    wait for it, or it would upload the version before that change."""
+    if (AUTOFIX.get(s.id) or {}).get("state") == "running":
+        return "Fix all issues is still running"
+    if s.id in RECALCULATING:
+        return "a recalculation is still running"
+    if (s.apply_status or {}).get("state") == "running" or s.apply_lock.locked():
+        return "changes are still being written"
+    if (s.scan or {}).get("state") == "running" or s.lock.locked() or s.pending:
+        return "the workbook has not been analysed yet" if s.pending and not s.lock.locked() else "the workbook is still being analysed"
+    return None
+
+
+def _current_version(s: Session) -> dict[str, Any] | None:
+    return next((v for v in s.versions if v["id"] == s.current_version_id), None)
+
+
+def _version_public(s: Session) -> dict[str, Any]:
+    v = _current_version(s) or {}
+    return {"id": s.current_version_id, "label": v.get("label"), "file_name": v.get("file_name") or s.current_path.name}
+
+
+def _mind_run_estimate(s: Session, use_assistant: bool, run_model: bool, check_numbers: bool, chosen: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        mb = Path(s.current_path).stat().st_size / 2**20
+    except OSError:
+        mb = 0.0
+    scan_s = None
+    if (s.scan or {}).get("state") == "ready":
+        scan_s = sum(float(x.get("seconds") or 0) for x in s.scan.get("stages", []) if x.get("stage") != "convert") or None
+    wbs = ((s.result or {}).get("workbook_analysis") or {}).get("workbooks") or [{}]
+    formulas = len(wbs[0].get("formulas") or [])
+    ops = sum(int(a.get("count") or 0) for a in chosen)
+    return estimate_mind_run(mb, scan_s, formulas, ops, use_assistant=use_assistant, check_numbers=check_numbers, run_model=run_model)
+
+
+def _mind_choices(s: Session) -> list[dict[str, Any]]:
+    """The changes Run in Mind can make before it uploads: the actions of the current version's plan
+    that have something to do, each ticked (default_on) as the loop would by default."""
+    return [
+        {"id": a["id"], "title": a.get("title") or a["id"], "count": int(a.get("count") or 0), "default_on": bool(a.get("default_on")), "level": a.get("level")}
+        for a in (s.plan or []) if int(a.get("count") or 0) > 0
+    ]
+
+
+@app.get("/api/sessions/{session_id}/mind-loop/options")
+def mind_loop_options(session_id: str, use_assistant: bool = True, run_model: bool = True) -> dict[str, Any]:
+    """What Run in Mind will upload (always the session's current version), the changes it can make
+    first (ticked as the loop would by default), what must finish first (busy) and the time estimate."""
+    s = _session(session_id)
+    choices = _mind_choices(s)
+    newest = max(s.versions, key=lambda v: (v.get("created_at") or "", v.get("major", 0), v.get("minor", 0)))["id"] if s.versions else None
+    return {
+        "version": _version_public(s),
+        "newest_version_id": newest,
+        "busy": _busy_with(s),
+        "choices": choices,
+        "estimate": _mind_run_estimate(s, use_assistant, run_model, True, [c for c in choices if c["default_on"]]),
+    }
+
+
 @app.post("/api/sessions/{session_id}/mind-loop")
 def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Start the autonomous run-in-Mind loop on the session's current version, in
     a background thread. One loop at a time (it owns the Excel session and the
-    Mind browser profile). Poll GET for progress."""
+    Mind browser profile). Poll GET for progress. Refused (409) while something
+    is still changing the workbook: it would upload the version before that.
+
+    `actions` (optional): the ids of the changes to make before uploading. Every
+    other change of the plan is left out, and the loop never switches it on by
+    itself; an empty list uploads the version as it is. Without `actions` the
+    loop chooses as before (`enable` / `disable`)."""
     s = _session(session_id)
     if s.current_path.suffix.lower() not in (".xlsx", ".xlsm"):
         raise HTTPException(status_code=422, detail="Mind accepts .xlsx / .xlsm only")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}. Run in Mind uploads the latest version, so start it once that has finished.")
+    enable = [str(a) for a in payload.get("enable", [])]
+    disable = [str(a) for a in payload.get("disable", [])]
+    chosen_ids: list[str] | None = None
+    if isinstance(payload.get("actions"), list):
+        chosen_ids = [str(a) for a in payload["actions"]]
+        plan_ids = {a["id"] for a in (s.plan or [])}
+        enable = sorted(set(chosen_ids) & plan_ids)
+        disable = sorted(plan_ids - set(chosen_ids))
+    use_assistant = bool(payload.get("useAssistant", True))
+    run_model = bool(payload.get("runModel", True))
+    check_numbers = bool(payload.get("checkNumbers", True))
+    max_iterations = int(payload.get("maxIterations", 4))
+    choices = _mind_choices(s)
+    chosen = [c for c in choices if (c["id"] in chosen_ids if chosen_ids is not None else c["default_on"])]
+    estimate = _mind_run_estimate(s, use_assistant, run_model, check_numbers, chosen)
     with _MIND_LOOP_LOCK:
         busy = _loop_running()
         if busy:
             raise HTTPException(status_code=409, detail=f"a Mind loop is already running (session {busy})")
         work = s.work_dir / "mind_loop" / time.strftime("%Y%m%d_%H%M%S")
-        state: dict[str, Any] = {"state": "running", "events": [], "report": None, "started": time.time(), "work_dir": str(work), "error": None}
+        state: dict[str, Any] = {
+            "state": "running", "events": [], "report": None, "started": time.time(), "work_dir": str(work), "error": None,
+            "stage": None, "stage_started": time.time(), "iteration": 0, "max_iterations": max_iterations,
+            "estimate": estimate, "finished": None, "version": _version_public(s), "actions": chosen_ids,
+        }
         MIND_LOOPS[session_id] = state
     cfg = LoopConfig(
         source=s.current_path,
         work_dir=work,
-        max_iterations=int(payload.get("maxIterations", 4)),
-        use_assistant=bool(payload.get("useAssistant", True)),
-        run_model=bool(payload.get("runModel", True)),
-        check_numbers=bool(payload.get("checkNumbers", True)),
-        enable=list(payload.get("enable", [])),
-        disable=list(payload.get("disable", [])),
+        max_iterations=max_iterations,
+        use_assistant=use_assistant,
+        run_model=run_model,
+        check_numbers=check_numbers,
+        enable=enable,
+        disable=disable,
         delete_projects=bool(payload.get("deleteProjects", True)),
         skip_mind=bool(payload.get("skipMind", False)),
     )
 
     def progress(e: dict[str, Any]) -> None:
-        state["events"].append({"t": time.time(), **e})
+        now = time.time()
+        if e.get("event") == "iteration" and e.get("n"):
+            state["iteration"] = int(e["n"])
+        stage = e.get("stage")
+        if stage and stage != state.get("stage"):
+            state["stage"], state["stage_started"] = stage, now
+        state["events"].append({"t": now, **e})
 
     def worker() -> None:
         try:
@@ -1163,15 +1259,50 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
             state["state"] = "error"
             state.update(_problem_fields(_report_problem(exc, "Run in Mind", s)))
             progress({"event": "done", "verdict": "error", "message": f"loop crashed: {exc}"[:300]})
+        finally:
+            state["finished"] = time.time()
 
     threading.Thread(target=worker, name=f"mind-loop-{session_id}", daemon=True).start()
-    return {"state": "running", "work_dir": str(work)}
+    return {"state": "running", "work_dir": str(work), "version": state["version"], "estimate": estimate}
+
+
+def _mind_loop_timing(st: dict[str, Any]) -> dict[str, Any]:
+    """Elapsed time, the stage in words, the stages of this iteration and a conservative time left
+    (app/estimate.py estimate_mind_run, mind_run_remaining)."""
+    now = st.get("finished") or time.time()
+    est = st.get("estimate") or {}
+    n = max(1, int(st.get("iteration") or 1))
+    stages = [x for x in (est.get("stages") or []) if n == 1 or x["id"] != "names"]  # the assistant names grids once
+    stage = st.get("stage")
+    stage_elapsed = max(0.0, now - float(st.get("stage_started") or now))
+    running = st.get("state") == "running"
+    left = mind_run_remaining(stages, stage, stage_elapsed) if running else 0.0
+    elapsed = max(0.0, now - float(st["started"]))
+    budget = float(est.get("first_s") or 0) + (n - 1) * float(est.get("retry_s") or 0)
+    ids = [x["id"] for x in stages]
+    cur = ids.index(stage) if stage in ids else -1
+    events = st.get("events") or []
+    return {
+        "elapsed_s": round(elapsed),
+        "remaining_s": round(left),
+        "estimate_s": est.get("first_s"),
+        "retry_s": est.get("retry_s"),
+        "over_estimate": bool(running and budget and elapsed > budget),
+        "stage": stage,
+        "stage_title": MIND_STAGE_TITLES.get(stage or "", "Starting"),
+        "stage_elapsed_s": round(stage_elapsed),
+        "iteration": n,
+        "max_iterations": st.get("max_iterations"),
+        "stages": [{"id": x["id"], "title": x["title"], "seconds": x["seconds"], "state": "done" if (i < cur or not running) else "now" if i == cur else "todo"} for i, x in enumerate(stages)],
+        "last_news_s": round(now - events[-1]["t"]) if events else round(elapsed),
+    }
 
 
 @app.get("/api/sessions/{session_id}/mind-loop")
 def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
     """Progress of the session's loop: events after index `after`, the report so
-    far (written after every iteration) and the final verdict."""
+    far (written after every iteration), the final verdict, the version it
+    uploads and the timing (elapsed, stage, a conservative time left)."""
     _session(session_id)
     st = MIND_LOOPS.get(session_id)
     if not st:
@@ -1185,7 +1316,8 @@ def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
             except Exception:
                 report = None
     events = st["events"][after:]
-    return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "incident": st.get("incident"), "problem": st.get("problem"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None}
+    return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "incident": st.get("incident"), "problem": st.get("problem"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None,
+            "version": st.get("version"), "actions": st.get("actions"), "timing": _mind_loop_timing(st)}
 
 
 def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]], str, str | None]:

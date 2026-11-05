@@ -128,3 +128,70 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
         "caveat": CAVEAT,
         "basis": {"file_mb": round(file_mb, 1), "scan_s": round(scan), "scan_measured": bool(scan_s and scan_s > 0), "stored_errors": stored_errors, "blocking_ops": blocking_ops},
     }
+
+
+# --- Run in Mind --------------------------------------------------------------------------------
+# One iteration of app/mind_loop.py, stage by stage. Measured once on a 13 MB model (6 min end to end,
+# about 3 of them in Mind); Mind's side (project, upload and convert, run) grows with the file and with
+# how busy Mind is, so those figures are generous. The Mind team asked for a conservative estimate:
+# every figure is multiplied by MIND_SAFETY, and the countdown never shows less than what is left of the
+# stages still to come.
+MIND_SAFETY = 1.5
+MIND_STAGES: list[tuple[str, str]] = [
+    ("analyse", "Reading the workbook"),
+    ("names", "Naming grids"),
+    ("prepare", "Making the chosen changes"),
+    ("check", "Checking grids and names"),
+    ("numbers", "Checking the numbers in Excel"),
+    ("mind_open", "Opening Mind, creating a test project"),
+    ("upload", "Uploading and converting in Mind"),
+    ("template", "Adding the model in Mind"),
+    ("run", "Running the model in Mind"),
+    ("results", "Reading Mind's results"),
+    ("cleanup", "Removing the test project"),
+]
+MIND_STAGE_TITLES = dict(MIND_STAGES)
+
+
+def estimate_mind_run(file_mb: float, scan_s: float | None, formula_count: int = 0, ops: int = 0, use_assistant: bool = True,
+                      check_numbers: bool = True, run_model: bool = True) -> dict[str, Any]:
+    """-> {"stages": [{id, title, seconds}], "first_s", "retry_s", "caveat"}: seconds per stage of the first
+    iteration (already padded by MIND_SAFETY), the whole first iteration, and what each retry adds (a
+    retry asks the assistant nothing). A run that converges in one iteration takes about first_s."""
+    scan = float(scan_s) if scan_s and scan_s > 0 else max(30.0, FALLBACK_SCAN_S_PER_FORMULA * formula_count)
+    open_s, save_s = _excel_session(file_mb)
+    raw: dict[str, float] = {
+        "analyse": scan,
+        "names": 60.0 if use_assistant else 0.0,
+        "prepare": (open_s + WRITE_S_PER_OP * ops + save_s + open_s) if ops else 5.0,
+        "check": scan,
+        "numbers": (2 * (open_s + 10.0 + save_s) + 0.2 * scan) if check_numbers else 0.0,
+        "mind_open": 45.0,
+        "upload": 60.0 + 5.0 * file_mb,
+        "template": 30.0,
+        "run": (60.0 + 4.0 * file_mb) if run_model else 0.0,
+        "results": 20.0 if run_model else 0.0,
+        "cleanup": 0.0 if run_model else 30.0,  # a project that was run is kept (Mind does not let automation delete it)
+    }
+    stages = [{"id": k, "title": t, "seconds": round(raw[k] * MIND_SAFETY)} for k, t in MIND_STAGES if raw[k] > 0]
+    first = sum(s["seconds"] for s in stages)
+    retry = first - next((s["seconds"] for s in stages if s["id"] == "names"), 0)
+    return {
+        "stages": stages,
+        "first_s": first,
+        "retry_s": retry,
+        "caveat": "Kept on the long side on purpose. Mind's own speed varies with the time of day; if Mind asks for "
+                  "another round, each round adds about the same again.",
+    }
+
+
+def mind_run_remaining(stages: list[dict[str, Any]], current: str | None, stage_elapsed_s: float) -> float:
+    """Seconds left in this iteration: what is left of the current stage (never less than a tenth of
+    its estimate: a stage past its estimate is still running) plus every later stage."""
+    ids = [s["id"] for s in stages]
+    if current not in ids:
+        return float(sum(s["seconds"] for s in stages)) if current is None else 0.0
+    i = ids.index(current)
+    cur = float(stages[i]["seconds"])
+    left = max(cur - stage_elapsed_s, 0.1 * cur)
+    return left + sum(float(s["seconds"]) for s in stages[i + 1:])

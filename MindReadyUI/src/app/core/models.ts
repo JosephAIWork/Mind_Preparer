@@ -442,6 +442,8 @@ export interface MindLoopOptions {
   skipMind?: boolean;
   enable?: string[];
   disable?: string[];
+  /** The changes to make before uploading; [] uploads the version as it is. */
+  actions?: string[];
 }
 
 export interface MindLoopEvent {
@@ -450,6 +452,51 @@ export interface MindLoopEvent {
   message?: string;
   n?: number;
   verdict?: string;
+  stage?: string;
+}
+
+export interface MindRunEstimate {
+  stages: { id: string; title: string; seconds: number }[];
+  first_s: number;
+  retry_s: number;
+  caveat: string;
+}
+
+export interface MindRunVersion {
+  id: string;
+  label: string | null;
+  file_name: string;
+}
+
+export interface MindRunChoice {
+  id: string;
+  title: string;
+  count: number;
+  default_on: boolean;
+  level?: string;
+}
+
+export interface MindRunOptionsInfo {
+  version: MindRunVersion;
+  newest_version_id: string | null;
+  busy: string | null;
+  choices: MindRunChoice[];
+  estimate: MindRunEstimate;
+}
+
+export interface MindRunTiming {
+  elapsed_s: number;
+  remaining_s: number;
+  estimate_s: number | null;
+  retry_s: number | null;
+  over_estimate: boolean;
+  stage: string | null;
+  stage_title: string;
+  stage_elapsed_s: number;
+  iteration: number;
+  max_iterations: number | null;
+  stages: { id: string; title: string; seconds: number; state: "done" | "now" | "todo" }[];
+  last_news_s: number;
 }
 
 export interface MindLoopIteration {
@@ -491,6 +538,9 @@ export interface MindLoopStatus {
   error?: string | null;
   summary?: string | null;
   work_dir?: string;
+  version?: MindRunVersion | null;
+  actions?: string[] | null;
+  timing?: MindRunTiming;
 }
 
 export interface NumbersCheck {

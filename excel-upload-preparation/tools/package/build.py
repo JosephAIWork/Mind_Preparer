@@ -52,6 +52,10 @@ def main() -> int:
         f"--output-dir={out}", "--output-filename=MindReady.exe",
         "--include-package=app",  # the rules engine imports app.validators.<category> by name
         "--include-package=uvicorn",  # uvicorn picks its protocol and loop modules by name
+        # pywintypes imports win32timezone by name when Excel hands back a date or time (a cell
+        # value, a file's save time): Nuitka cannot see that import (Mind team, 2026-11: "No module
+        # named win32timezone")
+        "--include-module=win32timezone",
         "--enable-plugin=playwright",
         "--nofollow-import-to=*.tests",
         f"--include-data-dir={APP / 'rules'}=rules",

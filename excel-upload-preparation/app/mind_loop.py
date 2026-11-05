@@ -130,13 +130,16 @@ def _rewrite_ok(a: Any, b: Any) -> bool:
     return _same(a, b) or (_is_error(a) and (_is_error(b) or b is None))
 
 
-def row_map(inserts: list[int]) -> Callable[[int], int]:
-    """Source row -> prepared row after whole-row inserts at `inserts`
-    (source coordinates): inserting at k pushes rows >= k down by one."""
-    ins = sorted(int(k) for k in inserts)
+def row_map(inserts: list[Any]) -> Callable[..., int]:
+    """Source row -> prepared row after the row inserts `inserts` (source coordinates): inserting
+    at k pushes rows >= k down by one. An insert is a row number (a whole row) or (row, first
+    column, last column) for one that shifts only those columns: then f(row, column) moves the
+    cell only when its column is one of them (f(row) alone counts whole rows only)."""
+    whole = sorted(int(k) for k in inserts if not isinstance(k, (tuple, list)))
+    banded = [(int(k[0]), int(k[1]), int(k[2])) for k in inserts if isinstance(k, (tuple, list))]
 
-    def f(r: int) -> int:
-        return r + sum(1 for k in ins if k <= r)
+    def f(r: int, col: int | None = None) -> int:
+        return r + sum(1 for k in whole if k <= r) + (sum(1 for k, c1, c2 in banded if k <= r and c1 <= col <= c2) if col is not None else 0)
 
     return f
 
@@ -203,11 +206,12 @@ def _allowed_cells(applied: list[dict[str, Any]]) -> tuple[dict[tuple[str, str],
     mode 'relaxed' set_formula / set_array_formula -- compared, error->error allowed"""
     src: dict[tuple[str, str], str] = {}
     prepared: dict[tuple[str, str], str] = {}
-    inserts: dict[str, list[int]] = {}
+    inserts: dict[str, list[Any]] = {}
     renames: dict[str, str] = {}
     for o in applied:
         if o["op"] == "insert_row":
-            inserts.setdefault(o["sheet"], []).append(int(o["row"]))
+            band = prep.insert_columns(o)
+            inserts.setdefault(o["sheet"], []).append(int(o["row"]) if band is None else (int(o["row"]), band[0], band[1]))
         elif o["op"] == "rename_sheet":
             renames[o["sheet"]] = str(o["after"])
     for o in prep._ordered(applied):
@@ -259,7 +263,7 @@ def compare_values(source_path: Path, prepared_path: Path, applied: list[dict[st
             seen_p: set[tuple[int, int]] = set()
             for r, row in enumerate(ws_s.iter_rows(min_row=1, min_col=1, values_only=True), start=1):
                 for col, a in enumerate(row, start=1):
-                    pr = rmap(r)
+                    pr = rmap(r, col)
                     seen_p.add((pr, col))
                     ref_s, ref_p = ref_text(col, r), ref_text(col, pr)
                     mode = src_allowed.get((sheet, ref_s)) or prep_allowed.get((sheet, ref_p))
@@ -557,7 +561,7 @@ def _assistant_names(analysis: dict[str, Any], progress: Progress) -> dict[str, 
             targets.append(g)
     if not targets:
         return {}
-    progress({"event": "names", "message": f"asking the assistant to name {len(targets)} grid(s)"})
+    progress({"event": "names", "stage": "names", "message": f"asking the assistant to name {len(targets)} grid(s)"})
     out = suggest_names([build_grid_context(analysis, g) for g in targets])
     if not out["available"]:
         progress({"event": "names", "message": f"assistant unavailable ({out.get('message')}); deterministic names stand"})
@@ -613,7 +617,7 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         it: dict[str, Any] = {"n": n, "enabled": sorted(enabled), "disabled": sorted(disabled), "run_model": cfg.run_model, "started": _now()}
         it_dir = cfg.work_dir / f"iter_{n}"
         it_dir.mkdir(parents=True, exist_ok=True)
-        progress({"event": "iteration", "n": n, "message": f"iteration {n}: analysing the source"})
+        progress({"event": "iteration", "stage": "analyse", "n": n, "message": f"iteration {n}: analysing the source"})
 
         # 1. analyse the ORIGINAL source
         res = plan_mode.run(source, it_dir / "analysis", {}, engine)
@@ -635,7 +639,7 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         ops = [o for a in chosen for o in a["operations"]]
         it["actions"] = [{"id": a["id"], "count": a["count"]} for a in chosen]
         it["findings_before"] = vreport["summary"]["status_counts"]
-        log(f"iteration {n}: applying {len(ops)} operation(s) from {', '.join(a['id'] for a in chosen) or 'no actions'}")
+        log(stage="prepare", msg=f"iteration {n}: applying {len(ops)} operation(s) from {', '.join(a['id'] for a in chosen) or 'no actions'}")
 
         # 2. apply through Excel
         if ops:
@@ -654,12 +658,13 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
             return finish(d["verdict"], d["reason"])
 
         # 3. local gates
+        log(stage="check", msg=f"iteration {n}: checking the prepared copy (grids and names)")
         after = plan_mode.run(prepared, it_dir / "after", {}, engine)
         it["findings_after"] = after["validation_report"]["summary"]["status_counts"]
         it["names"] = names_gate(after["workbook_analysis"], after["validation_report"], baseline_grids)
         log(f"iteration {n}: grids {it['names']['grids']} (baseline {baseline_grids}), unnamed {it['names']['unnamed']}, blocked {len(it['names']['blocked'])}")
         if cfg.check_numbers:
-            progress({"event": "numbers", "message": f"iteration {n}: recalculating source and prepared copies in Excel"})
+            progress({"event": "numbers", "stage": "numbers", "message": f"iteration {n}: recalculating source and prepared copies in Excel"})
             it["numbers"] = numbers_gate(source, prepared, applied.get("applied", []), analysis, it_dir / "numbers")
             nm = it["numbers"]
             log(f"iteration {n}: numbers {'match' if nm.get('match') else 'DIFFER' if nm.get('ran') else 'NOT CHECKED (' + str(nm.get('message')) + ')'} ({nm.get('compared', 0)} cells compared, {nm.get('differences', 0)} differ, {nm.get('volatile_skipped', 0)} volatile skipped)")
@@ -703,7 +708,7 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                 page.set_viewport_size({"width": 1680, "height": 1000})
             except Exception:
                 pass
-            progress({"event": "mind", "message": f"iteration {n}: creating sandbox project {name}"})
+            progress({"event": "mind", "stage": "mind_open", "message": f"iteration {n}: creating sandbox project {name}"})
             if not mc.open_manager(page):
                 out["error"] = "could not reach the Project manager (not logged in?)"
                 return out
@@ -718,10 +723,10 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
             if state != "empty":
                 out["error"] = f"project opened in state '{state}', expected an empty drop zone"
                 return out
-            progress({"event": "mind", "message": f"iteration {n}: uploading {prepared.name} and waiting for Upload / Convert / Test"})
+            progress({"event": "mind", "stage": "upload", "message": f"iteration {n}: uploading {prepared.name} and waiting for Upload / Convert / Test"})
             out["convert"] = mc.upload_and_convert(page, prepared, shots=shots)
             conv = out["convert"]
-            progress({"event": "mind", "message": f"iteration {n}: convert {'succeeded' if conv['success'] else 'FAILED'} {conv['steps']}" + (f" -- {' | '.join(conv['errors'])[:200]}" if conv["errors"] else "")})
+            progress({"event": "mind", "stage": "template", "message": f"iteration {n}: convert {'succeeded' if conv['success'] else 'FAILED'} {conv['steps']}" + (f" -- {' | '.join(conv['errors'])[:200]}" if conv["errors"] else "")})
             if not conv["success"]:
                 return out
             if not mc.add_template(page):
@@ -738,11 +743,11 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
             c = out["counts"]
             progress({"event": "mind", "message": f"iteration {n}: Mind lists {len(listed)} template entries" + (f", {c['mind_untitled']} Untitled; app predicted {c['app_untitled']}, unexplained {len(c['unexplained'])}, app-only {len(c['app_only'])}" if trusted else " (selector could not be read; count skipped)")})
             if cfg.run_model:
-                progress({"event": "mind", "message": f"iteration {n}: running the model"})
+                progress({"event": "mind", "stage": "run", "message": f"iteration {n}: running the model"})
                 record["ran"] = True  # set before the click: a project that was run must never be deleted
                 record["status"] = "run"
                 out["run"] = mc.run_model(page, shots=shots)
-                progress({"event": "mind", "message": f"iteration {n}: run {'completed' if out['run']['completed'] else 'did not complete'}" + (", consistent with the audit trail" if out["run"]["audit_consistent"] else "")})
+                progress({"event": "mind", "stage": "results", "message": f"iteration {n}: run {'completed' if out['run']['completed'] else 'did not complete'}" + (", consistent with the audit trail" if out["run"]["audit_consistent"] else "")})
                 try:
                     out["exports"] = mc.export_summary(page)
                 except Exception as exc:
@@ -752,6 +757,7 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
         out["error"] = f"Mind automation failed: {exc}"[:300]
     finally:
         if cfg.delete_projects and record.get("status") in ("created", "model added") and not record.get("ran"):
+            progress({"event": "mind", "stage": "cleanup", "message": f"iteration {n}: removing the sandbox project {name}"})
             try:
                 with mc.mind_session(headed=cfg.headed) as (_ctx, page):
                     st = mc.delete_project(page, name, cfg.folder)

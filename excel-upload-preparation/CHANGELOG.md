@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.12.1 (5 November 2026): what the Mind team saw when they tried it
+
+- **The program no longer stops with "No module named win32timezone".** Excel hands back dates and
+  times through a part of pywin32 that is loaded by name, which the compiled program left out; it is
+  now built in (`tools/package/build.py`).
+- **Run in Mind says which version it uploads: always the latest.** The screen names the version and
+  its file before the click. While Fix all issues, a recalculation, a Prep round or an analysis is
+  still changing the workbook, Run in Mind waits ("Wait a moment: ...") instead of uploading the version
+  before that change (`GET /api/sessions/{id}/mind-loop/options`, 409 on `POST .../mind-loop`).
+- **Choose the changes made before uploading.** Every change Run in Mind can make first is a tick box
+  (ticked as before by default); an unticked change is never made, not even when Mind asks for it, and
+  nothing ticked uploads the version as it is (`actions` in the `POST` body).
+- **A clearer status while it runs, with the time.** The stages of a round (reading, changes, checks,
+  opening Mind, upload and convert, run, results), the one going on now, the time spent, the time left
+  and the clock time it should be done by. The estimate is kept on the long side on purpose (1.5 times
+  the measured figures); past it, the screen says it is taking longer and is still working. The
+  detailed log is one click away (`app/estimate.py` `estimate_mind_run`).
+- **A row inserted for one grid no longer moves the grids beside it.** The empty row Prep inserts above
+  a '#Title' trapped inside a grid (STR-001) or above a grid to make room for its title (STR-004) now
+  shifts only that grid's columns down when another grid sits beside it at or below that row, so the
+  neighbour stays where it is (before, the trapped-title fix was skipped there, and a title row moved
+  the neighbour down, away from its own title). The columns that shift widen to take in anything that
+  must move as one: a grid below, a merged range, a pivot table, a range a formula reads across them.
+  When nothing sits beside the grid, or the sheet has an Excel table or a formula reading whole rows,
+  a whole row is inserted as before. The numbers check and Run in Mind follow the moved cells
+  (`app/prep.py` `plan_row_insert`).
+
 ## 1.12.0 (27 October 2026): the hand-over to the Mind team
 
 - **Send feedback to the Tel Aviv team.** When a step fails, a box under the header says in one plain

@@ -39,9 +39,10 @@ def test_plan_on_broken_model_lists_concrete_operations_and_skips(tmp_path, flag
     # 'Kind' -> 'Type' (PAR-002), 'Setting' -> 'Name' (PRJ-002) header corrections
     headers = {(o["before"], o["after"]) for o in plan["special_headers"]["operations"]}
     assert ("Kind", "Type") in headers and ("Setting", "Name") in headers
-    # the trapped '#Second' title shares rows with other grids -> skipped with a reason, never a blind row insert
-    assert plan["separate_merged_grids"]["count"] == 0
-    assert any("split" in s for s in plan["separate_merged_grids"]["skipped"])
+    # the trapped '#Second' title shares rows with other grids: never a whole-row insert that would split
+    # them -- 1.12.1: only its own grid's column (AI4:AI8) shifts down, the grids beside it stay
+    sep = plan["separate_merged_grids"]["operations"]
+    assert len(sep) == 1 and sep[0]["row"] == 6 and sep[0]["columns"] == "AI:AI"
     # plans never touch the file
     assert flagged_model_broken_xlsx.stat().st_size > 0
 

@@ -205,6 +205,80 @@ def _row_insert_is_safe(grids: list[dict[str, Any]], sheet: str, row: int, own: 
     return [o for o in grids if o["sheet"] == sheet and o is not own and o["first_row"] < row <= o["last_row"]]
 
 
+def insert_columns(o: dict[str, Any]) -> tuple[int, int] | None:
+    """The columns (first, last) a row insert shifts down, or None for a whole-row insert."""
+    cols = o.get("columns")
+    if not cols:
+        return None
+    a, _, b = str(cols).partition(":")
+    return col_to_num(a), col_to_num(b or a)
+
+
+def insert_moves(o: dict[str, Any], col: int) -> bool:
+    """Does the row insert `o` shift cells of column `col` (whole row: every column)?"""
+    band = insert_columns(o)
+    return band is None or band[0] <= col <= band[1]
+
+
+def plan_row_insert(analysis: dict[str, Any], grids: list[dict[str, Any]], sheet: str, row: int, own: dict[str, Any]) -> tuple[tuple[int, int] | None, list[dict[str, Any]]]:
+    """How to insert an empty row at `row` for the grid `own` without disturbing the grids beside it
+    (the Mind team, 2026-11: "insert row should be aware of other grids in the row").
+
+    -> (band, cut). `band` = (first, last) column: only those columns shift down (Excel's Insert,
+    shift cells down), so a grid next to `own` stays where it is; None = a whole-row insert, kept
+    when nothing at or below the row sits outside the band (it then does exactly what a whole
+    row did) or when the sheet holds an Excel table (its range is not known here). The band starts
+    as `own`'s columns and widens until it cuts nothing at or below the row across its edges: a
+    grid, a merged range, a pivot table, a range a formula or a name reads (a range cut across
+    would no longer read the cells it read). A formula reading a whole row there makes it a
+    whole-row insert. `cut` = the grids the insert would split in two (they span the row, inside
+    the band): the caller skips the insert then."""
+    sheet_grids = [g for g in grids if g["sheet"] == sheet]
+    whole = (None, _row_insert_is_safe(grids, sheet, row, own=own))
+    info = next((x for x in analysis["workbooks"][0].get("sheets", []) if x.get("name") == sheet), {})
+    if info.get("tables"):
+        return whole
+    index = reference_index(analysis)
+    if any(r >= row for r in (index.get("whole_rows", {}).get(sheet) or {})):
+        return whole
+    blocks: list[tuple[int, int, int, int]] = [(g["first_row"], g["last_row"], g["first_col"], g["last_col"]) for g in sheet_grids if g["last_row"] >= row]
+    for m in info.get("merged_cells") or []:
+        ref = parse_ref(str(m))
+        if ref and ref["r2"] >= row:
+            blocks.append((ref["r1"], ref["r2"], ref["c1"], ref["c2"]))
+    for r1, r2, c1, c2, _ in pivot_ranges(analysis).get(sheet, []):
+        if r2 >= row:
+            blocks.append((r1, r2, c1, c2))
+    for r1, r2, c1, c2, *_ in index.get("rects", {}).get(sheet, []):
+        if r2 >= row and c2 > c1:
+            blocks.append((r1, r2, c1, c2))
+    lo, hi = own["first_col"], own["last_col"]
+    changed = True
+    while changed:
+        changed = False
+        for _, _, c1, c2 in blocks:
+            if c1 <= hi and c2 >= lo and (c1 < lo or c2 > hi):
+                lo, hi = min(lo, c1), max(hi, c2)
+                changed = True
+    if not any(c2 < lo or c1 > hi for _, _, c1, c2 in blocks):
+        return whole  # nothing beside the band at or below the row: a whole row does the same
+    cut = [g for g in sheet_grids if g is not own and g["first_row"] < row <= g["last_row"] and g["first_col"] <= hi and g["last_col"] >= lo]
+    return (lo, hi), cut
+
+
+def _insert_fields(row: int, band: tuple[int, int] | None) -> dict[str, Any]:
+    """The extra fields of a row insert that shifts only `band`'s columns."""
+    if band is None:
+        return {}
+    return {"columns": f"{num_to_col(band[0])}:{num_to_col(band[1])}"}
+
+
+def _insert_words(row: int, band: tuple[int, int] | None) -> str:
+    if band is None:
+        return f"empty row {row} inserted"
+    return f"empty cells {num_to_col(band[0])}{row}:{num_to_col(band[1])}{row} inserted (only columns {num_to_col(band[0])}:{num_to_col(band[1])} shift down; the grids beside them stay)"
+
+
 # --- what the model's formulas read ------------------------------------------
 # A title is text written into a cell; a moved label is a cell emptied; a row
 # insert shifts every cell below it. None of that may change a computed value.
@@ -445,7 +519,7 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
                 # an endless Prep round. It is a manual job.
                 skipped.append(f"{g['sheet']}!{cell}: the title shares the grid's first row with other content -- an empty row above would not separate it; move the title to its own row by hand")
                 continue
-            others = _row_insert_is_safe(grids, g["sheet"], row, own=g)
+            band, others = plan_row_insert(analysis, grids, g["sheet"], row, g)
             if others:
                 skipped.append(f"{g['sheet']}!{cell}: inserting a row would also split {', '.join(o['display_name'] for o in others[:3])} -- separate manually")
                 continue
@@ -453,7 +527,7 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
             if blocker:
                 skipped.append(f"{g['sheet']}!{cell}: {blocker} -- separate manually")
                 continue
-            ops.append(_op("insert_row", "separate_merged_grids", "STR-001", g["sheet"], row=row, before=f"'{cell_value(analysis, g['sheet'], row, ref['c1'])}' directly below grid {g['display_name']}", after=f"empty row {row} inserted; title moves to row {row + 1}", note="Excel shifts every reference automatically"))
+            ops.append(_op("insert_row", "separate_merged_grids", "STR-001", g["sheet"], row=row, before=f"'{cell_value(analysis, g['sheet'], row, ref['c1'])}' directly below grid {g['display_name']}", after=f"{_insert_words(row, band)}; title moves to row {row + 1}", note="Excel shifts every reference automatically", **_insert_fields(row, band)))
     return ops, skipped
 
 
@@ -634,6 +708,7 @@ def plan_create_grid_titles(
     consumed: set[tuple[str, str]] = set()
     titled_cells: set[tuple[str, str]] = set(pre_titled or ())
     inserted_rows: dict[str, set[int]] = {k: set(v) for k, v in (pre_inserted or {}).items()}
+    banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns: (row, first, last)
     by_sheet: dict[str, list[dict[str, Any]]] = {}
     for g in grids:
         by_sheet.setdefault(g["sheet"], []).append(g)
@@ -697,9 +772,10 @@ def plan_create_grid_titles(
             # row insert -- but only when no other grid spans that row and no
             # formula counts or indexes whole columns of this sheet.
             reason = "starts on row 1" if r0 == 1 else f"the cell above ({above_cell}) is not free"
-            already = r0 in inserted_rows.get(g["sheet"], set())
+            already = r0 in inserted_rows.get(g["sheet"], set()) or any(r == r0 and b1 <= c0 <= b2 for r, b1, b2 in banded.get(g["sheet"], []))
+            band = None
             if not already:
-                cutting = _row_insert_is_safe(grids, g["sheet"], r0, own=g)
+                band, cutting = plan_row_insert(analysis, grids, g["sheet"], r0, g)
                 if cutting:
                     skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
                     continue
@@ -713,8 +789,11 @@ def plan_create_grid_titles(
                 continue
             if not already:
                 before = f"grid {g['ref']} starts on row 1" if r0 == 1 else f"'{above_val}' sits directly above grid {g['ref']}"
-                ops.append(_op("insert_row", "create_grid_titles", "STR-004", g["sheet"], row=r0, before=before, after=f"empty row {r0} inserted (the grid moves down one row)", note="makes room for the title; Excel shifts every reference automatically"))
-                inserted_rows.setdefault(g["sheet"], set()).add(r0)
+                ops.append(_op("insert_row", "create_grid_titles", "STR-004", g["sheet"], row=r0, before=before, after=f"{_insert_words(r0, band)} (the grid moves down one row)", note="makes room for the title; Excel shifts every reference automatically", **_insert_fields(r0, band)))
+                if band is None:
+                    inserted_rows.setdefault(g["sheet"], set()).add(r0)
+                else:
+                    banded.setdefault(g["sheet"], []).append((r0, band[0], band[1]))
             ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=ref_text(c0, r0), before=None, after=title, note=f"name from {source}; written after the row insert", after_inserts=True, insert_at=r0))
             titled_cells.add((g["sheet"], ref_text(c0, r0)))
         if label is not None:
@@ -1735,7 +1814,8 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
             continue
         if o["op"] == "insert_row":
             row = int(o["row"])
-            hit = next((p for p in rects if p[0] <= row <= p[1]), None)
+            band = insert_columns(o)
+            hit = next((p for p in rects if p[0] <= row <= p[1] and (band is None or (p[2] <= band[1] and p[3] >= band[0]))), None)
             if hit:
                 refused_inserts.add((o["sheet"], row))
                 skipped.append(f"{o['sheet']}!{row}:{row}: inserting a row here would cut the pivot table {hit[4]} -- Excel refuses; move the pivot table (or the title) by hand")
@@ -1904,11 +1984,13 @@ def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]], co
     if at is None:
         return op
     at = int(at)
-    same_row = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) == at)
-    shift = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) < at) + max(0, same_row - 1)
     ref = parse_ref(str(op["cell"]))
     if not ref:
         return op
+    # an insert that shifts only some columns moves the cell only when its column is one of them
+    mine = [o for o in row_inserts if o["sheet"] == op["sheet"] and insert_moves(o, ref["c1"])]
+    same_row = sum(1 for o in mine if int(o["row"]) == at)
+    shift = sum(1 for o in mine if int(o["row"]) < at) + max(0, same_row - 1)
     cshift = sum(1 for o in col_inserts if o["sheet"] == op["sheet"] and col_to_num(str(o["column"])) <= ref["c1"])
     if not shift and not cshift:
         return op
@@ -2249,7 +2331,11 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             if not o.get("in_style_table"):  # already done for every sheet at once (app/theme_colors.py)
                 _explicit_colors(ws, o, i, total, progress)
         elif o["op"] == "insert_row":
-            ws.Rows(int(o["row"])).Insert()
+            band = insert_columns(o)
+            if band is None:
+                ws.Rows(int(o["row"])).Insert()
+            else:  # only these columns shift down: the grids beside them stay where they are
+                ws.Range(ws.Cells(int(o["row"]), band[0]), ws.Cells(int(o["row"]), band[1])).Insert(Shift=-4121)  # xlShiftDown
         elif o["op"] == "insert_column":
             ws.Columns(col_to_num(str(o["column"]))).Insert()
         elif o["op"] in PIVOT_OPS:

@@ -3,7 +3,7 @@ import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -129,6 +129,12 @@ export class ApiService {
 
   startMindLoop(id: string, opts: MindLoopOptions): Promise<{ state: string; work_dir?: string }> {
     return firstValueFrom(this.http.post<{ state: string; work_dir?: string }>(`${this.s(id)}/mind-loop`, opts));
+  }
+
+  /** What Run in Mind will upload, the changes it can make first, what must finish first, the time estimate. */
+  mindLoopOptions(id: string, o: { useAssistant: boolean; runModel: boolean }): Promise<MindRunOptionsInfo> {
+    const params = new HttpParams().set("use_assistant", String(o.useAssistant)).set("run_model", String(o.runModel));
+    return firstValueFrom(this.http.get<MindRunOptionsInfo>(`${this.s(id)}/mind-loop/options`, { params }));
   }
 
   mindLoopStatus(id: string, after = 0): Promise<MindLoopStatus> {
