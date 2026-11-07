@@ -484,9 +484,31 @@ def whole_reference_to(index: dict[str, Any], sheet: str) -> str | None:
     return next(iter(cols.values()), None) or next(iter(rows.values()), None)
 
 
-def insert_blocker(index: dict[str, Any], sheet: str) -> str | None:
-    """Why a row must not be inserted on `sheet`, in words -- or None when
-    nothing reads it in a way an insert would shift."""
+def stretched_reader(index: dict[str, Any], sheet: str, row: int, band: tuple[int, int] | None = None) -> str | None:
+    """A range a formula or a name reads that an empty row inserted at `row` (in the columns of
+    `band`, or the whole row) would land inside -- it starts above the row and reaches it -- so the
+    range grows by a row: what reads it by position (INDEX(table, Scenario+1, 4), MATCH, OFFSET, a
+    lookup) then reads another cell. Tokyo IFRS 17 tool, 2026-11-07: a title row inside the scenario
+    table D29:H32 turned "New" into "Old". Excel's own names (print area, filter range) do not count."""
+    rects = index["rects"].get(sheet) or []
+    if not rects:
+        return None
+    blocks, tall = _row_blocks(index, sheet, rects)
+    lo, hi = band if band else (1, 1 << 20)
+    for i in list(blocks.get(row // _BLOCK_ROWS, ())) + tall:
+        r1, r2, c1, c2, own = rects[i]
+        if r1 < row <= r2 and c1 <= hi and c2 >= lo and not own.lower().startswith(("name _xlnm.", "name print_", "name _filterdatabase")):
+            return own
+    return None
+
+
+def insert_blocker(index: dict[str, Any], sheet: str, row: int | None = None, band: tuple[int, int] | None = None) -> str | None:
+    """Why a row must not be inserted on `sheet` (at `row`, over `band`'s columns), in words -- or
+    None when nothing reads it in a way an insert would shift."""
+    if row is not None:
+        inside = stretched_reader(index, sheet, row, band)
+        if inside:
+            return f"the new row would fall inside a range {inside} reads, which would then read other cells"
     whole = whole_reference_to(index, sheet)
     if whole:
         return f"inserting a row would shift what {whole} counts or indexes over whole columns of this sheet"
@@ -523,7 +545,7 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
             if others:
                 skipped.append(f"{g['sheet']}!{cell}: inserting a row would also split {', '.join(o['display_name'] for o in others[:3])} -- separate manually")
                 continue
-            blocker = insert_blocker(index, g["sheet"])
+            blocker = insert_blocker(index, g["sheet"], row, band)
             if blocker:
                 skipped.append(f"{g['sheet']}!{cell}: {blocker} -- separate manually")
                 continue
@@ -780,7 +802,7 @@ def plan_create_grid_titles(
                 if cutting:
                     skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
                     continue
-                blocker = insert_blocker(index, g["sheet"])
+                blocker = insert_blocker(index, g["sheet"], r0, band)
                 if blocker:
                     skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and {blocker}")
                     continue
@@ -1006,7 +1028,7 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
                 if cutting:
                     skipped.append(f"{gkey}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
                     continue
-                blocker = insert_blocker(index, g["sheet"])
+                blocker = insert_blocker(index, g["sheet"], r0, band)
                 if blocker:
                     skipped.append(f"{gkey}: {reason} and {blocker}")
                     continue

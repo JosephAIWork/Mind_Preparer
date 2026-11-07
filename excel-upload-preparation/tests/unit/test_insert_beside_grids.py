@@ -123,3 +123,16 @@ def test_excel_shifts_the_band_and_leaves_the_grid_beside_it_and_every_value(tmp
     a = _run(tmp_path, side_by_side_xlsx, "cmp")["workbook_analysis"]["workbooks"][0]
     gate = ml.numbers_gate(side_by_side_xlsx, out, res["applied"], {"workbooks": [a]}, tmp_path / "numbers")
     assert gate["ran"] and gate["match"], gate.get("listed")
+
+
+def test_no_row_is_inserted_inside_a_range_read_by_position():
+    # Tokyo IFRS 17 tool (2026-11-07): =INDEX($D$29:$H$32,Scenario+1,4) -- a title row inserted at row 31
+    # stretched the table to D29:H33 and the INDEX read another row ("New" became "Old")
+    from app.prep import insert_blocker
+
+    index = {"rects": {"Ctrl": [(29, 32, 4, 8, "Ctrl!G27")]}, "whole_cols": {}, "whole_rows": {}, "positional": {}, "text_addressed": {}}
+    assert "Ctrl!G27" in insert_blocker(index, "Ctrl", 31, (4, 8))
+    assert "Ctrl!G27" in insert_blocker(index, "Ctrl", 31, None)  # a whole row too
+    assert insert_blocker(index, "Ctrl", 29, (4, 8)) is None  # at the first row the whole table moves down: same cells
+    assert insert_blocker(index, "Ctrl", 31, (10, 12)) is None  # beside the table: it does not move
+    assert insert_blocker(index, "Ctrl", 33, None) is None  # below it

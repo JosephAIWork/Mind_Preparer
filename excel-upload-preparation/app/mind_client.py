@@ -426,7 +426,17 @@ def create_blank_project(page: Page, name: str) -> str | None:
     page.get_by_role("button", name=re.compile(r"^\s*New project\s*$", re.I)).first.click(timeout=6000)
     _wait(page, 1200)
     kill_tour(page)
-    page.locator('input[placeholder="Choose a project name"]').first.fill(name, timeout=5000)
+    # since November 2026 Mind asks first for the type of project (Milliman Mind / Milliman OpS)
+    name_box = page.locator('input[placeholder="Choose a project name"]').first
+    if not name_box.is_visible():
+        kind = page.get_by_text(re.compile(r"Milliman Mind blank project", re.I)).first
+        try:
+            kind.click(timeout=6000)
+            _wait(page, 1500)
+            kill_tour(page)
+        except Exception:
+            pass  # no type picker: the name box is just slow to appear
+    name_box.fill(name, timeout=15000)
     page.get_by_role("button", name=re.compile(r"^\s*Create project\s*$", re.I)).first.click(timeout=5000)
     _wait(page, 4000)
     kill_tour(page)
