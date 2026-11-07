@@ -62,3 +62,38 @@ def test_text_typed_with_a_leading_equals_sign_is_text_not_a_formula(tmp_path):
     cells = {f["cell"] for f in analysis["workbooks"][0]["formulas"]}
     assert "B2" in cells and "B3" not in cells
     assert cell_refs_in_formula("=表1!A1")[0]["sheet"] == "表1"
+
+
+def test_indirect_on_an_empty_sheet_chooser_becomes_na_where_excel_errs_already(tmp_path):
+    # ロールフォワード!C19 = IFERROR(OFFSET(INDIRECT("'"&$T19&"'!A1"), ...), 0) with T19 left blank: Excel's
+    # INDIRECT("''!A1") is an error already and the IFERROR gives 0; NA() in its place gives the same 0
+    from app.validators.references import indirect_as_value
+
+    def build(wb):
+        a = wb.active
+        a.title = "ロールフォワード"
+        a["S19"] = "Output - Run0"
+        o = wb.create_sheet("Output - Run0")
+        o["A1"] = 7
+        a["C19"] = "=IFERROR(OFFSET(INDIRECT(\"'\"&$S19&\"'!A1\"),0,0),0)+IFERROR(OFFSET(INDIRECT(\"'\"&$T19&\"'!A1\"),0,0),0)"
+
+    f = indirect_as_value(None, _book(tmp_path, build), {}, limit=None)
+    site = f["observed"]["sites"][0]
+    assert site["suggested_formula"] == "=IFERROR(OFFSET('Output - Run0'!A1,0,0),0)+IFERROR(OFFSET(NA(),0,0),0)"
+
+
+def test_a_lone_text_read_only_through_a_whole_column_lookup_is_not_flagged(tmp_path):
+    from app.validators.structure import lone_text_cells_read
+
+    def build(wb):
+        a = wb.active
+        a.title = "BBA_04"
+        a["A1"] = "Result"  # alone on row 1
+        for r, (k, v) in enumerate([("LF_保険料", 1.5), ("LF_保険金", 2.5), ("LF_COF", 4.0)], start=4):
+            a.cell(r, 1, k)
+            a.cell(r, 2, v)
+        res = wb.create_sheet("Result_CF")
+        res["A1"] = "LF_保険金"
+        res["A2"] = '=IFERROR(VLOOKUP(A1,BBA_04!$A:$B,2,FALSE),"-")'
+
+    assert lone_text_cells_read(None, _book(tmp_path, build), {})["status"] == "PASS"

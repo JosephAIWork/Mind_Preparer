@@ -718,6 +718,13 @@ class _Expr:
         return v
 
 
+class _Blank(str):
+    """An empty cell read by a formula: "" as text, 0 as a number (Excel's own reading)."""
+
+
+BLANK = _Blank("")
+
+
 def _text(v) -> str:
     if isinstance(v, bool):
         return "TRUE" if v else "FALSE"
@@ -727,6 +734,8 @@ def _text(v) -> str:
 
 
 def _num(v) -> float:
+    if isinstance(v, _Blank):
+        return 0.0
     if isinstance(v, bool):
         return 1.0 if v else 0.0
     if isinstance(v, (int, float)):
@@ -824,6 +833,8 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
 
     def lookup(sheet: str, row: int, col: int):
         v = cell_value(analysis, sheet, row, col)
+        if v is None and sheet in sheets:
+            return BLANK  # an empty cell: "" (a sheet chooser left blank, the Tokyo IFRS 17 tool's ロールフォワード!T19)
         if isinstance(v, str) and v.startswith("="):
             v = values_cell(analysis, sheet, row, col)  # a formula cell: the value Excel last stored
         return v

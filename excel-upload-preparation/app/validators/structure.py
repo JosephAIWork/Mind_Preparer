@@ -447,6 +447,11 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     used = None
     for lab in standalone_labels(analysis):
         owner = referenced_by(index, lab["sheet"], lab["row"], lab["col"])
+        if owner and owner in (index["whole_cols"].get(lab["sheet"], {}).get(lab["col"]), index["whole_rows"].get(lab["sheet"], {}).get(lab["row"])):
+            # read only as part of a whole column / row: the formula reads the sheet's table there, not this
+            # cell (VLOOKUP(x, BBA_04!$A:$B, 2, FALSE) gave Excel's values in Mind with a lone 'Result' in A1,
+            # the Tokyo IFRS 17 tool, 2026-11-08); a range over the cell itself still counts
+            owner = next((o for r1, r2, c1, c2, o in index["rects"].get(lab["sheet"], ()) if r1 <= lab["row"] <= r2 and c1 <= lab["col"] <= c2), None)
         if owner and owner.startswith("name "):
             used = used or _names_in_use(analysis)
             owner = _reader_in_use(index, used, lab["sheet"], lab["row"], lab["col"])
