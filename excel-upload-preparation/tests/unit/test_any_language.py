@@ -66,7 +66,7 @@ def test_text_typed_with_a_leading_equals_sign_is_text_not_a_formula(tmp_path):
 
 def test_indirect_on_an_empty_sheet_chooser_becomes_na_where_excel_errs_already(tmp_path):
     # ロールフォワード!C19 = IFERROR(OFFSET(INDIRECT("'"&$T19&"'!A1"), ...), 0) with T19 left blank: Excel's
-    # INDIRECT("''!A1") is an error already and the IFERROR gives 0; NA() in its place gives the same 0
+    # INDIRECT("''!A1") is an error already and the IFERROR gives 0; INDEX($A$1,NA()) (an #N/A Excel takes as a reference) gives the same 0
     from app.validators.references import indirect_as_value
 
     def build(wb):
@@ -79,7 +79,7 @@ def test_indirect_on_an_empty_sheet_chooser_becomes_na_where_excel_errs_already(
 
     f = indirect_as_value(None, _book(tmp_path, build), {}, limit=None)
     site = f["observed"]["sites"][0]
-    assert site["suggested_formula"] == "=IFERROR(OFFSET('Output - Run0'!A1,0,0),0)+IFERROR(OFFSET(NA(),0,0),0)"
+    assert site["suggested_formula"] == "=IFERROR(OFFSET('Output - Run0'!A1,0,0),0)+IFERROR(OFFSET(INDEX($A$1,NA()),0,0),0)"
 
 
 def test_a_lone_text_read_only_through_a_whole_column_lookup_is_not_flagged(tmp_path):

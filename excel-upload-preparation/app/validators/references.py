@@ -875,7 +875,9 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
                 suggested = suggested[: call["start"]] + target + suggested[call["end"] :]
             else:
                 missing = True
-                suggested = suggested[: call["start"]] + "NA()" + suggested[call["end"] :]
+                # where a reference must stand (OFFSET(INDIRECT(...), ...)) Excel refuses NA(): INDEX($A$1,NA()) is the
+                # same #N/A as a reference (Tokyo IFRS 17 tool, 2026-11-08)
+                suggested = suggested[: call["start"]] + ("NA()" if call["as_value"] else "INDEX($A$1,NA())") + suggested[call["end"] :]
         resolved.reverse()
         if unresolved:
             proposal, issue = None, f"the text INDIRECT builds cannot be worked out from the workbook's constants ({unresolved})"
