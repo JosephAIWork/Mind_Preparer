@@ -1543,6 +1543,10 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
         if original is not None and where in original:
             value, whose = original[where], "the original upload"
             issue = None if value is not None else 'the original upload shows "", an error or no value: by hand'
+            if value is None and s["value"] == "":
+                # an error in the original that this version shows as "" (the fixer's IFERROR(..., "")):
+                # "" names no folder of the app's, and it is what this version computes (Tokyo, 2026-11-07)
+                value, whose, issue = "", "this version", None
         else:
             value, whose, issue = s["value"], "this version", s["issue"]
         if issue:
