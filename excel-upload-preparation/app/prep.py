@@ -2279,6 +2279,15 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             try:
                 rng.FormulaArray = o["after"]
             except Exception as exc:
+                if ":" not in target:
+                    # FormulaArray takes 255 characters at most (a 447-character one-cell array on the Tokyo
+                    # IFRS 17 tool, 2026-11-08): Formula2 writes the same one-cell array as a dynamic array,
+                    # the same value, with no such limit
+                    try:
+                        rng.Formula2 = o["after"]
+                        return {**o, "array": target, "note": f"{o.get('note') or ''} (written as a one-cell dynamic array: FormulaArray refused it)".strip()}
+                    except Exception:
+                        pass
                 raise ValueError(
                     f"could not write the array formula over {o['sheet']}!{target}: {_com_message(exc, o)} -- if the range overlaps an "
                     "existing array formula, the operations must cover all of that array (or use its exact range)"
