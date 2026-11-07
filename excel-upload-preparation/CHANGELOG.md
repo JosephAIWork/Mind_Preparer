@@ -13,7 +13,25 @@
 - **A CELL formula that shows "" is frozen as `=""`.** A formula whose saved value is empty text
   was read as "no value", so the fix left it "by hand"; and a CELL formula that was an error in
   the original and shows "" after Fix all issues is frozen to "" as well.
+- **INDIRECT used as a range is rewritten too (FRM-007).** Checked in Mind: `VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)`
+  is not computed there and the IFERROR around it showed "-" in 480 cells of the result sheet; the same
+  lookup on `BBA_04!$A:$B` gives Excel's values. The Prep action ("Replace INDIRECT by the reference its
+  text builds") now writes the direct reference wherever INDIRECT stands. An empty cell in the text is
+  read as "" (a sheet chooser left blank: Excel's INDIRECT errs already); a missing target becomes NA(),
+  or `INDEX($A$1,NA())` where a reference must stand (Excel refuses `OFFSET(NA(), ...)`).
+- **A one-cell array formula over 255 characters is written with Formula2** (FormulaArray refuses longer
+  text; the same one-cell array, the same value).
+- **No title row is inserted inside a range a formula reads.** A row inserted inside `D29:H32` stretched it
+  and `INDEX($D$29:$H$32, Scenario+1, 4)` read another row ("New" became "Old"); such an insert is now
+  skipped (`prep.stretched_reader`).
+- **A lone text cell read only through a whole column is not flagged (STR-008)**: the formula reads the
+  sheet's table there, not the cell (Mind computed the lookup with it).
+- **Mind's new "type of project" step.** Creating a project now first asks Milliman Mind or Milliman OpS;
+  the automation picks Milliman Mind.
 - `scripts/night_chain.py --no-loop`: the chain without a Mind loop.
+- Checked on the Tokyo tool (anonymized): no computed value changed (110,175 formula cells), converted
+  and ran in Mind at the first attempt, and Mind's results equal Excel's on the result sheet and a
+  cash-flow grid.
 
 ## 1.12.2 (7 November 2026): the macro's loop through named ranges
 
