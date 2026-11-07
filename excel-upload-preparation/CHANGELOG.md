@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
+
+- **Sheet and name text in any language.** A reference such as `=ロールフォワード!B10` was read as
+  `=B10`: the reference reader only knew English letters, so on a workbook with Japanese sheet
+  names the scan reported dozens of false circular references (a cell reading "itself") and the
+  banner stayed on "blocked" while the recalculation was clean. Every reader of sheet names and
+  defined names now takes letters of any alphabet (Japanese, Hebrew, accented, Cyrillic ...).
+- **`CELL("filename", C6)` in C6 is not a circular reference.** CELL asks where the cell is, not
+  what it holds (Excel computes it); it is read like ROW and COLUMN.
+- **Text typed as `'=...` is text.** The scan took any text starting with "=" for a formula.
+- **A CELL formula that shows "" is frozen as `=""`.** A formula whose saved value is empty text
+  was read as "no value", so the fix left it "by hand"; and a CELL formula that was an error in
+  the original and shows "" after Fix all issues is frozen to "" as well.
+- `scripts/night_chain.py --no-loop`: the chain without a Mind loop.
+
 ## 1.12.2 (7 November 2026): the macro's loop through named ranges
 
 - **The loop is found when the macro reaches its cells through `Names("X").RefersToRange`.** A macro
