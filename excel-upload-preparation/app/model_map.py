@@ -47,6 +47,8 @@ _IF_RANGE_RE = re.compile(r"""^\s*(?:If|ElseIf)\s+Range\(\s*"(?P<name>[^"]+)"\s*
 _CLEAR_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)\s*\.ClearContents""", re.IGNORECASE)
 _SHEET_CLEAR_RE = re.compile(r"""(?:Worksheets|Sheets)\(\s*"(?P<sheet>[^"]+)"\s*\)\s*\.\s*Range\(\s*(?P<arg>[^()]*)\)\s*\.ClearContents""", re.IGNORECASE)
 _COPY_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)\s*\.Copy\s*$""", re.IGNORECASE)
+_NAMES_RANGE_RE = re.compile(r"""(?:(?:ThisWorkbook|ActiveWorkbook|Application)\s*\.\s*)?Names\(\s*"(?P<name>[^"]+)"\s*\)\s*\.\s*RefersToRange""", re.IGNORECASE)
+_SET_ANY_RE = re.compile(r"^\s*Set\s+(?P<var>[A-Za-z_]\w*)\s*=", re.IGNORECASE)
 _SET_RE = re.compile(r"""^\s*Set\s+(?P<var>[A-Za-z_]\w*)\s*=\s*Range\(\s*"(?P<name>[^"]+)"\s*\)""", re.IGNORECASE)
 _VAR_FROM_RANGE_RE = re.compile(r"""^\s*(?:Dim\s+[^:]+:\s*)?(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<expr>(?:Worksheets|Sheets|Range)\(.+?\)(?:\.Value2?)?)\s*$""", re.IGNORECASE)
 _CALL_RE = re.compile(r"^\s*(?:Call\s+)?(?P<name>[A-Za-z_]\w*)\s*$", re.IGNORECASE)
@@ -214,6 +216,35 @@ def _range_refs(expr: str, names: _Names, var: str | None, local: dict[str, str]
     return out
 
 
+def _expand_range_vars(st: str, local: dict[str, str], names: _Names) -> str:
+    """Write the macro's range shortcuts out in full so the rest of the reader sees the cell:
+    `ThisWorkbook.Names("X").RefersToRange` -> `Range("X")`; with `Set rng = Range("X")`,
+    `rng.Value` -> `Range("X").Value` and `rng(1, 2)` / `rng.Cells(1, 2)` -> that cell of X."""
+    st = _NAMES_RANGE_RE.sub(lambda m: f'Range("{m.group("name")}")', st)
+
+    def cell_of(m: re.Match, nm: str) -> str:
+        r, c = int(m.group(m.lastindex - 1)), int(m.group(m.lastindex))
+        ref = names.ref(nm)
+        if not ref or "!" not in ref:
+            return f'Range("{nm}")' if (r, c) == (1, 1) else m.group(0)
+        sheet, addr = ref.rsplit("!", 1)
+        first = addr.replace("$", "").split(":")[0]
+        pr = parse_ref(first)
+        if not pr or pr.get("whole_column") or pr.get("whole_row"):
+            return m.group(0)
+        c0, r0 = pr["c1"], pr["r1"]
+        if (r, c) == (1, 1):  # the name's own first cell: keep the name
+            return f'Range("{nm}")'
+        return f'Sheets("{sheet.strip(chr(39))}").Range("{num_to_col(c0 + c - 1)}{r0 + r - 1}")'
+
+    st = re.sub(r"""Range\(\s*"(?P<n>[^"]+)"\s*\)\s*(?:\.\s*Cells)?\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)""",
+                lambda m: cell_of(m, m.group("n")) if names.ref(m.group("n")) else m.group(0), st, flags=re.IGNORECASE)
+    for v, nm in local.items():
+        st = re.sub(rf"(?<![\w.]){re.escape(v)}\s*(?:\.\s*Cells)?\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", lambda m, nm=nm: cell_of(m, nm), st, flags=re.IGNORECASE)
+        st = re.sub(rf"(?<![\w.\"]){re.escape(v)}(?![\w(\"])", f'Range("{nm}")', st, flags=re.IGNORECASE)
+    return st
+
+
 def _bound(expr: str, names: _Names, vars_from: dict[str, str]) -> dict[str, Any]:
     """What a loop bound is: a literal, a named cell, a sheet cell, or a variable set from one."""
     e = expr.strip()
@@ -258,10 +289,16 @@ def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, A
         stack: list[dict[str, Any]] = []
         last_copy: str | None = None
         for st in stmts:
-            m = _SET_RE.match(st)
-            if m:
-                local[m.group("var")] = m.group("name")
+            ms = _SET_ANY_RE.match(st)
+            if ms:
+                st = st[:ms.end()] + _expand_range_vars(st[ms.end():], local, names)
+                m = _SET_RE.match(st)
+                if m:
+                    local[m.group("var")] = m.group("name")
+                else:
+                    local.pop(next((k for k in local if k.lower() == ms.group("var").lower()), ""), None)
                 continue
+            st = _expand_range_vars(st, local, names)
             m = _VAR_FROM_RANGE_RE.match(st)
             if m and not _FOR_RE.match(st):
                 vars_from[m.group("var").lower()] = m.group("expr")

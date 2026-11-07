@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.2 (7 November 2026): the macro's loop through named ranges
+
+- **The loop is found when the macro reaches its cells through `Names("X").RefersToRange`.** A macro
+  that writes `Set cohortRng = ThisWorkbook.Names("CohortRng").RefersToRange` and then
+  `cohortRng.Value = cohortYear` or `scenarioRng(1, 1).Value = i` had its loops read with no input
+  cell, so no Mind loop was offered (the Tokyo IFRS 17 tool). The macro reader now writes these
+  shortcuts out in full (`app/model_map.py`), including the loop limits read from them
+  (`startcohortyear = startRng.Value`) and `Range("X").Cells(r, c)`.
+
 ## 1.12.1 (5 November 2026): what the Mind team saw when they tried it
 
 - **The program no longer stops with "No module named win32timezone".** Excel hands back dates and

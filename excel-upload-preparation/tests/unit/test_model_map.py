@@ -269,3 +269,39 @@ def test_uc3_map_nested_loops_over_named_lists(tmp_path):
     sw = {s["cell"]: s for s in mp["run_settings"]["switches"]}
     assert all(cell in sw for cell in n["switch_cells"])
     assert {s["sheet"] for s in mp["outputs"]["sheets"]} >= set(n["output_sheets"])
+
+
+NAMES_REFERS_TO_STYLE = '''
+Sub AllScenarioRun()
+    Dim scenarioRng As Range
+    Set scenarioRng = ThisWorkbook.Names("Scenario").RefersToRange
+    Dim startRng As Range
+    Set startRng = ThisWorkbook.Names("StartCohortYear").RefersToRange
+    Dim startcohortyear As Long
+    startcohortyear = startRng.Value
+    Dim calcyearRng As Range
+    Set calcyearRng = ThisWorkbook.Names("CalcYear").RefersToRange
+    Dim endcohortyear As Long
+    endcohortyear = calcyearRng.Value
+    Dim cohortRng As Range
+    Set cohortRng = ThisWorkbook.Names("CohortRng").RefersToRange
+    For cohortYear = startcohortyear To endcohortyear
+        cohortRng.Value = cohortYear
+        For i = 0 To 3
+            scenarioRng(1, 1).Value = i
+            Calculate
+        Next i
+    Next cohortYear
+End Sub
+'''
+
+
+def test_ranges_reached_through_names_refers_to_range_and_range_variables():
+    # Tokyo (2026-11-07): Set rng = ThisWorkbook.Names("X").RefersToRange, then rng.Value = loop value / rng(1, 1).Value = i
+    names = _names(("Scenario", "Ctrl!$C$27:$D$27"), ("StartCohortYear", "Ctrl!$C$24"), ("CalcYear", "Ctrl!$C$18:$D$18"), ("CohortRng", "Ctrl!$C$22"))
+    v = parse_macros([("M1_Main", NAMES_REFERS_TO_STYLE)], names)
+    loops = {l["var"]: l for l in v["loops"]}
+    assert loops["cohortYear"]["drivers"][0]["cell"] == "Ctrl!C22" and loops["cohortYear"]["drivers"][0]["name"] == "CohortRng"
+    assert loops["cohortYear"]["from"]["name"] == "StartCohortYear" and loops["cohortYear"]["to"]["name"] == "CalcYear"
+    assert loops["i"]["drivers"][0]["name"] == "Scenario"
+    assert v["entry_points"] == ["AllScenarioRun"]
