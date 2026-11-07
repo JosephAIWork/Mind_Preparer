@@ -38,6 +38,7 @@ def main() -> int:
     ap.add_argument("--first", default=None)
     ap.add_argument("--skip-autofix", action="store_true")
     ap.add_argument("--ignore", default="")
+    ap.add_argument("--no-loop", action="store_true", help="do not build a Mind loop (the macro the model owner runs has no calculation loop)")
     ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant's advice (deterministic, for before/after comparisons)")
     ap.add_argument("--pivot-mode", default=None, help="blocking / formulas / values: what Prep does with the pivot tables (Advanced > Prep)")
     a = ap.parse_args()
@@ -145,7 +146,9 @@ def main() -> int:
     header = any(l.get("first") == 1 and any("header" in (n or "").lower() for n in l.get("notes", [])) for l in plan.get("loops", []))
     first = a.first or ("2" if header else None)
     say("loop plan: found", plan.get("found"), "| ready", [l["name"] for l in ready], "| ops", plan.get("operation_count"), "| first", first)
-    if plan.get("found") and ready and plan.get("operation_count"):
+    if a.no_loop:
+        chain["steps"]["loop"] = {"ok": None, "skipped": "--no-loop"}
+    elif plan.get("found") and ready and plan.get("operation_count"):
         body = {"reanalyze": True}
         if first:
             body["first"] = first

@@ -48,13 +48,13 @@ TRANSPARENT = {
 NUMERIC_CALLS = (TRANSPARENT - {"TEXT"}) | {"N", "LEN", "ROW", "COLUMN", "ROWS", "COLUMNS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "SUMPRODUCT", "TODAY", "NOW"}
 _CELL_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})")
 _COORD_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})")
-_NAME_BEFORE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$")
-_IFERROR_RE = re.compile(r"(?<![A-Za-z0-9_.])IFERROR\s*\(", re.IGNORECASE)
-_IF_RE = re.compile(r"(?<![A-Za-z0-9_.])IF\s*\(", re.IGNORECASE)
+_NAME_BEFORE_RE = re.compile(r"([^\W\d][\w.]*)\s*$")
+_IFERROR_RE = re.compile(r"(?<![\w.])IFERROR\s*\(", re.IGNORECASE)
+_IF_RE = re.compile(r"(?<![\w.])IF\s*\(", re.IGNORECASE)
 _IS_TEST_RE = re.compile(r"^(ISNUMBER|ISERROR|ISERR)\s*\(", re.IGNORECASE)
 _LOOKUP_RE = re.compile(r"(VLOOKUP|HLOOKUP)\s*\(", re.IGNORECASE)
-_EXACT_LOOKUP_RE = re.compile(r"(?<![A-Za-z0-9_.])(VLOOKUP|HLOOKUP|MATCH)\s*\(", re.IGNORECASE)
-_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+_EXACT_LOOKUP_RE = re.compile(r"(?<![\w.])(VLOOKUP|HLOOKUP|MATCH)\s*\(", re.IGNORECASE)
+_CALL_RE = re.compile(r"([^\W\d][\w.]*)\s*\(")
 
 _SCANS: dict[str, dict[str, Any]] = {}  # one scan serves both rules and both Prep actions
 
@@ -140,7 +140,7 @@ class _Book:
     def _named(self, text: str) -> dict | None:
         """The range a bare defined name stands for, else None."""
         t = text.strip()
-        if not re.fullmatch(r"[A-Za-z_\\][A-Za-z0-9_.]*", t):
+        if not re.fullmatch(r"(?:[^\W\d]|\\)[\w.?\\]*", t):
             return None
         return self.names.get(t.upper())
 
@@ -1041,7 +1041,7 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
 # name, used to build save paths for a macro. Mind has no file: its CELL("filename")
 # returned a text without "[", FIND failed and the run stopped ("startIndex ('-1') must be a
 # non-negative value", 2026-10-08). The value such a formula shows today is written in its place.
-_ENV_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
+_ENV_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
 # The app's own session folders (tempfile.mkdtemp(prefix="mind_ready_"), app/web/server.py). Once the
 # app's Excel has saved a version there, CELL("filename") shows that folder -- the app's working copy,
 # with the Windows user's name in it, not the user's own path.
@@ -1068,6 +1068,8 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         stored = book.stored(f["sheet"], int(m.group(2)), col_to_num(m.group(1))) if m else None
         calls = sorted({x.upper() for x in _ENV_RE.findall(mask_strings(formula))})
         multi_cell = several_cells(f)
+        if stored is None and m and (int(m.group(2)), col_to_num(m.group(1))) in _empty_text_cells(book, f["sheet"]):
+            stored = ""  # Excel saved "" for it (CELL("filename") in an IFERROR(..., "")): written as =""
         if multi_cell:
             value, issue = None, SEVERAL_CELLS
         elif stored is None:
@@ -1092,6 +1094,14 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
+
+
+def _empty_text_cells(book: Any, sheet: str) -> set[tuple[int, int]]:
+    """The formula cells Excel saved with the value "" (app/fast_xlsx.py); empty when not known."""
+    try:
+        return getattr(book.f[sheet], "mind_ready_empty_text", None) or set()
+    except Exception:
+        return set()
 
 
 def environment_values(analysis: dict[str, Any]) -> dict[tuple[str, str], Any]:

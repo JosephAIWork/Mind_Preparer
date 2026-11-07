@@ -51,11 +51,15 @@ class _CachedValueParser(_reader.WorkSheetParser):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.cached: dict[tuple[int, int], Any] = {}
+        self.empty_text: set[tuple[int, int]] = set()  # formulas whose saved value is "" (openpyxl reads it as None)
 
     def parse_cell(self, element):  # noqa: D401 -- openpyxl's signature
         out = super().parse_cell(element)
         if out["data_type"] == "f":
-            self.cached[(out["row"], out["column"])] = self._cached_value(element, out["style_id"])
+            key = (out["row"], out["column"])
+            self.cached[key] = self._cached_value(element, out["style_id"])
+            if self.cached[key] is None and element.get("t") == "str" and element.find(_reader.VALUE_TAG) is not None:
+                self.empty_text.add(key)
         return out
 
     def _cached_value(self, element, style_id):
@@ -117,6 +121,7 @@ class _CachedValueReader(_reader.WorksheetReader):
         super().bind_all()
         if isinstance(self.parser, _CachedValueParser):
             self.ws.mind_ready_cached = self.parser.cached
+            self.ws.mind_ready_empty_text = self.parser.empty_text
 
 
 def install() -> str | None:

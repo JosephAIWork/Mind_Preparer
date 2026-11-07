@@ -90,11 +90,11 @@ ERROR_MEANING = {
 # --- R1C1 formulas: references, names, functions -------------------------------------------
 _STRING_RE = re.compile(r'"(?:[^"]|"")*"')
 _ERROR_LITERAL_RE = re.compile(r"#(?:N/A|REF!|DIV/0!|NAME\?|VALUE!|NUM!|NULL!|SPILL!|CALC!|GETTING_DATA)", re.IGNORECASE)
-_WORD = r"A-Za-z0-9_.À-￿"
+_WORD = r"\w.À-￿"
 _EP = r"R(?:\[-?\d+\]|\d*)C(?:\[-?\d+\]|\d*)|R(?:\[-?\d+\]|\d*)|C(?:\[-?\d+\]|\d*)"
 _SHEET_PREFIX = rf"(?:'(?:[^']|'')+'|\[[^\]]*\][^!'+\-*/^&=<>(),;:]*|[{_WORD}]+(?::[{_WORD}]+)?)!"
 _REF_RE = re.compile(rf"(?<![{_WORD}\]\\])(?P<sheet>{_SHEET_PREFIX})?(?P<a>{_EP})(?::(?P<b>{_EP}))?(?![{_WORD}(\[!'\\])")
-_FUNC_RE = re.compile(r"(?<![A-Za-z0-9_.])((?:_xl[a-z]+\.)?[A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+_FUNC_RE = re.compile(r"(?<![\w.])((?:_xl[a-z]+\.)?[^\W\d][\w.]*)\s*\(")
 _NAME_RE = re.compile(rf"(?<![{_WORD}\\!'\]])([A-Za-z_\\À-￿][{_WORD}\\?]*)(?![{_WORD}\\?(\[!])")
 _TABLE_RE = re.compile(rf"[A-Za-z_À-￿][{_WORD}]*\[")
 _REF_LITERAL_RE = re.compile(rf"(?<![:{_WORD}'])(?:{_SHEET_PREFIX})?#REF!(?![:\w])")
@@ -102,7 +102,7 @@ _PURE_NA_RE = re.compile(r"^=\s*\+?\s*NA\(\s*\)\s*$", re.IGNORECASE)
 _STORAGE_PREFIX_RE = re.compile(r"^_xl[a-z]+\.", re.IGNORECASE)
 
 
-_DYNAMIC_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:INDIRECT|OFFSET)\s*\(", re.IGNORECASE)
+_DYNAMIC_CALL_RE = re.compile(r"(?<![\w.])(?:INDIRECT|OFFSET)\s*\(", re.IGNORECASE)
 _ADDRESS_RE = re.compile(r"^(?:(?P<sheet>'(?:[^']|'')+'|[^!]+)!)?\$?(?P<col>[A-Z]{1,3})\$?(?P<row>\d{1,7})$")
 
 

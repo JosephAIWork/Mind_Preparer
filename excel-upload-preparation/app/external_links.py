@@ -29,7 +29,7 @@ from .formula_utils import mask_strings
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main", "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 # '[1]Sheet name'!$D$13  or  [1]Sheet!D13  -- the reference may be a range
-EXT_REF_RE = re.compile(r"(?:'\[(\d+)\]((?:[^']|'')+)'|\[(\d+)\]([A-Za-z0-9_.]+))!(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)")
+EXT_REF_RE = re.compile(r"(?:'\[(\d+)\]((?:[^']|'')+)'|\[(\d+)\]([\w.]+))!(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)")
 
 
 def _target_path(target: str, workbook: Path) -> tuple[str, bool]:

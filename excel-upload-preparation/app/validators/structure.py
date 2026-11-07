@@ -245,7 +245,7 @@ def broken_defined_name_refs(rule, analysis: dict[str, Any], config: dict[str, A
     tables = [str(t) for s in wb0.get("sheets", []) for t in s.get("tables", [])]
     known = {n.upper() for n in defined} | {t.upper() for t in tables}
     broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
-    name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
+    name_re = re.compile(r"(?<![\w.])(" + "|".join(re.escape(n) for n in broken) + r")(?![\w.])") if broken else None
     lit_re = re.compile(r"#REF!")
     sites = []
     missing: dict[str, int] = {}
@@ -385,7 +385,7 @@ from .references import external_links_in_formulas  # noqa: E402,F401  (REF-002)
 
 
 
-_NAME_CHARS = r"A-Za-z0-9_.\\"
+_NAME_CHARS = r"\w.\\"
 
 
 def _names_in_use(analysis: dict[str, Any]) -> Any:

@@ -159,7 +159,7 @@ class _Names:
 
 def _sheet_ref(sheet: str, ref: str) -> str:
     sheet = sheet.strip("'")
-    q = f"'{sheet}'" if re.search(r"[^A-Za-z0-9_]", sheet) else sheet
+    q = f"'{sheet}'" if re.search(r"[^\w.]", sheet) else sheet
     return f"{q}!{ref.replace('$', '')}"
 
 
@@ -523,7 +523,7 @@ def _formula_counts(analysis: dict[str, Any]) -> tuple[Counter, Counter, dict[st
     name_uses: Counter = Counter()
     per_sheet: dict[str, int] = Counter()
     name_tokens = {n for n in names.by_name}
-    tok_re = re.compile(r"(?<![A-Za-z0-9_.!'\[])([A-Za-z_][A-Za-z0-9_.?]*)(?![A-Za-z0-9_(!])")
+    tok_re = re.compile(r"(?<![\w.!'\[])([^\W\d][\w.?]*)(?![\w(!])")
     for f in wb0.get("formulas", []):
         formula = f.get("formula") or ""
         per_sheet[f["sheet"]] += 1

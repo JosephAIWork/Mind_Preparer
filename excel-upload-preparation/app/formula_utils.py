@@ -20,17 +20,17 @@ import threading
 from contextlib import contextmanager
 
 STORAGE_PREFIX_RE = re.compile(r"_xl(?:fn|ws|udf|pm|op|dlm|l)\.", re.IGNORECASE)  # _xll. = XLL add-in call (MMForExcel)
-FUNCTION_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.!])([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+FUNCTION_CALL_RE = re.compile(r"(?<![\w.!])([^\W\d][\w.]*)\s*\(")
 
 REF_RE = re.compile(
-    r"(?<![A-Za-z0-9_.])"
-    r"(?:(?P<sheet>'[^']+'|[A-Za-z0-9_.]+)!)?"
+    r"(?<![\w.])"
+    r"(?:(?P<sheet>'[^']+'|[\w.]+)!)?"
     r"(?P<ref>"
     r"\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?"  # A1 or A1:B2
     r"|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}"  # A:A (whole columns)
     r"|\$?\d{1,7}:\$?\d{1,7}"  # 1:1 (whole rows)
     r")"
-    r"(?![A-Za-z0-9_(])"
+    r"(?![\w(])"
 )
 SINGLE_REF_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d{1,7})$")
 # a bare identifier: not a function call (no '(' after), not sheet-qualified (no '!' around),
@@ -236,7 +236,7 @@ def find_calls(formula: str, function_name: str) -> list[list[str]]:
 
 @functools.lru_cache(maxsize=1024)
 def _call_pattern(function_name: str) -> re.Pattern:
-    return re.compile(rf"(?<![A-Za-z0-9_])(?:_xl[a-z]+\.)?{re.escape(function_name)}\s*\(", re.IGNORECASE)
+    return re.compile(rf"(?<!\w)(?:_xl[a-z]+\.)?{re.escape(function_name)}\s*\(", re.IGNORECASE)
 
 
 def find_calls_detailed(formula: str, function_name: str) -> list[dict]:
@@ -497,7 +497,7 @@ def not_a_reference(arg: str) -> bool:
     if s.startswith("#"):
         return s.upper() != "#REF!"
     masked = mask_strings(s)
-    call = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(", masked)
+    call = re.match(r"([^\W\d][\w.]*)\s*\(", masked)
     if call and _closing_paren(masked, call.end() - 1) == len(s) - 1:
         name = strip_storage_prefix(call.group(1)).upper()
         return name not in REFERENCE_FUNCTIONS and not name.startswith("MM_")

@@ -187,7 +187,7 @@ def volatile_cells(formulas: list[dict[str, Any]], defined_names: list[dict[str,
                     hit = True
                     break
             if not hit:
-                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", fx):
+                for token in re.findall(r"[^\W\d][\w.]*", fx):
                     tgt = names.get(token.upper())
                     if tgt and tgt in vol:
                         hit = True
@@ -439,7 +439,7 @@ def actions_touching(plan: list[dict[str, Any]], diffs: list[dict[str, Any]], fo
                                         queue.append(k2)
                     if found:
                         break
-                    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", fx):
+                    for token in re.findall(r"[^\W\d][\w.]*", fx):
                         tgt = names.get(token.upper())
                         if tgt:
                             found |= writers.get(tgt, set())

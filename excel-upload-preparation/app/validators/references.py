@@ -43,7 +43,9 @@ CONDITIONAL_ARGS: dict[str, Any] = {"IF": {1, 2}, "IFERROR": {1}, "IFNA": {1}, "
 # became direct references, =INDEX(<a large input table>, ...) reached a cell that reads the sheet
 # the lookup sits on; Excel reported no circular reference) -- it is reported as a conditional one.
 LOOKUP_TABLE_ARGS: dict[str, Any] = {"INDEX": {0}, "VLOOKUP": {1}, "HLOOKUP": {1}, "MATCH": {1}, "LOOKUP": "rest", "XLOOKUP": {1, 2}}
-COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}}
+# CELL("filename", A1) in A1 asks where the cell is, not what it holds: no cycle for Excel either
+# (Tokyo IFRS 17 tool, 2026-11-07). Only CELL("contents", A1) reads the value; it is rare and FRM-012 freezes CELL anyway.
+COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}, "CELL": {1}}
 MAX_CYCLES_REPORTED = 12
 # INDIRECT("'"&sheet&"'!"&ADDRESS(ROW(),COLUMN())): the cell reads its own address on a sheet chosen
 # at run time. Mind resolved that to the cell itself and stopped ("Run error: Circular reference found",
@@ -52,8 +54,8 @@ SELF_ADDRESS_RE = re.compile(r"ADDRESS\(\s*ROW\(\s*\)\s*,\s*COLUMN\(\s*\)", re.I
 MAX_CHAIN = 12
 
 QUOTED_3D_RE = re.compile(r"'((?:[^']|'')*:(?:[^']|'')*)'!")
-BARE_3D_RE = re.compile(r"(?<![A-Za-z0-9_.!'\[])([A-Za-z0-9_.]+):([A-Za-z0-9_.]+)!")
-SHEET_NEEDS_QUOTES_RE = re.compile(r"[^A-Za-z0-9_.]")
+BARE_3D_RE = re.compile(r"(?<![\w.!'\[])([\w.]+):([\w.]+)!")
+SHEET_NEEDS_QUOTES_RE = re.compile(r"[^\w.]")
 
 
 # --- FRM-005 -----------------------------------------------------------------------------
@@ -64,7 +66,7 @@ def blank_arguments(formula: str, spec: dict[str, Any]) -> str:
     masked = mask_strings(formula)
     out = list(formula)
     for name, positions in spec.items():
-        pattern = re.compile(rf"(?<![A-Za-z0-9_.])(?:_xl[a-z]+\.)?{name}\s*\(", re.IGNORECASE)
+        pattern = re.compile(rf"(?<![\w.])(?:_xl[a-z]+\.)?{name}\s*\(", re.IGNORECASE)
         for m in pattern.finditer(masked):
             i = m.end()
             depth = 1
@@ -545,7 +547,7 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
 VALUE_OPERATORS = set("=<>+-*/^&")
 # functions whose argument is a value, never a range: NOT(INDIRECT(...)) converts the result too
 VALUE_ONLY_FUNCTIONS = {"NOT", "AND", "OR", "ABS", "ROUND", "ROUNDUP", "ROUNDDOWN", "INT", "SQRT", "EXP", "LN", "LOG", "LOG10", "POWER", "MOD", "LEN", "LEFT", "RIGHT", "MID", "UPPER", "LOWER", "TRIM", "TEXT", "VALUE", "YEAR", "MONTH", "DAY", "ISNUMBER", "ISTEXT", "ISLOGICAL"}
-INDIRECT_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?INDIRECT\s*\(", re.IGNORECASE)
+INDIRECT_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?INDIRECT\s*\(", re.IGNORECASE)
 
 
 class Unresolvable(Exception):
@@ -557,7 +559,7 @@ class _Expr:
     own constants: enough for "'"&$G710&"'!$Z$16", "LoB"&COLUMN()-6&"_Boolean",
     RIGHT(E2,IF(LEN(E2)=5,1,2)). Anything else raises Unresolvable."""
 
-    TOKEN = re.compile(r"\s*(?:(\"(?:[^\"]|\"\")*\")|(\d+(?:\.\d+)?)|('[^']+'![$A-Za-z0-9:]+|[A-Za-z_][A-Za-z0-9_.]*![$A-Za-z0-9:]+|\$?[A-Z]{1,3}\$?\d{1,7})|([A-Za-z_][A-Za-z0-9_.]*)|(<>|<=|>=|[=<>&+\-*/()^,;]))")
+    TOKEN = re.compile(r"\s*(?:(\"(?:[^\"]|\"\")*\")|(\d+(?:\.\d+)?)|('[^']+'![$A-Za-z0-9:]+|[^\W\d][\w.]*![$A-Za-z0-9:]+|\$?[A-Z]{1,3}\$?\d{1,7})|([^\W\d][\w.]*)|(<>|<=|>=|[=<>&+\-*/()^,;]))")
     FUNCS = {"ROW", "COLUMN", "LEN", "LEFT", "RIGHT", "MID", "IF", "UPPER", "LOWER", "TRIM", "VALUE", "INT", "TRUE", "FALSE", "N", "T"}
 
     def __init__(self, text: str, lookup, sheet: str, row: int, col: int, names: dict[str, str]):
@@ -797,7 +799,7 @@ def _enclosing_function(masked: str, pos: int) -> str | None:
             depth += 1
         elif ch == "(":
             if depth == 0:
-                m = re.search(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$", masked[:i])
+                m = re.search(r"([^\W\d][\w.]*)\s*$", masked[:i])
                 return m.group(1).upper() if m else None
             depth -= 1
         i -= 1

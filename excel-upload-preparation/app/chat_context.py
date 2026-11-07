@@ -37,7 +37,7 @@ MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
 MAX_PROPOSAL_RETRIES = 2  # a rejected ```changes block is sent back (twice at most) with the validation errors
 PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block
-CELL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:(?P<sheet>'[^']+'|[A-Za-z0-9_]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![A-Za-z0-9_(])")
+CELL_REF_RE = re.compile(r"(?<!\w)(?:(?P<sheet>'[^']+'|[\w.]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![\w(])")
 RULE_ID_RE = re.compile(r"\b([A-Z]{2,7})-(\d{3})\b")
 MM_FN_RE = re.compile(r"\bMM_[A-Za-z0-9_]+\b", re.IGNORECASE)
 # Replacements the tool vouches for (every function on the right is on the Mind list); when the user
@@ -52,7 +52,7 @@ KNOWN_EQUIVALENTS: dict[str, str] = {
     "SWITCH": "nested IF(...)",
     "ANCHORARRAY": "the fixed range the spill covers today (Prep action 'freeze_spill_refs' does it for every A1# reference); MM_RANGE if the range must grow",
 }
-FN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])(?:_xl(?:fn|ws|udf|pm|l)\.)?([A-Za-z][A-Za-z0-9_.]{1,30})", re.IGNORECASE)
+FN_WORD_RE = re.compile(r"(?<!\w)(?:_xl(?:fn|ws|udf|pm|l)\.)?([A-Za-z][\w.]{1,30})", re.IGNORECASE)
 BLOCK_RE = {kind: re.compile(rf"```{kind}\s*\n(.*?)```", re.DOTALL | re.IGNORECASE) for kind in ("changes", "lookup")}
 
 SYSTEM_PROMPT = """You are the assistant inside "Excel Upload Preparation", a tool that checks Excel workbooks before upload to Milliman Mind (an actuarial modelling platform that imports Excel models; grids are blocks of cells titled with a '#Name /Flag' cell; MM_-prefixed functions come from the MMForExcel add-in).

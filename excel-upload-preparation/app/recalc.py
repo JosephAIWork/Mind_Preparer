@@ -261,7 +261,7 @@ def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str
 
 
 # --- root-cause grouping ---------------------------------------------------------
-_REF_TOKEN_RE = re.compile(r"(?:(?:'[^']+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?")
+_REF_TOKEN_RE = re.compile(r"(?:(?:'[^']+'|[\w.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?")
 _NUMBER_RE = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")
 _A1_CELL_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})$")
 

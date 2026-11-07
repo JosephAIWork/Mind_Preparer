@@ -328,10 +328,11 @@ def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, 
     for r in range(top, bottom + 1):
         cells = []
         for c in range(left, right + 1):
-            raw = ws_f.cell(r, c).value
+            cf = ws_f.cell(r, c)
+            raw = cf.value
             formula = None
             array_ref = None
-            if isinstance(raw, str) and raw.startswith("="):
+            if isinstance(raw, str) and raw.startswith("=") and cf.data_type == "f":  # text typed as '=... is text
                 formula = STORAGE_PREFIX_RE.sub("", raw)  # `_xlfn.` etc. are storage artefacts, not what Excel shows
             elif isinstance(raw, ArrayFormula):
                 text = raw.text if str(raw.text).startswith("=") else "=" + str(raw.text)
@@ -447,7 +448,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
 
         formula_text: str | None = None
         entry: dict[str, Any] | None = None
-        if isinstance(value, str) and value.startswith("="):
+        if isinstance(value, str) and value.startswith("=") and cell.data_type == "f":  # text typed as '=... is text
             formula_text = value
             entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": value}
         elif isinstance(value, ArrayFormula):

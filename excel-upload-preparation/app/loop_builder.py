@@ -50,7 +50,7 @@ def loop_name_from(text: str) -> str:
 
 def _qs(sheet: str) -> str:
     """The sheet name as a formula writes it: quoted unless it is a plain word."""
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", sheet):
+    if re.fullmatch(r"[^\W\d][\w.]*", sheet):
         return sheet
     return "'" + sheet.replace("'", "''") + "'"
 

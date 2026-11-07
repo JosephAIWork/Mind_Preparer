@@ -296,8 +296,8 @@ _REF_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 #   * an address built as text, =INDIRECT("'"&$E$2&"'!H"&n): text is not a reference.
 _STRING_LITERAL_RE = re.compile(r'"(?:[^"]|"")*"')
 _THREE_D_QUOTED_RE = re.compile(r"'((?:[^']|'')+)'!")
-_THREE_D_BARE_RE = re.compile(r"(?<![A-Za-z0-9_.'])([A-Za-z0-9_.]+):([A-Za-z0-9_.]+)!")
-_INDIRECT_RE = re.compile(r"(?<![A-Za-z0-9_.])INDIRECT\s*\(", re.IGNORECASE)
+_THREE_D_BARE_RE = re.compile(r"(?<![\w.'])([\w.]+):([\w.]+)!")
+_INDIRECT_RE = re.compile(r"(?<![\w.])INDIRECT\s*\(", re.IGNORECASE)
 
 
 def _sheet_order(wb: dict[str, Any]) -> list[str]:
@@ -1065,7 +1065,7 @@ def plan_unprotect_sheets(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-_SHEET_REF_ERROR_RE = re.compile(r"(?<![:\w'.])(?:'(?:[^']|'')+'|[A-Za-z0-9_.]+)!#REF!(?![:\w])")
+_SHEET_REF_ERROR_RE = re.compile(r"(?<![:\w'.])(?:'(?:[^']|'')+'|[\w.]+)!#REF!(?![:\w])")
 
 
 def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool, bool]:
@@ -1082,7 +1082,7 @@ def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool, bool]:
     fixed = formula
     for nm in sorted(broken_names, key=len, reverse=True):
         # with its sheet, if it has one: Projn!Name -> NA(), not Projn!NA() (Excel refuses that)
-        fixed = re.sub(r"(?<![A-Za-z0-9_.\]])(?:(?:'(?:[^']|'')+'|[\w.]+)!)?" + re.escape(nm) + r"(?![A-Za-z0-9_.])", "NA()", fixed)
+        fixed = re.sub(r"(?<![\w.\]])(?:(?:'(?:[^']|'')+'|[\w.]+)!)?" + re.escape(nm) + r"(?![\w.])", "NA()", fixed)
     fixed = _SHEET_REF_ERROR_RE.sub("NA()", fixed)
     fixed = re.sub(r"(?<![:!\w])#REF!(?![:\w])", "NA()", fixed)  # standalone #REF! only
     swapped = fixed
@@ -1119,7 +1119,7 @@ def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, An
     needs a range (SUMIFS('Sheet'!#REF!,...)) had to become NA() as a whole."""
     wb0 = analysis["workbooks"][0]
     broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
-    name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
+    name_re = re.compile(r"(?<![\w.])(" + "|".join(re.escape(n) for n in broken) + r")(?![\w.])") if broken else None
     lit_re = re.compile(r"#REF!")
     # A name no definition exists for (misspelt, or deleted) is broken too -- Excel shows
     # #NAME? where it is evaluated, Mind refuses the formula ('not a function') even in a branch
@@ -1173,8 +1173,8 @@ def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]
 # range. Replacing the reference by that fixed range keeps today's result and
 # gives Mind a formula it compiles; if the source grows later, the range will
 # not follow (the caution says so).
-SPILL_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?ANCHORARRAY\(\s*((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})\s*\)", re.IGNORECASE)
-SPILL_HASH_RE = re.compile(r"(?<![A-Za-z0-9_.#])((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})#", re.IGNORECASE)
+SPILL_CALL_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?ANCHORARRAY\(\s*((?:'[^']+'|[\w.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})\s*\)", re.IGNORECASE)
+SPILL_HASH_RE = re.compile(r"(?<![\w.#])((?:'[^']+'|[\w.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})#", re.IGNORECASE)
 
 
 def _absolute(ref: str) -> str:
@@ -1852,7 +1852,7 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
 # down, before and after the rewrite, are written in one assignment instead.
 FILL_DOWN_ACTIONS = {"guard_blank_arithmetic", "keep_error_cells", "line_breaks_as_char", "empty_cells_as_zero"}
 # what a fill moves but relative_form keeps as written: whole rows (2:2), another workbook's cells ([1]Data!A5)
-_UNSEEN_IN_A_FILL = re.compile(r"(?<![A-Za-z0-9_.$])\$?\d+:\$?\d+(?![\d(])|\[")
+_UNSEEN_IN_A_FILL = re.compile(r"(?<![\w.$])\$?\d+:\$?\d+(?![\d(])|\[")
 
 
 def _fill_down_blocks(ops: list[dict[str, Any]], analysis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2853,7 +2853,7 @@ def _array_containing(analysis: dict[str, Any], sheet: str, cell: str) -> str | 
     return None
 
 
-_ARRAY_REF_RE = re.compile(r"(?:(?:'[^']+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}:\$?[A-Za-z]{1,3}\$?\d{1,7}")
+_ARRAY_REF_RE = re.compile(r"(?:(?:'[^']+'|[\w.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}:\$?[A-Za-z]{1,3}\$?\d{1,7}")
 
 
 def array_size_hint(array_ref: str, formula: str) -> str:
