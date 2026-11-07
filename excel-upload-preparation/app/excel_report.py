@@ -78,7 +78,7 @@ FIX_HINTS: dict[str, str] = {
     "FRM-012": "Apply the Prep action 'Write what CELL / INFO formulas show today in their place': the formula becomes the text or number Excel shows; Mind cannot answer CELL(\"filename\") or INFO().",
     "FRM-011": "Apply the Prep action 'Write line breaks inside text as CHAR(10)': the break typed inside the quotes becomes \"...\"&CHAR(10)&\"...\", the same text in Excel and in Mind.",
     "FRM-009": "Apply the Prep action 'Read empty cells as 0 where they are compared': N() goes around the reading of the empty cell (or around the reference / lookup that lands on it), so it is 0 in Excel and in Mind.",
-    "FRM-007": "Apply the Prep action 'Replace INDIRECT used as a value by the reference its text builds'; what it cannot work out from the workbook's constants is listed for a person.",
+    "FRM-007": "Apply the Prep action 'Replace INDIRECT by the reference its text builds'; what it cannot work out from the workbook's constants is listed for a person.",
     "FRM-003": "Remove the implicit-intersection '@' where the formula returns a single value; replace spilled/array results Mind must resize with MM_RANGE (single-cell table) or fixed-size array formulas.",
     "FORMULA-002": "Re-implement the VBA user-defined function as native formulas / MM_ functions, or register it as a custom C# formula in Mind -- VBA does not run in Mind.",
     "LOOP-002": "Use one consistent capitalization for this loop name everywhere it's defined (loop names are case-sensitive in Mind).",

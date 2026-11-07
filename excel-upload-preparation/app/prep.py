@@ -1399,7 +1399,7 @@ def _held_on_omitted_sheets(analysis: dict[str, Any], formula: str, references: 
     return held
 
 
-# --- FRM-007: INDIRECT used as a value, replaced by the reference it builds ------------
+# --- FRM-007: INDIRECT (as a value or as a range), replaced by the reference it builds --
 def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
     """FRM-007: Mind returns a reference for INDIRECT and cannot use it as a value
     ('Unable to cast AM.Models.AMReference to System.IConvertible'). Where the text INDIRECT
@@ -1422,7 +1422,7 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
             skipped.append(f"{where}: {site.get('issue') or 'no rewrite proposed'}")
             continue
         targets = sorted({c["target"] for c in site.get("calls", []) if c.get("target")})
-        note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind cannot use INDIRECT as a value; a text built from a changed input would no longer be followed"
+        note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed); a text built from a changed input would no longer be followed"
         if site.get("issue"):
             note += "; " + site["issue"]
         f = arrays.get((site["sheet"], site["cell"]))
@@ -1745,7 +1745,7 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets Mind imports; a sheet with no grid is left out only when it holds nothing at those cells, so Excel's result is the same ('Did the numbers change?' proves it)", "planner": plan_expand_3d_references},
     {"id": "freeze_external_links", "title": "Freeze external links: write the value Excel shows for each reference to another workbook, then break the link", "rule_ids": ["REF-002"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a reference to another workbook becomes the copy Excel kept of that cell (a number or a text), NA() where it kept none; the values stop following the other file -- which they already do not when it cannot be reached", "planner": plan_freeze_external_links},
-    {"id": "direct_references", "title": "Replace INDIRECT used as a value by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
+    {"id": "direct_references", "title": "Replace INDIRECT by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: INDIRECT(\"'\"&$G10&\"'!$Z$16\") becomes 'Line 1'!$Z$16, the reference the text designates with today's inputs (Mind cannot use INDIRECT as a value); a text built from an input that changes later would no longer be followed -- Excel's values today stay the same", "planner": plan_direct_references},
     {"id": "cover_array_headers", "title": "Extend the header row over every column an array formula covers", "rule_ids": ["RSK-002"], "default_on": True, "level": BLOCKING,
      "caution": "writes 'Period n' into the empty header cells above the array's columns (Mind refuses an array formula that reaches past its grid); rename them by hand if the model has better words", "planner": plan_cover_array_headers},

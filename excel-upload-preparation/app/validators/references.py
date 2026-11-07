@@ -807,8 +807,11 @@ def _enclosing_function(masked: str, pos: int) -> str | None:
 
 
 def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
-    """FRM-007: INDIRECT used as a value, with the direct reference proposed
-    where the text it builds can be worked out from the workbook's constants."""
+    """FRM-007: INDIRECT, with the direct reference proposed where the text it builds can be
+    worked out from the workbook's constants. Used as a value Mind stops the run; used as a range
+    (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)) Mind does not resolve it either and the formula
+    falls to its IFERROR -- confirmed in Mind on the Tokyo IFRS 17 tool, 2026-11-08: 480 cells showed
+    "-" where Excel shows the results; the same lookup on BBA_04!$A:$B gave Excel's values."""
     from ..inventory import cell_value, values_cell
 
     wb0 = analysis["workbooks"][0]
@@ -831,7 +834,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
         if "INDIRECT" not in formula.upper():
             continue
         calls = _indirect_calls(formula)
-        if not any(c["as_value"] for c in calls):
+        if not calls:
             continue
         origin = parse_ref(f["cell"])
         resolved = []
@@ -882,17 +885,18 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
         first = next((s for s in sites if s["suggested_formula"] and not s["issue"]), sites[0])
         return finding(
             "ERROR",
-            f"{len(sites)} formula(s) use the result of INDIRECT as a value (compared, multiplied, divided, negated or concatenated): Mind returns a reference for INDIRECT and "
-            "cannot turn it into a value ('Run error: Unable to cast object of type AM.Models.AMReference to type System.IConvertible'). "
+            f"{len(sites)} formula(s) use INDIRECT. Mind does not follow it: used as a value (compared, multiplied, concatenated) Mind stops the run "
+            "('Run error: Unable to cast object of type AM.Models.AMReference to type System.IConvertible'); used as a range (VLOOKUP(x, INDIRECT($A5&\"!A:B\"), 2, FALSE)) "
+            "Mind computes the formula without it and an IFERROR around it shows its fallback (confirmed in Mind, 2026-11-08: \"-\" in place of the results). "
             f"First: {first['sheet']}!{first['cell']} = {first['formula'][:90]}"
             + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
             + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates; {observed['with_missing_targets']} also point at a sheet or name that does not exist "
             "(an error in Excel already: that call becomes NA() in its place); "
-            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). The Prep action 'Replace INDIRECT used as a value by the reference its text builds' writes the proposals.",
+            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). The Prep action 'Replace INDIRECT by the reference its text builds' writes the proposals.",
             observed,
             location={"sheet": first["sheet"], "cell": first["cell"]},
         )
-    return finding("PASS", "No formula uses the result of INDIRECT as a value.", observed)
+    return finding("PASS", "No formula uses INDIRECT.", observed)
 
 
 

@@ -136,11 +136,11 @@ rules:
   version: 1.0.0
   status: active
   category: formula
-  description: 'INDIRECT used as a value -- Mind returns a reference for INDIRECT and cannot turn it into a value ("Unable to cast AM.Models.AMReference to System.IConvertible").'
+  description: 'INDIRECT -- Mind does not follow it: used as a value it stops the run ("Unable to cast AM.Models.AMReference to System.IConvertible"); used as a range (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)) it is not computed and an IFERROR around it shows its fallback (Tokyo IFRS 17 tool, 2026-11-08).'
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-01, a client model)
+    document: real Mind conversion testing (2026-10-01, a client model; 2026-11-08, the Tokyo IFRS 17 tool)
     article: FRM-007
   validation:
     deterministic: true

@@ -516,8 +516,8 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     inp["G710"], inp["G711"] = "Line 1", "Line 2"  # Line 2 is not a sheet
     inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
     inp["AA711"] = "=IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G711&\"'!$Z$12\")/INDIRECT(\"'\"&$G711&\"'!$Z$16\"))"
-    inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # a reference context: Mind handles it, not flagged
-    inp["B7"] = "=INDIRECT(\"'\"&$G710&\"'!$Z$12\")"  # alone in the cell: a reference, not a value -- not flagged
+    inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # as a range: Mind does not compute it either (Tokyo, 2026-11-08)
+    inp["B7"] = "=INDIRECT(\"'\"&$G710&\"'!$Z$12\")"  # alone in the cell: a reference -- rewritten too
     inp["B2"] = "=NOT(INDIRECT(\"Line\"&COLUMN()-1&\"_Boolean\"))*2"  # a defined name built from COLUMN()
     inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"  # B4 is a formula with no stored value: by hand
     inp["B4"] = "=G710"
@@ -530,14 +530,15 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     f = _finding(engine, config, build_analysis(p, tmp_path / "w", "i"), "FRM-007")
     assert f["status"] == "ERROR"
     sites = {s["cell"]: s for s in f["observed"]["sites"]}
-    assert set(sites) == {"AA710", "AA711", "B2", "B3", "B6"}
+    assert set(sites) == {"AA710", "AA711", "B1", "B2", "B3", "B6", "B7"}
+    assert sites["B1"]["suggested_formula"] == "=SUM('Line 1'!$Z$12:$Z$16)" and sites["B7"]["suggested_formula"] == "='Line 1'!$Z$12"
     assert sites["B6"]["suggested_formula"] == "=IF(LEFT(RIGHT($G710,2),1)=\" \",Line1_Boolean=TRUE,NA()=TRUE)"
     assert sites["AA710"]["suggested_formula"] == "=IF('Line 1'!$Z$16=0,0,66%*'Line 1'!$Z$12/'Line 1'!$Z$16)"
     # the missing target becomes NA() where it stands, never the whole formula (it may sit in a branch never taken)
     assert sites["AA711"]["suggested_formula"] == "=IF(NA()=0,0,66%*NA()/NA())" and "Line 2" in sites["AA711"]["issue"]
     assert sites["B2"]["suggested_formula"] == "=NOT(Line1_Boolean)*2"
     assert sites["B3"]["suggested_formula"] is None and "cannot be worked out" in sites["B3"]["issue"]
-    assert f["observed"]["with_proposal"] == 2 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
+    assert f["observed"]["with_proposal"] == 4 and f["observed"]["with_missing_targets"] == 2 and f["observed"]["without_proposal"] == 1
     assert "AMReference" in f["message"] and "writes the proposals" in f["message"]
 
 
