@@ -869,6 +869,8 @@ def _outside_public(s: Session) -> dict[str, Any] | None:
         "extra": list(match["extra"]),
         "summary": summary,
         "brought_in": _brought_in(s) if s.versions else False,
+        # the /Input grids the bring-in made for this line (their size is the model's import area)
+        "mind_inputs": [Path(n).stem for n in _mind_input_files(_mind_inputs_dir_for(s))] if s.versions else [],
     }
 
 

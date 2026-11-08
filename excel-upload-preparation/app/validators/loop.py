@@ -415,8 +415,16 @@ def rzs_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     exactly on its current last row/column will not follow the resize --
     they must use MM_LASTROWCELL / MM_LASTCOLUMNCELL (or MM_TABLE/MM_COLUMN/MM_ROW)."""
     resizable = _resizable_grids(analysis)
+    # the Mind inputs made from outside files (app/outside_inputs.py) keep the size of the model's
+    # import area, as the model's own macro does (it refuses a file with more items than the area
+    # holds) and the app writes their CSVs at exactly that size: a fixed range over them is right
+    made = {str(n).casefold() for n in (((config or {}).get("outside_inputs") or {}).get("mind_inputs") or [])}
+    fixed_inputs = [g for g in resizable if made and str(g.get("name") or "").casefold() in made]
+    resizable = [g for g in resizable if g not in fixed_inputs]
     if not resizable:
-        return finding("PASS", "No resizable grids (no resize flags, /Input grids or MM_SETSIZE), so fixed ranges cannot go stale.", {"resizable_grids": 0})
+        extra = f" {len(fixed_inputs)} Mind input grid(s) made from outside files keep the import area's size." if fixed_inputs else ""
+        return finding("PASS", "No resizable grids (no resize flags, /Input grids or MM_SETSIZE), so fixed ranges cannot go stale." + extra,
+                       {"resizable_grids": 0, "fixed_size_mind_inputs": [g.get("name") for g in fixed_inputs]})
     by_sheet: dict[str, list[dict[str, Any]]] = {}
     for g in resizable:
         by_sheet.setdefault(g["sheet"], []).append(g)

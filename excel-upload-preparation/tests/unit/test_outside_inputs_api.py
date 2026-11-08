@@ -556,3 +556,35 @@ def test_the_mind_run_estimate_lists_the_input_upload_only_with_inputs():
     assert "inputs" not in plain
     ids = [x["id"] for x in estimate_mind_run(13.0, 60.0, 0, 200, inputs=6)["stages"]]
     assert ids.index("template") < ids.index("inputs") < ids.index("run")
+
+
+def test_rzs_006_leaves_the_mind_inputs_made_from_outside_files_alone(tmp_path):
+    """A reader over part of an app-made Mind input (`IN_X!$C4:$E4`, ending on the grid's last
+    column) is flagged by RZS-006 for an ordinary /Input grid; the grids the bring-in made keep the
+    import area's size (the model's macro refuses bigger files, the app writes same-size CSVs)."""
+    import openpyxl
+
+    from app.inventory import build_analysis
+    from app.validators.loop import rzs_006
+
+    wb = openpyxl.Workbook()
+    calc = wb.active
+    calc.title = "Calc"
+    calc["A1"] = "#Totals"
+    calc["A2"] = "Item"
+    calc["B2"] = "Value"
+    calc["A3"] = "Sum"
+    calc["B3"] = "=SUM(IN_X!$C4:$E4)"
+    inp = wb.create_sheet("IN_X")
+    inp["A1"] = "#IN_X /Input"
+    for c, h in enumerate(["a", "b", "c", "d", "e"], start=1):
+        inp.cell(2, c, h)
+        for r in range(3, 6):
+            inp.cell(r, c, r * 10 + c)
+    path = tmp_path / "m.xlsx"
+    wb.save(path)
+    analysis = build_analysis(path, tmp_path / "w", "t")
+    assert rzs_006(None, analysis, {})["status"] == "ERROR"
+    res = rzs_006(None, analysis, {"outside_inputs": {"imports": True, "mind_inputs": ["IN_X"]}})
+    assert res["status"] == "PASS", res["message"]
+    assert "keep the import area's size" in res["message"]
