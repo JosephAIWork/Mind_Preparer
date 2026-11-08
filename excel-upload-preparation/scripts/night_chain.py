@@ -30,6 +30,14 @@ def say(*a) -> None:
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
+# sheet names in any language: never let the console code page stop the chain
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workbook")
