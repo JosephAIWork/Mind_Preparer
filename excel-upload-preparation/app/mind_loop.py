@@ -27,6 +27,9 @@ assistant is used exactly once, before the first iteration, to name grids
   names           every grid the plan could title is titled; what is left is
                   the list of grids the app cannot title, with reasons
   convert         Mind's Upload / Convert / Test wizard all Complete
+  inputs          (a model whose outside files became Mind inputs) Mind's
+                  Inputs window took every input file: each one shows
+                  SUCCESS on the /Input grid of its name
   run             Mind ran the model and reports it consistent with the
                   audit trail
   counts          the number of 'Untitled(r,c)' entries Mind lists equals
@@ -103,6 +106,9 @@ class LoopConfig:
     disable: list[str] = field(default_factory=list)  # actions never used
     delete_projects: bool = True
     skip_mind: bool = False  # local gates only (tests, dry runs)
+    # the Mind input files (one .csv / .txt per /Input grid, made from the outside files): every
+    # iteration uploads them through Mind's Inputs window after adding the model, before the run
+    inputs_dir: Path | None = None
 
 
 # --- numbers: does the prepared workbook compute the same values? -----------------
@@ -603,6 +609,8 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
             return finish("stuck", f"could not convert .xlsb: {conv.get('message')}")
         source = Path(conv["output_path"]).resolve()
         report["converted_source"] = str(source)
+    if cfg.inputs_dir and not cfg.skip_mind and not Path(cfg.inputs_dir).is_dir():
+        return finish("stuck", f"the folder of Mind input files is missing ({cfg.inputs_dir}): bring in the outside files again")
 
     enabled: set[str] = set(cfg.enable)
     disabled: set[str] = set(cfg.disable)
@@ -677,6 +685,8 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         else:
             # 4. Mind
             it["mind"] = _mind_iteration(cfg, it_dir, prepared, it["names"], [s["name"] for s in wb0["sheets"]], n, stamp, report, progress)
+            if "inputs_upload" in it["mind"]:
+                it["inputs_upload"] = it["mind"]["inputs_upload"]
         it["decision"] = decide(it, plan, enabled, disabled, wb0.get("formulas", []), wb0.get("defined_names", []))
         it["finished"] = _now()
         report["iterations"].append(it)
@@ -696,8 +706,26 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
     return finish("exhausted", f"no convergence after {cfg.max_iterations} iteration(s)")
 
 
+def _inputs_stage() -> dict[str, Any]:
+    """The progress stage of the input upload: its own ('inputs') once app/estimate.py lists it,
+    else none -- the upload then counts as part of 'template' (an unknown stage would show the
+    wrong time left)."""
+    from .estimate import MIND_STAGE_TITLES
+
+    return {"stage": "inputs"} if "inputs" in MIND_STAGE_TITLES else {}
+
+
 def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[str, Any], sheet_names: list[str], n: int, stamp: str, report: dict[str, Any], progress: Progress) -> dict[str, Any]:
     out: dict[str, Any] = {"skipped": False}
+    inputs: list[Path] = []
+    if cfg.inputs_dir:
+        if not Path(cfg.inputs_dir).is_dir():
+            out["error"] = f"the folder of Mind input files is missing ({cfg.inputs_dir}): bring in the outside files again"
+            return out
+        inputs = mc.input_files(cfg.inputs_dir)
+        if not inputs:
+            out["inputs_upload"] = {"skipped": True, "reason": f"no .csv or .txt file in {cfg.inputs_dir}: nothing to upload"}
+            progress({"event": "log", "message": f"iteration {n}: no Mind input file to upload ({cfg.inputs_dir} holds no .csv or .txt)"})
     shots = it_dir / "mind"
     name = f"{cfg.project_prefix}_{stamp}_i{n}"
     record = {"name": name, "status": "not created", "init_url": None, "ran": False}
@@ -733,6 +761,19 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                 out["error"] = "Add template to Milliman Mind did not lead to a Run button"
                 return out
             record["status"] = "model added"
+            if inputs:
+                # every iteration uploads a new model into a new project, so its inputs go up again too
+                progress({"event": "mind", **_inputs_stage(), "message": f"iteration {n}: uploading {len(inputs)} input file(s) through Mind's Inputs window"})
+                mb = sum(f.stat().st_size for f in inputs) / 2**20  # Tokyo's inputs: about 1.4 M cells
+                up = out["inputs_upload"] = mc.upload_inputs(page, Path(cfg.inputs_dir), timeout_s=int(300 + 30 * mb), shots=shots)
+                if not up.get("ok"):
+                    out["error"] = f"Mind did not take the input files: {up.get('reason') or 'no reason recorded'}"
+                    progress({"event": "mind", "message": f"iteration {n}: {out['error']}"[:300]})
+                    return out
+                progress({"event": "mind", "message": f"iteration {n}: Mind took the {len(up['files'])} input file(s), each one SUCCESS on its grid: " + ", ".join(up["files"])[:200]})
+                if not up.get("closed", True) and mc.open_project(page, init) != "model":
+                    out["error"] = "Mind's Inputs window would not close and the project did not open again"
+                    return out
             stem = prepared.stem
             listed = mc.template_names(page, stem)
             # the list is only trusted when it shows the workbook's own sheets
@@ -777,11 +818,13 @@ def summarize(report: dict[str, Any]) -> str:
         conv = (mind.get("convert") or {}).get("success")
         run = mind.get("run") or {}
         numbers = "match" if nums.get("match") else (f"differ:{nums.get('differences')}" if nums.get("ran") else ("not checked" if nums.get("requested") else "off"))
+        up = mind.get("inputs_upload")
+        inputs = "" if not up else f"inputs={'ok' if up.get('ok') else 'skipped' if up.get('skipped') else 'FAIL'} "
         lines.append(
             f"  iter {it['n']}: actions={','.join(a['id'] for a in it.get('actions', []))} | apply={it.get('apply', {}).get('status')} "
             f"| grids {nm.get('baseline_grids')}->{nm.get('grids')} unnamed={nm.get('unnamed')} blocked={len(nm.get('blocked', []))} "
             f"| numbers={numbers} "
-            f"| convert={'ok' if conv else ('skipped' if mind.get('skipped') else 'FAIL')} run={'ok' if run.get('completed') else '-'} audit={'ok' if run.get('audit_consistent') else '-'} "
+            f"| convert={'ok' if conv else ('skipped' if mind.get('skipped') else 'FAIL')} {inputs}run={'ok' if run.get('completed') else '-'} audit={'ok' if run.get('audit_consistent') else '-'} "
             f"| {it.get('decision', {}).get('verdict')}: {it.get('decision', {}).get('reason')}"
         )
     res = report.get("residual_untitled")

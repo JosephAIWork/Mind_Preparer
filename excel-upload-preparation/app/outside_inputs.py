@@ -85,8 +85,10 @@ def _mask_vba_strings(line: str) -> str:
 
 
 def vba_procedures(modules: Iterable[tuple[str, str]]) -> dict[str, dict[str, Any]]:
-    """{name: {module, kind, params, lines}} for every Sub/Function/Property (comments dropped,
-    ` _` continuations joined). Names in any alphabet."""
+    """{key: {name, module, kind, params, lines}} for every Sub/Function/Property (comments dropped,
+    ` _` continuations joined). Names in any alphabet. The key is the name, or `Module.Name` when
+    another module has a procedure of the same name (CommandButton1_Click on two sheets): that is
+    also how Application.Run reaches it."""
     procs: dict[str, dict[str, Any]] = {}
     for module, code in modules:
         joined: list[str] = []
@@ -102,8 +104,9 @@ def vba_procedures(modules: Iterable[tuple[str, str]]) -> dict[str, dict[str, An
         for ln in joined:
             m = _PROC_RE.match(ln)
             if m:
-                cur = {"module": module, "kind": m.group(1).split()[0].lower(), "params": m.group(3).strip(), "lines": []}
-                procs.setdefault(m.group(2), cur)
+                cur = {"name": m.group(2), "module": module, "kind": m.group(1).split()[0].lower(), "params": m.group(3).strip(), "lines": []}
+                key = m.group(2) if m.group(2) not in procs else f"{module}.{m.group(2)}"
+                procs[key] = cur
                 continue
             if _END_PROC_RE.match(ln):
                 cur = None
@@ -120,8 +123,12 @@ def scan_vba(modules: Iterable[tuple[str, str]]) -> dict[str, Any]:
      "chain": [names from the import macro down to the opening procedure],
      "procedures": {name: {calls, opens, params, msgbox, yes_no}},
      "messages": [{procedure, line}] -- every MsgBox/InputBox line as the source writes it}"""
+    modules = list(modules)
     procs = vba_procedures(modules)
-    names = list(procs)
+    module_alt = "|".join(re.escape(m) for m, _c in modules if m) or "(?!)"
+    by_bare: dict[str, list[str]] = {}
+    for key, p in procs.items():
+        by_bare.setdefault(p["name"], []).append(key)
     info: dict[str, dict[str, Any]] = {}
     imports: list[dict[str, Any]] = []
     msgboxes: list[dict[str, Any]] = []
@@ -137,7 +144,15 @@ def scan_vba(modules: Iterable[tuple[str, str]]) -> dict[str, Any]:
             if _MSGBOX_RE.search(_mask_vba_strings(raw)):
                 msgboxes.append({"procedure": name, "line": raw.strip()[:300]})
         body = "\n".join(masked)
-        calls = sorted(q for q in names if q != name and re.search(rf"(?<![\w.]){re.escape(q)}(?!\w)", body))
+        calls_set: set[str] = set()
+        for bare, keys in by_bare.items():
+            # `Name`, `Call Name(...)` or `Module.Name` (a call through its module)
+            if not re.search(rf"(?<![\w.])(?:(?:{module_alt})\.)?{re.escape(bare)}(?!\w)", body):
+                continue
+            targets = [k for k in keys if k != name]
+            same_module = [k for k in targets if procs[k]["module"] == p["module"]]
+            calls_set.update(same_module or targets)
+        calls = sorted(calls_set)
         info[name] = {
             "module": p["module"],
             "kind": p["kind"],
@@ -254,17 +269,25 @@ def file_name_tail(formula: str) -> str | None:
 def _same_row_refs(formula: str, sheet: str, row: int) -> list[tuple[str, int, int]]:
     """Single cells on `row` of `sheet` that the formula reads (the row's key cells)."""
     out = []
-    masked = mask_strings(formula, mask_sheet_quotes=False)
-    for m in REF_RE.finditer(masked):
-        s = m.group("sheet")
-        if s:
-            s = s[1:-1].replace("''", "'") if s.startswith("'") else s
-        if s and s != sheet:
+    for x in _refs(formula, sheet):
+        if x["external"] or x["three_d"] or normalize_name(x["sheet"]) != normalize_name(sheet):
             continue
-        r = parse_ref(m.group("ref"))
-        if r and not r["whole_column"] and not r["whole_row"] and r["cells"] == 1 and r["r1"] == row:
+        r = x["ref"]
+        if not r["whole_column"] and not r["whole_row"] and r["cells"] == 1 and r["r1"] == row:
             out.append((sheet, r["r1"], r["c1"]))
     return out
+
+
+def _builds_file_name(formula: str) -> bool:
+    """Whether a formula BUILDS a file name: a text with a name or a folder before the extension
+    ("data.csv", "C:\\x\\a.xlsm"), or the extension joined on with & (&".xlsm") -- not a check such as
+    RIGHT(H35,5)=".xlsm"."""
+    for m in re.finditer(rf'"([^"]*)\.(?:{_EXT})"', formula, re.IGNORECASE):
+        if m.group(1).strip():
+            return True
+        if re.search(r"&\s*$", formula[:m.start()]) or re.match(r"\s*&", formula[m.end():]):
+            return True
+    return False
 
 
 def find_import_table(cells: Iterable[dict[str, Any]], value_of: Callable[[str, int, int], Any], sheet_names: Iterable[str]) -> list[dict[str, Any]]:
@@ -284,11 +307,13 @@ def find_import_table(cells: Iterable[dict[str, Any]], value_of: Callable[[str, 
             continue
         row, col = ref["r1"], ref["c1"]
         if formula:
-            if not PATH_LITERAL_RE.search(formula):
+            if not _builds_file_name(formula):
                 continue
         elif not (isinstance(value, str) and FILE_NAME_RE.search(value.strip()) and re.search(r"[\\/]", value)):
             continue
         cached = value_of(c["sheet"], row, col) if formula else value
+        if formula and isinstance(cached, str) and cached.strip() and not cached.startswith("#") and not FILE_NAME_RE.search(cached.strip()):
+            continue  # it computes something else ("OK" / "NG" of a check on a path)
         expected = None
         if isinstance(cached, str) and FILE_NAME_RE.search(cached.strip()):
             expected = re.split(r"[\\/]", cached.strip())[-1]
@@ -318,7 +343,7 @@ def import_table_from_analysis(analysis: dict[str, Any]) -> list[dict[str, Any]]
     cells: list[dict[str, Any]] = [
         {"sheet": f["sheet"], "cell": f["cell"], "formula": f["formula"]}
         for f in wb_entry.get("formulas", [])
-        if isinstance(f.get("formula"), str) and PATH_LITERAL_RE.search(f["formula"])
+        if isinstance(f.get("formula"), str) and PATH_LITERAL_RE.search(f["formula"]) and _builds_file_name(f["formula"])
     ]
     try:
         wb = open_cached(analysis)
@@ -349,7 +374,8 @@ def match_files(table: list[dict[str, Any]], uploaded: Iterable[str]) -> dict[st
     """Which picked file goes with which import-table row.
 
     {"rows": [row + {"file": name | None, "how": "exact" | "key" | None, "candidates": [...]}],
-     "matched": n, "missing": [rows without a file], "extra": [files no row wants]}"""
+     "matched": n, "missing": [rows without a file], "extra": [files no row wants],
+     "ambiguous": [files that fit several rows, left for the user to place]}"""
     files = list(dict.fromkeys(uploaded))
     by_norm = {normalize_name(f): f for f in files}
     used: set[str] = set()
@@ -382,11 +408,13 @@ def match_files(table: list[dict[str, Any]], uploaded: Iterable[str]) -> dict[st
                     r["candidates"] = sorted(set(r["candidates"]) | {f})
                     r.update({"file": None, "how": None})
     used = {r["file"] for r in out_rows if r["file"]}
+    wanted = used | {f for r in out_rows for f in r["candidates"]}
     return {
         "rows": out_rows,
         "matched": len(used),
         "missing": [r for r in out_rows if not r["file"]],
-        "extra": [f for f in files if f not in used],
+        "extra": [f for f in files if f not in wanted],
+        "ambiguous": [f for f in files if f in wanted and f not in used],
     }
 
 
@@ -440,8 +468,20 @@ def repair_dialog_text(text: str) -> str:
     try:
         import ctypes
 
-        raw = text.encode(f"cp{ctypes.windll.kernel32.GetACP()}")
+        acp = f"cp{ctypes.windll.kernel32.GetACP()}"
+        raw = text.encode(acp)
     except Exception:
+        return text
+    # garbled double-byte text is full of the characters the system code page puts on bytes
+    # 0x80-0x9F (lead bytes of Shift-JIS & co.): ‚ ƒ „ … † ‡ ˆ ‰ € ... -- real Hebrew or French text is not
+    c1 = set()
+    for b in range(0x80, 0xA0):
+        try:
+            c1.add(bytes([b]).decode(acp))
+        except Exception:
+            pass
+    non_ascii = [ch for ch in text if ord(ch) > 127]
+    if not non_ascii or sum(ch in c1 for ch in non_ascii) / len(non_ascii) < 0.2:
         return text
     best, best_score = text, 0
     for cp in ("cp932", "cp936", "cp949", "cp950"):
@@ -520,31 +560,33 @@ def _dialog_watch(pid: int, stop: threading.Event, found: list[dict[str, Any]], 
                 continue
             seen.add(h)
             parts = texts(h)
-            buttons = [p.split(":", 1)[1] for p in parts if p.startswith("Button:")]
             message = " ".join(p.split(":", 1)[1] for p in parts if p.startswith("Static:")).strip()
-            choice = None
-            for want in ("OK", "No", "いいえ", "Cancel", "キャンセル"):
-                for b in buttons:
-                    if b.replace("&", "").split("(")[0].strip().lower() == want.lower():
-                        choice = b
-                        break
-                if choice:
-                    break
-            found.append({"title": win32gui.GetWindowText(h), "message": message, "buttons": buttons, "pressed": choice})
+            # the buttons by their control id, the same in every language:
+            # IDOK 1, IDCANCEL 2, IDABORT 3, IDRETRY 4, IDIGNORE 5, IDYES 6, IDNO 7
+            btns: dict[int, tuple[int, str]] = {}
+
+            def btn(hh, _):
+                try:
+                    if win32gui.GetClassName(hh) == "Button" and win32gui.IsWindowVisible(hh):
+                        btns.setdefault(int(win32gui.GetDlgCtrlID(hh)), (hh, win32gui.GetWindowText(hh)))
+                except Exception:
+                    pass
+                return True
+
             try:
-                if choice:
-                    target: list[int] = []
-
-                    def btn(hh, _):
-                        if win32gui.GetClassName(hh) == "Button" and win32gui.GetWindowText(hh) == choice:
-                            target.append(hh)
-                        return True
-
-                    win32gui.EnumChildWindows(h, btn, None)
-                    if target:
-                        win32api.PostMessage(target[0], win32con.BM_CLICK, 0, 0)
-                        continue
-                win32api.PostMessage(h, win32con.WM_CLOSE, 0, 0)
+                win32gui.EnumChildWindows(h, btn, None)
+            except Exception:
+                pass
+            # one button: press it; a question: No, else Cancel -- nothing goes ahead unasked
+            pick = next(iter(btns)) if len(btns) == 1 else next((i for i in (7, 2, 3, 1) if i in btns), None)
+            found.append({"title": win32gui.GetWindowText(h), "message": message,
+                          "buttons": [t for _hh, t in btns.values()],
+                          "pressed": btns[pick][1] if pick is not None else None, "pressed_id": pick})
+            try:
+                if pick is not None:
+                    win32api.PostMessage(btns[pick][0], win32con.BM_CLICK, 0, 0)
+                else:
+                    win32api.PostMessage(h, win32con.WM_CLOSE, 0, 0)
             except Exception:
                 pass
         stop.wait(0.4)
@@ -736,7 +778,7 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
             e["areas"] = info["areas"]
             e["cleared"] = info["cleared"]
         report["stopped_early"] = any(e["file"] and not e["opened"] for e in report["files"]) or any(
-            (d.get("pressed") or "OK").replace("&", "").split("(")[0].strip().upper() != "OK" for d in found)
+            d.get("pressed_id") not in (1, None) or len(d.get("buttons") or []) > 1 for d in found)
         # --- put back what must not change: the path formulas; for a file nobody picked, the
         # row of the import table (status cell) and the area the macro cleared get the upload's own content
         for e in report["files"]:
@@ -841,6 +883,20 @@ def analyse_events(log: list[tuple], book: str, file_names: set[str]) -> dict[st
                         cleared.append({"sheet": sheet, "ref": rect_ref(rect)})
                         used_clears.add(k)
                         break
+        # pieces written in any order (E, C, D) or joined by the cleared range: one area each
+        merged = True
+        while merged:
+            merged = False
+            for i1 in range(len(areas)):
+                for i2 in range(i1 + 1, len(areas)):
+                    a1, a2 = areas[i1], areas[i2]
+                    if a1["sheet"] == a2["sheet"] and _overlap_or_touch(a1["_rect"], a2["_rect"]):
+                        a1["_rect"] = _union(a1["_rect"], a2["_rect"])
+                        del areas[i2]
+                        merged = True
+                        break
+                if merged:
+                    break
         for a in areas:
             r1, c1, r2, c2 = a.pop("_rect")
             a.update({"ref": rect_ref((r1, c1, r2, c2)), "r1": r1, "c1": c1, "r2": r2, "c2": c2,
@@ -898,6 +954,26 @@ def plan_mind_inputs(report: dict[str, Any], sheet_names: Iterable[str]) -> list
     return out
 
 
+def _refs(formula: str, own_sheet: str) -> Iterable[dict[str, Any]]:
+    """Every A1 reference of a formula: {start, end, raw, sheet, ref, external, three_d}.
+    external: a reference into another workbook (`[1]Sheet!A1`, `'[Book.xlsx]Sheet'!A1`) -- never
+    one of this workbook's areas. three_d: a span of sheets (`Jan:Dec!A1`, `'BBA_04:合計'!A1`) --
+    which sheets it covers depends on the tab order, so it is treated as covering every sheet."""
+    masked = mask_strings(formula, mask_sheet_quotes=False)
+    for m in REF_RE.finditer(masked):
+        ref = parse_ref(m.group("ref"))
+        if not ref:
+            continue
+        token = formula[m.start("sheet"):m.end("sheet")] if m.group("sheet") else None
+        before = formula[m.start() - 1] if m.start() > 0 else ""
+        external = bool(token and ("[" in token)) or before == "]"
+        inner = token[1:-1] if token and token.startswith("'") else token
+        three_d = bool(inner and ":" in inner) or (before == ":" and token is not None)
+        yield {"start": m.start(), "end": m.end(), "raw": m.group("ref"), "token": token,
+               "sheet": None if three_d else _sheet_of(token, own_sheet), "ref": ref,
+               "external": external, "three_d": three_d}
+
+
 def _sheet_of(token_sheet: str | None, own: str) -> str:
     if not token_sheet:
         return own
@@ -922,31 +998,29 @@ def redirect_formula(formula: str, own_sheet: str, areas: list[dict[str, Any]]) 
     reads an area in a way that cannot be moved (partly covered, whole columns, OFFSET from inside)."""
     if not formula or not formula.startswith("="):
         return formula, 0, None
-    masked = mask_strings(formula, mask_sheet_quotes=False)
-    # quoted sheet names must stay visible to REF_RE: mask strings only
     pieces: list[str] = []
     last = 0
     changed = 0
-    for m in REF_RE.finditer(masked):
-        sheet = _sheet_of(formula[m.start("sheet"):m.end("sheet")] if m.group("sheet") else None, own_sheet)
-        ref = parse_ref(m.group("ref"))
-        if not ref:
+    for r in _refs(formula, own_sheet):
+        if r["external"]:
             continue
+        ref = r["ref"]
         rect = (ref["r1"], ref["c1"], ref["r2"], ref["c2"])
         for a in areas:
-            if normalize_name(a["sheet"]) != normalize_name(sheet):
-                continue
             arect = (a["r1"], a["c1"], a["r2"], a["c2"])
             if not _intersects(arect, rect):
                 continue
+            if r["three_d"]:
+                return formula, 0, f"{r['token']}!{r['raw']} spans several sheets over the import area {a['sheet']}!{a['ref']}"
+            if normalize_name(a["sheet"]) != normalize_name(r["sheet"]):
+                continue
             if ref["whole_column"] or ref["whole_row"] or not _contains(arect, rect):
-                return formula, 0, f"{sheet}!{m.group('ref')} covers only part of the import area {a['sheet']}!{a['ref']}"
+                return formula, 0, f"{r['sheet']}!{r['raw']} covers only part of the import area {a['sheet']}!{a['ref']}"
             # same cells on the input grid: data starts at row 3, column A of IN_<name>
-            raw = m.group("ref")
-            new_ref = _shift_ref(raw, row_shift=3 - a["r1"], col_shift=1 - a["c1"])
-            pieces.append(formula[last:m.start()])
+            new_ref = _shift_ref(r["raw"], row_shift=3 - a["r1"], col_shift=1 - a["c1"])
+            pieces.append(formula[last:r["start"]])
             pieces.append(f"{_quote_sheet(a['name'])}!{new_ref}")
-            last = m.end()
+            last = r["end"]
             changed += 1
             break
     if not changed:
@@ -1026,6 +1100,7 @@ def split_partial_sums(formula: str, own_sheet: str, areas: list[dict[str, Any]]
             continue
         width = parsed[0][2]["c2"] - parsed[0][2]["c1"] + 1
         cuts: set[int] = set()
+        refused = any(":" in (sh or "") or "[" in (sh or "") for _k, sh, _r in parsed)  # sheet spans, outside links
         for _k, sheet, r in parsed:
             for a in areas:
                 if normalize_name(a["sheet"]) != normalize_name(sheet):
@@ -1033,13 +1108,12 @@ def split_partial_sums(formula: str, own_sheet: str, areas: list[dict[str, Any]]
                 if not _intersects((a["r1"], a["c1"], a["r2"], a["c2"]), (r["r1"], r["c1"], r["r2"], r["c2"])):
                     continue
                 if not (a["r1"] <= r["r1"] and r["r2"] <= a["r2"]):
-                    cuts = set()
-                    break
+                    refused = True  # rows outside the area too: a column split would not be enough
                 if r["c1"] < a["c1"]:
                     cuts.add(a["c1"] - r["c1"])
                 if r["c2"] > a["c2"]:
                     cuts.add(a["c2"] - r["c1"] + 1)
-        cuts = {x for x in cuts if 0 < x < width}
+        cuts = {x for x in cuts if 0 < x < width} if not refused else set()
         if not cuts:
             continue
         bounds = [0] + sorted(cuts) + [width]
@@ -1116,18 +1190,19 @@ def _partly_covered(formula: str, own_sheet: str, areas: list[dict[str, Any]]) -
     """The areas a formula reads in a way that cannot be moved: a reference that covers only part of
     the area (or whole columns / rows across it), or OFFSET starting inside it."""
     out: list[dict[str, Any]] = []
-    masked = mask_strings(formula, mask_sheet_quotes=False)
-    for m in REF_RE.finditer(masked):
-        sheet = _sheet_of(formula[m.start("sheet"):m.end("sheet")] if m.group("sheet") else None, own_sheet)
-        ref = parse_ref(m.group("ref"))
-        if not ref:
+    for r in _refs(formula, own_sheet):
+        if r["external"]:
             continue
+        ref = r["ref"]
         rect = (ref["r1"], ref["c1"], ref["r2"], ref["c2"])
         for a in areas:
-            if normalize_name(a["sheet"]) != normalize_name(sheet) or a in out:
+            if a in out:
                 continue
             arect = (a["r1"], a["c1"], a["r2"], a["c2"])
-            if _intersects(arect, rect) and (ref["whole_column"] or ref["whole_row"] or not _contains(arect, rect)):
+            if not _intersects(arect, rect):
+                continue
+            if r["three_d"] or (normalize_name(a["sheet"]) == normalize_name(r["sheet"]) and (
+                    ref["whole_column"] or ref["whole_row"] or not _contains(arect, rect))):
                 out.append(a)
     for args in find_calls(formula, "OFFSET"):
         if args:
@@ -1333,14 +1408,15 @@ def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iter
 
 
 def _reads_area(formula: str, own_sheet: str, area: dict[str, Any], partly: bool = True) -> bool:
-    """Whether any reference of the formula touches the area (fully or partly)."""
-    masked = mask_strings(formula, mask_sheet_quotes=False)
+    """Whether any reference of the formula touches the area (fully or partly); a span of sheets
+    over the area's cells counts, a reference into another workbook does not."""
     arect = (area["r1"], area["c1"], area["r2"], area["c2"])
-    for m in REF_RE.finditer(masked):
-        sheet = _sheet_of(formula[m.start("sheet"):m.end("sheet")] if m.group("sheet") else None, own_sheet)
-        if normalize_name(sheet) != normalize_name(area["sheet"]):
+    for r in _refs(formula, own_sheet):
+        if r["external"]:
             continue
-        ref = parse_ref(m.group("ref"))
-        if ref and _intersects(arect, (ref["r1"], ref["c1"], ref["r2"], ref["c2"])):
+        ref = r["ref"]
+        if not _intersects(arect, (ref["r1"], ref["c1"], ref["r2"], ref["c2"])):
+            continue
+        if r["three_d"] or normalize_name(r["sheet"]) == normalize_name(area["sheet"]):
             return True
     return False

@@ -1,4 +1,4 @@
-c# Runbook — prep a workbook and run it in Milliman Mind
+# Runbook — prep a workbook and run it in Milliman Mind
 
 End-to-end: take a raw model workbook, fix it with the local **Mind Ready** app,
 then upload it to **Milliman Mind**, convert it, and run it. This reproduces the
@@ -50,8 +50,10 @@ and **Reports** for a written findings report.)*
    - If it stops at **Convert** with a red step, click **Display Error Logs** —
      that message tells you exactly what to fix back in the app (this is how the
      app's rules were built). Fix, re-download, re-upload.
-10. Click **Add template to Milliman Mind** (the blue button). You'll see
-    **"Successfully added model"** and the project opens with a **Run** button.
+10. Click **Add template to Milliman Mind** (the blue button; **Add templates …**
+    when you uploaded several workbooks). You'll see **"Successfully added
+    model"** and the project opens with a **Run** button. If the model has
+    outside input files, upload them now (see *Outside input files* below).
 11. Click **Run** (top-left). Wait for **"Run in Progress"** → the button turns
     **green** and you get **"Calculations completed — Run completed in N seconds
     · Consistent with the audit trail."** The model has run.
@@ -72,3 +74,32 @@ The error log names the cause. Common ones this app now handles automatically:
 broken `#REF!` references (REF-001 → NA() rewrite, opt-in in A4) and unsupported
 functions (FRM-002; note Mind *does* support `FILTER`). Fix in the app, re-download,
 re-upload.
+
+---
+
+## Outside input files (Input Manager)
+
+Some models get data from other files through a macro. The app turns each of those files
+into a **Mind input**: a grid `#IN_<name> /Input` in the model, plus one CSV named
+`IN_<name>.csv` (or a TAB `.txt`) in **Mind inputs.zip** (see `OUTSIDE_INPUTS.md`).
+
+**By hand** (and each quarter, with the new CSVs — no new model upload):
+
+1. Open the project. A model with `/Input` grids has an **Inputs** button left of **Run**.
+2. Click **Inputs**. The window lists model › sheet › grid, with **Status** and **File**.
+3. Leave **Culture** (English - United Kingdom) and **CSV Separator** (Default) as they are.
+4. Click **Browse** and pick the **folder** that holds the CSVs (or drop the files).
+   Mind puts each file on the grid of the same name: `IN_BBA_01.csv` → `IN_BBA_01`.
+5. Every row should show **SUCCESS** and its file. If **Match unmatched inputs** opens, a
+   file's name matches no grid: click Cancel and fix the file name.
+6. Close the window (nothing to save) and **Run**. The run uses the uploaded values,
+   also in a later session.
+
+**Run in Mind does this by itself** once the app has made the Mind inputs: in every
+attempt, after the model is added and before the run, it uploads the folder of CSVs
+(only the `.csv` / `.txt` files) and checks that each one shows SUCCESS. If a file is
+not matched or not accepted, the attempt stops and names the file; the app never picks
+a grid for a file itself. It never changes Culture or CSV Separator: if Mind shows a
+culture that may read a decimal point differently (German, French…) or another
+separator, it uploads nothing and says why. The details are in the loop report, under
+`iterations[n].inputs_upload` (status per grid, unmatched files).

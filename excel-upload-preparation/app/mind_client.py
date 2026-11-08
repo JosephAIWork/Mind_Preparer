@@ -21,14 +21,18 @@ from ``mind_session`` and returns plain dicts so ``app/mind_loop.py`` can run
 unattended:
 
   open_manager -> ensure_folder -> create_blank_project -> open_project
-  -> upload_and_convert -> add_template -> run_model -> template_names
-  -> export_summary -> delete_project (best effort)
+  -> upload_and_convert -> add_template -> upload_inputs (a model with Mind input
+  files only) -> template_names -> run_model -> export_summary -> delete_project
+  (best effort)
 """
 from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -525,11 +529,14 @@ def upload_and_convert(page: Page, workbook: Path, timeout_s: int = 420, shots: 
     return {"success": success, "steps": steps, "errors": errors, "timed_out": time.time() >= end, "text": text[:600]}
 
 
+_ADD_TEMPLATE = re.compile(r"Add templates? to Milliman Mind", re.I)  # plural when several workbooks went up
+
+
 def add_template(page: Page, timeout_s: int = 150) -> bool:
-    """'Add template to Milliman Mind' after a successful conversion; True once
-    the project shows its Run button."""
+    """'Add template to Milliman Mind' ('Add templates ...' after several workbooks) once the
+    conversion succeeded; True once the project shows its Run button."""
     try:
-        page.get_by_role("button", name=re.compile(r"Add template to Milliman Mind", re.I)).first.click(timeout=8000)
+        page.get_by_role("button", name=_ADD_TEMPLATE).first.click(timeout=8000)
     except Exception:
         return False
     end = time.time() + timeout_s
@@ -542,12 +549,420 @@ def add_template(page: Page, timeout_s: int = 150) -> bool:
     return False
 
 
+# --- the Input Manager: Mind input files (outside files made Mind inputs) ----------------------
+# Mapped on the live site 2026-11-08: a model with /Input grids has an "Inputs" button left of Run;
+# it opens a window "Inputs" listing model > sheet > grid with Status and File columns, Culture and
+# CSV Separator boxes and a drop zone whose <input type=file webkitdirectory> takes a FOLDER. Mind
+# matches each file to the grid of the same name (grid IN_X <- IN_X.csv), the row then shows
+# SUCCESS and the file name; nothing to save, the next run uses the imported values.
+INPUT_UPLOAD_SUFFIXES = (".csv", ".txt")
+_INPUTS_BUTTON = re.compile(r"^\s*Inputs\s*$")
+_INPUTS_DROP = "Upload inputs or Drag"  # the window's drop zone: present while the window is open
+_UNMATCHED = "Match unmatched"  # Mind's popup for a file no grid name matches
+_INPUTS_HEADER = re.compile(r"^\s*Element\b.*\bStatus\b.*\bFile\b")
+_INPUT_FILE_NAME = re.compile(r"\.(?:csv|txt|zip|parquet)$", re.I)
+# a grid row's status while it has no file or Mind is still taking it
+INPUT_PENDING_STATUSES = frozenset({"", "-", "NO FILE", "PENDING", "UPLOADING", "IN PROGRESS", "PROCESSING", "LOADING",
+                                    "QUEUED", "WAITING", "VALIDATING", "IMPORTING", "RUNNING", "STARTED"})
+_INPUT_STATUS_WORDS = INPUT_PENDING_STATUSES | {"SUCCESS", "ERROR", "WARNING", "FAILED", "FAILURE", "INVALID",
+                                                "CANCELLED", "CANCELED", "DONE", "COMPLETE", "COMPLETED"}
+# cultures that read numbers as the input files write them (a decimal point, no thousands mark;
+# proven with English - United Kingdom). Under another one (German: '.' groups thousands) 1000.5
+# could silently become 10005, so the files are not uploaded at all.
+_POINT_CULTURE = re.compile(r"^\s*(?:English(?!.*South Africa)|Japanese|Chinese|Korean|Hebrew)\b", re.I)
+_VIS_JS = "const vis=(e)=>{const r=e.getBoundingClientRect();const s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};"
+# the smallest visible window (modal / dialog) whose text holds `marker`
+_BOX_FIND_JS = ("const boxes=[...document.querySelectorAll('.cds--modal,[role=dialog],[role=alertdialog]')].filter(vis)"
+                ".filter(b=>(b.innerText||'').toLowerCase().includes(marker.toLowerCase()));"
+                "boxes.sort((a,b)=>(a.innerText||'').length-(b.innerText||'').length);const box=boxes[0]||null;")
+# its text, and (mark=true) its Cancel / Close button tagged for a click -- never any other button
+_BOX_JS = ("([marker,mark])=>{" + _VIS_JS + _BOX_FIND_JS +
+           "if(!box) return {text:null,marked:'nf'};let marked='no';"
+           "if(mark){const bs=[...box.querySelectorAll('button')].filter(vis);"
+           "const pick=bs.find(b=>/^\\s*(cancel|close)\\s*$/i.test(b.innerText||''))||"
+           "bs.find(b=>/close/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')));"
+           "document.querySelectorAll('[data-mr-close]').forEach(e=>e.removeAttribute('data-mr-close'));"
+           "if(pick){pick.setAttribute('data-mr-close','1');marked='ok';}}"
+           "return {text:box.innerText||'',marked};}")
+# the Inputs window's table: one list of cell texts per visible row (the header row included)
+_INPUT_ROWS_JS = ("()=>{" + _VIS_JS + "const marker='" + _INPUTS_DROP + "';" + _BOX_FIND_JS +
+                  "const root=box||document.body;let rows=[...root.querySelectorAll('tr,[role=row]')];"
+                  "if(!rows.length) rows=[...root.querySelectorAll('*')].filter(e=>getComputedStyle(e).display==='table-row');"
+                  "return rows.filter(vis).map(r=>[...r.children].filter(c=>/^(TD|TH)$/.test(c.tagName)||"
+                  "/cell|header/.test(c.getAttribute('role')||'')||getComputedStyle(c).display==='table-cell')"
+                  ".map(c=>(c.innerText||'').replace(/\\s+/g,' ').trim()));}")
+_INPUT_SETTINGS_JS = ("()=>{const t=(id)=>{const s=document.getElementById(id);if(!s||s.selectedIndex<0)return null;"
+                      "const o=s.options[s.selectedIndex];return o?(o.text||'').trim():null;};"
+                      "return {culture:t('culture'),separator:t('delimiter')};}")
+
+
+def _norm(text: Any) -> str:
+    return unicodedata.normalize("NFKC", str(text or "")).casefold().strip()
+
+
+def _has(text: str, marker: str) -> bool:
+    return marker.casefold() in (text or "").casefold()
+
+
+def input_files(folder: Path | str | None) -> list[Path]:
+    """The Mind input files of `folder`: its .csv / .txt files (not in subfolders, no lock or
+    hidden files), by name."""
+    if not folder:
+        return []
+    p = Path(folder)
+    if not p.is_dir():
+        return []
+    return sorted((f for f in p.iterdir() if f.is_file() and f.suffix.lower() in INPUT_UPLOAD_SUFFIXES
+                   and not f.name.startswith(("~$", "."))), key=lambda f: f.name.casefold())
+
+
+def _settled(status: str | None) -> bool:
+    s = (status or "").strip().upper()
+    return s not in INPUT_PENDING_STATUSES and not s.endswith(("...", "…"))
+
+
+def parse_input_rows(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
+    """The Inputs window's table (cell texts per row, header first) -> one dict per grid row:
+    {model, sheet, grid, status, file}. The header names the columns (Element, Status, File); a
+    row with neither a status nor a file is a model or sheet heading (the first one the model)."""
+    out: list[dict[str, Any]] = []
+    cols: tuple[int, int, int] | None = None
+    model = sheet = None
+    for raw in rows or []:
+        cells = [" ".join(str(c or "").split()) for c in (raw or [])]
+        low = [c.casefold() for c in cells]
+        if cols is None:
+            if "status" in low and "file" in low:
+                cols = (low.index("element") if "element" in low else 0, low.index("status"), low.index("file"))
+            continue
+        e, s, f = cols
+        name, status, file = (cells[i] if i < len(cells) else "" for i in (e, s, f))
+        if status.casefold() == "status" and file.casefold() == "file":
+            continue  # the header again (a sticky copy)
+        if not (status or file):
+            heading = next((c for c in cells if c), "")
+            if heading:
+                if model is None:
+                    model = heading
+                else:
+                    sheet = heading
+            continue
+        if name:
+            out.append({"model": model, "sheet": sheet, "grid": name, "status": status,
+                        "file": None if file.casefold() in ("", "-", "no file") else file})
+    return out
+
+
+def parse_inputs_text(text: str) -> list[dict[str, Any]]:
+    """The same rows read from the page text (when the table cannot be read): after the
+    'Element  DL  Status  File ...' header, a grid name is followed by its status (SUCCESS, -,
+    ...) and its file ('No file' or a name); the other names are the model and sheet headings."""
+    lines = (text or "").splitlines()
+    start = next((i for i, ln in enumerate(lines) if _INPUTS_HEADER.match(ln)), None)
+    if start is None:
+        return []
+    tokens: list[str] = []
+    for ln in lines[start + 1:]:
+        if ln.strip() in ("Culture", "CSV Separator") or _has(ln, _INPUTS_DROP):
+            break
+        tokens += [t.strip() for t in ln.split("\t") if t.strip()]
+
+    def is_status(t: str) -> bool:
+        return t == "-" or (t == t.upper() and t in _INPUT_STATUS_WORDS)
+
+    out: list[dict[str, Any]] = []
+    model = sheet = None
+    i = 0
+    while i < len(tokens):
+        if i + 1 < len(tokens) and is_status(tokens[i + 1]):
+            file, j = None, i + 2
+            if j < len(tokens) and (tokens[j].casefold() == "no file" or _INPUT_FILE_NAME.search(tokens[j])):
+                file = None if tokens[j].casefold() == "no file" else tokens[j]
+                j += 1
+            out.append({"model": model, "sheet": sheet, "grid": tokens[i], "status": tokens[i + 1], "file": file})
+            i = j
+            continue
+        if model is None:
+            model = tokens[i]
+        else:
+            sheet = tokens[i]
+        i += 1
+    return out
+
+
+def _read_input_rows(page: Page, text: str | None = None) -> list[dict[str, Any]]:
+    try:
+        rows = parse_input_rows(page.evaluate(_INPUT_ROWS_JS))
+    except Exception:
+        rows = []
+    return rows or parse_inputs_text(body_text(page) if text is None else text)
+
+
+def _row_for(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    """The grid row that took the file `name`: by the name in its File column (with or without
+    the extension), else the grid of the same name (Mind matches a file to the grid it is named
+    after) unless that grid shows another file."""
+    full, stem = _norm(name), _norm(Path(name).stem)
+    for r in rows:
+        f = re.split(r"[\\/]", str(r.get("file") or ""))[-1]
+        if f and (_norm(f) == full or _norm(Path(f).stem) == stem):
+            return r
+    for r in rows:
+        f = re.split(r"[\\/]", str(r.get("file") or ""))[-1]
+        if _norm(r.get("grid")) == stem and not _INPUT_FILE_NAME.search(f):
+            return r
+    return None
+
+
+def _inputs_settled(rows: list[dict[str, Any]], expect: list[str]) -> bool:
+    """Mind has finished with the files: each one that has a row (a row showing its name, or the
+    grid named after it -- listed from the moment the window opens) shows a final status. A file
+    with no row has no grid to go to: waiting longer changes nothing."""
+    return bool(rows) and all((r := _row_for(rows, n)) is None or _settled(r["status"]) for n in expect)
+
+
+def _inputs_box(page: Page, marker: str, mark: bool = False) -> dict[str, Any]:
+    try:
+        return page.evaluate(_BOX_JS, [marker, mark]) or {}
+    except Exception:
+        return {}
+
+
+def _close_box(page: Page, marker: str, tries: int = 3) -> bool:
+    """Close the window whose text holds `marker` with its own Cancel / Close button (Escape
+    when it has none). True once that text has left the page."""
+    for _ in range(tries):
+        if not _has(body_text(page), marker):
+            return True
+        kill_tour(page)
+        clicked = False
+        if _inputs_box(page, marker, mark=True).get("marked") == "ok":
+            try:
+                page.locator("[data-mr-close='1']").first.click(timeout=4000)
+                clicked = True
+            except Exception:
+                pass
+        if not clicked:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        _wait(page, 1500)
+    return not _has(body_text(page), marker)
+
+
+def _inputs_excerpt(text: str, popup: str = "") -> str:
+    """The window's rows as one line (the Culture list left out), the popup's text first."""
+    lines = (text or "").splitlines()
+    start = next((i for i, ln in enumerate(lines) if _INPUTS_HEADER.match(ln)), 0)
+    keep = []
+    for ln in lines[start:]:
+        if ln.strip() in ("Culture", "CSV Separator") or _has(ln, _INPUTS_DROP):
+            break
+        if ln.strip():
+            keep.append(" ".join(ln.split()))
+    s = " | ".join(keep)
+    if popup:
+        s = " ".join(popup.split())[:300] + " || " + s
+    return s[:600]
+
+
+def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | None = None) -> dict[str, Any]:
+    """Upload the Mind input files of `folder` (.csv / .txt) through the project's Inputs window
+    (the Input Manager), once the model has been added. Culture and CSV Separator are never
+    changed; when they would not read the files as written (a decimal point; Default separator)
+    nothing is uploaded. Mind matches each file to the /Input grid of the same name; a file it
+    cannot match opens "Match unmatched inputs": the file is reported and the popup cancelled --
+    never a guessed match. The window is closed at the end (nothing to save).
+
+    -> {"ok": every file is on its grid with SUCCESS, "statuses": {grid: status} for every grid
+    listed, "unmatched": [files no grid took], "failed": {grid: status} for a file Mind did not
+    accept, "waiting": [files still not taken at the time limit], "rows": [{model, sheet, grid,
+    status, file}], "files": [names uploaded], "reason": one plain sentence when not ok, "text": the
+    window's rows (first 600 characters), "timed_out", "closed", "seconds", "culture", "separator"}."""
+    t0 = time.time()
+    folder = Path(folder)
+    files = input_files(folder)
+    res: dict[str, Any] = {"ok": False, "statuses": {}, "unmatched": [], "failed": {}, "waiting": [], "rows": [],
+                           "files": [f.name for f in files], "reason": None, "text": "", "timed_out": False,
+                           "closed": True, "seconds": None, "culture": None, "separator": None}
+    if not files:
+        res.update(reason=f"no .csv or .txt file in {folder}", seconds=0.0)
+        return res
+    # the input box takes a whole folder: anything else in it (a zip, a subfolder) would go up too,
+    # so a folder holding more than the input files is copied, input files only, to a clean one
+    stage = None
+    upload_dir = folder
+    if any(p not in files for p in folder.iterdir()):
+        stage = tempfile.TemporaryDirectory(prefix="mind_inputs_", ignore_cleanup_errors=True)
+        upload_dir = Path(stage.name) / (folder.name or "inputs")
+        upload_dir.mkdir(parents=True)
+        for f in files:
+            shutil.copy2(f, upload_dir / f.name)
+    try:
+        _upload_inputs(page, upload_dir, res, t0 + timeout_s, timeout_s, shots)
+    finally:
+        res["seconds"] = round(time.time() - t0, 1)
+        if stage is not None:  # only now: the browser reads the files while it uploads them
+            stage.cleanup()
+    return res
+
+
+def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: float, timeout_s: int, shots: Path | None) -> None:
+    names: list[str] = res["files"]
+    # 1. open the window: the Inputs button (only a model with /Input grids has one)
+    open_by = min(deadline, time.time() + 30)
+    seen_button = False
+    last_click = None
+    while not _has(body_text(page), _INPUTS_DROP):
+        if time.time() >= open_by:
+            res["closed"] = _close_box(page, _INPUTS_DROP)
+            res["reason"] = ("Mind's Inputs window did not open" if seen_button else
+                             "Mind shows no Inputs button: the model in Mind has no /Input grid")
+            return
+        kill_tour(page)
+        btn = page.get_by_role("button", name=_INPUTS_BUTTON)
+        if btn.count():
+            seen_button = True
+            if last_click is None or time.time() - last_click >= 8:
+                last_click = time.time()
+                try:
+                    btn.first.click(timeout=5000)
+                except Exception:
+                    pass
+        _wait(page, 2000)
+    kill_tour(page)
+    try:
+        sel = page.evaluate(_INPUT_SETTINGS_JS) or {}
+        res["culture"], res["separator"] = sel.get("culture"), sel.get("separator")
+    except Exception:
+        pass
+    if shots:
+        screenshot(page, shots / "inputs_before.png")
+    # Culture and CSV Separator stay as Mind shows them; the files are only handed over when those
+    # read them as written (one header row, a decimal point, commas -- TAB in a .txt)
+    culture, separator = res["culture"], res["separator"]
+    if (culture and not _POINT_CULTURE.match(culture)) or (separator and separator.strip().casefold() != "default"):
+        res["reason"] = (f"Mind's Inputs window would read the files with Culture '{culture or '?'}' and CSV Separator "
+                         f"'{separator or '?'}': the input files are written for English - United Kingdom and Default, "
+                         "so they were not uploaded (their values could change)")
+        res["closed"] = _close_box(page, _INPUTS_DROP)
+        return
+    # 2. hand Mind the folder (the input has webkitdirectory: it must be a folder, not files)
+    try:
+        page.set_input_files("input[type=file][webkitdirectory]", str(upload_dir))
+    except Exception as exc:
+        res["reason"] = f"could not hand the folder of input files to Mind: {exc}"[:300]
+        res["closed"] = _close_box(page, _INPUTS_DROP)
+        return
+    # 3. wait until Mind has taken every file (or says it cannot match one)
+    expect = list(names)
+    popup = ""
+    popups = 0
+    stuck = None  # why the wait ended before Mind had finished
+    rows: list[dict[str, Any]] = []
+    text = ""
+    while True:
+        _wait(page, 3000)
+        kill_tour(page)
+        text = body_text(page)
+        if _has(text, _UNMATCHED):
+            popups += 1
+            # the files the popup names (its own text only: the page's text also lists matched files)
+            now = _inputs_box(page, _UNMATCHED).get("text") or ""
+            at = re.search(re.escape(_UNMATCHED), text, re.I)
+            popup = popup or now or (text[at.start():at.start() + 300] if at else "")
+            expect = [n for n in expect if not re.search(rf"(?<![\w.-]){re.escape(_norm(n))}(?![\w.-])", _norm(now))]
+            if shots:
+                screenshot(page, shots / "inputs_unmatched.png")
+            closed = _close_box(page, _UNMATCHED)  # Cancel: the app never guesses a match
+            if not closed and popups >= 3:
+                stuck = "Mind's 'Match unmatched inputs' window would not close"
+                break
+        elif not _has(text, _INPUTS_DROP):
+            stuck = "the Inputs window closed before Mind had shown every file"
+            break
+        else:
+            rows = _read_input_rows(page, text)
+            if _inputs_settled(rows, expect):
+                break
+        if time.time() >= deadline:
+            res["timed_out"] = True
+            break
+    if shots:
+        screenshot(page, shots / "inputs_after.png")
+    # 4. what Mind shows, file by file
+    for r in rows:
+        key = r["grid"] if r["grid"] not in res["statuses"] else f"{r.get('sheet') or '?'} > {r['grid']}"
+        res["statuses"][key] = r["status"] or "-"
+    res["rows"] = rows
+    unfinished = res["timed_out"] or stuck is not None
+    for n in names:
+        r = _row_for(rows, n)
+        if n not in expect:
+            res["unmatched"].append(n)  # named by the popup
+        elif r is None or not _settled(r["status"]):
+            (res["waiting"] if unfinished else res["unmatched"]).append(n)
+        elif r["status"].strip().upper() != "SUCCESS":
+            res["failed"][r["grid"]] = r["status"]
+    res["text"] = _inputs_excerpt(text, popup)
+    parts = [stuck] if stuck else []
+    if res["unmatched"]:
+        parts.append("Mind found no /Input grid named like " + ", ".join(res["unmatched"]))
+    if res["failed"]:
+        parts.append("Mind did not accept " + ", ".join(f"{g} ({s})" for g, s in res["failed"].items()))
+    if res["timed_out"]:
+        parts.append(f"Mind had not finished after {timeout_s} s")
+    if res["waiting"]:
+        parts.append("still waiting for " + ", ".join(res["waiting"]))
+    if not parts and not rows:
+        parts.append("the Inputs window's rows could not be read")
+    res["reason"] = "; ".join(parts) or None
+    res["ok"] = res["reason"] is None and all(
+        (r := _row_for(rows, n)) is not None and r["status"].strip().upper() == "SUCCESS" for n in names)
+    # 5. close the window: nothing to save, the next run uses the imported values
+    if _has(body_text(page), _UNMATCHED):
+        _close_box(page, _UNMATCHED)
+    res["closed"] = _close_box(page, _INPUTS_DROP)
+
+
+def close_open_windows(page: Page, tries: int = 4) -> bool:
+    """Close any window still covering the project (the Inputs window can stay open: its header
+    then takes the click meant for Run). Clicks the VISIBLE "Close modal" button -- a hidden modal
+    of the page has one too -- else presses Escape. True once no full-screen window is left."""
+    for _ in range(tries):
+        if not page.locator(".cds--modal.is-visible, cds-modal.full-screen-cds-modal .cds--modal-header").count():
+            return True
+        clicked = False
+        closers = page.get_by_role("button", name=re.compile(r"Close modal", re.I))
+        for j in range(closers.count()):
+            try:
+                if closers.nth(j).is_visible():
+                    closers.nth(j).click(timeout=4000)
+                    clicked = True
+                    break
+            except Exception:
+                pass
+        if not clicked:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        _wait(page, 1500)
+    return not page.locator(".cds--modal.is-visible").count()
+
+
 def run_model(page: Page, timeout_s: int = 300, shots: Path | None = None) -> dict[str, Any]:
     """Click Run and wait. {'completed', 'audit_consistent', 'seconds', 'text'}."""
+    close_open_windows(page)
     btn = page.get_by_role("button", name=re.compile(r"^\s*Run\s*$"))
     if not btn.count():
         return {"completed": False, "audit_consistent": False, "seconds": None, "text": "no Run button"}
-    btn.first.click(timeout=8000)
+    try:
+        btn.first.click(timeout=8000)
+    except Exception:
+        close_open_windows(page)
+        btn.first.click(timeout=8000)
     _wait(page, 2000)
     kill_tour(page)
     if page.locator(".cds--modal.is-visible").count():
