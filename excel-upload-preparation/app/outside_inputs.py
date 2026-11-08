@@ -472,10 +472,13 @@ def repair_dialog_text(text: str) -> str:
     if not text or text.isascii():
         return text
     try:
+        import codecs
         import ctypes
 
-        acp = f"cp{ctypes.windll.kernel32.GetACP()}"
-        raw = text.encode(acp)
+        acp = int(ctypes.windll.kernel32.GetACP())
+        # Windows' own conversion back to bytes: the bytes the code page leaves undefined came in as
+        # U+0081 / U+F88E ...; Python's cp1255 codec refuses those, Windows maps them back exactly
+        raw = codecs.code_page_encode(acp, text, "strict")[0]
     except Exception:
         return text
     # garbled double-byte text is full of the characters the system code page puts on bytes
@@ -483,22 +486,32 @@ def repair_dialog_text(text: str) -> str:
     c1 = set()
     for b in range(0x80, 0xA0):
         try:
-            c1.add(bytes([b]).decode(acp))
+            c1.add(codecs.code_page_decode(acp, bytes([b]), "strict", True)[0])
         except Exception:
             pass
     non_ascii = [ch for ch in text if ord(ch) > 127]
     if not non_ascii or sum(ch in c1 for ch in non_ascii) / len(non_ascii) < 0.2:
         return text
-    best, best_score = text, 0
+    best, best_key = text, None
     for cp in ("cp932", "cp936", "cp949", "cp950"):
         try:
             cand = raw.decode(cp, errors="replace")
         except Exception:
             continue
         cjk = sum(1 for ch in cand if "\u3040" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7af")
-        score = cjk - 3 * cand.count("\ufffd")
-        if score > best_score:
-            best, best_score = cand, score
+        if not cjk:
+            continue
+        # a reading that is valid all through beats one with holes; then the script that only that
+        # code page has (kana for Japanese, Hangul for Korean: GBK reads Shift-JIS bytes as Chinese
+        # without a single hole); then the most East Asian characters
+        # (Korean read from Japanese bytes is all Hangul without a hole too: any kana in a hole-free
+        # Japanese reading wins; real Korean bytes leave holes when read as Japanese)
+        kana = sum(1 for ch in cand if "\u3040" <= ch <= "\u30ff")
+        hangul = sum(1 for ch in cand if "\uac00" <= ch <= "\ud7af")
+        own = 2 if (cp == "cp932" and kana) else 1 if (cp == "cp949" and hangul) else 0
+        key = (-cand.count("\ufffd"), own, cjk)
+        if best_key is None or key > best_key:
+            best, best_key = cand, key
     return best
 
 
@@ -764,10 +777,13 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
         t0 = time.time()
         try:
             xl.Run(f"'{wb.Name}'!{macro}")
-        except Exception as exc:  # `End` in the macro, or a VBA error
-            report["error"] = str(exc)[:300]
+        except Exception as exc:  # `End` in the macro (after its message box), or a VBA error
+            report["run_exception"] = str(exc)[:300]
         report["seconds"] = round(time.time() - t0, 1)
         stop.set()
+        if report.get("run_exception") and not found:
+            # no message box explains the stop: the macro itself failed
+            report["error"] = "The workbook's import macro stopped with an error: " + report["run_exception"]
         for d in found:
             d["message_repaired"] = repair_dialog_text(d.get("message") or "")
             src = source_of_message(d["message_repaired"], messages or [])
