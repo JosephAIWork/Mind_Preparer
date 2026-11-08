@@ -453,7 +453,13 @@ class _Events:
 
     def OnSheetChange(self, sh, target):  # noqa: N802
         try:
-            self.log.append(("change", str(sh.Parent.Name), str(sh.Name), str(target.Address).replace("$", "")))
+            rng = target
+            # Columns("AB:DP").ClearContents / Cells.ClearContents: the part of the sheet in use
+            if int(target.Rows.Count) >= 1048576 or int(target.Columns.Count) >= 16384:
+                inter = sh.Application.Intersect(target, sh.UsedRange)
+                if inter is not None:
+                    rng = inter
+            self.log.append(("change", str(sh.Parent.Name), str(sh.Name), str(rng.Address).replace("$", "")))
         except Exception:
             pass
 
@@ -708,9 +714,21 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
     timed_out = {"v": False}
     try:
         xl, pid = _new_excel(macros=True)
+        found: list[dict[str, Any]] = []
+
+        def on_timeout() -> None:
+            timed_out["v"] = True
+            from .excel_com import kill_excel
+
+            kill_excel(pid)
+
+        # from here on every message box is answered and the whole run has a time limit -- the open too
+        watcher = threading.Thread(target=_dialog_watch, args=(pid, stop, found, time.time() + timeout_s, on_timeout), daemon=True)
+        watcher.start()
         ev = win32com.client.WithEvents(xl, _Events)
         ev.log = []
         say("Opening the workbook to run its import macro")
+        xl.EnableEvents = False  # the model's own Workbook_Open does not run: only its import macro does
         wb = xl.Workbooks.Open(str(copy), UpdateLinks=0)
         try:
             xl.Calculation = xlCalculationManual
@@ -742,16 +760,6 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
             # a missing file: a path that does not exist, so the macro takes its own "not found" branch
             cell.Value2 = str(picked.resolve()) if picked else str(run_dir / "not-uploaded" / (expected or "missing.xlsm"))
         ev.log.clear()
-        found: list[dict[str, Any]] = []
-
-        def on_timeout() -> None:
-            timed_out["v"] = True
-            from .excel_com import kill_excel
-
-            kill_excel(pid)
-
-        watcher = threading.Thread(target=_dialog_watch, args=(pid, stop, found, time.time() + timeout_s, on_timeout), daemon=True)
-        watcher.start()
         say(f"Running the workbook's import macro {macro}")
         t0 = time.time()
         try:
@@ -777,8 +785,15 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
             e["opened"] = True
             e["areas"] = info["areas"]
             e["cleared"] = info["cleared"]
+        # a box with one button is information ("完了しました"): pressing it changes nothing (its OK
+        # button carries id 2 in an MB_OK box); a question answered No / Cancel / Abort is an early stop
         report["stopped_early"] = any(e["file"] and not e["opened"] for e in report["files"]) or any(
-            d.get("pressed_id") not in (1, None) or len(d.get("buttons") or []) > 1 for d in found)
+            len(d.get("buttons") or []) > 1 and d.get("pressed_id") in (2, 3, 7) for d in found)
+        picked = [e for e in report["files"] if e["file"]]
+        wrote = any(item[0] == "change" and item[1] == wb.Name for item in ev.log)
+        if picked and not any(e["opened"] for e in picked) and wrote and not report["error"]:
+            report["error"] = ("The macro read the files without opening them as workbooks (Open ... For Input, a query table ...): "
+                               "the app cannot yet tell which data came from which file.")
         # --- put back what must not change: the path formulas; for a file nobody picked, the
         # row of the import table (status cell) and the area the macro cleared get the upload's own content
         for e in report["files"]:
@@ -873,16 +888,27 @@ def analyse_events(log: list[tuple], book: str, file_names: set[str]) -> dict[st
                     break
             else:
                 areas.append({"sheet": sheet, "_rect": rect})
-        start = windows[i - 1]["pos"] if i else -1
+        w["areas"] = areas
+    # each range cleared outside a file's window belongs to the FIRST later file that writes there
+    # (a macro may clear every area first and import afterwards)
+    owner: dict[int, int] = {}
+    for k, (pos, sheet, rect) in enumerate(outside):
+        for i, w in enumerate(windows):
+            if w["pos"] > pos and any(s2 == sheet and _overlap_or_touch(r2, rect) for s2, r2 in w["writes"]):
+                owner[k] = i
+                break
+    for i, w in enumerate(windows):
+        areas = w["areas"]
         cleared = []
         for k, (pos, sheet, rect) in enumerate(outside):
-            if start < pos < w["pos"]:
-                for a in areas:
-                    if a["sheet"] == sheet and _overlap_or_touch(a["_rect"], rect):
-                        a["_rect"] = _union(a["_rect"], rect)
-                        cleared.append({"sheet": sheet, "ref": rect_ref(rect)})
-                        used_clears.add(k)
-                        break
+            if owner.get(k) != i:
+                continue
+            for a in areas:
+                if a["sheet"] == sheet and _overlap_or_touch(a["_rect"], rect):
+                    a["_rect"] = _union(a["_rect"], rect)
+                    cleared.append({"sheet": sheet, "ref": rect_ref(rect)})
+                    used_clears.add(k)
+                    break
         # pieces written in any order (E, C, D) or joined by the cleared range: one area each
         merged = True
         while merged:
@@ -902,7 +928,11 @@ def analyse_events(log: list[tuple], book: str, file_names: set[str]) -> dict[st
             a.update({"ref": rect_ref((r1, c1, r2, c2)), "r1": r1, "c1": c1, "r2": r2, "c2": c2,
                       "rows": r2 - r1 + 1, "cols": c2 - c1 + 1})
         files[w["name"]] = {"areas": areas, "cleared": cleared}
-    orphans = [(sheet, rect) for k, (pos, sheet, rect) in enumerate(outside) if k not in used_clears]
+    # a range cleared for no picked file (a file not picked): put back from the upload -- but never
+    # over cells a picked file wrote
+    written = [(s2, r2) for w in windows for s2, r2 in w["writes"]]
+    orphans = [(sheet, rect) for k, (pos, sheet, rect) in enumerate(outside)
+               if k not in used_clears and not any(s2 == sheet and _intersects(r2, rect) for s2, r2 in written)]
     return {"files": files, "orphans": orphans}
 
 
@@ -941,8 +971,13 @@ def plan_mind_inputs(report: dict[str, Any], sheet_names: Iterable[str]) -> list
     taken = {normalize_name(s) for s in sheet_names}
     out = []
     k = 0
+    seen_areas: dict[tuple[str, str], int] = {}
     for e in report.get("files", []):
         for a in e.get("areas", []):
+            key = (normalize_name(a["sheet"]), a["ref"])
+            if key in seen_areas:  # a later file overwrote the same area: its data is what stays
+                out[seen_areas[key]]["file"] = e.get("file")
+                continue
             k += 1
             base = "IN_" + (_ascii_name(a["sheet"]) or f"FILE{k}")
             name, n = base[:31], 2
@@ -950,6 +985,7 @@ def plan_mind_inputs(report: dict[str, Any], sheet_names: Iterable[str]) -> list
                 name = f"{base[:28]}_{n}"
                 n += 1
             taken.add(normalize_name(name))
+            seen_areas[key] = len(out)
             out.append({"name": name, "file": e.get("file"), **{x: a[x] for x in ("sheet", "ref", "r1", "c1", "r2", "c2", "rows", "cols")}})
     return out
 

@@ -963,3 +963,28 @@ def test_tokyo_fake_inputs_end_to_end(tmp_path):
 
     numbers = compare_workbooks(imported, final, Moves())
     assert numbers["ran"] and numbers["clean"] is True, numbers["verdict"]
+
+
+def test_analyse_events_pairs_clears_made_first_with_the_file_that_later_writes_there():
+    """A macro that clears every input area first and imports afterwards (review finding): each
+    clear belongs to the file that later writes there -- none is put back over the new data."""
+    book = "tool.xlsm"
+    log = [("change", book, s, "AB3:DP1202") for s in ("BBA_01", "BBA_02", "BBA_03")]
+    for n, s in enumerate(("BBA_01", "BBA_02", "BBA_03"), start=1):
+        log += [("open", f"C:/x/f{n}.xlsm"), ("change", book, s, "AB3:DP1203"), ("close", f"C:/x/f{n}.xlsm")]
+    res = analyse_events(log, book, {"f1.xlsm", "f2.xlsm", "f3.xlsm"})
+    assert res["orphans"] == []
+    for n, s in enumerate(("BBA_01", "BBA_02", "BBA_03"), start=1):
+        assert [(a["sheet"], a["ref"]) for a in res["files"][f"f{n}.xlsm"]["areas"]] == [(s, "AB3:DP1203")]
+
+
+def test_a_clear_for_a_file_not_picked_is_an_orphan_but_never_over_picked_data():
+    book = "tool.xlsm"
+    log = [("change", book, "BBA_02", "AB3:DP1202"), ("change", book, "Ctrl_01", "G36"),  # no file for BBA_02
+           ("change", book, "BBA_03", "AB3:DP1202"), ("open", "C:/x/f3.xlsm"),
+           ("change", book, "BBA_03", "AB3:DP1203"), ("close", "C:/x/f3.xlsm")]
+    res = analyse_events(log, book, {"f3.xlsm"})
+    assert res["orphans"] == [("BBA_02", (3, 28, 1202, 120))]
+    # the same clear when a picked file later wrote over it is not put back
+    log2 = log + [("open", "C:/x/f2.xlsm"), ("change", book, "BBA_02", "AB3:DP1203"), ("close", "C:/x/f2.xlsm")]
+    assert analyse_events(log2, book, {"f2.xlsm", "f3.xlsm"})["orphans"] == []
