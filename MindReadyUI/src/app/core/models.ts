@@ -78,7 +78,7 @@ export interface ReadinessBlocking {
   status: Status;
   message: string;
   location?: Record<string, unknown>;
-  fix: "prep" | "prep_skipped" | "assistant";
+  fix: "prep" | "prep_skipped" | "assistant" | "outside_inputs";  // outside_inputs: the "Outside files" card brings them in
   action_id?: string | null;
   sites?: unknown;
 }
@@ -136,6 +136,11 @@ export interface SessionStart {
   /** 1.11.7: what Prep (and Do everything) does with the pivot tables, and the choices */
   pivot_mode?: PivotMode;
   pivot_modes?: Record<PivotMode, string>;
+  /** the outside files the workbook's macros open (null: they open none); from the scan of the upload */
+  outsideInputs?: OutsideInputs | null;
+  /** the upload's model workbook and the input files picked with it (several files picked at once) */
+  main?: string;
+  inputs?: InputFile[];
 }
 
 export type PivotMode = "formulas" | "values";
@@ -148,6 +153,8 @@ export interface PendingUpload {
   version: Version;
   versions: Version[];
   scan: ScanStatus;
+  main?: string;
+  inputs?: InputFile[];
 }
 
 export interface ApplyResult {
@@ -715,9 +722,12 @@ export interface AutoFixLeft {
   tried: boolean;
 }
 
+/** The steps of "Do everything", in order ("outside" only when the model's macros open outside files). */
+export type ChainStepId = "outside" | "fixAll" | "prepare" | "loop" | "recalc";
+
 /** 1.11.6: GET .../estimate -- how long "Do everything" may take, per step (seconds). */
 export interface ChainEstimateStep {
-  id: "fixAll" | "prepare" | "loop" | "recalc";
+  id: ChainStepId;
   low_s: number;
   mid_s: number;
   high_s: number;
@@ -738,4 +748,234 @@ export interface FeedbackMessage {
   email: string;
   file_name: string;
   assistant: boolean;
+}
+
+// ---- outside input files: a model whose macros open other files (app/outside_inputs.py) --------------
+/** One row of the model's import table (a cell that holds an outside file's path), with the picked file. */
+export interface OutsideInputRow {
+  /** "Sheet!A1": the cell that holds the path */
+  cell: string;
+  /** the exact file name the model expects, when Excel's stored value shows it */
+  expected: string | null;
+  /** the row's key values (e.g. "BBA_01") */
+  keys: string[];
+  /** the sheet the macro fills from this file */
+  target_sheet: string | null;
+  /** the picked file that goes with this row (null: missing) */
+  file: string | null;
+  how: "exact" | "key" | null;
+  /** the picked files that could fit, when more than one does */
+  candidates: string[];
+}
+
+/** The outside files the workbook's macros open, matched with the files picked with it
+ *  (in the scan answer and GET /api/sessions/{id}; null when the macros open none). */
+export interface OutsideInputs {
+  imports: boolean;
+  macro: string | null;
+  calls: { procedure: string; call: string; line: string }[];
+  rows: OutsideInputRow[];
+  matched: number;
+  /** "Sheet!A1" of the rows without a file */
+  missing: string[];
+  /** picked files no row wants */
+  extra: string[];
+  /** one plain sentence: "6 of 6 input files matched." */
+  summary: string;
+  /** the current version has the files brought in */
+  brought_in: boolean;
+}
+
+export interface InputFile {
+  name: string;
+  bytes: number;
+}
+
+export interface OutsideImportFile {
+  cell: string;
+  file: string | null;
+  expected: string | null;
+  exact: boolean;
+  opened: boolean;
+  areas: { sheet: string; ref: string; rows?: number; cols?: number }[];
+  cleared?: unknown[];
+}
+
+/** What the model's own import macro did with the picked files (run_import). */
+export interface OutsideImportReport {
+  macro: string;
+  seconds: number | null;
+  files: OutsideImportFile[];
+  /** areas put back from the upload: the macro cleared them for a file nobody picked */
+  kept: { sheet: string; ref: string }[];
+  /** the message boxes the macro showed, answered by the app */
+  dialogs: { title?: string; message?: string; buttons?: string[]; pressed?: string | null }[];
+  stopped_early: boolean;
+  error: string | null;
+  saved?: string | null;
+}
+
+export interface MindInputMade {
+  name: string;
+  sheet: string;
+  ref: string;
+  file?: string | null;
+  rows: number;
+  cols: number;
+  /** the CSV's file name (a download of the session) */
+  csv: string;
+  separator?: string;
+  readers?: number;
+}
+
+/** The Mind inputs made from the import areas, and the areas that stay inside the model (apply_mind_inputs). */
+export interface MindInputsReport {
+  inputs: MindInputMade[];
+  kept: { sheet: string; ref: string; name?: string; why: string }[];
+  formulas_changed: number;
+  names_changed: number;
+  sums_split?: number;
+  saved?: string | null;
+}
+
+export interface OutsideRunResult {
+  import?: OutsideImportReport | null;
+  mindInputs?: MindInputsReport | null;
+  versions: string[];
+  download?: { zip: string; files: string[] } | null;
+  /** one plain line: "6 outside files brought in; 6 Mind inputs made (IN_BBA_01, ...); no computed value changed." */
+  summary: string;
+  /** the comparison of every computed value before and after the Mind inputs (when it ran) */
+  numbers?: { ran?: boolean; clean?: boolean | null; verdict?: string } | null;
+  /** what the user should know, in plain words (a file not picked, an area that stays inside the model) */
+  notes?: string[];
+}
+
+/** GET .../outside-inputs: the background job that brings the outside files in. */
+export interface OutsideRunStatus {
+  outsideInputs: OutsideInputs | null;
+  running: boolean;
+  /** the stage in words ("Running the workbook's import macro") */
+  stage: string | null;
+  result: OutsideRunResult | null;
+  error: string | null;
+  /** the latest progress line of the stage, and the seconds since the job started */
+  message?: string | null;
+  elapsed_s?: number;
+}
+
+/** The model workbook itself (the main file of an upload). */
+export const WORKBOOK_FILE_RE = /\.(xlsx|xlsm|xlsb)$/i;
+/** What a model's input file may be (INPUT_FILE_EXTENSIONS of app/outside_inputs.py). */
+export const INPUT_FILE_RE = /\.(xlsx|xlsm|xlsb|xls|csv|txt|prn)$/i;
+/** The File Explorer filter: the model and its input files. */
+export const PICK_ACCEPT = ".xlsx,.xlsm,.xlsb,.xls,.csv,.txt";
+
+/** "a, b, c and 2 more" */
+export function nameList(names: string[], max = 3): string {
+  return names.slice(0, max).join(", ") + (names.length > max ? ` and ${names.length - max} more` : "");
+}
+
+/** How the server compares two file names (NFKC: full-width （１） = (1); case ignored). */
+function sameName(name: string): string {
+  return name.normalize("NFKC").toLowerCase().trim();
+}
+
+/** Why these input files cannot be sent (not an Excel or text file, the same name twice), or "". */
+export function inputFilesProblem(names: string[]): string {
+  const bad = names.filter((n) => !INPUT_FILE_RE.test(n));
+  if (bad.length) return `${nameList(bad)} ${bad.length === 1 ? "is not an Excel or text file" : "are not Excel or text files"}: pick .xlsx, .xlsm, .xlsb, .xls, .csv or .txt files.`;
+  const seen = new Set<string>();
+  for (const n of names) {
+    const k = sameName(n);
+    if (seen.has(k)) return `Two files are named ${n}: pick only one of them.`;
+    seen.add(k);
+  }
+  return "";
+}
+
+/** Why the files picked on the upload screen cannot be sent, or "": one workbook (as before), or the
+ *  model workbook together with its input files (the server finds which one is the model). */
+export function pickedFilesProblem(names: string[]): string {
+  if (names.length <= 1) return names.length && !WORKBOOK_FILE_RE.test(names[0]) ? "Choose an .xlsx, .xlsm or .xlsb workbook." : "";
+  if (!names.some((n) => WORKBOOK_FILE_RE.test(n))) return "Pick the model workbook (.xlsx, .xlsm or .xlsb) together with its input files.";
+  return inputFilesProblem(names);
+}
+
+/** A row of the import table in words: the file name the model expects, else the row's key. */
+export function outsideRowLabel(r: OutsideInputRow): string {
+  return r.expected || (r.keys ?? []).filter(Boolean).join(" / ") || r.cell;
+}
+
+/** The outcome of "Bring in the outside files" in plain words, and whether Do everything may go on.
+ *  It stops when the model's macro did not read every picked file (a file it did not open, or a
+ *  question the app answered No), or when a computed value changed (values must never change).
+ *  An area that stays inside the model is reported, not a stop. */
+export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" | "warn" | "error"; line: string; detail: string } {
+  const imp = r.import;
+  const made = r.mindInputs;
+  const picked = (imp?.files ?? []).filter((f) => f.file);
+  const notRead = picked.filter((f) => !f.opened).map((f) => f.file as string);
+  const dialogs = imp?.dialogs ?? [];
+  const answer = (p: string | null | undefined) => (p ?? "").replace(/&/g, "").split("(")[0].trim();
+  const count = (n: number | null | undefined) => Number(n ?? 0).toLocaleString("en-US");
+  const declined = dialogs.find((d) => d.pressed && answer(d.pressed).toUpperCase() !== "OK");
+  const stopped = !!imp?.stopped_early;
+  const changed = !!r.numbers?.ran && r.numbers.clean === false;
+  const kept = made?.kept ?? [];
+  const inputs = made?.inputs ?? [];
+  const notes = (r.notes ?? []).filter(Boolean);
+  const line = !stopped
+    ? r.summary || `${inputs.length} Mind input${inputs.length === 1 ? "" : "s"} made`
+    : notRead.length
+      ? `The import macro stopped before it read every file (not read: ${nameList(notRead)})`
+      : declined
+        ? `The import macro asked a question and the app answered ${answer(declined.pressed)}, so it may have stopped early`
+        : "The import macro stopped early";
+  // the server's notes say in words what the reports hold; without them, the reports are read here
+  const own = [
+    imp?.error ? `the macro said: ${imp.error.slice(0, 120)}` : "",
+    imp?.kept?.length ? `the model keeps its own data in ${nameList(imp.kept.map((k) => `${k.sheet}!${k.ref}`))} (no file picked)` : "",
+    kept.length ? `stays inside the model: ${kept.slice(0, 2).map((k) => `${k.sheet}!${k.ref} (${k.why})`).join("; ")}${kept.length > 2 ? `; … ${kept.length - 2} more` : ""}` : "",
+  ];
+  const detail = [
+    stopped ? r.summary : "",
+    imp ? `${picked.length - notRead.length} of ${picked.length} file${picked.length === 1 ? "" : "s"} read by the macro ${imp.macro}${imp.seconds != null ? ` (${Math.round(imp.seconds)} s)` : ""}` : "",
+    dialogs.length ? `${dialogs.length} message box${dialogs.length === 1 ? "" : "es"} answered${dialogs[0].message ? `: "${dialogs[0].message.slice(0, 80)}"` : ""}` : "",
+    made ? `${count(made.formulas_changed)} formula${made.formulas_changed === 1 ? "" : "s"} now read the Mind inputs${made.sums_split ? ` (${count(made.sums_split)} sums split in two)` : ""}` : "",
+    ...(notes.length ? notes : own),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const tone = stopped || changed ? "error" : kept.length || !inputs.length ? "warn" : "ok";
+  return { ok: !stopped && !changed, tone, line, detail };
+}
+
+/** "Bring in the outside files" when the server's estimate has no such step, with the measures of
+ *  app/estimate.py: the model's own import macro and the making of the Mind inputs each start Excel,
+ *  open and save the workbook; each new version is scanned again; the numbers check opens both. */
+export function outsideStepEstimate(basis: Partial<ChainEstimate["basis"]> | undefined): ChainEstimateStep {
+  const mb = Math.max(0, basis?.file_mb ?? 0);
+  const scan = basis?.scan_s && basis.scan_s > 0 ? basis.scan_s : 30;
+  const open = 5 + 8 + 0.3 * mb;
+  const save = 10 + 0.18 * mb;
+  const fixed = 2 * (open + save) + 10 + 2 * (open + 10 + save) + 0.2 * scan; // import, Mind inputs, numbers check
+  return {
+    id: "outside",
+    low_s: Math.round(fixed + 10 + 2 * 0.7 * scan),
+    mid_s: Math.round(fixed + 60 + 2 * 1.2 * scan),
+    high_s: Math.round(fixed + 300 + 2 * 1.5 * scan),
+    why: "the model's own import macro (seconds to minutes, by the number of files), the Mind inputs, two scans and the numbers check",
+  };
+}
+
+/** The chain's estimate with the outside step in it when that step will run and the server did not count it. */
+export function withOutsideStep(e: ChainEstimate | null, include: boolean): ChainEstimate | null {
+  if (!e || !include || e.steps.some((s) => s.id === "outside")) return e;
+  const step = outsideStepEstimate(e.basis);
+  return {
+    ...e,
+    steps: [step, ...e.steps],
+    total: { low_s: e.total.low_s + step.low_s, mid_s: e.total.mid_s + step.mid_s, high_s: e.total.high_s + step.high_s },
+  };
 }

@@ -49,6 +49,7 @@ def main() -> int:
     ap.add_argument("--no-loop", action="store_true", help="do not build a Mind loop (the macro the model owner runs has no calculation loop)")
     ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant's advice (deterministic, for before/after comparisons)")
     ap.add_argument("--pivot-mode", default=None, help="blocking / formulas / values: what Prep does with the pivot tables (Advanced > Prep)")
+    ap.add_argument("--inputs", default=None, help="a folder with the model's input files (the files its macro opens): uploaded with the model, then 'Bring in the outside files' runs first")
     a = ap.parse_args()
     B = f"http://127.0.0.1:{a.port}/api"
     wb = Path(a.workbook)
@@ -59,9 +60,17 @@ def main() -> int:
 
     say("upload", wb.name)
     ignore = [x.strip() for x in a.ignore.split(",") if x.strip()]
-    with open(wb, "rb") as fh:
-        data = {"mode": "plan", **({"defer": "1"} if ignore else {})}
-        r = requests.post(f"{B}/sessions", files={"file": (wb.name, fh)}, data=data, timeout=3600)
+    data = {"mode": "plan", **({"defer": "1"} if ignore else {})}
+    input_paths = sorted(p for p in Path(a.inputs).iterdir() if p.is_file()) if a.inputs else []
+    handles = [open(wb, "rb")] + [open(p, "rb") for p in input_paths]
+    try:
+        files = [("file", (wb.name, handles[0]))] + [("files", (p.name, h)) for p, h in zip(input_paths, handles[1:])]
+        r = requests.post(f"{B}/sessions", files=files, data=data, timeout=3600)
+    finally:
+        for h in handles:
+            h.close()
+    if input_paths:
+        say("input files sent:", len(input_paths))
     r.raise_for_status()
     sid = r.json()["sessionId"]
     if ignore:
@@ -87,6 +96,34 @@ def main() -> int:
     except requests.RequestException as exc:
         chain["estimate"] = {"error": str(exc)[:300]}
     t_chain = time.time()
+
+    # outside input files first (the screen's first step), when the macro reads any
+    outside = (state() or {}).get("outsideInputs")
+    if outside:
+        chain["outsideInputs"] = {k: outside.get(k) for k in ("macro", "matched", "missing", "extra", "summary", "brought_in")}
+        say("outside files:", outside.get("summary"))
+        if not outside.get("brought_in"):
+            r = requests.post(f"{B}/sessions/{sid}/outside-inputs/run", timeout=300)
+            say("bring in the outside files:", r.status_code, r.text[:200])
+            last = ""
+            while r.status_code in (200, 202):
+                time.sleep(5)
+                st = requests.get(f"{B}/sessions/{sid}/outside-inputs", timeout=300).json()
+                if st.get("stage") and st.get("stage") != last:
+                    say("  ", str(st.get("stage"))[:160])
+                    last = st.get("stage")
+                if not st.get("running"):
+                    break
+            st = requests.get(f"{B}/sessions/{sid}/outside-inputs", timeout=300).json()
+            res = st.get("result") or {}
+            chain["steps"]["outside"] = {"ok": not st.get("error") and bool(res), "error": st.get("error"),
+                                         "summary": res.get("summary"), "download": res.get("download"),
+                                         "kept": (res.get("mindInputs") or {}).get("kept")}
+            say("outside:", json.dumps(chain["steps"]["outside"], ensure_ascii=False)[:400])
+            if st.get("error") or not res:
+                say("stopping: the outside files could not be brought in")
+                (out / "chain.json").write_text(json.dumps(chain, indent=1, ensure_ascii=False), encoding="utf-8")
+                return 1
 
     if not a.skip_autofix:
         say("fix all issues: start")

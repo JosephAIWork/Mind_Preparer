@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.12.4 (9 November 2026): outside input files as Mind inputs (the Tokyo IFRS 17 tool)
+
+- **A model and its input files, picked together.** The upload takes several files at once (File
+  Explorer or drag and drop); the app finds the model (the workbook whose macros open other files)
+  and lists the files its macro reads: matched, missing, and files it does not need. Missing files
+  can be added later; a file that is not picked keeps the data the model already holds.
+- **Bring in the outside files** (the first step of "Do everything", and a button). The app runs the
+  model's OWN import macro on a copy, in an Excel of its own, with each path cell pointing at the
+  picked file, and watches it through Excel's events: which file it opens and which cells it writes
+  while that file is open. The values arrive exactly as the client's tool puts them. Message boxes
+  are answered (No / Cancel on a question) and reported; a macro that stops early is reported, not
+  hidden. The numbers check then compares later steps with this version.
+- **Each outside file becomes a Mind input.** Its area moves to a sheet `IN_<sheet>` holding the grid
+  `#IN_<sheet> /Input`; every formula that read the area reads the same cells there (a SUMIF whose
+  ranges run past the side of the area is split in two: the same total); one CSV per input
+  (`Mind inputs.zip`). Each quarter the Mind team imports new CSVs in Mind's **Inputs** window and
+  runs -- no new upload of the model. An area some formula cannot follow (a 3-D reference over it,
+  OFFSET from inside it, a range that covers only part of it) stays in the model and is reported.
+- **Run in Mind uploads the input files** through the Inputs window after the template step.
+- **New rule INP-010 "Outside input files"**: blocking until the outside files are brought in.
+- Proven on the Tokyo tool (anonymized, invented input files): 6 of 6 files matched, import 11 s,
+  6 Mind inputs, 46,800 formulas moved, no computed value changed; in Mind 6 of 6 inputs SUCCESS and
+  Mind = Excel on the result grid (120 of 120 numbers); a "next quarter" (two inputs changed, model
+  not re-uploaded) gives Excel's new answer too (120 of 120).
+- `scripts/night_chain.py` writes UTF-8 (a Japanese sheet name stopped it on a Hebrew console).
+
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 
 - **Sheet and name text in any language.** A reference such as `=ロールフォワード!B10` was read as

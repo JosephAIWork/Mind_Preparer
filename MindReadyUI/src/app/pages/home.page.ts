@@ -3,7 +3,10 @@ import { Component, OnDestroy, computed, effect, inject, signal } from "@angular
 import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
-import { ChainEstimate, FORMULA_ACTION_IDS, LoopPlan, Operation, PendingUpload, ScanStatus, appliedCount, failedCount, failedText, isPending } from "../core/models";
+import {
+  ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus,
+  appliedCount, failedCount, failedText, inputFilesProblem, isPending, nameList, outsideOutcome, outsideRowLabel, pickedFilesProblem, withOutsideStep,
+} from "../core/models";
 import { SessionStore } from "../core/session.store";
 import { KeyBox } from "./advanced/key-box";
 
@@ -61,7 +64,7 @@ interface ScanRow {
   message?: string;
 }
 
-type StepId = "fixAll" | "prepare" | "loop" | "recalc";
+type StepId = ChainStepId;
 interface Step {
   id: StepId;
   label: string;
@@ -72,7 +75,9 @@ interface Step {
   open?: boolean;
 }
 
+/** The chain's steps in order; "outside" only when the model's macros open outside files. */
 const STEPS: { id: StepId; label: string; check: string }[] = [
+  { id: "outside", label: "Bring in the outside files", check: "every input file matched and read by the model's own import macro" },
   { id: "fixAll", label: "Fix all issues", check: "the fixer ends clean, or every error left was already in the workbook (none caused by the preparation)" },
   { id: "prepare", label: "Fix the formulas and the structure", check: "every blocking action applied, nothing refused, none left" },
   { id: "loop", label: "Build the Mind loop", check: "nothing refused (skipped when the model has no loop)" },
@@ -95,6 +100,8 @@ export class HomePage implements OnDestroy {
   readonly phase = signal<Phase>("idle");
   readonly scan = signal<ScanStatus | null>(null);
   readonly uploadError = signal("");
+  /** Words for the uploading screen: one workbook, or the model with its input files. */
+  readonly sending = signal("");
   readonly dragOver = signal(false);
   readonly pending = signal<PendingUpload | null>(null);
   readonly skip = signal<Set<string>>(new Set());
@@ -103,6 +110,17 @@ export class HomePage implements OnDestroy {
   readonly loop = signal<ActionState>(idle());
   readonly recalc = signal<ActionState>(idle());
   readonly prepare = signal<ActionState>(idle());
+  /** Bring in the outside files: the model's own import macro, then one Mind input per file */
+  readonly outside = signal<ActionState>(idle());
+  readonly outsideResult = signal<OutsideRunResult | null>(null);
+  /** the input files sent with the workbook (the upload's answer), for the note when its macros open none */
+  readonly pickedInputs = signal<InputFile[]>([]);
+  readonly addingInputs = signal(false);
+  readonly inputsError = signal("");
+  readonly cardDragOver = signal(false);
+  /** files were added after the outside files were brought in: they come in with "Bring in again" */
+  private readonly addedSince = signal(false);
+  readonly pickAccept = PICK_ACCEPT;
   readonly loopPlan = signal<LoopPlan | null>(null);
   readonly steps = signal<Step[]>([]);
   /** Ticked: once an uploaded workbook is read, Do everything starts by itself -- and a big workbook is
@@ -117,8 +135,21 @@ export class HomePage implements OnDestroy {
   private stepT0 = 0;
   private stepSeconds: Partial<Record<StepId, number>> = {};
   private ticker: ReturnType<typeof setInterval> | null = null;
+  /** Do everything starts by bringing in the outside files: the macros open some, the app knows which
+   *  cells name them, and they are not in the current version yet. */
+  readonly outsideWillRun = computed(() => {
+    const o = this.store.outsideInputs();
+    return !!o && !o.brought_in && this.canBringIn(o);
+  });
+  /** The server's estimate, with the outside step in it when that step runs and the server left it out. */
+  readonly fullEstimate = computed(() => {
+    const include = this.chainRunning()
+      ? this.steps().some((s) => s.id === "outside" && (s.state === "waiting" ? this.outsideWillRun() : s.state !== "skipped"))
+      : this.outsideWillRun();
+    return withOutsideStep(this.estimate(), include);
+  });
   readonly estimateLine = computed(() => {
-    const e = this.estimate();
+    const e = this.fullEstimate();
     if (!e) return "";
     const t = e.total;
     return `Rough estimate: about ${minutes(t.mid_s)} (between ${minutes(t.low_s)} and ${minutes(t.high_s)}).`;
@@ -127,7 +158,7 @@ export class HomePage implements OnDestroy {
    *  finished steps compared with their own estimate, minus what the running step has already taken. */
   readonly timerLine = computed(() => {
     const now = this.clock();
-    const e = this.estimate();
+    const e = this.fullEstimate();
     if (!this.chainRunning() || !this.chainT0) return "";
     const elapsed = `${minutes((now - this.chainT0) / 1000)} so far`;
     if (!e) return elapsed;
@@ -136,8 +167,10 @@ export class HomePage implements OnDestroy {
     let took = 0;
     for (const s of this.steps()) {
       const actual = this.stepSeconds[s.id];
-      if (s.state === "done" && actual !== undefined) {
-        planned += est.get(s.id)?.mid_s ?? 0;
+      const x = est.get(s.id);
+      // a step without an estimate would only push the ratio up
+      if (s.state === "done" && actual !== undefined && x) {
+        planned += x.mid_s;
         took += actual;
       }
     }
@@ -156,10 +189,14 @@ export class HomePage implements OnDestroy {
     }
     return `${elapsed} · about ${minutes(left)} left${slow ? " · this step is taking longer than usual" : ""}`;
   });
-  readonly busy = computed(() => this.chainRunning() || this.fixAll().running || this.fixFormulas().running || this.prepare().running || this.loop().running || this.recalc().running);
+  readonly busy = computed(
+    () => this.chainRunning() || this.outside().running || this.addingInputs() || this.fixAll().running || this.fixFormulas().running || this.prepare().running || this.loop().running || this.recalc().running,
+  );
   /** Which step holds the buttons, for the hint on a disabled button. */
   readonly busyHint = computed(() => {
     if (this.chainRunning()) return "Do everything is running";
+    if (this.outside().running) return "Bring in the outside files is running";
+    if (this.addingInputs()) return "The input files are being added";
     if (this.fixAll().running) return this.fixAll().stopping ? "Fix all issues is stopping after its round" : "Fix all issues is running";
     if (this.fixFormulas().running) return "Fix the formulas is running";
     if (this.prepare().running) return "Fix the formulas and the structure is running";
@@ -197,6 +234,23 @@ export class HomePage implements OnDestroy {
     const v = this.store.currentVersion();
     return id && v ? this.api.downloadUrl(id, v.file_name) : null;
   });
+  /** Brought in already, and files were added since (or a matched file is one the last bring-in did not
+   *  read): the card offers to bring them in again (the server starts a new line for it). */
+  readonly canBringInAgain = computed(() => {
+    const o = this.store.outsideInputs();
+    if (!o?.brought_in || !o.matched) return false;
+    if (this.addedSince()) return true;
+    const files = this.outsideResult()?.import?.files;
+    if (!files) return false;
+    const read = new Set(files.filter((f) => f.opened && f.file).map((f) => `${f.cell}|${f.file}`));
+    return o.rows.some((r) => r.file && !read.has(`${r.cell}|${r.file}`));
+  });
+  /** "Mind inputs.zip": one CSV per Mind input, made by the last Bring in the outside files */
+  readonly zipUrl = computed(() => {
+    const id = this.store.sessionId();
+    const r = this.outsideResult();
+    return id && r?.download?.zip && r.mindInputs?.inputs?.length ? this.api.downloadUrl(id, r.download.zip) : null;
+  });
 
   // ---- the scan, as rows -------------------------------------------------------------------------
   readonly scanRows = computed<ScanRow[]>(() => {
@@ -220,6 +274,7 @@ export class HomePage implements OnDestroy {
 
   private timers: ReturnType<typeof setTimeout>[] = [];
   private fixAllFollowing = false;
+  private outsideFollowing = false;
   private estimateSeq = 0;
   /** Set when the page is left (Advanced): a running Do everything starts no further step unseen. */
   private destroyed = false;
@@ -234,6 +289,7 @@ export class HomePage implements OnDestroy {
         this.phase.set("loaded");
         void this.loadLoopPlan();
         void this.resumeFixer();
+        void this.resumeOutside();
       } else if (!loaded && phase === "loaded") {
         this.phase.set("idle");
         this.loopPlan.set(null);
@@ -269,16 +325,16 @@ export class HomePage implements OnDestroy {
   // ---- upload -----------------------------------------------------------------------------
   onFileInput(event: Event): void {
     const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (file) void this.uploadFile(file);
+    const files = Array.from(input.files ?? []);
     input.value = "";
+    if (files.length) void this.uploadFiles(files);
   }
 
   onDrop(event: DragEvent): void {
     event.preventDefault();
     this.dragOver.set(false);
-    const file = event.dataTransfer?.files?.[0];
-    if (file) void this.uploadFile(file);
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length) void this.uploadFiles(files);
   }
 
   onDragOver(event: DragEvent): void {
@@ -286,16 +342,21 @@ export class HomePage implements OnDestroy {
     this.dragOver.set(true);
   }
 
-  async uploadFile(file: File): Promise<void> {
-    if (!/\.(xlsx|xlsm|xlsb)$/i.test(file.name)) {
-      this.uploadError.set("Choose an .xlsx, .xlsm or .xlsb workbook.");
+  /** One workbook, or the model workbook together with its input files (the server finds the model). */
+  async uploadFiles(files: File[]): Promise<void> {
+    const problem = pickedFilesProblem(files.map((f) => f.name));
+    if (problem) {
+      this.uploadError.set(problem);
       return;
     }
     this.uploadError.set("");
+    this.sending.set(files.length === 1 ? "Sending the file to the app…" : `Sending the ${files.length} files to the app…`);
     this.phase.set("uploading");
     this.scan.set(null);
+    this.pickedInputs.set([]);
     try {
-      const started = await this.api.upload(file, "plan", true);
+      const started = await this.api.upload(files.length === 1 ? files[0] : files, "plan", true);
+      this.pickedInputs.set(started.inputs ?? []);
       if (isPending(started)) {
         // A big workbook with several sheets: let the user leave sheets out before the scan
         // (not when Do everything is to follow on its own: nothing stops the run).
@@ -334,6 +395,7 @@ export class HomePage implements OnDestroy {
   private afterLoad(): void {
     this.phase.set("loaded");
     this.pending.set(null);
+    this.resetOutside();
     this.fixAll.set(idle());
     this.fixFormulas.set(idle());
     this.loop.set(idle());
@@ -392,8 +454,257 @@ export class HomePage implements OnDestroy {
     if (this.busy()) return;
     this.store.reset();
     this.loopPlan.set(null);
+    this.resetOutside();
+    this.pickedInputs.set([]);
     this.phase.set("idle");
     void this.router.navigate([], { queryParams: {}, replaceUrl: true });
+  }
+
+  // ---- bring in the outside files (the model's macros open other files) ---------------------------
+  private resetOutside(): void {
+    this.outside.set(idle());
+    this.outsideResult.set(null);
+    this.inputsError.set("");
+    this.cardDragOver.set(false);
+    this.addedSince.set(false);
+  }
+
+  rowLabel(r: OutsideInputRow): string {
+    return outsideRowLabel(r);
+  }
+
+  /** The app can run the model's own import: it knows the macro and the cells that name the files. */
+  canBringIn(o: OutsideInputs): boolean {
+    return o.rows.length > 0 && !!o.macro;
+  }
+
+  /** The card's sentence: how the picked files match, or why the app cannot bring them in. */
+  outsideLead(o: OutsideInputs): string {
+    const cannot = "the app cannot bring them in, so their data stays inside the model.";
+    if (!o.rows.length) return `${o.macro ? `The macro ${o.macro} opens` : "The workbook's macros open"} outside files, but no cell of the workbook names them: ${cannot}`;
+    if (!o.macro) return `The workbook's macros open outside files, but which macro brings them in is not clear: ${cannot}`;
+    return o.summary;
+  }
+
+  /** With files missing, the button says it brings in only the matched ones. */
+  outsideButton(o: OutsideInputs): string {
+    if (o.brought_in) return "Bring in again";
+    return o.matched && o.missing.length ? `Bring in the ${o.matched} matched file${o.matched === 1 ? "" : "s"}` : "Bring in the outside files";
+  }
+
+  /** Why Do everything skips the outside step ("" when it runs it). It never brings them in a second
+   *  time: that starts a new line of versions, the card's "Bring in again" does it when asked. */
+  private outsideSkip(): string {
+    const o = this.store.outsideInputs();
+    if (!o) return "The model's macros open no outside files";
+    if (o.brought_in) return this.canBringInAgain() ? 'Already brought in (the files added since come in with "Bring in again" on the Outside files card)' : "Already brought in";
+    if (!o.rows.length) return "No cell names the files the macro opens: their data stays inside the model";
+    if (!o.macro) return "Which macro brings the outside files in is not clear: their data stays inside the model";
+    return "";
+  }
+
+  /** Bring in the outside files: the model's own import macro runs on a copy with the matched files, then
+   *  each file's area becomes a Mind input (a background job, followed every second). From Do everything
+   *  (`strict`) a missing file stops the chain: add it, or bring in the others with the card's button. */
+  async runOutside(strict = false): Promise<boolean> {
+    const id = this.store.sessionId();
+    const o = this.store.outsideInputs();
+    if (!id || !o || this.outside().running) return false;
+    if (!this.canBringIn(o)) {
+      this.outside.set({ running: false, fraction: null, line: "The app cannot bring these files in", detail: this.outsideLead(o), tone: "error" });
+      return false;
+    }
+    if (!o.matched) {
+      this.outside.set({ running: false, fraction: null, line: "No input file matched yet", detail: "Add the model's input files on the Outside files card (Add files).", tone: "error" });
+      return false;
+    }
+    const missing = o.rows.filter((r) => !r.file).map((r) => outsideRowLabel(r));
+    if (strict && missing.length) {
+      this.outside.set({
+        running: false,
+        fraction: null,
+        line: `${missing.length} of ${o.rows.length} input file${o.rows.length === 1 ? "" : "s"} missing: ${nameList(missing)}`,
+        detail: `Add ${missing.length === 1 ? "it" : "them"} on the Outside files card (Add files), or press "${this.outsideButton(o)}" there: a missing file keeps the data the model already holds.`,
+        tone: "error",
+      });
+      return false;
+    }
+    this.inputsError.set("");
+    this.outside.set({ running: true, fraction: null, line: "Starting…", detail: "", tone: "idle" });
+    try {
+      await this.api.startOutsideInputs(id);
+    } catch (e) {
+      // refused: it may run already (started before a reload, or in another tab): then follow that run
+      const st = await this.api.outsideInputs(id).catch(() => null);
+      if (!st?.running) {
+        this.outside.set({ running: false, fraction: null, line: "Not started", detail: errorText(e), tone: "error" });
+        return false;
+      }
+      return await this.followOutside(id, true);
+    }
+    return await this.followOutside(id);
+  }
+
+  /** Follows the job to its end, a look every second. True when the files came in and the check passed.
+   *  `seenRunning`: the caller saw the job running (else a status without it waits a few looks). */
+  private async followOutside(id: string, seenRunning = false): Promise<boolean> {
+    if (this.outsideFollowing) return false;
+    this.outsideFollowing = true;
+    const t0 = Date.now();
+    let looks = 0;
+    let failures = 0;
+    try {
+      for (;;) {
+        if (this.destroyed) return false; // the page was left: the next one picks the job up
+        let st: OutsideRunStatus;
+        try {
+          st = await this.api.outsideInputs(id);
+          failures = 0;
+        } catch (e) {
+          if (++failures < 5) {
+            await this.sleep(1000);
+            continue;
+          }
+          this.outside.set({ running: false, fraction: null, line: "Lost the job", detail: errorText(e), tone: "error" });
+          return false;
+        }
+        looks++;
+        if (st.outsideInputs) this.store.outsideInputs.set(st.outsideInputs);
+        if (st.running) {
+          seenRunning = true;
+          this.showOutsideRunning(st, t0);
+          await this.sleep(1000);
+          continue;
+        }
+        // a server that shows the job a moment after it answered: a few more looks first
+        if (!seenRunning && looks < 3) {
+          await this.sleep(1000);
+          continue;
+        }
+        await this.reloadSession(id); // the job's new versions, also when it stopped half-way
+        if (st.error) {
+          this.outside.set({ running: false, fraction: null, line: "Could not bring in the outside files", detail: st.error, tone: "error" });
+          return false;
+        }
+        if (!st.result) {
+          this.outside.set({ running: false, fraction: null, line: "The job ended without a result", detail: "", tone: "error" });
+          return false;
+        }
+        return this.showOutsideResult(st.result);
+      }
+    } finally {
+      this.outsideFollowing = false;
+    }
+  }
+
+  /** The running job on the card: its stage (or its latest line, when that says the stage in full),
+   *  then the latest line and the time it has taken. */
+  private showOutsideRunning(st: OutsideRunStatus, t0: number): void {
+    const secs = Math.round(st.elapsed_s ?? (Date.now() - t0) / 1000);
+    const took = secs < 60 ? `${secs} s so far` : `${Math.floor(secs / 60)} min ${secs % 60} s so far`;
+    const stage = st.stage || "Working…";
+    const said = st.message && st.message !== stage ? st.message : "";
+    const full = !!said && said.startsWith(stage);
+    this.outside.set({ running: true, fraction: null, line: full ? said : stage, detail: [full ? "" : said, took].filter(Boolean).join(" · "), tone: "idle" });
+  }
+
+  /** The result on the card (and in the chain): the summary, then the details and the new versions. */
+  private showOutsideResult(r: OutsideRunResult): boolean {
+    this.outsideResult.set(r);
+    this.addedSince.set(false);
+    const out = outsideOutcome(r);
+    const labels = (r.versions ?? []).map((v) => this.store.versions().find((x) => x.id === v)?.label ?? "");
+    this.outside.set({ running: false, fraction: null, line: out.line, detail: [out.detail, ...labels].filter(Boolean).join(" · "), tone: out.tone });
+    return out.ok;
+  }
+
+  /** The job may still run from before a reload or a visit to Advanced (follow it), or its result is there to show. */
+  private async resumeOutside(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || !this.store.outsideInputs() || this.outsideFollowing) return;
+    let st: OutsideRunStatus;
+    try {
+      st = await this.api.outsideInputs(id);
+    } catch {
+      return; // nothing to pick up
+    }
+    if (st.outsideInputs) this.store.outsideInputs.set(st.outsideInputs);
+    if (st.running) {
+      this.showOutsideRunning(st, Date.now());
+      await this.followOutside(id, true);
+    } else if (st.result) this.showOutsideResult(st.result);
+    else if (st.error) this.outside.set({ running: false, fraction: null, line: "Could not bring in the outside files", detail: st.error, tone: "error" });
+  }
+
+  /** The match and `brought_in` as the server has them now (a version restored under Advanced changes them). */
+  private async refreshOutside(id: string): Promise<void> {
+    try {
+      const st = await this.api.outsideInputs(id);
+      if (st.outsideInputs) this.store.outsideInputs.set(st.outsideInputs);
+    } catch {
+      /* keep what the scan said */
+    }
+  }
+
+  /** After a background job made new versions: the session as the server holds it now, and the loop
+   *  plan of the new current version. */
+  private async reloadSession(id: string): Promise<void> {
+    try {
+      const s = await this.api.resume(id);
+      this.store.applyAnalysis({ ...s, version: s.version });
+    } catch {
+      /* the next step's answer brings the new version */
+    }
+    await this.loadLoopPlan();
+  }
+
+  onAddInputs(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    if (files.length) void this.addInputs(files);
+  }
+
+  onCardDragOver(event: DragEvent): void {
+    event.preventDefault(); // always: a file dropped on the card must not open in the browser
+    const o = this.store.outsideInputs();
+    this.cardDragOver.set(!!o && this.canBringIn(o));
+  }
+
+  onCardDrop(event: DragEvent): void {
+    event.preventDefault();
+    this.cardDragOver.set(false);
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length) void this.addInputs(files);
+  }
+
+  /** Add files: more input files (one of the same name replaces the old one); the server matches them
+   *  again. After a bring-in they come in with "Bring in again". */
+  async addInputs(files: File[]): Promise<void> {
+    const id = this.store.sessionId();
+    const o = this.store.outsideInputs();
+    if (!id || !o || !this.canBringIn(o)) return;
+    if (this.busy()) {
+      this.inputsError.set(`Wait: ${this.busyHint()}.`);
+      return;
+    }
+    const problem = inputFilesProblem(files.map((f) => f.name));
+    if (problem) {
+      this.inputsError.set(problem);
+      return;
+    }
+    this.inputsError.set("");
+    this.addingInputs.set(true);
+    try {
+      const out = await this.api.addInputs(id, files);
+      this.store.applyAnalysis({ outsideInputs: out.outsideInputs, readiness: out.readiness ?? undefined });
+      if (this.outside().tone === "error") this.outside.set(idle()); // the last stop was about the files before
+      if (o.brought_in) this.addedSince.set(true); // they come in with "Bring in again"
+    } catch (e) {
+      this.inputsError.set(errorText(e));
+    } finally {
+      this.addingInputs.set(false);
+    }
   }
 
   // ---- fix all issues -------------------------------------------------------------------------
@@ -696,7 +1007,9 @@ export class HomePage implements OnDestroy {
     if (!id || this.busy()) return;
     this.chainRunning.set(true);
     this.chainLine.set("");
-    this.steps.set(STEPS.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
+    // the outside step only for a model whose macros open outside files
+    const plan = STEPS.filter((s) => s.id !== "outside" || this.store.outsideInputs() !== null);
+    this.steps.set(plan.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
     // the clock starts before the estimate is fetched: until then the timer would show the last run's time
     this.stepSeconds = {};
     this.chainT0 = this.stepT0 = Date.now();
@@ -705,15 +1018,25 @@ export class HomePage implements OnDestroy {
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = setInterval(() => this.clock.set(Date.now()), 10_000);
     const runners: Record<StepId, () => Promise<boolean>> = {
+      outside: () => this.runOutside(true),
       fixAll: () => this.runFixAll(),
       prepare: () => this.runPrepare(),
       loop: () => this.runLoop(),
       recalc: () => this.runRecalc(),
     };
-    const states: Record<StepId, typeof this.fixAll> = { fixAll: this.fixAll, prepare: this.prepare, loop: this.loop, recalc: this.recalc };
+    const states: Record<StepId, typeof this.fixAll> = { outside: this.outside, fixAll: this.fixAll, prepare: this.prepare, loop: this.loop, recalc: this.recalc };
     try {
-      for (const step of STEPS) {
+      for (const step of plan) {
         if (this.destroyed) return; // the page was left: the next step would run unseen
+        if (step.id === "outside") {
+          await this.refreshOutside(id);
+          if (this.destroyed) return;
+          const why = this.outsideSkip();
+          if (why) {
+            this.setStep(step.id, { state: "skipped", line: why });
+            continue;
+          }
+        }
         if (step.id === "loop" && !this.canBuildLoop()) {
           this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs a decision first (Advanced › Mind loop)" : "No run loop in this workbook" });
           continue;
@@ -731,7 +1054,8 @@ export class HomePage implements OnDestroy {
         this.stepSeconds[step.id] = (Date.now() - this.stepT0) / 1000;
         this.setStep(step.id, { state: ok ? "done" : "failed", line: r.line, detail: r.detail });
         if (!ok) {
-          this.chainLine.set(`Stopped at "${step.label}": ${r.line}. Fix that under Advanced, then press Do everything again.`);
+          const where = step.id === "outside" ? "See the Outside files card above" : "Fix that under Advanced";
+          this.chainLine.set(`Stopped at "${step.label}": ${r.line.replace(/\.$/, "")}. ${where}, then press Do everything again.`);
           return;
         }
       }

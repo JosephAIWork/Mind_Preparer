@@ -134,6 +134,7 @@ FIX_HINTS: dict[str, str] = {
     "EXP-003": "/ExportSettings columns must be from the documented set, GridName must name an /Export grid, boolean columns must be true/false/1/0, FileExtension .csv/.txt.",
     "EXP-004": "FileNamePattern tags must be {ModelName} {GridName} {InstanceName} {LoopsLabels} {yyyyMMdd}.",
     "INP-004": "FileNamePattern tags must be {GridName} {InstanceName} {ModelName} {*} or {???}.",
+    "INP-010": "Use 'Bring in the outside files': pick the files the macro opens together with the workbook; the app runs the workbook's own import macro once on a copy, then makes each imported area a Mind input (an IN_<sheet> /Input grid and its CSV) that the Mind team swaps each quarter in Mind's Input Manager.",
     "PAR-002": "/Parameters grid columns: Label | Type | PossibleValues | one or more value columns.",
     "PAR-003": "Type must be one of number, text, switch, checkbox, radio, slider, dropdown, percentage, date.",
     "PAR-004": "PossibleValues: 'min|max' or 'min|max|step' for number/slider/percentage; 'a|b|c' for checkbox/radio/dropdown; empty for text/switch/date.",

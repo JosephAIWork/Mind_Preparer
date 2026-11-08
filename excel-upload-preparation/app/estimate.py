@@ -146,6 +146,7 @@ MIND_STAGES: list[tuple[str, str]] = [
     ("mind_open", "Opening Mind, creating a test project"),
     ("upload", "Uploading and converting in Mind"),
     ("template", "Adding the model in Mind"),
+    ("inputs", "Uploading the Mind inputs"),  # only when the outside files were made Mind inputs
     ("run", "Running the model in Mind"),
     ("results", "Reading Mind's results"),
     ("cleanup", "Removing the test project"),
@@ -154,10 +155,11 @@ MIND_STAGE_TITLES = dict(MIND_STAGES)
 
 
 def estimate_mind_run(file_mb: float, scan_s: float | None, formula_count: int = 0, ops: int = 0, use_assistant: bool = True,
-                      check_numbers: bool = True, run_model: bool = True) -> dict[str, Any]:
+                      check_numbers: bool = True, run_model: bool = True, inputs: int = 0) -> dict[str, Any]:
     """-> {"stages": [{id, title, seconds}], "first_s", "retry_s", "caveat"}: seconds per stage of the first
     iteration (already padded by MIND_SAFETY), the whole first iteration, and what each retry adds (a
-    retry asks the assistant nothing). A run that converges in one iteration takes about first_s."""
+    retry asks the assistant nothing). A run that converges in one iteration takes about first_s.
+    `inputs`: the Mind inputs (CSV files) uploaded through Mind's Inputs window before the run."""
     scan = float(scan_s) if scan_s and scan_s > 0 else max(30.0, FALLBACK_SCAN_S_PER_FORMULA * formula_count)
     open_s, save_s = _excel_session(file_mb)
     raw: dict[str, float] = {
@@ -169,6 +171,7 @@ def estimate_mind_run(file_mb: float, scan_s: float | None, formula_count: int =
         "mind_open": 45.0,
         "upload": 60.0 + 5.0 * file_mb,
         "template": 30.0,
+        "inputs": (30.0 + 10.0 * inputs) if inputs else 0.0,  # open the Inputs window, one folder upload, a status per grid
         "run": (60.0 + 4.0 * file_mb) if run_model else 0.0,
         "results": 20.0 if run_model else 0.0,
         "cleanup": 0.0 if run_model else 30.0,  # a project that was run is kept (Mind does not let automation delete it)

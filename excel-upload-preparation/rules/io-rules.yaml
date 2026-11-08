@@ -106,6 +106,28 @@ rules:
     automatic: false
   on_unevaluable: NOT_SUPPORTED
   severity_source: MEDIUM
+- id: INP-010
+  version: 1.0.0
+  status: active
+  category: io
+  description: 'Outside input files -- the macros open other files and paste their data in; Mind runs no macro and opens no outside file, so each file must become a Mind input (an /Input grid the Mind team fills in the Input Manager).'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: app/outside_inputs.py (real Mind Input Manager testing, 2026-11-08, a client IFRS 17 tool)
+    article: INP-010
+  validation:
+    deterministic: true
+    implementation: validators.io.inp_010
+  correction:
+    automatic: false
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - The macros open no outside file.
+  - The current version descends from the version the outside files were brought into.
+  fail_if:
+  - A macro opens outside files and they are not brought in yet.
+  severity_source: BLOCKER
 - id: EXP-001
   version: 1.0.0
   status: active

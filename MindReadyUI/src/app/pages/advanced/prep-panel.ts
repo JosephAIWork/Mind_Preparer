@@ -34,7 +34,7 @@ export class PrepPanel implements OnDestroy {
   readonly blocking = computed(() => this.store.plan().filter((a) => a.level === "blocking" && (a.count > 0 || this.showEmpty())));
   readonly optional = computed(() => this.store.plan().filter((a) => a.level !== "blocking" && (a.count > 0 || this.showEmpty())));
   readonly emptyCount = computed(() => this.store.plan().filter((a) => !a.count).length);
-  readonly byHand = computed(() => (this.store.readiness()?.blocking ?? []).filter((b) => b.fix !== "prep"));
+  readonly byHand = computed(() => (this.store.readiness()?.blocking ?? []).filter((b) => b.fix !== "prep" && b.fix !== "outside_inputs"));
   readonly selection = computed(() => {
     // Defaults follow the plan (default_on) until the user changes them; a new plan resets.
     const plan = this.store.plan();

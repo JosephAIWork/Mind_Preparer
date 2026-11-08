@@ -6,7 +6,8 @@ KB sources: 'Input manager' (/Input grids, CSV named like the grid),
 columns' (/Reorder needs /Input, no /NoHeader, unique headers), 'Projects
 settings edition' (Enable check format in Input manager), 'Export'
 (/Export, unique /ExportSettings with its documented columns and
-FileNamePattern tags)."""
+FileNamePattern tags). INP-010: outside files a macro imports (the facts come
+from the server, config["outside_inputs"]; app/outside_inputs.py)."""
 from __future__ import annotations
 
 import re
@@ -149,6 +150,48 @@ def inp_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
         "time (it validates imported CSVs against each grid's Excel format). Do not declare an "
         "'EnableCheckFormatInputManager' /ProjectSettings setting -- Mind's converter rejects it (see PRJ-006).",
         {"input_grids": len(inputs)}, evidence="RECOMMENDATION")
+
+
+def _file_label(row: dict[str, Any]) -> str:
+    """How a row of the import table is named to the user: the file it expects, else its key, else its cell."""
+    return str(row.get("expected") or "/".join(str(k) for k in row.get("keys") or []) or row.get("cell") or "?")
+
+
+def inp_010(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
+    """INP-010: the macros open other files and paste their data in (app/outside_inputs.py). Mind
+    runs no macro and opens no outside file, so each file must become a Mind input the Mind team
+    swaps in Mind's Input Manager. The facts come from the server, in config["outside_inputs"]:
+    what the upload's macros open, the import table, the files the user picked with the workbook
+    and whether this version descends from the one they were brought into ("brought_in"). Without
+    them, or when the macros open nothing, there is nothing to do (PASS: the Status enum has no
+    NOT_APPLICABLE)."""
+    oi = (config or {}).get("outside_inputs")
+    if not isinstance(oi, dict) or not oi.get("imports"):
+        return finding("PASS", "Nothing to bring in: the macros open no outside file.", {"imports": False})
+    rows = [r for r in oi.get("rows") or [] if isinstance(r, dict)]
+    macro = oi.get("macro")
+    missing = [r for r in rows if not r.get("file")]
+    observed = {
+        "imports": True, "macro": macro, "calls": oi.get("calls") or [], "files": len(rows), "matched": int(oi.get("matched") or 0),
+        "missing": [_file_label(r) for r in missing], "extra": list(oi.get("extra") or []), "brought_in": bool(oi.get("brought_in")),
+        "sites": [{"sheet": str(r["cell"]).rsplit("!", 1)[0], "cell": str(r["cell"]).rsplit("!", 1)[1]} for r in rows if "!" in str(r.get("cell") or "")],
+    }
+    location = observed["sites"][0] if observed["sites"] else None
+    if oi.get("brought_in"):
+        return finding("PASS", "The outside files are brought in: Mind needs no macro for them.", observed, location)
+    if not macro:
+        return finding("WARNING", "The macros open outside files, but which macro brings them in is not clear: the data they brought in last stays in the workbook as it is.", observed, location)
+    if not rows:
+        return finding("WARNING", f"The macro {macro} opens outside files, but no cell names them: the data it brought in last stays in the workbook as it is, and Mind cannot update it.", observed, location)
+    n = len(rows)
+    picked = f"{observed['matched']} of {n} picked"
+    if missing:
+        names = [_file_label(r) for r in missing]
+        picked += f", missing: {', '.join(names[:6])}" + (f" (+{len(names) - 6} more)" if len(names) > 6 else "")
+    return finding(
+        "ERROR",
+        f"The macro {macro} fills the workbook from {n} outside file{'' if n == 1 else 's'}, and Mind runs no macro: {picked}. Use Bring in the outside files.",
+        observed, location)
 
 
 # --- EXP ---------------------------------------------------------------------

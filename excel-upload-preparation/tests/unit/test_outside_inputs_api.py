@@ -1,0 +1,558 @@
+"""Outside input files through the API (app/web/server.py + app/outside_inputs.py): the workbook and
+the files its macro opens picked together, the main workbook found among them, its import table
+matched (any language), POST .../inputs, the bring-in job (its Excel steps replaced here: no Excel
+runs), INP-010 and the readiness next step, the numbers baselines that move to the version the files
+were brought into, the downloads, and Run in Mind uploading the Mind inputs."""
+from __future__ import annotations
+
+import io
+import shutil
+import threading
+import time
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import openpyxl
+import pytest
+from fastapi.testclient import TestClient
+
+from app import model_map, outside_inputs
+from app.estimate import estimate_mind_run
+from app.readiness import compute_readiness
+from app.validators.io import inp_010
+from app.web import server
+
+MAIN = "IFRS17計算ツール_ver7（テスト）.xlsx"  # any language: a Japanese name with full-width brackets
+KEYS = ["BBA_01", "BBA_02", "BBA_03", "BBA_04", "BBA_05", "VFA_01"]
+INPUTS = [f"2026Q1_2026_{k}.xlsm" for k in KEYS]
+VBA = '''
+Sub calcCF()
+    Dim i As Long
+    For i = 1 To 6
+        Call InputCFFile(Sheets("Ctrl_01").Cells(34 + i, 8).Value)
+    Next i
+End Sub
+
+Sub InputCFFile(ByVal filePath As String)
+    Workbooks.Open filePath
+    ActiveWorkbook.Close
+End Sub
+'''
+
+
+@pytest.fixture(scope="module")
+def client():
+    return TestClient(server.app)
+
+
+@pytest.fixture
+def macros(monkeypatch):
+    """The main workbook's VBA (olevba is replaced): calcCF opens one file per row of Ctrl_01!H35:H40."""
+    monkeypatch.setattr(model_map, "read_vba", lambda p: [("M1_Main", VBA)] if Path(p).name == MAIN else [])
+    monkeypatch.setattr(server, "has_vba_project", lambda p: Path(p).name == MAIN)
+
+
+def _main_book(folder: Path, name: str = MAIN) -> Path:
+    """A Tokyo-like tool: the import table on Ctrl_01 (key in D, path formula in H), the sheet the
+    first file fills (BBA_01) and a formula that reads it."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Ctrl_01"
+    ws["A1"] = "SYNTHETIC_TEST_FIXTURE"
+    ws["D34"], ws["H34"] = "Sheet", "File"
+    for i, key in enumerate(KEYS):
+        r = 35 + i
+        ws[f"D{r}"] = key
+        ws[f"H{r}"] = f'="C:\\inputs\\"&"2026Q1_2026_"&D{r}&".xlsm"'
+    cf = wb.create_sheet("BBA_01")
+    cf["A1"], cf["A2"], cf["B2"] = "#CF", "Month", "Amount"
+    for r in range(3, 6):
+        cf[f"A{r}"], cf[f"B{r}"] = r - 2, r * 10
+    calc = wb.create_sheet("Calc")
+    calc["A1"], calc["A2"], calc["A3"] = "#Total", "Total", "=SUM(BBA_01!B3:B5)"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    wb.save(path)
+    wb.close()
+    return path
+
+
+def _part(name: str, data: bytes) -> tuple[str, tuple[str, io.BytesIO, str]]:
+    return ("files", (name, io.BytesIO(data), "application/octet-stream"))
+
+
+def _upload_picked(client, main: Path, inputs: list[str], extra: list[str] = (), defer: bool = False) -> dict:
+    parts = [_part(n, b"an input file") for n in inputs] + [_part(n, b"x") for n in extra] + [_part(main.name, main.read_bytes())]
+    res = client.post("/api/sessions", files=parts, data={"mode": "plan", **({"defer": "1"} if defer else {})})
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _finding(report: dict, rule_id: str = "INP-010") -> dict:
+    return next(f for f in report["findings"] if f["rule_id"] == rule_id)
+
+
+def _wait(client, sid: str, timeout: float = 120) -> dict:
+    deadline = time.time() + timeout
+    while True:
+        st = client.get(f"/api/sessions/{sid}/outside-inputs").json()
+        if not st["running"]:
+            return st
+        assert time.time() < deadline, st
+        time.sleep(0.1)
+
+
+# --- the Excel steps, replaced ------------------------------------------------------------------
+def _fake_run_import(calls: list, gate: threading.Event | None = None, stopped: bool = False):
+    def run_import(workbook, rows, files, macro, out_path, work_dir, timeout_s=900, progress=None, messages=None):
+        calls.append({"workbook": Path(workbook), "rows": rows, "files": dict(files), "macro": macro, "messages": messages})
+        if gate is not None:
+            assert gate.wait(60)
+        if progress:
+            progress(f"Running the workbook's import macro {macro}")
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(workbook, out_path)
+        entries = []
+        for r in rows:
+            key = f"{r['sheet']}!{r['cell']}"
+            p = files.get(key)
+            opened = bool(p) and not (stopped and not key.endswith("H35"))
+            areas = [{"sheet": "BBA_01", "ref": "B3:B5", "r1": 3, "c1": 2, "r2": 5, "c2": 2, "rows": 3, "cols": 1}] if p and key.endswith("H35") and not stopped else []
+            entries.append({"cell": key, "file": p.name if p else None, "expected": None, "exact": False, "opened": opened, "areas": areas, "cleared": []})
+        # a hidden Excel shows a Japanese message box as mojibake; the core repairs it (message_repaired)
+        dialogs = [{"title": "Microsoft Excel", "message": "BBA_01\x82\xcc", "message_repaired": "BBA_01のinput領域には93項目まで入力可能です",
+                    "buttons": ["OK"], "pressed": "OK"}] if stopped else []
+        return {"macro": macro, "seconds": 0.1, "files": entries, "kept": [], "dialogs": dialogs, "stopped_early": stopped,
+                "error": "Exception occurred." if stopped else None, "saved": str(out_path), "ok": not stopped}
+
+    return run_import
+
+
+def _fake_apply_mind_inputs(calls: list):
+    def apply_mind_inputs(workbook, plan, formulas, out_path, csv_dir, progress=None):
+        calls.append({"workbook": Path(workbook), "plan": plan, "formulas": list(formulas)})
+        wb = openpyxl.load_workbook(workbook)
+        csv_dir = Path(csv_dir)
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        inputs = []
+        for a in plan:
+            ws = wb.create_sheet(a["name"])
+            ws["A1"], ws["A2"] = f"#{a['name']} /Input", "Amount"
+            for i in range(a["rows"]):
+                ws.cell(3 + i, 1, (i + 3) * 10)
+            csv = csv_dir / f"{a['name']}.csv"
+            csv.write_bytes(b"Amount\n30\n40\n50\n")  # as the core writes it: UTF-8, LF, no BOM
+            inputs.append({"name": a["name"], "sheet": a["sheet"], "ref": a["ref"], "file": a.get("file"), "rows": a["rows"], "cols": a["cols"],
+                           "csv": str(csv), "separator": "comma", "readers": 1})
+        wb["Calc"]["A3"] = f"=SUM({plan[0]['name']}!A3:A5)"
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(out_path)
+        wb.close()
+        return {"inputs": inputs, "kept": [], "formulas_changed": 1, "names_changed": 0, "sums_split": 0, "saved": str(out_path)}
+
+    return apply_mind_inputs
+
+
+@pytest.fixture
+def excel_steps(monkeypatch):
+    """run_import / apply_mind_inputs / compare_workbooks replaced; Excel 'available'."""
+    calls: dict[str, list] = {"import": [], "mind_inputs": [], "compare": []}
+    monkeypatch.setattr(server, "com_available", lambda: True)
+    monkeypatch.setattr(outside_inputs, "run_import", _fake_run_import(calls["import"]))
+    monkeypatch.setattr(outside_inputs, "apply_mind_inputs", _fake_apply_mind_inputs(calls["mind_inputs"]))
+
+    def compare(original, prepared, moves, progress=None):
+        calls["compare"].append((Path(original), Path(prepared)))
+        return {"ran": True, "clean": True, "verdict": "The preparation changed no computed value (1 formula cells compared with the original).",
+                "counts": {"compared": 1, "same": 1, "good_to_error": 0, "good_to_other": 0, "missing_good": 0}, "regressions": []}
+
+    monkeypatch.setattr(server, "compare_workbooks", compare)
+    return calls
+
+
+# --- 1. several files picked at once ---------------------------------------------------------------
+def test_files_picked_together_find_the_workbook_keep_the_inputs_and_match_the_import_table(client, macros, tmp_path):
+    main = _main_book(tmp_path)
+    body = _upload_picked(client, main, INPUTS[:5], extra=["notes.csv"])
+    sid = body["sessionId"]
+    s = server.SESSIONS[sid]
+    assert body["main"] == MAIN and [v["source"] for v in body["versions"]] == ["upload"]
+    assert {i["name"] for i in body["inputs"]} == set(INPUTS[:5]) | {"notes.csv"} and all(i["bytes"] > 0 for i in body["inputs"])
+    assert s.current_path.parent == s.work_dir / "upload" and s.current_path.name == MAIN
+    for i in s.inputs:  # kept beside the session, one folder per file, never as versions
+        p = Path(i["path"])
+        assert p.is_file() and p.parent.parent == s.work_dir / "inputs" and len(i["sha256"]) == 64
+    oi = body["outsideInputs"]
+    assert oi["imports"] is True and oi["macro"] == "calcCF" and oi["calls"][0]["procedure"] == "InputCFFile"
+    assert [r["cell"] for r in oi["rows"]] == [f"Ctrl_01!H{r}" for r in range(35, 41)]
+    first = oi["rows"][0]
+    assert first["keys"] == ["BBA_01"] and first["target_sheet"] == "BBA_01" and first["file"] == INPUTS[0] and first["how"] == "key"
+    assert oi["matched"] == 5 and oi["missing"] == ["Ctrl_01!H40"] and oi["extra"] == ["notes.csv"] and oi["brought_in"] is False
+    assert oi["summary"].startswith("5 of 6 input files matched; missing: VFA_01")
+    # INP-010 blocks, and the next step is to bring the files in (before Prep moves anything)
+    f = _finding(body["report"])
+    assert f["status"] == "ERROR" and f["priority"] == "REQUIRED" and "5 of 6 picked, missing: VFA_01" in f["message"] and "Bring in the outside files" in f["message"]
+    rd = body["readiness"]
+    assert rd["state"] == "blocked" and rd["next_step"]["label"] == "Bring in the outside files" and rd["next_step"]["detail"] == "6 files the workbook's macro opens"
+    assert next(b for b in rd["blocking"] if b["rule_id"] == "INP-010")["fix"] == "outside_inputs"
+    # the same on a reopened session and on GET .../outside-inputs
+    again = client.get(f"/api/sessions/{sid}").json()
+    assert again["outsideInputs"] == oi and again["main"] == MAIN and len(again["inputs"]) == 6
+    st = client.get(f"/api/sessions/{sid}/outside-inputs").json()
+    assert st["outsideInputs"] == oi and st["running"] is False and st["state"] == "idle" and st["result"] is None and st["error"] is None
+
+
+def test_a_deferred_upload_matches_after_its_scan_and_the_single_file_field_still_works(client, macros, tmp_path):
+    main = _main_book(tmp_path)
+    pending = _upload_picked(client, main, INPUTS, defer=True)
+    assert pending["pending"] is True and pending["main"] == MAIN and len(pending["inputs"]) == 6
+    out = client.post(f"/api/sessions/{pending['sessionId']}/analyze", json={})
+    assert out.status_code == 200, out.text
+    assert out.json()["outsideInputs"]["matched"] == 6 and _finding(out.json()["report"])["status"] == "ERROR"
+    # "file" (scripts, tests) + "files": the workbook sent in both is not its own input
+    with main.open("rb") as fh:
+        res = client.post("/api/sessions", files=[("file", (MAIN, fh, "application/octet-stream")), _part(INPUTS[0], b"x"), _part(MAIN, b"same workbook")], data={"mode": "plan"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [i["name"] for i in body["inputs"]] == [INPUTS[0]] and body["outsideInputs"]["matched"] == 1
+
+
+def test_a_workbook_whose_macros_open_nothing_has_no_outside_inputs(client, plain_grid_xlsx):
+    with plain_grid_xlsx.open("rb") as fh:
+        body = client.post("/api/sessions", files={"file": (plain_grid_xlsx.name, fh, "application/octet-stream")}, data={"mode": "plan"}).json()
+    assert body["outsideInputs"] is None and body["inputs"] == [] and body["main"] == plain_grid_xlsx.name
+    f = _finding(body["report"])
+    assert f["status"] == "PASS" and f["message"].startswith("Nothing to bring in")
+    sid = body["sessionId"]
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 422
+    assert client.get(f"/api/sessions/{sid}/outside-inputs").json()["outsideInputs"] is None
+
+
+def test_files_of_another_kind_are_refused_in_plain_words(client, macros, tmp_path):
+    main = _main_book(tmp_path)
+    res = client.post("/api/sessions", files=[_part("report.pdf", b"%PDF"), _part(MAIN, main.read_bytes())], data={"mode": "plan"})
+    assert res.status_code == 400 and res.json()["detail"].startswith("report.pdf: Mind Ready takes the workbook and the files its macros open")
+    res = client.post("/api/sessions", files=[_part(INPUTS[0].replace(".xlsm", ".csv"), b"a,b")], data={"mode": "plan"})
+    assert res.status_code == 422 and "Pick the workbook itself" in res.json()["detail"]
+    assert client.post("/api/sessions", data={"mode": "plan"}).status_code == 422
+
+
+def test_the_main_workbook_is_the_one_whose_macros_open_outside_files(monkeypatch, tmp_path):
+    big = tmp_path / "big_report.xlsx"
+    big.write_bytes(b"x" * 5000)
+    tool = tmp_path / "tool.xlsm"
+    tool.write_bytes(b"x" * 100)
+    other = tmp_path / "other_macros.xlsm"
+    other.write_bytes(b"x" * 300)
+    data = tmp_path / "data.csv"
+    data.write_bytes(b"x" * 9000)
+    vba = {"tool.xlsm": [("M", VBA)], "other_macros.xlsm": [("M", "Sub Hello()\n  MsgBox \"hi\"\nEnd Sub")]}
+    monkeypatch.setattr(model_map, "read_vba", lambda p: vba.get(Path(p).name, []))
+    monkeypatch.setattr(server, "has_vba_project", lambda p: Path(p).name in vba)
+    main, found = server._pick_main([big, tool, other, data])
+    assert main == tool and found["import_macro"] == "calcCF"
+    del vba["tool.xlsm"]  # no macro opens a file: the only workbook with macros
+    main, found = server._pick_main([big, tool, other, data])
+    assert main == other and found["imports"] == []
+    vba.clear()  # no macros at all: the largest workbook (a .csv is never the workbook)
+    assert server._pick_main([big, tool, other, data]) == (big, None)
+
+
+# --- 2. adding files later -----------------------------------------------------------------------------
+def test_adding_the_missing_file_matches_it_without_a_new_scan(client, macros, tmp_path):
+    main = _main_book(tmp_path)
+    body = _upload_picked(client, main, INPUTS[:5])
+    sid = body["sessionId"]
+    scans = len(server.SESSIONS[sid].plan_history)
+    res = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[5], b"the VFA file"), _part(INPUTS[0], b"BBA_01 again, newer")])
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["outsideInputs"]["matched"] == 6 and out["outsideInputs"]["missing"] == [] and out["outsideInputs"]["summary"] == "6 of 6 input files matched."
+    names = [i["name"] for i in out["inputs"]]
+    assert sorted(names) == sorted(INPUTS) and len(names) == 6  # replaced by name, not added twice
+    s = server.SESSIONS[sid]
+    assert Path(server._input_path(s, INPUTS[0])).read_bytes() == b"BBA_01 again, newer"
+    assert len(s.plan_history) == scans  # no rescan
+    f = _finding(s.result["validation_report"])  # INP-010 says the new counts at once
+    assert f["status"] == "ERROR" and "6 of 6 picked." in f["message"]
+    assert out["readiness"]["next_step"]["label"] == "Bring in the outside files"
+    assert client.post(f"/api/sessions/{sid}/inputs", files=[_part("notes.docx", b"x")]).status_code == 400
+
+
+# --- 3. the bring-in job ---------------------------------------------------------------------------------
+def test_bring_in_makes_two_versions_the_mind_inputs_and_their_downloads(client, macros, excel_steps, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert res.status_code == 202 and res.json()["running"] is True and res.json()["base_version_id"] == "ver-001"
+    st = _wait(client, sid)
+    assert st["state"] == "done" and st["error"] is None, st
+    (imp_call,) = excel_steps["import"]
+    assert imp_call["macro"] == "calcCF" and imp_call["workbook"] == s.paths["ver-001"]
+    assert imp_call["messages"] == []  # the VBA's own MsgBox lines (none in this one) go with the run
+    assert sorted(imp_call["files"]) == [f"Ctrl_01!H{r}" for r in range(35, 41)] and all(p.is_file() for p in imp_call["files"].values())
+    # the Mind inputs are made from the import version's own scan, every sheet read
+    (mi_call,) = excel_steps["mind_inputs"]
+    assert mi_call["workbook"] == s.paths["ver-002"] and [p["name"] for p in mi_call["plan"]] == ["IN_BBA_01"]
+    assert any(f["sheet"] == "Calc" and f["cell"] == "A3" for f in mi_call["formulas"])
+    result = st["result"]
+    assert result["summary"] == "6 outside files brought in; 1 Mind input made (IN_BBA_01); no computed value changed."
+    assert result["versions"] == ["ver-002", "ver-003"] == st["versions"]
+    assert result["import"]["macro"] == "calcCF" and result["import"]["saved"] and all(f["opened"] for f in result["import"]["files"])
+    assert result["mindInputs"]["inputs"][0]["csv"] == "IN_BBA_01.csv" and result["download"] == {"zip": "Mind inputs.zip", "files": ["IN_BBA_01.csv"]}
+    assert result["numbers"]["clean"] is True and excel_steps["compare"] == [(s.paths["ver-002"], s.paths["ver-003"])]
+    versions = {v["id"]: v for v in s.versions}
+    assert versions["ver-002"]["source"] == "import" and versions["ver-002"]["label"] == "v2 — Outside files brought in" and versions["ver-002"]["parent"] == "ver-001"
+    assert versions["ver-003"]["source"] == "mind_inputs" and versions["ver-003"]["label"] == "v3 — Outside files made Mind inputs" and versions["ver-003"]["parent"] == "ver-002"
+    assert versions["ver-002"]["change_log"][0]["op"] == "bring_in_file" and versions["ver-003"]["change_log"][0]["after"] == "#IN_BBA_01 /Input"
+    assert s.current_version_id == "ver-003"
+    # the CSV folder of this line holds the CSVs alone (Run in Mind uploads the whole folder)
+    assert s.mind_inputs_dir and server._mind_inputs_dir_for(s) == s.mind_inputs_dir
+    assert sorted(p.name for p in Path(s.mind_inputs_dir).iterdir()) == ["IN_BBA_01.csv"]
+    # brought in: INP-010 passes, the verdict no longer asks for it
+    after = client.get(f"/api/sessions/{sid}").json()
+    assert after["outsideInputs"]["brought_in"] is True and _finding(after["report"])["status"] == "PASS"
+    assert all(b["rule_id"] != "INP-010" for b in after["readiness"]["blocking"])
+    assert (after["readiness"]["next_step"] or {}).get("label") != "Bring in the outside files"
+    # the numbers baseline is now the version the files were brought into; CELL/INFO stay with the upload
+    assert server._original_path(s) == s.paths["ver-002"] and server._original_and_moves(s)[0] == s.paths["ver-002"]
+    assert server._upload_and_moves(s)[0] == s.paths["ver-001"]
+    # downloads: the zip (the CSVs at its root) and each CSV under the name Mind matches
+    z = client.get(f"/api/sessions/{sid}/files/Mind inputs.zip")
+    assert z.status_code == 200 and z.headers["content-type"] == "application/zip"
+    assert zipfile.ZipFile(io.BytesIO(z.content)).namelist() == ["IN_BBA_01.csv"]
+    c = client.get(f"/api/sessions/{sid}/files/IN_BBA_01.csv")
+    assert c.status_code == 200 and c.headers["content-type"].startswith("text/csv") and c.content.startswith(b"Amount\n")
+    v3 = client.get(f"/api/sessions/{sid}/files/{versions['ver-003']['file_name']}")
+    assert v3.status_code == 200 and v3.content[:2] == b"PK"
+    assert client.get(f"/api/sessions/{sid}/estimate").status_code == 200  # priced against the import version's baseline
+    # and once more: the line is brought in already, so the macro runs on the version before it
+    again = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"checkNumbers": False})
+    assert again.status_code == 202 and again.json()["base_version_id"] == "ver-001" and "already brought in" in again.json()["note"]
+    st2 = _wait(client, sid)
+    assert st2["state"] == "done" and st2["result"]["versions"] == ["ver-004", "ver-005"] and st2["result"]["numbers"] is None
+    assert st2["result"]["summary"].startswith("6 outside files brought in; 1 Mind input made (IN_BBA_01); the computed values are not checked yet.")
+    assert {v["id"]: v for v in s.versions}["ver-004"]["parent"] == "ver-001"
+
+
+def test_bring_in_is_refused_while_a_job_runs_and_refuses_the_others(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    gate = threading.Event()
+    monkeypatch.setattr(outside_inputs, "run_import", _fake_run_import(excel_steps["import"], gate=gate))
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    try:
+        st = client.get(f"/api/sessions/{sid}/outside-inputs").json()
+        assert st["running"] is True and st["stage"] in ("Starting", "Running the workbook's import macro")
+        again = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+        assert again.status_code == 409 and "being brought in" in again.json()["detail"]
+        assert client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"x")]).status_code == 409
+        op = {"operations": [{"op": "set_value", "sheet": "Calc", "cell": "Z9", "after": 1}], "reanalyze": False}
+        assert client.post(f"/api/sessions/{sid}/apply", json=op).status_code == 409
+        assert client.post(f"/api/sessions/{sid}/recalculate").status_code == 409
+        assert client.post(f"/api/sessions/{sid}/auto-fix", json={"use_assistant": False}).status_code == 409
+        assert "outside files" in client.get(f"/api/sessions/{sid}/mind-loop/options").json()["busy"]
+    finally:
+        gate.set()
+    assert _wait(client, sid)["state"] == "done"
+    assert not server.SESSIONS[sid].apply_lock.locked()
+
+
+def test_a_macro_that_stops_early_changes_nothing(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    monkeypatch.setattr(outside_inputs, "run_import", _fake_run_import(excel_steps["import"], stopped=True))
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "error" and st["result"] is None and st["versions"] == []
+    assert st["error"].startswith('The workbook\'s import macro stopped early: "BBA_01のinput領域には93項目まで入力可能です".')
+    assert "Not opened: 2026Q1_2026_BBA_02.xlsm" in st["error"] and st["error"].endswith("Nothing was changed: check the input files, then try again.")
+    s = server.SESSIONS[sid]
+    assert [v["id"] for v in s.versions] == ["ver-001"] and s.current_version_id == "ver-001" and not s.apply_lock.locked()
+    assert _finding(s.result["validation_report"])["status"] == "ERROR" and excel_steps["mind_inputs"] == []
+    timed_out = {"saved": None, "stopped_early": False, "files": [], "dialogs": [], "error": "the import macro ran longer than 900 s and was stopped"}
+    assert server._import_stopped(timed_out) == "The workbook's import macro ran longer than 900 s and was stopped. Nothing was changed: check the input files, then try again."
+    # every file opened, the last one written to nowhere, Excel's own words for the VBA error
+    files = [{"file": "a.xlsm", "opened": True, "areas": [{"sheet": "A", "ref": "B3:C4"}]}, {"file": "b.xlsm", "opened": True, "areas": []}]
+    error = "(-2147352567, 'Exception occurred.', (0, 'Microsoft Visual Basic', 'Subscript out of range', None, 0, -2146828279), None)"
+    report = {"saved": "x", "stopped_early": False, "files": files, "dialogs": [], "error": error, "ok": False}
+    assert not server._import_ok(report)
+    assert server._import_stopped(report) == "The workbook's import macro opened b.xlsm but wrote nothing from it: Subscript out of range. Nothing was changed: check the input files, then try again."
+
+
+def test_bring_in_needs_a_matched_file_and_excel(client, macros, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, ["unrelated.xlsx"])["sessionId"]
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert res.status_code == 422 and "add the outside files first" in res.json()["detail"]
+    client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"x")])
+    monkeypatch.setattr(server, "com_available", lambda: False)
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert res.status_code == 409 and "needs Excel" in res.json()["detail"]
+
+
+# --- 4. the baselines and the version the macro runs on -------------------------------------------------
+def _session(tmp_path: Path, steps: list[tuple[str, list[dict]]]) -> server.Session:
+    """A session with one version per step (source, change log), each a file of its own."""
+    s = server.Session(id=f"t{time.time_ns()}", work_dir=tmp_path, mode="plan")
+    for i, (source, log) in enumerate(steps, start=1):
+        p = tmp_path / f"v{i}" / "model.xlsm"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+        server._add_version(s, p, source, source, log, None, "0" * 64)
+    return s
+
+
+def test_the_baselines_move_to_the_version_the_files_were_brought_into(client, monkeypatch, tmp_path):
+    insert = lambda row: [{"op": "insert_row", "sheet": "Data", "row": row}]  # noqa: E731
+    s = _session(tmp_path, [("upload", []), ("prep", insert(2)), ("import", []), ("prep", insert(1))])
+    v = {x["id"]: s.paths[x["id"]] for x in s.versions}
+    # B: the numbers check and the fixer compare with the import version, through the moves made since
+    original, moves = server._original_and_moves(s)
+    assert original == v["ver-003"] and moves.forward("Data", 5, 1) == ("Data", 6, 1)
+    # A: the recalculation errors are judged against it too
+    assert server._original_path(s) == v["ver-003"]
+    # C: the CELL / INFO values the user's Excel saved stay with the upload, moved by every insert
+    upload, all_moves = server._upload_and_moves(s)
+    assert upload == v["ver-001"] and all_moves.forward("Data", 5, 1) == ("Data", 7, 1)
+    s.original_environment = {("Data", "A5"): "C:\\models\\tool.xlsm"}
+    assert server._original_environment(s) == {"Data!A7": "C:\\models\\tool.xlsm"}
+    # on the import version itself there is nothing to compare, and the numbers check says why
+    s.current_version_id = "ver-003"
+    assert server._original_and_moves(s) is None and server._original_path(s) == v["ver-003"]
+    server.SESSIONS[s.id] = s
+    out = client.post(f"/api/sessions/{s.id}/numbers-check").json()
+    assert out["ran"] is False and out["verdict"] == "This is the version the outside files were brought into: nothing to compare."
+    # a line without the import (v2) is compared with the upload as before
+    s.current_version_id = "ver-002"
+    assert server._original_path(s) == v["ver-001"] and server._original_and_moves(s)[0] == v["ver-001"]
+    # each baseline file is recalculated once, the upload's and the import's apart
+    runs = []
+
+    def recalculate(path, save=True):
+        runs.append(Path(path).parent.name)
+        return {"ran": True, "status": "ERROR", "formula_errors": [{"sheet": "Data", "cell": "B2", "error": "#N/A"}], "addin_gap_errors": [], "message": "ok"}
+
+    monkeypatch.setattr(server, "recalculate", recalculate)
+    for key in v.values():
+        s.ref_formulas[str(key)] = set()
+    s.current_version_id = "ver-004"
+    first = server._original_baseline(s, server._original_path(s))
+    assert first["path"] == str(v["ver-003"]) and server._original_baseline(s, server._original_path(s)) is first
+    s.current_version_id = "ver-002"
+    assert server._original_baseline(s, server._original_path(s))["path"] == str(v["ver-001"])
+    s.current_version_id = "ver-004"
+    server._original_baseline(s, server._original_path(s))
+    assert len(runs) == 2 and set(s.baselines) == {str(v["ver-001"]), str(v["ver-003"])}
+
+
+def test_the_macro_runs_where_the_layout_is_still_the_uploads(tmp_path):
+    formula_fix = [{"op": "set_formula", "sheet": "Data", "cell": "B2", "after": "=1"}]
+    s = _session(tmp_path, [("upload", []), ("prep", formula_fix)])
+    assert server._bring_in_base(s) == (s.versions[1], None)  # nothing moved: the current version
+    s = _session(tmp_path / "moved", [("upload", []), ("prep", formula_fix), ("grid_namer", [{"op": "insert_row", "sheet": "Data", "row": 1}])])
+    base, note = server._bring_in_base(s)
+    assert base["id"] == "ver-002" and note.startswith("Brought in on v2: rows, columns or sheet names changed after it")
+    assert note.endswith("run Do everything again.")
+    s = _session(tmp_path / "again", [("upload", []), ("import", []), ("mind_inputs", [])])
+    base, note = server._bring_in_base(s)
+    assert base["id"] == "ver-001" and "already brought in" in note
+
+
+# --- 5. INP-010 and the next step -------------------------------------------------------------------------
+def test_inp_010_says_what_is_left_to_do():
+    rows = [{"cell": f"Ctrl_01!H{r}", "expected": None, "keys": [k], "file": f"{k}.xlsm" if k != "VFA_01" else None} for r, k in zip(range(35, 41), KEYS)]
+    oi = {"imports": True, "macro": "calcCF", "calls": [], "rows": rows, "matched": 5, "missing": ["Ctrl_01!H40"], "extra": [], "brought_in": False}
+    assert inp_010(None, {}, {})["status"] == "PASS"
+    f = inp_010(None, {}, {"outside_inputs": oi})
+    assert f["status"] == "ERROR" and f["message"] == "The macro calcCF fills the workbook from 6 outside files, and Mind runs no macro: 5 of 6 picked, missing: VFA_01. Use Bring in the outside files."
+    assert f["location"] == {"sheet": "Ctrl_01", "cell": "H35"} and len(f["observed"]["sites"]) == 6
+    assert inp_010(None, {}, {"outside_inputs": {**oi, "brought_in": True}})["status"] == "PASS"
+    assert inp_010(None, {}, {"outside_inputs": {**oi, "rows": []}})["status"] == "WARNING"  # no cell names the files
+    assert inp_010(None, {}, {"outside_inputs": {**oi, "macro": None}})["status"] == "WARNING"
+
+
+def test_the_next_step_brings_the_outside_files_in_before_prep():
+    def f(rid, status, sites=None):
+        return {"rule_id": rid, "status": status, "priority": "REQUIRED", "message": rid, "observed": {"sites": sites} if sites else None}
+
+    plan = [{"id": "create_grid_titles", "rule_ids": ["STR-004"], "count": 3, "level": "blocking", "skipped": []}]
+    report = {"findings": [f("STR-004", "ERROR"), f("INP-010", "ERROR", [1, 2, 3, 4, 5, 6]), f("READY-001", "NOT_SUPPORTED")]}
+    r = compute_readiness(report, plan, None, "v")
+    assert r["next_step"] == {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": "6 files the workbook's macro opens", "rule_id": "INP-010"}
+    assert {b["rule_id"]: b["fix"] for b in r["blocking"]} == {"STR-004": "prep", "INP-010": "outside_inputs"}
+
+
+# --- 6. Run in Mind uploads the Mind inputs of the line ------------------------------------------------------
+@dataclass
+class _LoopConfig:
+    source: Path
+    work_dir: Path
+    max_iterations: int = 4
+    use_assistant: bool = True
+    run_model: bool = True
+    check_numbers: bool = True
+    enable: list = field(default_factory=list)
+    disable: list = field(default_factory=list)
+    delete_projects: bool = True
+    skip_mind: bool = False
+    inputs_dir: Path | None = None
+
+
+@dataclass
+class _OldLoopConfig:
+    source: Path
+    work_dir: Path
+    max_iterations: int = 4
+    use_assistant: bool = True
+    run_model: bool = True
+    check_numbers: bool = True
+    enable: list = field(default_factory=list)
+    disable: list = field(default_factory=list)
+    delete_projects: bool = True
+    skip_mind: bool = False
+
+
+def test_run_in_mind_uploads_the_mind_inputs_of_the_current_line(client, macros, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    (csv_dir / "IN_BBA_01.csv").write_text("Amount\n1\n", encoding="utf-8")
+    s.mind_inputs_dirs[s.current_version_id] = str(csv_dir)
+    seen = []
+
+    def run_loop(cfg, progress):
+        seen.append(cfg)
+        return {"verdict": "converged", "iterations": []}
+
+    monkeypatch.setattr(server, "run_loop", run_loop)
+    monkeypatch.setattr(server, "LoopConfig", _OldLoopConfig)  # a loop that cannot upload them: refused, nothing left running
+    res = client.post(f"/api/sessions/{sid}/mind-loop", json={"skipMind": True, "actions": [], "useAssistant": False, "checkNumbers": False})
+    assert res.status_code == 409 and "Mind inputs" in res.json()["detail"] and sid not in server.MIND_LOOPS
+    monkeypatch.setattr(server, "LoopConfig", _LoopConfig)
+    options = client.get(f"/api/sessions/{sid}/mind-loop/options").json()
+    assert options["inputs"] == ["IN_BBA_01.csv"] and "inputs" in [x["id"] for x in options["estimate"]["stages"]]
+    res = client.post(f"/api/sessions/{sid}/mind-loop", json={"skipMind": True, "actions": [], "useAssistant": False, "checkNumbers": False})
+    assert res.status_code == 200, res.text
+    for _ in range(200):
+        if server.MIND_LOOPS[sid]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert server.MIND_LOOPS[sid]["state"] == "done" and server.MIND_LOOPS[sid]["inputs"] == ["IN_BBA_01.csv"]
+    assert seen[0].inputs_dir == csv_dir
+    # another line (a version made from the upload without the bring-in) has no Mind inputs
+    s.mind_inputs_dirs.clear()
+    assert client.get(f"/api/sessions/{sid}/mind-loop/options").json()["inputs"] == []
+
+
+def test_the_mind_run_estimate_lists_the_input_upload_only_with_inputs():
+    plain = [x["id"] for x in estimate_mind_run(13.0, 60.0, 0, 200)["stages"]]
+    assert "inputs" not in plain
+    ids = [x["id"] for x in estimate_mind_run(13.0, 60.0, 0, 200, inputs=6)["stages"]]
+    assert ids.index("template") < ids.index("inputs") < ids.index("run")

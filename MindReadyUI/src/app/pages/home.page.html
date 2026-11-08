@@ -11,9 +11,10 @@
       (drop)="onDrop($event)"
     >
       <p class="drop__text">Drag an .xlsx or .xlsm workbook here</p>
+      <p class="drop__hint">If the model's macros read other files, add those input files too: pick or drag them all at once.</p>
       <label class="cds--btn cds--btn--primary drop__button">
         Choose a workbook
-        <input type="file" accept=".xlsx,.xlsm,.xlsb" (change)="onFileInput($event)" hidden />
+        <input type="file" multiple [accept]="pickAccept" (change)="onFileInput($event)" hidden />
       </label>
     </div>
     <label class="autorun">
@@ -51,7 +52,7 @@
     </div>
   } @else if (phase() === "uploading") {
     <h1 class="page-title">Uploading the workbook</h1>
-    <cds-inline-loading [state]="'active'" loadingText="Sending the file to the app…"></cds-inline-loading>
+    <cds-inline-loading [state]="'active'" [loadingText]="sending() || 'Sending the file to the app…'"></cds-inline-loading>
   } @else if (phase() === "scanning") {
     <h1 class="page-title">Reading the workbook</h1>
     <div class="scan">
@@ -90,12 +91,82 @@
       ></cds-inline-notification>
     }
 
+    <!-- Outside files: the model's macros open other files -->
+    @if (store.outsideInputs(); as oi) {
+      <section class="outside" [class.outside--over]="cardDragOver()" (dragover)="onCardDragOver($event)" (dragleave)="cardDragOver.set(false)" (drop)="onCardDrop($event)">
+        <div class="outside__head">
+          <div>
+            <h2 class="outside__title">Outside files</h2>
+            <p class="outside__lead">{{ outsideLead(oi) }}</p>
+          </div>
+          @if (canBringIn(oi)) {
+            <div class="outside__buttons">
+              <button cdsButton="tertiary" size="md" (click)="addPicker.click()" [disabled]="busy()" [title]="busyHint()">Add files</button>
+              <input #addPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
+              @if (!oi.brought_in || canBringInAgain()) {
+                <button
+                  cdsButton="primary"
+                  size="md"
+                  (click)="runOutside()"
+                  [disabled]="busy() || !oi.matched"
+                  [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in ? 'Starts again from the version before the first bring-in: run Do everything again after it' : '')"
+                >{{ outsideButton(oi) }}</button>
+              }
+            </div>
+          }
+        </div>
+        @if (oi.rows.length) {
+          <ul class="outside__rows">
+            @for (r of oi.rows; track r.cell) {
+              <li class="outside__row" [class.outside__row--missing]="!r.file">
+                <bdi>{{ rowLabel(r) }}</bdi>
+                <span class="outside__arrow">→</span>
+                <bdi class="outside__file">{{ r.file || "missing" }}</bdi>
+                @if (!r.file && r.candidates.length) { <span class="outside__note">could be <bdi>{{ r.candidates.join(" or ") }}</bdi></span> }
+                @if (r.target_sheet) { <span class="outside__note">(fills <bdi>{{ r.target_sheet }}</bdi>)</span> }
+              </li>
+            }
+          </ul>
+          @if (oi.missing.length) { <p class="outside__note">A missing file keeps the data the model already holds.</p> }
+        }
+        @if (oi.extra.length) { <p class="outside__note">Not used: <bdi>{{ oi.extra.join(", ") }}</bdi></p> }
+        @if (addingInputs()) { <cds-inline-loading [state]="'active'" loadingText="Adding the files…"></cds-inline-loading> }
+        @if (inputsError()) { <p class="outside__error">{{ inputsError() }}</p> }
+        @if (outside(); as s) {
+          @if (s.running) {
+            <div class="action__progress">
+              <cds-progress-bar [label]="s.line" [helperText]="s.detail" [max]="100"></cds-progress-bar>
+            </div>
+          } @else if (s.line) {
+            <div class="outside__result">
+              <span class="dot" [class.dot--ok]="s.tone === 'ok'" [class.dot--warn]="s.tone === 'warn'" [class.dot--error]="s.tone === 'error'"></span>
+              <span>{{ s.line }}</span>
+              @if (s.detail) { <button class="link" (click)="toggle('outside')">{{ s.open ? "Hide details" : "View details" }}</button> }
+            </div>
+            @if (s.open && s.detail) {
+              <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
+                <span>{{ s.detail }}</span>
+              </div>
+            }
+          }
+        }
+        @if (zipUrl(); as url) {
+          <p class="outside__download">
+            <a [href]="url" download>Download Mind inputs.zip</a>
+            <span class="outside__note">one CSV per Mind input: the Mind team puts new ones in Mind's Inputs window each quarter</span>
+          </p>
+        }
+      </section>
+    } @else if (pickedInputs().length) {
+      <p class="outside__aside">The model's macros open no outside files, so the other {{ pickedInputs().length === 1 ? "file" : pickedInputs().length + " files" }} you picked {{ pickedInputs().length === 1 ? "is" : "are" }} not used.</p>
+    }
+
     <!-- Do everything -->
     <div class="chain">
       <div class="chain__head">
         <div>
           <h2 class="chain__title">Do everything</h2>
-          <p class="chain__text">Fix all issues, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
+          <p class="chain__text">{{ store.outsideInputs() ? "Bring in the outside files, fix all issues" : "Fix all issues" }}, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
           @if (store.pivots().length) {
             <p class="chain__caveat">Pivot tables ({{ store.pivots().length }}): {{ store.pivotModes()[store.pivotMode()] || store.pivotMode() }}. Change it in Advanced › Prep actions.</p>
           }

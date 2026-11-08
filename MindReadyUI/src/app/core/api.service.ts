@@ -3,7 +3,7 @@ import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -36,12 +36,35 @@ export class ApiService {
     return firstValueFrom(this.http.post<FeedbackMessage>(`${this.base}/feedback`, body));
   }
 
-  upload(file: File, mode: Mode = "plan", defer = true): Promise<SessionStart | PendingUpload> {
+  /** One workbook goes as the field "file" (as always); several files -- the model and its input
+   *  files -- go as repeated "files", and the server finds which one is the model. */
+  upload(files: File | File[], mode: Mode = "plan", defer = true): Promise<SessionStart | PendingUpload> {
+    const list = Array.isArray(files) ? files : [files];
     const form = new FormData();
-    form.append("file", file, file.name);
+    if (list.length === 1) form.append("file", list[0], list[0].name);
+    else for (const f of list) form.append("files", f, f.name);
     form.append("mode", mode);
     if (defer) form.append("defer", "1");
     return firstValueFrom(this.http.post<SessionStart | PendingUpload>(`${this.base}/sessions`, form));
+  }
+
+  /** Adds (or replaces, by name) the model's input files; the server matches them again, no new scan
+   *  (the readiness, when sent, says the new counts). */
+  addInputs(id: string, files: File[]): Promise<{ inputs: InputFile[]; outsideInputs: OutsideInputs | null; readiness?: Readiness | null }> {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return firstValueFrom(this.http.post<{ inputs: InputFile[]; outsideInputs: OutsideInputs | null; readiness?: Readiness | null }>(`${this.s(id)}/inputs`, form));
+  }
+
+  /** Starts bringing the outside files in (a background job: the model's own import macro, then the
+   *  Mind inputs); refused (409) while another long job runs on the session. */
+  startOutsideInputs(id: string): Promise<{ running: boolean }> {
+    return firstValueFrom(this.http.post<{ running: boolean }>(`${this.s(id)}/outside-inputs/run`, {}));
+  }
+
+  /** Where that job is (stage), and its result or error once it has ended. */
+  outsideInputs(id: string): Promise<OutsideRunStatus> {
+    return firstValueFrom(this.http.get<OutsideRunStatus>(`${this.s(id)}/outside-inputs`));
   }
 
   analyze(id: string, ignoreSheets: string[] = []): Promise<SessionStart> {

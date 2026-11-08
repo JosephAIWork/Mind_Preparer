@@ -24,6 +24,8 @@ from typing import Any
 
 BLOCKING_STATUSES = ("ERROR", "REQUIRES_USER_INPUT")
 RECALC_RULE = "READY-001"
+# Outside input files (app/outside_inputs.py): fixed by its own step, "Bring in the outside files"
+OUTSIDE_RULE = "INP-010"
 
 
 def level_of(finding: dict[str, Any]) -> str:
@@ -42,7 +44,10 @@ def level_of(finding: dict[str, Any]) -> str:
 def _fix_route(rule_id: str, plan: list[dict[str, Any]]) -> tuple[str, str | None]:
     """How a finding can be fixed: ('prep', action_id) when a plan action holds
     operations for the rule, ('prep_skipped', action_id) when the action
-    exists but left every site for review, else ('assistant', None)."""
+    exists but left every site for review, ('outside_inputs', None) for the
+    outside input files (their own step), else ('assistant', None)."""
+    if rule_id == OUTSIDE_RULE:
+        return "outside_inputs", None
     for a in plan:
         if rule_id in a.get("rule_ids", []) and a.get("count", 0) > 0:
             return "prep", a["id"]
@@ -147,6 +152,12 @@ def _site_count(f: dict[str, Any]) -> int | None:
 
 def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -> dict[str, Any]:
     if state == "blocked":
+        # The outside files first: the workbook's own macro brings them in, and it writes to fixed
+        # places -- before Prep inserts a row anywhere
+        outside = next((b for b in blocking if b["rule_id"] == OUTSIDE_RULE), None)
+        if outside is not None:
+            n = outside.get("sites")
+            return {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": f"{n} file{'' if n == 1 else 's'} the workbook's macro opens" if n else None, "rule_id": OUTSIDE_RULE}
         # Only a Prep action that targets a *blocking finding* counts here -- a
         # blocking-level action with work left for an optional finding does not.
         via_prep = [b for b in blocking if b["fix"] == "prep"]
@@ -392,9 +403,10 @@ def apply_outcome(
         if appeared_blocking:
             headline += f" -- new in this version: {_some(appeared_blocking)}"
         if remaining:
-            by_hand = [r["rule_id"] for r in remaining if r["fix"] != "prep"]
+            by_hand = [r["rule_id"] for r in remaining if r["fix"] not in ("prep", "outside_inputs")]
             via_prep = [r["rule_id"] for r in remaining if r["fix"] == "prep"]
-            parts = ([f"{_some(via_prep)} (Prep has a repair: apply it)"] if via_prep else []) + ([f"{_some(by_hand)} (no automatic repair: by hand or with the assistant)"] if by_hand else [])
+            outside = [r["rule_id"] for r in remaining if r["fix"] == "outside_inputs"]
+            parts = ([f"{_some(via_prep)} (Prep has a repair: apply it)"] if via_prep else []) + ([f"{_some(outside)} (Bring in the outside files)"] if outside else []) + ([f"{_some(by_hand)} (no automatic repair: by hand or with the assistant)"] if by_hand else [])
             headline += f" -- left: {'; '.join(parts)}"
         headline += "."
     return {

@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from "@angular/core";
 
 export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
-import { ChatMessage, Delta, FixTarget, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+import { ChatMessage, Delta, FixTarget, OutsideInputs, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
@@ -24,6 +24,10 @@ export class SessionStore {
   /** 1.11.7: what Prep (and Do everything) does with the pivot tables */
   readonly pivotMode = signal<PivotMode>("values");
   readonly pivotModes = signal<Record<string, string>>({});
+  /** The outside files the model's macros open, matched with the input files picked with it
+   *  (null: the macros open none). Set by the scan of the upload; the match and `brought_in` follow
+   *  Add files and Bring in the outside files. */
+  readonly outsideInputs = signal<OutsideInputs | null>(null);
   /** STR-009's pivots: [{sheet, name, ref, blocking}] (empty when the workbook has none) */
   readonly pivots = computed(() => {
     const f = this.findings().find((x) => x.rule_id === "STR-009");
@@ -57,6 +61,7 @@ export class SessionStore {
     this.delta.set(start.delta ?? null);
     this.pivotMode.set(start.pivot_mode ?? "values");
     if (start.pivot_modes) this.pivotModes.set(start.pivot_modes);
+    this.outsideInputs.set(start.outsideInputs ?? null);
     this.recalc.set(null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);
@@ -74,6 +79,8 @@ export class SessionStore {
     if (a.readiness) this.readiness.set(a.readiness);
     if (a.prep_progress) this.prepProgress.set(a.prep_progress);
     if (a.delta !== undefined) this.delta.set(a.delta ?? null);
+    // a property of the upload: a later answer refreshes it, none clears it
+    if (a.outsideInputs) this.outsideInputs.set(a.outsideInputs);
   }
 
   addVersion(v: Version): void {
@@ -92,6 +99,7 @@ export class SessionStore {
     this.readiness.set(null);
     this.prepProgress.set(null);
     this.delta.set(null);
+    this.outsideInputs.set(null);
     this.recalc.set(null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);
