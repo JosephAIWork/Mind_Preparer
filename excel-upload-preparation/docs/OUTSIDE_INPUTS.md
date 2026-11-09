@@ -19,6 +19,19 @@ uploading the model again.
 4. Download the model and **Mind inputs.zip** (one CSV per input). Run in Mind uploads both.
    Each quarter: put the new CSVs in Mind's **Inputs** window, then Run.
 
+### Only the workbook, no input files
+
+The app still finds what the macro reads and lists every file as missing; INP-010 blocks and
+"Do everything" stops at its first step, saying what to do. Two ways on:
+
+- **Add files** on the Outside files card (or drop them there): no new upload of the model.
+- **Go on without them** (same card): the model keeps the numbers its macro brought in last
+  (they are saved in the workbook as plain values). Mind runs on those numbers but cannot swap
+  them each quarter. INP-010 becomes a warning, the banner no longer blocks on it, and "Do
+  everything" leaves the bring-in out. **Undo** on the card takes the choice back; adding a
+  file or starting a bring-in takes it back too. Offered only while the version never went
+  through a bring-in (`POST /api/sessions/{id}/outside-inputs/skip`, body `{"skip": true|false}`).
+
 ## How it works (`app/outside_inputs.py`)
 
 - **Finding the import.** The VBA is read for calls that open outside files

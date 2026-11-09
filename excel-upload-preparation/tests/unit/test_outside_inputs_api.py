@@ -490,6 +490,71 @@ def test_inp_010_says_what_is_left_to_do():
     unfinished = inp_010(None, {}, {"outside_inputs": {**oi, "brought_in_reason": "the last bring-in did not finish"}})
     assert unfinished["status"] == "ERROR" and ": the last bring-in did not finish (5 of 6 picked" in unfinished["message"]
     assert inp_010(None, {}, {"outside_inputs": {**oi, "brought_in": True, "brought_in_reason": "ignored"}})["status"] == "PASS"
+    # the user has only the workbook and chose to go on without the files: a warning, not a block
+    went_on = inp_010(None, {}, {"outside_inputs": {**oi, "matched": 0, "skipped": True}})
+    assert went_on["status"] == "WARNING" and went_on["observed"]["skipped"] is True and went_on["message"] == (
+        "You chose to go on without the outside files: the data the macro calcCF brought in last stays in the workbook as plain numbers. "
+        "Mind runs on those numbers and cannot swap them each quarter; to make them Mind inputs, add the files and use Bring in the outside files.")
+    # a line that went through a bring-in is not "without the files": still asked to bring them in again
+    assert inp_010(None, {}, {"outside_inputs": {**oi, "skipped": True, "brought_in_reason": "the last bring-in did not finish"}})["status"] == "ERROR"
+    assert inp_010(None, {}, {"outside_inputs": {**oi, "skipped": True, "brought_in": True}})["status"] == "PASS"
+
+
+def test_with_only_the_workbook_the_user_can_go_on_without_the_files_and_take_it_back(client, macros, tmp_path):
+    main = _main_book(tmp_path)
+    body = _upload_picked(client, main, [])  # the workbook alone
+    sid = body["sessionId"]
+    s = server.SESSIONS[sid]
+    oi = body["outsideInputs"]
+    assert oi["matched"] == 0 and len(oi["missing"]) == 6 and oi["skipped"] is False and oi["brought_in"] is False
+    assert _finding(body["report"])["status"] == "ERROR" and body["readiness"]["next_step"]["label"] == "Bring in the outside files"
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 422  # nothing to bring in with
+    # go on without them: INP-010 warns, nothing blocks on it, the next step is no longer the bring-in
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={})
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["outsideInputs"]["skipped"] is True and s.outside_skipped is True
+    f = _finding(out["report"])
+    assert f["status"] == "WARNING" and f["message"].startswith("You chose to go on without the outside files: the data the macro calcCF brought in last")
+    assert "INP-010" not in out["report"]["summary"]["blocking_rule_ids"]
+    assert all(b["rule_id"] != "INP-010" for b in out["readiness"]["blocking"])
+    assert (out["readiness"]["next_step"] or {}).get("label") != "Bring in the outside files"
+    assert [v["id"] for v in s.versions] == ["ver-001"]  # the workbook itself is not touched
+    # a new scan (as after every fix) keeps the choice
+    again = client.post(f"/api/sessions/{sid}/reanalyze", json={})
+    assert again.status_code == 200, again.text
+    assert _finding(again.json()["report"])["status"] == "WARNING" and again.json()["outsideInputs"]["skipped"] is True
+    assert client.get(f"/api/sessions/{sid}").json()["outsideInputs"]["skipped"] is True
+    # take it back: blocking again
+    back = client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={"skip": False}).json()
+    assert back["outsideInputs"]["skipped"] is False and _finding(back["report"])["status"] == "ERROR"
+    assert back["readiness"]["next_step"]["label"] == "Bring in the outside files"
+    # go on without them again; a file the macro does not read leaves the choice as it is
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={}).json()["outsideInputs"]["skipped"] is True
+    other = client.post(f"/api/sessions/{sid}/inputs", files=[_part("notes.csv", b"x")]).json()
+    assert other["outsideInputs"]["skipped"] is True and other["outsideInputs"]["extra"] == ["notes.csv"]
+    # a file it reads: meant to be brought in, the choice is taken back
+    added = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"an input file")]).json()
+    assert added["outsideInputs"]["skipped"] is False and added["outsideInputs"]["matched"] == 1
+    assert _finding(s.result["validation_report"])["status"] == "ERROR"
+
+
+def test_go_on_without_the_files_is_refused_after_a_bring_in_and_a_bring_in_takes_it_back(client, macros, excel_steps, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    # chosen first (allowed: never brought in), then a bring-in starts: the choice is taken back
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={}).status_code == 200 and s.outside_skipped is True
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "done" and s.outside_skipped is False
+    assert st["outsideInputs"]["brought_in"] is True and st["outsideInputs"]["skipped"] is False
+    # brought in: nothing to go on without
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={})
+    assert res.status_code == 409 and "brought in already" in res.json()["detail"]
+    # a workbook whose macros open nothing has nothing to go on without
+    plain = _upload_picked(client, _main_book(tmp_path / "plain", name="plain.xlsx"), [])["sessionId"]
+    assert client.post(f"/api/sessions/{plain}/outside-inputs/skip", json={}).status_code == 422
 
 
 def test_the_next_step_brings_the_outside_files_in_before_prep():

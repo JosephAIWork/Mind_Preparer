@@ -118,6 +118,7 @@ export class HomePage implements OnDestroy {
   /** the input files sent with the workbook (the upload's answer), for the note when its macros open none */
   readonly pickedInputs = signal<InputFile[]>([]);
   readonly addingInputs = signal(false);
+  readonly skippingOutside = signal(false);
   readonly inputsError = signal("");
   readonly cardDragOver = signal(false);
   /** the last run on this page failed (the job stopped, its check failed, it could not start): the card offers "Try again" */
@@ -143,7 +144,7 @@ export class HomePage implements OnDestroy {
    *  cells name them, and they are not in the current version yet. */
   readonly outsideWillRun = computed(() => {
     const o = this.store.outsideInputs();
-    return !!o && !o.brought_in && this.canBringIn(o);
+    return !!o && !o.brought_in && !o.skipped && this.canBringIn(o);
   });
   /** The server's estimate, with the outside step in it when that step runs and the server left it out. */
   readonly fullEstimate = computed(() => {
@@ -520,7 +521,13 @@ export class HomePage implements OnDestroy {
       return false;
     }
     if (!o.matched) {
-      this.outside.set({ running: false, fraction: null, line: "No input file matched yet", detail: "Add the model's input files on the Outside files card (Add files).", tone: "error" });
+      this.outside.set({
+        running: false,
+        fraction: null,
+        line: "No input file matched yet",
+        detail: 'Add the model\'s input files on the Outside files card (Add files). Without them, press "Go on without them" there: the model keeps the numbers it already holds.',
+        tone: "error",
+      });
       return false;
     }
     const missing = o.rows.filter((r) => !r.file).map((r) => outsideRowLabel(r));
@@ -728,6 +735,34 @@ export class HomePage implements OnDestroy {
       this.inputsError.set(errorText(e));
     } finally {
       this.addingInputs.set(false);
+    }
+  }
+
+  /** Go on without the outside files (`skip`), or take that back: for a user who has only the workbook.
+   *  The model keeps the numbers its macro brought in last (Mind runs on them, it cannot swap them each
+   *  quarter); INP-010 warns instead of blocking and Do everything leaves the bring-in out. Adding files
+   *  or bringing them in takes the choice back (the server does it). */
+  async skipOutside(skip: boolean): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || this.skippingOutside()) return;
+    if (this.busy()) {
+      this.inputsError.set(`Wait: ${this.busyHint()}.`);
+      return;
+    }
+    this.inputsError.set("");
+    this.skippingOutside.set(true);
+    try {
+      const out = await this.api.skipOutsideInputs(id, skip);
+      this.store.applyAnalysis({ outsideInputs: out.outsideInputs, readiness: out.readiness ?? undefined, report: out.report });
+      if (this.outside().tone === "error") {
+        // the last stop was "no input file matched yet": the choice answers it
+        this.outside.set(idle());
+        this.outsideFailed.set(false);
+      }
+    } catch (e) {
+      this.inputsError.set(errorText(e));
+    } finally {
+      this.skippingOutside.set(false);
     }
   }
 

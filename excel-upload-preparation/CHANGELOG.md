@@ -20,6 +20,12 @@
   OFFSET from inside it, a range that covers only part of it) stays in the model and is reported.
 - **Run in Mind uploads the input files** through the Inputs window after the template step.
 - **New rule INP-010 "Outside input files"**: blocking until the outside files are brought in.
+- **Only the workbook, no input files: "Go on without them".** The Outside files card lists every
+  file as missing and "Do everything" stops at its first step, saying what to do: add the files
+  (no new upload), or go on without them -- the model keeps the numbers its macro brought in last
+  (Mind runs on them, it cannot swap them each quarter). INP-010 then warns instead of blocking and
+  "Do everything" leaves the bring-in out; Undo, adding a file or starting a bring-in takes the
+  choice back (`POST .../outside-inputs/skip`).
 - Proven on the Tokyo tool (anonymized, invented input files): 6 of 6 files matched, import 11 s,
   6 Mind inputs, 46,800 formulas moved, no computed value changed; in Mind 6 of 6 inputs SUCCESS and
   Mind = Excel on the result grid (120 of 120 numbers); a "next quarter" (two inputs changed, model

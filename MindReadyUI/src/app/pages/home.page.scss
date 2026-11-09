@@ -131,6 +131,14 @@
     color: theme.$text-error;
   }
 
+  // the user chose to go on without the files: said plainly, with a way back
+  &__skipped {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+    border-left: 3px solid theme.$support-warning;
+    padding-left: $spacing-03;
+  }
+
   &__result {
     display: flex;
     align-items: center;

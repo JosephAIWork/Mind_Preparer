@@ -789,6 +789,8 @@ export interface OutsideInputs {
   brought_in_reason?: string | null;
   /** the Mind inputs (/Input grids) the bring-in made for the current line */
   mind_inputs?: string[];
+  /** the user chose to go on without the files: the model keeps the numbers it holds (INP-010 warns) */
+  skipped?: boolean;
 }
 
 export interface InputFile {
@@ -1002,6 +1004,7 @@ export function outsideButtonLabel(o: OutsideInputs, failed: boolean): string {
 export function outsideSkipReason(o: OutsideInputs | null, unchecked = false): string {
   if (!o) return "The model's macros open no outside files";
   if (o.brought_in) return unchecked ? "Already brought in (the computed values were not checked)" : "Already brought in";
+  if (o.skipped) return "Going on without the outside files: the model keeps the numbers it holds";
   if (!o.rows.length) return "No cell names the files the macro opens: their data stays inside the model";
   if (!o.macro) return "Which macro brings the outside files in is not clear: their data stays inside the model";
   return "";

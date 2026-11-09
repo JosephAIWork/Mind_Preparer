@@ -181,6 +181,10 @@ class Session:
     # input was made) -> the fingerprint of the picked files it read (_inputs_fingerprint). A line counts
     # as brought in only through one of these, and only while the picked files are still those.
     brought_in_files: dict[str, str] = field(default_factory=dict)
+    # the user chose to go on without the outside files (POST .../outside-inputs/skip): the data the
+    # import macro brought in last stays in the workbook as plain numbers (INP-010 warns, no longer
+    # blocks). Adding input files or starting a bring-in takes the choice back.
+    outside_skipped: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     # one Apply at a time: two at once would both copy the same version and the last one to finish
     # would become current without the other's changes
@@ -918,6 +922,9 @@ def _outside_public(s: Session) -> dict[str, Any] | None:
         # why the line's bring-in does not count, in words (the input files changed since, it did not
         # finish); None when brought in or when the line never went through one
         "brought_in_reason": why_not,
+        # the user chose to go on without the files: the model keeps the numbers it holds (only for a
+        # line that never went through a bring-in)
+        "skipped": bool(s.outside_skipped) and not brought_in and why_not is None,
         # the /Input grids the bring-in made for this line (their size is the model's import area)
         "mind_inputs": [Path(n).stem for n in _mind_input_files(_mind_inputs_dir_for(s))] if s.versions else [],
     }
@@ -952,6 +959,7 @@ _STEPS = {
     "/api/sessions/{session_id}/inputs": "Input files",
     "/api/sessions/{session_id}/outside-inputs": "Bring in the outside files",
     "/api/sessions/{session_id}/outside-inputs/run": "Bring in the outside files",
+    "/api/sessions/{session_id}/outside-inputs/skip": "Go on without the outside files",
     "/api/assistant-key": "AI key",
 }
 
@@ -2422,6 +2430,7 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
         raise HTTPException(status_code=422, detail=f"{base['label'].split(' — ')[0]} has no macros left to run: bring the outside files in on the uploaded workbook.")
     if not s.apply_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Wait a moment: changes are still being written.")
+    s.outside_skipped = False  # bringing them in takes back "go on without them"
     now = time.time()
     s.outside_run = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now, "finished": None,
                      "result": None, "error": None, "versions": [], "base_version_id": base["id"]}
@@ -2469,12 +2478,41 @@ def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str
         raise HTTPException(status_code=422, detail="Pick the input files to add.")
     _check_input_names([Path(f.filename or "").name for f in picked])
     main_key = outside_inputs.normalize_name(_main_name(s))
+    added: set[str] = set()
     for f in picked:
         if outside_inputs.normalize_name(Path(f.filename or "").name) != main_key:  # the workbook is not its own input
-            _keep_input(s, _save_upload(f, _input_folder(s)))
+            added.add(_keep_input(s, _save_upload(f, _input_folder(s)))["name"])
     _rematch(s)
+    if any(r.get("file") in added for r in _match_rows(s)):
+        s.outside_skipped = False  # a file the macro reads was added: it is meant to be brought in
     _patch_outside_finding(s, s.result)
     return {"inputs": _inputs_public(s), "outsideInputs": _outside_public(s), "readiness": s.readiness()}
+
+
+@app.post("/api/sessions/{session_id}/outside-inputs/skip")
+def skip_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Go on without the outside files (`skip`, default true), or take that back (`skip: false`): the
+    data the import macro brought in last stays in the workbook as plain numbers. Mind runs on them
+    and cannot swap them each quarter, so INP-010 warns instead of blocking and Do everything leaves
+    the bring-in out. For a user who has only the workbook. Adding input files or starting a bring-in
+    takes the choice back; refused (409) once the line went through a bring-in (bring them in again)."""
+    s = _session(session_id)
+    _refuse_while_bringing_in(s)
+    if not s.outside_inputs:
+        raise HTTPException(status_code=422, detail="Nothing to go on without: the workbook's macros open no outside file.")
+    skip = bool((payload or {}).get("skip", True))
+    if skip:
+        brought_in, why_not = _brought_in_state(s) if s.versions else (False, None)
+        if brought_in:
+            raise HTTPException(status_code=409, detail="The outside files are brought in already: nothing to go on without.")
+        if why_not:
+            raise HTTPException(status_code=409, detail=f"This workbook went through a bring-in already ({why_not}): bring the files in again instead.")
+    s.outside_skipped = skip
+    _patch_outside_finding(s, s.result)
+    out: dict[str, Any] = {"outsideInputs": _outside_public(s), "readiness": s.readiness()}
+    if s.result:
+        out["report"] = {k: v for k, v in s.result["validation_report"].items() if k != "_version_id"}
+    return out
 
 
 # --- fix all automatically ----------------------------------------------------------------

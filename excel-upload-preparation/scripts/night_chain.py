@@ -50,6 +50,7 @@ def main() -> int:
     ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant's advice (deterministic, for before/after comparisons)")
     ap.add_argument("--pivot-mode", default=None, help="blocking / formulas / values: what Prep does with the pivot tables (Advanced > Prep)")
     ap.add_argument("--inputs", default=None, help="a folder with the model's input files (the files its macro opens): uploaded with the model, then 'Bring in the outside files' runs first")
+    ap.add_argument("--without-inputs", action="store_true", help="the model's macro opens outside files but there are none: 'Go on without them' (the model keeps the numbers it holds)")
     a = ap.parse_args()
     B = f"http://127.0.0.1:{a.port}/api"
     wb = Path(a.workbook)
@@ -102,7 +103,19 @@ def main() -> int:
     if outside:
         chain["outsideInputs"] = {k: outside.get(k) for k in ("macro", "matched", "missing", "extra", "summary", "brought_in")}
         say("outside files:", outside.get("summary"))
-        if not outside.get("brought_in"):
+        if not outside.get("brought_in") and a.without_inputs:
+            # the screen's "Go on without them": the model keeps the numbers its macro brought in last
+            r = requests.post(f"{B}/sessions/{sid}/outside-inputs/skip", json={"skip": True}, timeout=300)
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            inp = next((f for f in ((body.get("report") or {}).get("findings") or []) if f.get("rule_id") == "INP-010"), {})
+            chain["steps"]["outside"] = {"ok": r.status_code == 200, "skipped": True, "status": r.status_code,
+                                         "inp_010": inp.get("status"), "message": inp.get("message") or r.text[:300]}
+            say("go on without the outside files:", json.dumps(chain["steps"]["outside"], ensure_ascii=False)[:400])
+            if r.status_code != 200:
+                say("stopping: could not go on without the outside files")
+                (out / "chain.json").write_text(json.dumps(chain, indent=1, ensure_ascii=False), encoding="utf-8")
+                return 1
+        elif not outside.get("brought_in"):
             r = requests.post(f"{B}/sessions/{sid}/outside-inputs/run", timeout=300)
             say("bring in the outside files:", r.status_code, r.text[:200])
             last = ""

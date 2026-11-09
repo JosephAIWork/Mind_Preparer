@@ -196,6 +196,8 @@ describe("the Outside files card in words", () => {
     expect(outsideSkipReason(null)).toBe("The model's macros open no outside files");
     expect(outsideSkipReason(outside({ rows: [] }))).toMatch(/^No cell names the files/);
     expect(outsideSkipReason(outside({ macro: null }))).toMatch(/^Which macro brings the outside files in is not clear/);
+    // the user has only the workbook and chose to go on without the files
+    expect(outsideSkipReason(outside({ matched: 0, skipped: true }))).toBe("Going on without the outside files: the model keeps the numbers it holds");
   });
 
   it("says why the files are not brought in any more", () => {
@@ -287,6 +289,21 @@ describe("ApiService and the input files", () => {
     get.flush({ outsideInputs: null, running: false, stage: null, result: null, error: null });
     expect((await status).running).toBe(false);
   });
+
+  it("goes on without the outside files, and takes that back", async () => {
+    const skipped = api.skipOutsideInputs("s1");
+    const req = http.expectOne("/api/sessions/s1/outside-inputs/skip");
+    expect(req.request.method).toBe("POST");
+    expect(req.request.body).toEqual({ skip: true });
+    req.flush({ outsideInputs: outside({ matched: 0, skipped: true }), readiness: null });
+    expect((await skipped).outsideInputs?.skipped).toBe(true);
+
+    const back = api.skipOutsideInputs("s1", false);
+    const undo = http.expectOne("/api/sessions/s1/outside-inputs/skip");
+    expect(undo.request.body).toEqual({ skip: false });
+    undo.flush({ outsideInputs: outside({ matched: 0 }) });
+    expect((await back).outsideInputs?.skipped).toBeUndefined();
+  });
 });
 
 describe("SessionStore and the outside files", () => {
@@ -315,10 +332,12 @@ interface Fake {
   statuses: OutsideRunStatus[];
   starts: number;
   autoFixStarts: number;
+  /** the skip choices sent (POST .../outside-inputs/skip) */
+  skips: boolean[];
 }
 
 function fakeServer(statuses: OutsideRunStatus[]): Fake {
-  const f: Fake = { api: null as unknown as ApiService, statuses, starts: 0, autoFixStarts: 0 };
+  const f: Fake = { api: null as unknown as ApiService, statuses, starts: 0, autoFixStarts: 0, skips: [] };
   let last: OutsideRunStatus | undefined;
   f.api = {
     outsideInputs: () => {
@@ -328,6 +347,14 @@ function fakeServer(statuses: OutsideRunStatus[]): Fake {
     startOutsideInputs: () => {
       f.starts++;
       return Promise.resolve({ running: true });
+    },
+    // the server's answer to the choice: the card as it is now, and from then on GET says the same
+    skipOutsideInputs: (_id: string, skip = true) => {
+      f.skips.push(skip);
+      const o = { ...(last?.outsideInputs ?? outside({ matched: 0 })), skipped: skip };
+      last = status(o);
+      f.statuses = [];
+      return Promise.resolve({ outsideInputs: o, readiness: null });
     },
     // Do everything went on past the outside step: the fake stops it at the next one
     startAutoFix: () => {
@@ -431,5 +458,31 @@ describe("the Outside files card and Do everything", () => {
     expect(f.starts).toBe(1);
     expect(page.steps()[0]).toMatchObject({ state: "skipped", line: "Already brought in (the computed values were not checked)" });
     expect(f.autoFixStarts).toBe(1);
+  });
+
+  it("with only the workbook: Do everything stops and says how to go on without the files; then it goes on", async () => {
+    const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] }), row("Ctrl_01!H36", { keys: ["BBA_02"] })], matched: 0, missing: ["Ctrl_01!H35", "Ctrl_01!H36"] });
+    const f = fakeServer([status(alone)]);
+    open(f, alone);
+    await page.runAll();
+    expect(f.starts).toBe(0);
+    expect(page.steps()[0]).toMatchObject({ id: "outside", state: "failed", line: "No input file matched yet" });
+    expect(page.outsideCard().detail).toContain('press "Go on without them" there: the model keeps the numbers it already holds');
+    expect(f.autoFixStarts).toBe(0);
+    // the choice: the card's stop is answered, and Do everything leaves the bring-in out
+    await page.skipOutside(true);
+    expect(f.skips).toEqual([true]);
+    expect(store.outsideInputs()?.skipped).toBe(true);
+    expect(page.outsideCard().tone).not.toBe("error");
+    expect(page.outsideWillRun()).toBe(false); // the time estimate of Do everything leaves the step out too
+    await page.runAll();
+    expect(f.starts).toBe(0);
+    expect(page.steps()[0]).toMatchObject({ state: "skipped", line: "Going on without the outside files: the model keeps the numbers it holds" });
+    expect(f.autoFixStarts).toBe(1); // the chain went on to Fix all issues
+    // and back: the step runs (and stops) again
+    await page.skipOutside(false);
+    expect(store.outsideInputs()?.skipped).toBe(false);
+    await page.runAll();
+    expect(page.steps()[0]).toMatchObject({ state: "failed", line: "No input file matched yet" });
   });
 });

@@ -112,9 +112,24 @@
                   [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in || oi.brought_in_reason ? 'Starts again from the version before the first bring-in' : '')"
                 >{{ outsideButton(oi) }}</button>
               }
+              @if (!oi.brought_in && !oi.brought_in_reason && !oi.skipped) {
+                <button
+                  cdsButton="ghost"
+                  size="md"
+                  (click)="skipOutside(true)"
+                  [disabled]="busy() || skippingOutside()"
+                  [title]="busyHint() || 'No files? The model keeps the numbers it already holds (from the last time its macro ran). Mind runs on them but cannot swap them each quarter.'"
+                >Go on without them</button>
+              }
             </div>
           }
         </div>
+        @if (oi.skipped) {
+          <p class="outside__skipped">
+            Going on without the outside files: the model keeps the numbers it already holds, and Mind cannot swap them each quarter.
+            <button class="link" (click)="skipOutside(false)" [disabled]="busy() || skippingOutside()">Undo</button>
+          </p>
+        }
         @if (oi.rows.length) {
           <ul class="outside__rows">
             @for (r of oi.rows; track r.cell) {
