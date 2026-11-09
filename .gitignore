@@ -8,6 +8,9 @@ excel-upload-preparation/runs/
 excel-upload-preparation/**/*.changelog.json
 
 # --- secrets / local state ---
+# a shared copy's end date (tools/package/build.py writes it into the package only): one next to
+# VERSION in the source would stop every developer server (docs/SHARING.md)
+excel-upload-preparation/EXPIRY
 secret.key
 config.enc
 .env

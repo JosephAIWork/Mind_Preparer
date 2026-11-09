@@ -48,6 +48,11 @@
   consistent with the audit trail, converged; 56 untitled grids in Mind (76 in 1.12.3).
 - `scripts/night_chain.py` writes UTF-8 (a Japanese sheet name stopped it on a Hebrew console) and takes
   `--inputs <folder>`.
+- **A shared copy stops on a date** (`build.py --expires 2026-12-15 --contact "..."`, 15 December
+  2026 by default, `--no-expiry` for none): "Works until 15 Dec 2026" in the header, a line in the
+  last 7 days, then a plain message at start and a calm page instead of the app (410 on every API
+  call); a clock moved back counts too; the developer version has no date (`app/expiry.py`,
+  docs/SHARING.md).
 
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 

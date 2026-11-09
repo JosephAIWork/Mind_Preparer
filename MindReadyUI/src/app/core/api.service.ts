@@ -1,6 +1,7 @@
 import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
+import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
   ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
@@ -11,6 +12,7 @@ import {
 export class ApiService {
   private http = inject(HttpClient);
   private feedbackBox = inject(FeedbackService);
+  private expiry = inject(ExpiryService);
   private base = "/api";
 
   private s(id: string): string {
@@ -190,6 +192,7 @@ export class ApiService {
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => null);
       this.feedbackBox.report(err?.incident, err?.problem);
+      this.expiry.noteAnswer(res.status, err); // fetch, not HttpClient: the interceptor does not see this one
       throw new Error(typeof err?.detail === "string" ? err.detail : `${res.status} ${res.statusText}`);
     }
     const reader = res.body.getReader();

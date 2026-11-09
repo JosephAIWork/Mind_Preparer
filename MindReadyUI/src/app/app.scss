@@ -32,6 +32,25 @@
   padding: 0 $spacing-05;
 }
 
+// A shared copy's end date: as quiet as the version beside it.
+.shell__until {
+  @include type.type-style("body-compact-01");
+  color: theme.$text-on-color;
+  opacity: 0.7;
+  display: flex;
+  align-items: center;
+  padding: 0 0 0 $spacing-05;
+  white-space: nowrap;
+}
+
+// The last 7 days: one gentle line under the header, no button.
+.shell__soon {
+  @include type.type-style("body-compact-01");
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$support-info;
+  padding: $spacing-04 $spacing-05;
+}
+
 .shell__feedback {
   @include type.type-style("body-compact-01");
   color: theme.$text-on-color;
