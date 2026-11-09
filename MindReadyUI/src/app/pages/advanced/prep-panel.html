@@ -5,7 +5,8 @@
     <h3 class="panel__h">By hand ({{ byHand().length }})</h3>
     <ul class="plain">
       @for (b of byHand(); track $index) {
-        <li><span class="mono">{{ b.rule_id }}</span> {{ b.message }}</li>
+        <!-- no link to its own Prep action: it has nothing left to change (that is why it is here) -->
+        <li><span class="mono">{{ b.rule_id }}</span> {{ b.message }}<mr-show-me [text]="b.message" [rule]="b.rule_id" except="prep-action"></mr-show-me></li>
       }
     </ul>
   }
@@ -26,7 +27,7 @@
     </div>
   }
 
-  <h3 class="panel__h">Blocking ({{ blocking().length }})</h3>
+  <h3 class="panel__h" data-show-me="prep-list">Blocking ({{ blocking().length }})</h3>
   <ng-container *ngTemplateOutlet="actions; context: { list: blocking() }"></ng-container>
 
   <h3 class="panel__h">Optional ({{ optional().length }})</h3>
@@ -47,7 +48,7 @@
       <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
         <strong>{{ line() }}</strong>
         @if (detail()) {
-          <span>{{ detail() }}</span>
+          <span>{{ detail() }}<mr-show-me [text]="detail()"></mr-show-me></span>
         }
       </div>
     }
@@ -59,7 +60,7 @@
     <p class="hint">Nothing to change.</p>
   }
   @for (a of list; track a.id) {
-    <div class="card" [class.card--off]="!a.count">
+    <div class="card" [class.card--off]="!a.count" [attr.data-show-me]="showMeWords(a)">
       <label class="card__head">
         <input type="checkbox" [checked]="isOn(a.id)" (change)="toggle(a.id)" [disabled]="!a.count || running()" />
         <span class="card__title">{{ a.title }}</span>

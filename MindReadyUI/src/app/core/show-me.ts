@@ -7,8 +7,9 @@ import { AdvancedTab } from "./session.store";
  *  name them, and the clicks that lead there.
  *
  *  Elements are found by their `data-show-me` words, never by their text: the header's links
- *  (`nav-main`, `nav-advanced`), each Advanced tab (`tab-<tab>`) and each place below. One element may
- *  carry several words, space separated ("ask ask-FRM-009"). See excel-upload-preparation/docs/SHOW_ME.md. */
+ *  (`nav-main`, `nav-advanced`), the links on the pages themselves (`link-main`, `link-advanced`), each
+ *  Advanced tab (`tab-<tab>`) and each place below. One element may carry several words, space
+ *  separated ("ask ask-FRM-009"). See excel-upload-preparation/docs/SHOW_ME.md. */
 
 /** The two screens: the main screen (route "") and Advanced (route "advanced"). */
 export type ShowMePage = "main" | "advanced";
@@ -16,7 +17,9 @@ export type ShowMePage = "main" | "advanced";
 /** The places a "Show me" leads to. */
 export type ShowMeId =
   | "prep-apply" // Advanced › Prep actions: the Apply button
+  | "prep-action" // Advanced › Prep actions: the action that repairs a rule ("The Prep action '…'" in a finding)
   | "prep-pivots" // Advanced › Prep actions: what happens to the pivot tables
+  | "stack-apply" // Advanced, above the tabs: the list of changes waiting to be applied, its Apply all
   | "deliver-numbers" // Advanced › Deliver: Check the numbers
   | "assistant-key" // Advanced › Assistant: the AI key box
   | "assistant-ask" // Advanced › Findings: "Ask the assistant" on the rule's row, else the list
@@ -88,7 +91,21 @@ const OUTSIDE_CARD: ShowMeTarget = { el: "outside-card", text: "The Outside file
  *  click to another screen), else the first. */
 export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "prep-apply": [{ page: "advanced", tab: "prep", targets: [{ el: "prep-apply", text: "Apply the blocking repairs here" }] }],
+  "prep-action": [
+    {
+      page: "advanced",
+      tab: "prep",
+      // the card of the action that repairs the finding's rule; an action with nothing left to change
+      // is not drawn, and then the list of actions is shown
+      targets: [
+        { el: `prep-for-${RULE}`, text: "Tick this action, then click Apply" },
+        { el: "prep-list", text: "The Prep actions are listed here" },
+      ],
+    },
+  ],
   "prep-pivots": [{ page: "advanced", tab: "prep", targets: [{ el: "prep-pivots", text: "Choose what happens to the pivot tables here" }] }],
+  // above the tabs: on any tab of Advanced
+  "stack-apply": [{ page: "advanced", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }],
   "deliver-numbers": [{ page: "advanced", tab: "deliver", targets: [{ el: "deliver-numbers", text: "Check the numbers here" }] }],
   "assistant-key": [{ page: "advanced", tab: "assistant", targets: [{ el: "assistant-key", text: "Paste the AI key here" }] }],
   "assistant-ask": [
@@ -132,15 +149,21 @@ const UNDER = String.raw`Advanced\s*(?:›|>|&gt;)\s*`;
 const under = (tab: string) => new RegExp(UNDER + tab, "i");
 
 /** The words in the app's texts (and the backend's) that send the user somewhere, and the place each
- *  one names. Found with grep for "Advanced ›", "in Prep", "Assistant", "Deliver", "Recalculate",
- *  "Mind loop", "card" in MindReadyUI/src and excel-upload-preparation/app (see show-me.spec.ts for
- *  every text). When a text names several places, the one it names first counts: the first thing to do. */
+ *  one names. Found with grep for "Advanced ›", "in Prep", "Prep action", "Assistant", "Deliver",
+ *  "Recalculate", "Mind loop", "card", "Use ", "press", "top of" in MindReadyUI/src and in
+ *  excel-upload-preparation/app -- the findings' own messages included (app/validators) -- see
+ *  show-me.spec.ts for every text. When a text names several places, the one it names first counts:
+ *  the first thing to do. */
 export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: /pivot tables?\b[^]*?Advanced\s*(?:›|>|&gt;)\s*Prep actions/i, id: "prep-pivots" },
   { words: under("Deliver"), id: "deliver-numbers" },
   { words: /\bCheck the numbers\b/i, id: "deliver-numbers" },
   { words: under("Prep actions"), id: "prep-apply" },
   { words: /\bblocking repairs in Prep\b|\bin Prep\b|\bPrep has a repair\b|\badded to the Prep plan\b/i, id: "prep-apply" },
+  // a finding's message: "The Prep action 'Freeze external links' removes them"
+  { words: /\bthe Prep action\b/i, id: "prep-action" },
+  // "Apply them with the others from the list at the top of this page" (Prep, the assistant)
+  { words: /\b(?:the list at|from) the top of (?:this|the) page\b/i, id: "stack-apply" },
   { words: under("Assistant"), id: "assistant-key" },
   { words: /\bpaste (?:an|the|your) AI key\b/i, id: "assistant-key" },
   { words: /\bFix [A-Z]{2,5}-\d{3} with the assistant\b|\bby hand or with the assistant\b/i, id: "assistant-ask" },
@@ -158,12 +181,14 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
 
 /** The place a text sends the user to, or null when it names none (most texts: a "Show me" appears
  *  only next to an instruction). A quoted name ('Stopped at "Bring in the outside files": …', 'press
- *  "Make them with AI"') names a step or a button, not a place, so it is not read. */
-export function showMeFor(text: string | null | undefined): ShowMeRequest | null {
+ *  "Make them with AI"') names a step or a button, not a place, so it is not read. `except`: a place
+ *  already next to the text (a Findings row's own "Ask the assistant"): the next place it names counts. */
+export function showMeFor(text: string | null | undefined, except?: ShowMeId | null): ShowMeRequest | null {
   const plain = (text ?? "").replace(/"[^"]*"|“[^”]*”/g, '""');
   if (!plain.trim()) return null;
   let best: { at: number; id: ShowMeId } | null = null;
   for (const p of SHOW_ME_PHRASES) {
+    if (p.id === except) continue;
     const m = p.words.exec(plain);
     if (m && (!best || m.index < best.at)) best = { at: m.index, id: p.id };
   }
@@ -171,6 +196,15 @@ export function showMeFor(text: string | null | undefined): ShowMeRequest | null
   // "Fix FRM-009 with the assistant": point at that rule's row
   const rule = best.id === "assistant-ask" ? /\b[Ff]ix ([A-Z]{2,5}-\d{3}) with the assistant/.exec(plain)?.[1] : undefined;
   return rule ? { id: best.id, ruleId: rule } : { id: best.id };
+}
+
+/** A chat message the app wrote itself: its notes ("12 changes added to the list …") and the server's
+ *  "(no answer: …)" when the assistant could not answer (app/web/server.py, `_chat_payload`). Only these
+ *  get a "Show me". The assistant's own words may name a place only to say there is nothing to do
+ *  there ("There is no repair in Prep for FRM-009: change the formula by hand"): a link would lead the
+ *  other way. */
+export function chatIsAppWords(m: { role: string; content: string; note?: boolean }): boolean {
+  return m.role !== "user" && (!!m.note || m.content.startsWith("(no answer:"));
 }
 
 /** The place the readiness verdict's next step names, by its stable `screen` (app/readiness.py
@@ -194,6 +228,21 @@ export function showMeForStep(step: ShowMeNextStep | null | undefined): ShowMeRe
   }
 }
 
+/** The links to each screen: the header's, else the one on the page itself. Below 66rem (a window
+ *  snapped to half a screen, a laptop at 125 %) Carbon hides the header's links and the app has no side
+ *  menu, so the page's own link is the way: "Advanced" at the foot of the main screen, "Back to the
+ *  main screen" at the top of Advanced. */
+export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
+  advanced: [
+    { el: "nav-advanced", text: "Click Advanced" },
+    { el: "link-advanced", text: "Click Advanced" },
+  ],
+  main: [
+    { el: "nav-main", text: "Click Main" },
+    { el: "link-main", text: "Click Back to the main screen" },
+  ],
+};
+
 /** The steps from the screen the user is on (`here`) to the place: a click on Advanced or Main when the
  *  place is on the other screen, a click on the Advanced tab, then the place itself. Whether the user is
  *  already on that screen or tab is checked again as each step comes up (ShowMeService). */
@@ -202,9 +251,7 @@ export function planShowMe(request: ShowMeRequest, here: ShowMePage): ShowMeStep
   if (!ways?.length) return [];
   const way = ways.find((w) => w.page === here) ?? ways[0];
   const steps: ShowMeStep[] = [];
-  if (way.page !== here) {
-    steps.push({ kind: "page", page: way.page, targets: [{ el: `nav-${way.page}`, text: way.page === "advanced" ? "Click Advanced" : "Click Main" }] });
-  }
+  if (way.page !== here) steps.push({ kind: "page", page: way.page, targets: [...PAGE_LINKS[way.page]] });
   if (way.tab) steps.push({ kind: "tab", tab: way.tab, targets: [{ el: `tab-${way.tab}`, text: `Click ${TAB_NAMES[way.tab]}` }] });
   const rule = request.ruleId?.trim();
   const targets = way.targets.flatMap((t) => {

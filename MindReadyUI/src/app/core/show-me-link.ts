@@ -6,8 +6,11 @@ import { ShowMeService } from "./show-me.service";
  *  - `[text]`: a text the app shows (a result, an error, the server's words): when it names a place;
  *  - `to`: a place named in the template itself ("Change it in Advanced › Prep actions");
  *  - `[step]`: the readiness verdict's next step (by its screen).
- *  `[unless]`: another text shown next to this one; when it leads to the same place, its own link is
- *  enough (one link per place). The click starts the pointer (ShowMeService). */
+ *  `[rule]`: the rule the text is about (a finding's message): the pointer goes to that rule's own row or
+ *  Prep action. `except`: a place already next to the text (a Findings row's own "Ask the assistant"):
+ *  no link to it, the next place the text names counts. `[unless]`: another text shown next to this
+ *  one; when it leads to the same place, its own link is enough (one link per place). The click starts
+ *  the pointer (ShowMeService). */
 @Component({
   selector: "mr-show-me",
   standalone: true,
@@ -19,13 +22,17 @@ export class ShowMeLink {
   readonly text = input<string | null | undefined>(null);
   readonly to = input<ShowMeId | null | undefined>(null);
   readonly step = input<ShowMeNextStep | null | undefined>(null);
+  readonly rule = input<string | null | undefined>(null);
+  readonly except = input<ShowMeId | null | undefined>(null);
   readonly unless = input<string | null | undefined>(null);
 
   readonly request = computed<ShowMeRequest | null>(() => {
     const to = this.to();
     const step = this.step();
-    const r = to ? { id: to } : step ? showMeForStep(step) : showMeFor(this.text());
-    if (!r) return null;
+    const found = to ? { id: to } : step ? showMeForStep(step) : showMeFor(this.text(), this.except());
+    if (!found) return null;
+    const rule = this.rule()?.trim();
+    const r: ShowMeRequest = rule && !found.ruleId ? { ...found, ruleId: rule } : found;
     const other = showMeFor(this.unless());
     return other && other.id === r.id ? null : r;
   });

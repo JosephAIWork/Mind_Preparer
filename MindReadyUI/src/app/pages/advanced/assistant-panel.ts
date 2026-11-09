@@ -6,6 +6,7 @@ import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
 import { ChatMessage, FixTarget, Proposal, Version, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { chatIsAppWords } from "../../core/show-me";
 import { ShowMeLink } from "../../core/show-me-link";
 import { KeyBox } from "./key-box";
 
@@ -36,6 +37,8 @@ export class AssistantPanel implements OnDestroy {
   private stop: (() => void) | null = null;
 
   readonly target = computed(() => this.store.fixTarget());
+  /** Only the app's own words in the chat get a "Show me", never the assistant's free text. */
+  readonly appWords = chatIsAppWords;
   readonly prompts = computed(() => {
     const t = this.target();
     if (!t) return ["What blocks this workbook in Mind?", "Which changes would you make first?"];

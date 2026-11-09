@@ -8,11 +8,11 @@
         <h1 class="page-title">Advanced</h1>
         <p class="page-lead">{{ store.summary()?.file_name }} · {{ store.currentVersion()?.label }}</p>
       </div>
-      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }">Back to the main screen</a>
+      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }" data-show-me="link-main">Back to the main screen</a>
     </header>
 
     @if (store.readiness(); as r) {
-      <cds-inline-notification [notificationObj]="{ type: readinessKind(), title: r.headline, message: readinessDetail(), lowContrast: true, showClose: false, template: readinessBanner }"></cds-inline-notification>
+      <mr-readiness-banner [kind]="readinessKind()" [headline]="r.headline" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
     }
 
     <mr-stack-bar></mr-stack-bar>
@@ -87,7 +87,9 @@
                   <td class="mono">{{ f.rule_id }}</td>
                   <td><cds-tag [type]="tag(f.status).type" size="sm">{{ tag(f.status).label }}</cds-tag></td>
                   <td class="mono">{{ where(f) }}</td>
-                  <td>{{ f.message }}</td>
+                  <!-- the message's own instruction ("Use Bring in the outside files", "The Prep action '…'"); the row's
+                       "Ask the assistant" is already next to it -->
+                  <td>{{ f.message }}@if (f.status !== "PASS") {<mr-show-me [text]="f.message" [rule]="f.rule_id" except="assistant-ask"></mr-show-me>}</td>
                   <td class="ask">@if (f.status !== "PASS") { <button cdsButton="ghost" size="sm" [attr.data-show-me]="'ask ask-' + f.rule_id" (click)="askAbout(f)">Ask the assistant</button> }</td>
                 </tr>
               }
@@ -170,11 +172,3 @@
     }
   }
 </section>
-
-<!-- The readiness banner as Carbon draws it, with "Show me" after the next step -->
-<ng-template #readinessBanner let-n>
-  <div class="cds--inline-notification__title">{{ n.title }}</div>
-  <div class="cds--inline-notification__subtitle">
-    <span>{{ n.message }}</span><mr-show-me [step]="store.readiness()?.next_step"></mr-show-me>
-  </div>
-</ng-template>

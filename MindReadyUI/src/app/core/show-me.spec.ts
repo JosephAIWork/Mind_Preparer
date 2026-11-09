@@ -3,15 +3,17 @@ import { TestBed } from "@angular/core/testing";
 import { Router, provideRouter } from "@angular/router";
 import type { HomePage } from "../pages/home.page";
 import { ApiService } from "./api.service";
-import { LoopPlan, OutsideInputs, OutsideRunResult, outsideAddLine, outsideOutcome } from "./models";
+import { AutoFixStatus, LoopPlan, OutsideInputs, OutsideRunResult, RecalcResult, outsideAddLine, outsideOutcome } from "./models";
 import { SessionStore } from "./session.store";
-import { PLACE_SIDES, SHOW_ME_PHRASES, SHOW_ME_PLACES, ShowMeId, TAB_NAMES, placeShowMe, planShowMe, showMeFor, showMeForStep } from "./show-me";
+import { PLACE_SIDES, SHOW_ME_PHRASES, SHOW_ME_PLACES, ShowMeId, TAB_NAMES, chatIsAppWords, placeShowMe, planShowMe, showMeFor, showMeForStep } from "./show-me";
+import { ShowMeLink } from "./show-me-link";
 import { ShowMeOverlay } from "./show-me-overlay";
 import { SHOW_ME_AFTER_CLICK_MS, SHOW_ME_WAIT_MS, SHOW_ME_WATCH_MS, ShowMeService } from "./show-me.service";
 
 // ---- every text that sends the user somewhere, and the place its "Show me" leads to -----------------
-// Found with grep for "Advanced ›", "Advanced >", "in Prep", "Prep actions", "Assistant", "Deliver",
-// "Recalculate", "Mind loop", "card" in MindReadyUI/src and excel-upload-preparation/app.
+// Found with grep for "Advanced ›", "Advanced >", "in Prep", "Prep action", "Assistant", "Deliver",
+// "Recalculate", "Mind loop", "card", "Use ", "press", "top of" in MindReadyUI/src and in
+// excel-upload-preparation/app, the findings' messages (app/validators) included.
 const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = [
   // the main screen
   { where: "Outside files card: numbers not checked", text: "Check them under Advanced › Deliver (Check the numbers), or go on without the check.", id: "deliver-numbers" },
@@ -35,7 +37,17 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
     text: 'Stopped at "Bring in the outside files": Making the Mind inputs would change 3 computed values. See the Outside files card above, then press Do everything again.',
     id: "outside-card",
   },
-  { where: "Do everything: stopped at Fix all issues", text: 'Stopped at "Fix all issues": Not started. Fix that under Advanced › Recalculate, then press Do everything again.', id: "recalc-errors" },
+  { where: "Do everything: Fix all issues did not run", text: 'Stopped at "Fix all issues": Not started. Press Do everything again.', id: "do-everything" },
+  {
+    where: "Do everything: Fix all issues, the comparison did not run",
+    text: 'Stopped at "Fix all issues": The errors left could not be checked against the original (the comparison did not run). Check the numbers under Advanced › Deliver, then press Do everything again.',
+    id: "deliver-numbers",
+  },
+  {
+    where: "Do everything: Fix all issues left errors",
+    text: 'Stopped at "Fix all issues": Fixed what it could (stuck). Fix that under Advanced › Recalculate, then press Do everything again.',
+    id: "recalc-errors",
+  },
   {
     where: "Do everything: stopped at the formulas and the structure",
     text: 'Stopped at "Fix the formulas and the structure": 3 changed, 1 refused. Fix that under Advanced › Prep actions, then press Do everything again.',
@@ -45,6 +57,40 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
   { where: "Do everything: stopped at Recalculate", text: 'Stopped at "Recalculate": Recalculated, 4 formula errors. Fix that under Advanced › Recalculate, then press Do everything again.', id: "recalc-errors" },
   // Advanced
   { where: "Grid Namer: suggestions", text: "12 suggestions, added to the Prep plan", id: "prep-apply" },
+  { where: "Prep actions: Add to the list", text: "Apply them with the others from the list at the top of this page.", id: "stack-apply" },
+  { where: "Assistant: a proposal added to the list (the app's note)", text: "12 changes added to the list (applied with the others from the top of the page)", id: "stack-apply" },
+  // the findings' own messages (Advanced › Findings, and the Prep panel's "By hand" list)
+  {
+    where: "INP-010 (app/validators/io.py): not brought in",
+    text: "The macro calcCF fills the workbook from 6 outside files, and Mind runs no macro: 6 of 6 picked. Use Bring in the outside files.",
+    id: "outside-bring-in",
+  },
+  {
+    where: "INP-010: brought in before, no longer counts",
+    text: "The macro calcCF fills the workbook from 6 outside files, and Mind runs no macro: the input files changed since they were brought in (6 of 6 picked). Use Bring in the outside files to bring them in again.",
+    id: "outside-bring-in",
+  },
+  {
+    where: "INP-010: stand-ins in use",
+    text: "The outside files are brought in, but 2 of 6 are stand-ins the assistant made from the numbers the model already holds (a.xlsm, b.xlsm). Best results come with the actual input files: add them, then use Bring in the outside files again.",
+    id: "outside-bring-in",
+  },
+  {
+    where: "FRM rules (app/validators/mind_values.py)",
+    text: `12 formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR. First: Calc!B2 = IFERROR(A2*2,0). The Prep action 'Test for empty text before the arithmetic or lookup' rewrites 12 formula(s) -- these and the rest of their filled-down blocks, so each column keeps one formula; Excel's results stay the same.`,
+    id: "prep-action",
+  },
+  { where: "REF rules (app/validators/references.py)", text: "3 external link part(s) in the package but no formula reads them: the Prep action 'Freeze external links' removes them.", id: "prep-action" },
+  {
+    where: "STR-009 (app/validators/structure.py)",
+    text: "2 pivot table(s), first Data!A3:D20 (PivotTable1): Mind's converter stops on a pivot table. The Prep action 'Pivot tables' turns them into plain values, or into formulas over their source.",
+    id: "prep-action",
+  },
+  {
+    where: "REF rules: no automatic repair",
+    text: "No automatic repair: replace the run-time sheet choice by direct references to the sheet (or by a lookup Mind can follow) by hand or with the assistant.",
+    id: "assistant-ask",
+  },
   // the backend's words
   { where: "readiness next step (app/readiness.py)", text: "Apply the blocking repairs in Prep", id: "prep-apply" },
   { where: "readiness next step", text: "Fix FRM-009 with the assistant", id: "assistant-ask", ruleId: "FRM-009" },
@@ -115,6 +161,24 @@ describe("Show me: the texts that send the user somewhere", () => {
     expect(showMeFor("Press Do everything again, or check them under Advanced › Deliver.")?.id).toBe("do-everything");
   });
 
+  it("leaves out a place already next to the text, and takes the next one it names", () => {
+    const byHand = "No automatic repair: replace the run-time sheet choice by direct references to the sheet by hand or with the assistant.";
+    expect(showMeFor(byHand, "assistant-ask")).toBeNull(); // a Findings row: its own Ask button is next to it
+    const skipped = "The Prep action 'Replace INDIRECT by the reference its text builds' writes 0 proposals; the rest by hand or with the assistant.";
+    expect(showMeFor(skipped)?.id).toBe("prep-action");
+    expect(showMeFor(skipped, "prep-action")?.id).toBe("assistant-ask"); // the Prep panel's "By hand" list
+  });
+
+  it("gives the chat's links only to the app's own words, never to the assistant's free text", () => {
+    // the assistant names a place to say there is nothing there: its words would lead the other way
+    const answer = { role: "assistant", content: "There is no repair in Prep for FRM-009: change the formula by hand." };
+    expect(showMeFor(answer.content)?.id).toBe("prep-apply");
+    expect(chatIsAppWords(answer)).toBe(false);
+    expect(chatIsAppWords({ role: "assistant", content: "12 changes added to the list (applied with the others from the top of the page)", note: true })).toBe(true);
+    expect(chatIsAppWords({ role: "assistant", content: "(no answer: No AI key is saved yet: paste one under Advanced > Assistant.)" })).toBe(true);
+    expect(chatIsAppWords({ role: "user", content: "Is it in Prep?" })).toBe(false);
+  });
+
   it("knows every place it names, and every place is named by some text", () => {
     const named = new Set(SHOW_ME_PHRASES.map((p) => p.id));
     for (const id of Object.keys(SHOW_ME_PLACES) as ShowMeId[]) {
@@ -148,12 +212,27 @@ describe("Show me: the readiness verdict's next step", () => {
 describe("Show me: the clicks to a place", () => {
   it("goes through Advanced and the tab from the main screen, through the tab only on Advanced", () => {
     expect(planShowMe({ id: "prep-apply" }, "main")).toEqual([
-      { kind: "page", page: "advanced", targets: [{ el: "nav-advanced", text: "Click Advanced" }] },
+      // the header's link, else the page's own (Carbon hides the header's below 66rem)
+      { kind: "page", page: "advanced", targets: [{ el: "nav-advanced", text: "Click Advanced" }, { el: "link-advanced", text: "Click Advanced" }] },
       { kind: "tab", tab: "prep", targets: [{ el: "tab-prep", text: "Click Prep actions" }] },
       { kind: "place", targets: [{ el: "prep-apply", text: "Apply the blocking repairs here" }] },
     ]);
     expect(planShowMe({ id: "prep-apply" }, "advanced").map((s) => s.kind)).toEqual(["tab", "place"]);
-    expect(planShowMe({ id: "outside-card" }, "advanced")[0]).toEqual({ kind: "page", page: "main", targets: [{ el: "nav-main", text: "Click Main" }] });
+    expect(planShowMe({ id: "outside-card" }, "advanced")[0]).toEqual({
+      kind: "page",
+      page: "main",
+      targets: [{ el: "nav-main", text: "Click Main" }, { el: "link-main", text: "Click Back to the main screen" }],
+    });
+  });
+
+  it("leads to a rule's own Prep action, and to the list above the tabs from any tab", () => {
+    expect(planShowMe({ id: "prep-action", ruleId: "REF-005" }, "advanced")).toEqual([
+      { kind: "tab", tab: "prep", targets: [{ el: "tab-prep", text: "Click Prep actions" }] },
+      { kind: "place", targets: [{ el: "prep-for-REF-005", text: "Tick this action, then click Apply" }, { el: "prep-list", text: "The Prep actions are listed here" }] },
+    ]);
+    expect(planShowMe({ id: "prep-action" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-list"]);
+    expect(planShowMe({ id: "stack-apply" }, "advanced")).toEqual([{ kind: "place", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }]);
+    expect(planShowMe({ id: "stack-apply" }, "main").map((s) => s.kind)).toEqual(["page", "place"]);
   });
 
   it("takes the way on the screen the user is on when there are two", () => {
@@ -271,20 +350,79 @@ describe("Show me: the pointer", () => {
     expect(showMe.pointer()).toMatchObject({ el: tab, text: "Click Deliver" });
   });
 
-  it("skips a click whose element never comes, and the rule's row when it is not there", async () => {
+  it("ends quietly when a click on the way cannot be shown, without waiting for the steps after it", () => {
     vi.useFakeTimers();
-    const tab = draw("tab-prep"); // no Advanced link drawn
+    draw("tab-prep"); // on the main screen, and no link to Advanced drawn at all
     showMe.start({ id: "prep-apply" });
     expect(showMe.pointer()).toBeNull();
     vi.advanceTimersByTime(SHOW_ME_WAIT_MS);
+    // not two more waits for a tab and a place that only Advanced has
+    expect(showMe.active()).toBe(false);
+  });
+
+  it("in a narrow window, where Carbon hides the header's links, points at the page's own link", async () => {
+    vi.useFakeTimers();
+    store.advancedTab.set("findings");
+    draw("nav-advanced", { width: 0, height: 0 }); // .cds--header__nav { display: none } below 66rem
+    const link = draw("link-advanced"); // "Advanced" at the foot of the main screen
+    showMe.start({ id: "prep-apply" });
+    expect(showMe.pointer()).toMatchObject({ el: link, text: "Click Advanced", last: false });
+    link.click(); // its router link opens Advanced
+    await router.navigateByUrl("/advanced?session=s1");
+    const tab = draw("tab-prep");
+    vi.advanceTimersByTime(SHOW_ME_AFTER_CLICK_MS);
     expect(showMe.pointer()).toMatchObject({ el: tab, text: "Click Prep actions" });
 
+    draw("nav-main", { width: 0, height: 0 });
+    const back = draw("link-main"); // "Back to the main screen" at the top of Advanced
+    showMe.start({ id: "outside-card" });
+    expect(showMe.pointer()).toMatchObject({ el: back, text: "Click Back to the main screen", last: false });
+  });
+
+  it("points at the rule's own row, else at any finding", async () => {
     await router.navigateByUrl("/advanced");
     store.advancedTab.set("findings");
     draw("ask", { width: 0, height: 0 }); // hidden: not pointed at
     const ask = draw("ask");
     showMe.start({ id: "assistant-ask", ruleId: "FRM-009" });
     expect(showMe.pointer()).toMatchObject({ el: ask, text: "Ask the assistant about a finding here", last: true });
+  });
+
+  it("goes on through a double click, and through a click again on the element just clicked", async () => {
+    const click = (el: HTMLElement, detail: number) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, detail }));
+    await router.navigateByUrl("/advanced?session=s1");
+    store.advancedTab.set("findings");
+    const tab = draw("tab-prep");
+    vi.useFakeTimers();
+    showMe.start({ id: "prep-apply" });
+    expect(showMe.pointer()?.el).toBe(tab);
+
+    click(tab, 1);
+    store.advancedTab.set("prep"); // the tab's own handler
+    const apply = draw("prep-apply");
+    click(tab, 2); // the double click's second click, before Apply is even pointed at
+    expect(showMe.active()).toBe(true);
+    vi.advanceTimersByTime(SHOW_ME_AFTER_CLICK_MS);
+    expect(showMe.pointer()).toMatchObject({ el: apply, last: true });
+    click(tab, 2); // and when it comes after Apply is pointed at
+    click(tab, 1); // a click again on the tab, later: nothing new happened
+    expect(showMe.pointer()).toMatchObject({ el: apply, last: true });
+    click(draw("something-else"), 1); // a click anywhere else still ends it
+    expect(showMe.active()).toBe(false);
+  });
+
+  it("goes on when a double click on Advanced lands its second click on the new screen", async () => {
+    const click = (el: HTMLElement, detail: number) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, detail }));
+    store.advancedTab.set("findings");
+    const nav = draw("nav-advanced");
+    vi.useFakeTimers();
+    showMe.start({ id: "prep-apply" });
+    click(nav, 1);
+    await router.navigateByUrl("/advanced?session=s1");
+    const tab = draw("tab-prep");
+    click(draw("findings-row"), 2); // what Advanced drew under the mouse
+    vi.advanceTimersByTime(SHOW_ME_AFTER_CLICK_MS);
+    expect(showMe.pointer()).toMatchObject({ el: tab, text: "Click Prep actions" });
   });
 
   it("ends quietly when the place itself is not on the page", async () => {
@@ -346,10 +484,41 @@ describe("Show me: the pointer", () => {
   });
 });
 
+// ---- the link itself, next to a finding's message ---------------------------------------------------------
+describe("Show me: the link next to a finding's message", () => {
+  beforeEach(() => TestBed.configureTestingModule({ providers: [provideRouter([])] }));
+  afterEach(() => TestBed.inject(ShowMeService).stop());
+
+  /** The link as a template draws it, with these inputs. */
+  function link(inputs: Record<string, unknown>): HTMLButtonElement | null {
+    const f = TestBed.createComponent(ShowMeLink);
+    for (const [name, value] of Object.entries(inputs)) f.componentRef.setInput(name, value);
+    f.detectChanges();
+    return (f.nativeElement as HTMLElement).querySelector("button");
+  }
+
+  it("leads to the action that repairs the row's own rule", () => {
+    const button = link({ text: "3 external link part(s) in the package but no formula reads them: the Prep action 'Freeze external links' removes them.", rule: "REF-005", except: "assistant-ask" });
+    expect(button?.textContent).toBe("Show me");
+    button!.click();
+    const steps = TestBed.inject(ShowMeService).steps();
+    expect(steps[steps.length - 1].targets[0]).toEqual({ el: "prep-for-REF-005", text: "Tick this action, then click Apply" });
+  });
+
+  it("has none to the row's own Ask button, and none where the message names no place", () => {
+    const row = { rule: "REF-009", except: "assistant-ask" };
+    expect(link({ ...row, text: "No automatic repair: replace the run-time sheet choice by direct references to the sheet by hand or with the assistant." })).toBeNull();
+    expect(link({ ...row, text: "The outside files are brought in: Mind needs no macro for them." })).toBeNull();
+    expect(link({ ...row, text: "The macro calcCF fills the workbook from 6 outside files, and Mind runs no macro: 6 of 6 picked. Use Bring in the outside files." })).not.toBeNull();
+  });
+});
+
 // ---- the main screen's own texts, built by the page -----------------------------------------------------
 describe("Show me on the main screen's texts", () => {
   let Page: typeof HomePage;
   let page: HomePage;
+  /** the fake server: each test sets the answers it needs */
+  let api: Record<string, unknown>;
 
   beforeAll(async () => {
     // The page's logic, without drawing it: Carbon (a package Node cannot load as it is) stands in as
@@ -362,24 +531,70 @@ describe("Show me on the main screen's texts", () => {
   });
 
   beforeEach(() => {
-    const api = {
+    api = {
       startAutoFix: () => Promise.reject(new Error("the test stops here")),
       estimate: () => Promise.reject(new Error("no estimate")),
       resume: () => Promise.reject(new Error("offline")),
       mindLoopPlan: () => Promise.reject(new Error("no loop plan")),
       downloadUrl: (id: string, name: string) => `/api/sessions/${id}/files/${encodeURIComponent(name)}`,
-    } as unknown as ApiService;
+    };
     TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: ApiService, useValue: api }] });
     page = TestBed.runInInjectionContext(() => new Page());
+    (page as unknown as { sleep: () => Promise<void> }).sleep = () => Promise.resolve(); // no real waits between looks
     TestBed.inject(SessionStore).sessionId.set("s1");
   });
 
   afterEach(() => page?.ngOnDestroy());
 
-  it("says under which tab to fix what stopped Do everything, and that tab has a Show me", async () => {
+  /** The fixer runs and ends with this result. */
+  function fixerEnds(result: AutoFixStatus["result"]): void {
+    api["startAutoFix"] = () => Promise.resolve({ state: "running", title: "Pass 1" });
+    api["autoFixStatus"] = () => Promise.resolve({ state: "done", result });
+  }
+
+  it("says what to do when Fix all issues did not run: nothing under Advanced fixes that", async () => {
+    await page.runAll(); // the server would not start the fixer
+    expect(page.chainLine()).toBe('Stopped at "Fix all issues": Not started. Press Do everything again.');
+    expect(showMeFor(page.chainLine())).toEqual({ id: "do-everything" });
+  });
+
+  it("sends the errors Fix all issues left to the recalculation's list", async () => {
+    fixerEnds({ status: "stuck", errors_before: 5, errors_after: 2, left: [], regression_cells: 2 });
     await page.runAll();
-    expect(page.chainLine()).toBe('Stopped at "Fix all issues": Not started. Fix that under Advanced › Recalculate, then press Do everything again.');
+    expect(page.chainLine()).toBe('Stopped at "Fix all issues": Fixed what it could (stuck). Fix that under Advanced › Recalculate, then press Do everything again.');
     expect(showMeFor(page.chainLine())).toEqual({ id: "recalc-errors" });
+  });
+
+  it("sends a comparison that did not run to Check the numbers", async () => {
+    fixerEnds({ status: "partial", errors_before: 5, errors_after: 2, left: [], regression_cells: 0, numbers_check: { ran: false } });
+    await page.runAll();
+    expect(page.chainLine()).toBe(
+      'Stopped at "Fix all issues": The errors left could not be checked against the original (the comparison did not run). Check the numbers under Advanced › Deliver, then press Do everything again.',
+    );
+    expect(showMeFor(page.chainLine())).toEqual({ id: "deliver-numbers" });
+  });
+
+  it("names the list of formula errors only when there is one", async () => {
+    const recalc = (errors: RecalcResult["formula_errors"]): RecalcResult => ({
+      status: errors.length ? "WARNING" : "PASS",
+      message: errors.length ? "1 formula error." : "No formula error.",
+      ran: true,
+      formula_errors: errors,
+      addin_gap_errors: [],
+      new_errors: errors.length,
+      preexisting_errors: 0,
+    });
+    api["recalculate"] = () => Promise.resolve(recalc([]));
+    await page.runRecalc();
+    const clean = page.recalc();
+    expect(clean.detail).not.toContain("Advanced › Recalculate");
+    expect(showMeFor(`${clean.line} · ${clean.detail}`)).toBeNull(); // no Show me for a second recalculation
+
+    api["recalculate"] = () => Promise.resolve(recalc([{ sheet: "Calc", cell: "B2", error: "#DIV/0!" }]));
+    await page.runRecalc();
+    const errors = page.recalc();
+    expect(errors.detail).toContain("The list is under Advanced › Recalculate.");
+    expect(showMeFor(`${errors.line} · ${errors.detail}`)).toEqual({ id: "recalc-errors" });
   });
 
   it("names the Mind loop tab when a loop needs a decision", () => {

@@ -11,8 +11,8 @@ export interface ShowMePointer {
   last: boolean;
 }
 
-/** How long a step's element is waited for (a screen or a tab still being drawn) before the step is
- *  skipped -- or, for the place itself, before the pointer ends quietly. */
+/** How long a step's element is waited for (a screen or a tab still being drawn) before the pointer
+ *  ends quietly. */
 export const SHOW_ME_WAIT_MS = 2500;
 /** How often a missing element is looked for. */
 export const SHOW_ME_LOOK_MS = 100;
@@ -24,12 +24,15 @@ export const SHOW_ME_WATCH_MS = 300;
 /** The "Show me" pointer: one arrow at a time, at the next thing to click, until the place itself.
  *
  *  `start` plans the steps from the screen the user is on (show-me.ts); each step is then looked for
- *  in the page by its `data-show-me` word. A step the user is already past (that screen, that tab) is
- *  skipped; one whose element does not come is skipped too, and at the place itself the pointer ends
- *  quietly: it never stops the page. A click on the element the arrow points at moves it on (at the
- *  place itself: ends it, the user acts there); Esc, "Got it" or a click anywhere else ends it. The
- *  clicks are watched on the whole document in the capture phase, so the element's own handler (a
- *  router link, a tab) still runs as usual: the overlay never takes a click. */
+ *  in the page by its `data-show-me` words (the header's link, else the page's own: in a narrow window
+ *  Carbon hides the header's). A step the user is already past (that screen, that tab) is skipped; when
+ *  a step's element does not come, the pointer ends quietly -- a click on the way that cannot be shown
+ *  leaves nothing after it to reach, and the pointer never stops the page. A click on the element the
+ *  arrow points at moves it on (at the place itself: ends it, the user acts there); Esc, "Got it" or a
+ *  click anywhere else ends it, but not the second click of a double click, nor a click again on the
+ *  element just clicked (a screen slow to change). The clicks are watched on the whole document in the
+ *  capture phase, so the element's own handler (a router link, a tab) still runs as usual: the overlay
+ *  never takes a click. */
 @Injectable({ providedIn: "root" })
 export class ShowMeService {
   private readonly router = inject(Router);
@@ -46,6 +49,8 @@ export class ShowMeService {
 
   private lookTimer: ReturnType<typeof setTimeout> | null = null;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
+  /** the element of the step just clicked: a click on it again is no click elsewhere */
+  private passed: HTMLElement | null = null;
 
   constructor() {
     const click = (e: Event) => this.onClick(e);
@@ -76,6 +81,7 @@ export class ShowMeService {
     if (this.watchTimer) clearInterval(this.watchTimer);
     this.lookTimer = null;
     this.watchTimer = null;
+    this.passed = null;
     this.pointer.set(null);
     this.at.set(0);
     if (this.steps().length) this.steps.set([]);
@@ -114,9 +120,9 @@ export class ShowMeService {
         return;
       }
       if (Date.now() - since >= SHOW_ME_WAIT_MS) {
-        // never came: a click on the way is skipped; the place itself missing ends the pointer quietly
-        if (step.kind === "place") this.stop();
-        else this.go(i + 1, 0);
+        // never came: the pointer ends quietly. Skipping a click on the way would only wait for steps
+        // that cannot come (the tab and the place are on the screen that click leads to).
+        this.stop();
         return;
       }
       this.lookTimer = setTimeout(look, SHOW_ME_LOOK_MS);
@@ -155,7 +161,7 @@ export class ShowMeService {
   }
 
   /** Angular drew the element again, hid it or took it away: look for it again; gone for good, the
-   *  step is skipped or the pointer ends, as when it is not found at first. */
+   *  pointer ends, as when it is not found at first. */
   private watch(): void {
     const p = this.pointer();
     if (!p) return;
@@ -167,14 +173,23 @@ export class ShowMeService {
     if (!this.active()) return;
     const target = e.target as (Node & { closest?: (s: string) => Element | null }) | null;
     if (target?.closest?.("[data-show-me-ui]")) return; // the bubble's own "Got it": its handler ends the pointer
+    // The second click of a double click (the browser counts them in `detail`): the first one already
+    // counted. It may land where the next element is not drawn yet, or on the next screen, which came
+    // under the mouse: neither a click elsewhere nor the next click asked for.
+    if ((e as MouseEvent).detail > 1) return;
     const p = this.pointer();
     if (p && target && p.el.contains(target)) {
       // the click the arrow asked for: on to the next step once the screen or the tab has changed; at
       // the place itself the user acts there, and the pointer goes
       if (p.last) this.stop();
-      else this.go(this.at() + 1, SHOW_ME_AFTER_CLICK_MS);
+      else {
+        this.passed = p.el;
+        this.go(this.at() + 1, SHOW_ME_AFTER_CLICK_MS);
+      }
       return;
     }
+    // the element just clicked, clicked again (the screen is slow to change): nothing new happened
+    if (target && this.passed?.contains(target)) return;
     this.stop(); // a click anywhere else ends it
   }
 

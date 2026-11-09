@@ -50,10 +50,19 @@
   `--inputs <folder>`.
 - **"Show me" pointers.** Next to every instruction that sends the user somewhere (the banner's next
   step, "Apply the blocking repairs in Prep", "Check them under Advanced › Deliver", "on the Outside
-  files card", "paste an AI key under Advanced › Assistant") a quiet "Show me" link: one arrow with a
-  short bubble at the next click ("Click Advanced", "Click Prep actions") until the place itself,
-  outlined, with "Got it"; Esc or a click elsewhere ends it, and it never takes a click from the page.
-  "Fix that under Advanced" now names the tab. `docs/SHOW_ME.md`.
+  files card", "paste an AI key under Advanced › Assistant", a finding's "Use Bring in the outside
+  files" or "The Prep action '…'", "the list at the top of this page") a quiet "Show me" link: one
+  arrow with a short bubble at the next click ("Click Advanced", "Click Prep actions") until the place
+  itself, outlined, with "Got it"; Esc or a click elsewhere ends it, and it never takes a click from
+  the page. "Fix that under Advanced" now names the tab. `docs/SHOW_ME.md`.
+- **"Show me", after an independent review** (8 findings, 7 fixed): in a window narrower than 66rem,
+  where Carbon hides the header's Main and Advanced, the arrow uses the page's own links (it showed
+  nothing for 7.5 s, then ended); a click on the way that cannot be shown ends the pointer at once; a
+  double click goes on instead of ending it; a stopped "Fix all issues" names the right place (Deliver
+  when its comparison did not run, none when it did not run at all: "Press Do everything again"); a
+  clean recalculation names no list; the assistant's own answers get no link (only the app's words);
+  the findings' messages and Prep's "Add to the list" note have theirs; the readiness banner, now one
+  component for both screens, keeps its name for screen readers (the title carries Carbon's id).
 
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 

@@ -6,12 +6,13 @@ import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
 import { Operation, PivotMode, PrepAction, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { ShowMeLink } from "../../core/show-me-link";
 
 /** The Prep actions one by one: tick what to apply, see the changes, apply through Excel. */
 @Component({
   selector: "mr-prep-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule, TagModule],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, TagModule, ShowMeLink],
   templateUrl: "./prep-panel.html",
   styleUrl: "./panels.scss",
 })
@@ -86,6 +87,12 @@ export class PrepPanel implements OnDestroy {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     this.selected.set(next);
+  }
+
+  /** The card's words for "Show me": the rules this action repairs ("The Prep action '…'" in their
+   *  findings leads here). None on an action with nothing to change: there is nothing to tick. */
+  showMeWords(a: PrepAction): string | null {
+    return a.count ? (a.rule_ids ?? []).map((r) => `prep-for-${r}`).join(" ") : null;
   }
 
   isOpen(id: string): boolean {

@@ -25,7 +25,7 @@
 
     <div class="bar">
       @if (stack.entries().length) {
-        <button cdsButton="primary" size="md" (click)="applyAll()" [disabled]="running() || stale()">Apply all {{ stack.operations().length }} changes</button>
+        <button cdsButton="primary" size="md" data-show-me="stack-apply" (click)="applyAll()" [disabled]="running() || stale()">Apply all {{ stack.operations().length }} changes</button>
         <button cdsButton="ghost" size="md" (click)="stack.clear()" [disabled]="running()">Empty the list</button>
       }
       @if (running()) {

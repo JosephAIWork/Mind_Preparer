@@ -12,7 +12,7 @@
 
   <div class="chat__log">
     @for (m of store.chatHistory(); track trackMsg($index, m)) {
-      <div class="bubble" [class.bubble--user]="m.role === 'user'" [class.bubble--note]="m.note" [class.bubble--ok]="m.tone === 'success'" [class.bubble--warn]="m.tone === 'warning'">{{ m.content }}@if (m.role !== "user") {<mr-show-me [text]="m.content"></mr-show-me>}</div>
+      <div class="bubble" [class.bubble--user]="m.role === 'user'" [class.bubble--note]="m.note" [class.bubble--ok]="m.tone === 'success'" [class.bubble--warn]="m.tone === 'warning'">{{ m.content }}@if (appWords(m)) {<mr-show-me [text]="m.content"></mr-show-me>}</div>
     }
     @if (streaming()) {
       <div class="bubble bubble--draft">

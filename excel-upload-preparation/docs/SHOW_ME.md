@@ -11,11 +11,17 @@ to the words. It starts a pointer: one arrow with a short bubble at the next thi
 - At the place itself: a soft outline, the bubble says what to do there ("Apply the blocking
   repairs here") and **Got it**.
 - Steps the user is already past are skipped: already on Advanced, the tab already open.
-- **Esc**, **Got it**, a click on the place itself, or a click anywhere else ends it.
+- In a window narrower than 66rem (a browser snapped to half a screen, a laptop at 125 %) Carbon
+  hides the header's Main and Advanced, and the app has no side menu: the arrow then points at the
+  page's own link ("Advanced" at the foot of the main screen, "Back to the main screen" on Advanced).
+- **Esc**, **Got it**, a click on the place itself, or a click anywhere else ends it. A double
+  click does not (its second click is not "a click elsewhere"), nor a click again on what was just
+  clicked while the screen changes.
 - The pointer never takes a click: the arrow, the bubble and the outline let every click through
   to the page (only "Got it" is a button). The user's click works as usual.
-- Something missing (a tab not drawn, a button not shown in this state): that click is skipped
-  after 2.5 seconds; when the place itself is missing, the pointer ends quietly.
+- Something missing (a tab not drawn, a button not shown in this state): the pointer ends quietly
+  after 2.5 seconds. It does not skip a click on the way: what comes after it is on the screen that
+  click leads to, and would not come either.
 - The bubble sits under the element; at the place itself it moves beside or above it when a
   button sits under it, so it never hides the next thing to click.
 
@@ -27,13 +33,21 @@ to the words. It starts a pointer: one arrow with a short bubble at the next thi
 | "Check them under Advanced › Deliver (Check the numbers)" | Deliver: Check the numbers |
 | "Pivot tables (…). Change it in Advanced › Prep actions." | Prep actions: the pivot tables choice |
 | "Fix that under Advanced › Prep actions" (Do everything stopped) | Prep actions: Apply |
-| "(Advanced › Recalculate)", "The list is under Advanced › Recalculate" | Recalculate: the list of formula errors, else its button |
+| "(Advanced › Recalculate)", "The list is under Advanced › Recalculate" (only when there is a list) | Recalculate: the list of formula errors, else its button |
 | "The loop needs a decision first (Advanced › Mind loop)", "loop(s) need a decision" | Mind loop: the loop's choices |
 | "Add … on the Outside files card (Add files)" | main screen: Add files |
 | "See the Outside files card above" | main screen: the Outside files card |
 | "Bring them in again first (the Outside files card …)" (Run in Mind) | main screen: the card's button that brings the files in |
-| "paste an AI key under Advanced › Assistant" (server, assistant answers) | Assistant: the AI key box |
+| "paste an AI key under Advanced › Assistant" (server; the chat's "(no answer: …)") | Assistant: the AI key box |
 | "added to the Prep plan" (Grid Namer) | Prep actions: Apply |
+| A finding's "Use Bring in the outside files" (INP-010) | main screen: the card's button that brings the files in |
+| A finding's "The Prep action '…'" (FRM, REF, STR rules) | Prep actions: the card of the action that repairs that rule, else the list |
+| A finding's "by hand or with the assistant" | on the Findings row: none (its own "Ask the assistant" is next to it); in Prep's "By hand" list: that rule's "Ask the assistant" |
+| "Apply them with the others from the list at the top of this page" (Prep), "(applied with the others from the top of the page)" (the assistant's note) | Advanced, above the tabs: Apply all |
+
+In the chat only the app's own words get a link (its notes, and the server's "(no answer: …)"):
+the assistant's free text may name a place to say there is nothing there ("There is no repair in
+Prep for FRM-009"), and a link would lead the other way.
 
 The readiness verdict's next step (`app/readiness.py`, `_next_step`) is read by its stable
 `screen`, not by its words:
@@ -46,8 +60,16 @@ The readiness verdict's next step (`app/readiness.py`, `_next_step`) is read by 
 | `recalculate` | "Recalculate in Excel": the main screen's Recalculate (on the main screen) or Advanced › Recalculate; "Review the new formula errors": the list |
 | `reports` | "Download or send to Mind": Download this version (main screen) or Advanced › Run in Mind |
 
-"Fix that under Advanced", which named no tab, now says which one (Recalculate after Fix all
-issues or Recalculate, Prep actions after the formulas and the structure, Mind loop after the loop).
+"Fix that under Advanced", which named no tab, now says which one: Prep actions after the formulas
+and the structure, Mind loop after the loop, Recalculate after Recalculate. Fix all issues has no tab
+of its own, so how it ended decides: the errors it left are in Recalculate's list ("Fix that under
+Advanced › Recalculate"); when its comparison with the original did not run, "Check the numbers
+under Advanced › Deliver"; when it did not start, was lost or stopped with an error, nothing under
+Advanced fixes that: "Press Do everything again."
+
+The readiness banner (`core/readiness-banner.ts`, on both screens) replaces Carbon's template to put
+the link inside the words; its title keeps the notification's id (`notificationID`), so the banner
+is still named by its verdict for a screen reader (Carbon's `aria-labelledby`).
 
 ## How it works
 
@@ -65,14 +87,18 @@ All in `MindReadyUI/src/app/core/`:
   above everything, following the element on scroll and resize.
 - `show-me-link.ts` -- the link: `<mr-show-me [text]="…">` (appears only when the words name a
   place), `<mr-show-me to="prep-pivots">`, `<mr-show-me [step]="readiness.next_step">`;
-  `[unless]="…"` hides it when a text shown next to it already leads to the same place.
+  `[rule]="f.rule_id"` points at that rule's own row or Prep action; `except="assistant-ask"` leaves
+  out a place already next to the text (the next place it names counts); `[unless]="…"` hides it
+  when a text shown next to it already leads to the same place.
 
-Elements are found by their `data-show-me` words, never by their text: `nav-main`, `nav-advanced`,
-`tab-<tab>` for each Advanced tab, and the places (`prep-apply`, `prep-pivots`, `deliver-numbers`,
-`assistant-key`, `ask`, `ask-<rule>`, `findings-list`, `recalc-run`, `recalc-errors`,
-`main-recalc`, `loop-choices`, `mind-run`, `outside-card`, `outside-add`, `outside-bring-in`,
-`do-everything`, `download`).
+Elements are found by their `data-show-me` words, never by their text: `nav-main`, `nav-advanced`
+(the header), `link-main`, `link-advanced` (the pages' own links, for a narrow window), `tab-<tab>`
+for each Advanced tab, and the places (`prep-apply`, `prep-for-<rule>` on each Prep action's card,
+`prep-list`, `prep-pivots`, `stack-apply`, `deliver-numbers`, `assistant-key`, `ask`, `ask-<rule>`,
+`findings-list`, `recalc-run`, `recalc-errors`, `main-recalc`, `loop-choices`, `mind-run`,
+`outside-card`, `outside-add`, `outside-bring-in`, `do-everything`, `download`).
 
 To add one: put `<mr-show-me [text]="…">` next to the instruction. When it names a new place, add
 the place to `SHOW_ME_PLACES`, its words to `SHOW_ME_PHRASES`, `data-show-me` on the element, and
-the text to `FOUND` in `show-me.spec.ts` (that test lists every text that sends the user somewhere).
+the text to `FOUND` in `show-me.spec.ts` (that test lists every text that sends the user somewhere:
+the app's own, the server's, and the findings' messages in `app/validators`).

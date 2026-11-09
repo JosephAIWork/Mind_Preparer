@@ -86,9 +86,7 @@
     </header>
 
     @if (store.readiness(); as r) {
-      <cds-inline-notification
-        [notificationObj]="{ type: readinessKind(), title: readinessTitle(), message: readinessDetail(), lowContrast: true, showClose: false, template: readinessBanner }"
-      ></cds-inline-notification>
+      <mr-readiness-banner [kind]="readinessKind()" [headline]="readinessTitle()" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
     }
 
     <!-- Outside files: the model's macros open other files -->
@@ -290,7 +288,7 @@
     </div>
 
     <p class="advanced-link">
-      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }">Advanced</a>.
+      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }" data-show-me="link-advanced">Advanced</a>.
     </p>
   }
 </section>
@@ -315,12 +313,4 @@
       </div>
     }
   }
-</ng-template>
-
-<!-- The readiness banner as Carbon draws it, with "Show me" after the next step -->
-<ng-template #readinessBanner let-n>
-  <div class="cds--inline-notification__title">{{ n.title }}</div>
-  <div class="cds--inline-notification__subtitle">
-    <span>{{ n.message }}</span><mr-show-me [step]="store.readiness()?.next_step"></mr-show-me>
-  </div>
 </ng-template>
