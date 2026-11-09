@@ -3,10 +3,10 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular
 import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
-import { LoopChoices, LoopPlan, appliedCount, failedCount, failedText } from "../../core/models";
+import { LoopChoice, LoopChoices, LoopPlan, LoopPlanLoop, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
-/** The Mind loop with its choices: name, first, last, count cell, clearing; preview, then write. */
+/** The Mind loops, each with its own choices (name, first, last, count cell), and the clearing; preview, then write. */
 @Component({
   selector: "mr-loop-panel",
   standalone: true,
@@ -18,10 +18,8 @@ export class LoopPanel implements OnInit, OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
 
-  readonly name = signal("");
-  readonly first = signal("");
-  readonly last = signal("");
-  readonly countCell = signal("");
+  /** each loop's own choices, by driver cell */
+  readonly picks = signal<Record<string, LoopChoice>>({});
   readonly clearOld = signal(false);
   readonly fixedRanges = signal(false);
   readonly plan = signal<LoopPlan | null>(null);
@@ -34,7 +32,6 @@ export class LoopPanel implements OnInit, OnDestroy {
   readonly showOps = signal(false);
   private stop: (() => void) | null = null;
 
-  readonly needsCount = computed(() => (this.plan()?.loops ?? []).some((l) => l.status === "needs_decision" && (l.notes ?? []).some((n) => /count/i.test(n))));
   readonly canWrite = computed(() => {
     const p = this.plan();
     return !!p && p.found && p.operation_count > 0 && p.loops.some((l) => l.status === "ready");
@@ -49,7 +46,40 @@ export class LoopPanel implements OnInit, OnDestroy {
   }
 
   private choices(): LoopChoices {
-    return { name: this.name() || undefined, first: this.first() || undefined, last: this.last() || undefined, count_cell: this.countCell() || undefined, clear_old: this.clearOld() || undefined, fixed_ranges: this.fixedRanges() || undefined };
+    const loops: Record<string, LoopChoice> = {};
+    for (const [driver, c] of Object.entries(this.picks())) {
+      const kept = Object.fromEntries(Object.entries(c).map(([k, v]) => [k, (v ?? "").trim()]).filter(([, v]) => v)) as LoopChoice;
+      if (Object.keys(kept).length) loops[driver] = kept;
+    }
+    return { clear_old: this.clearOld() || undefined, fixed_ranges: this.fixedRanges() || undefined, loops: Object.keys(loops).length ? loops : undefined };
+  }
+
+  /** what was typed for one loop's choice */
+  pick(l: LoopPlanLoop, key: keyof LoopChoice): string {
+    return (l.driver && this.picks()[l.driver]?.[key]) || "";
+  }
+
+  setPick(l: LoopPlanLoop, key: keyof LoopChoice, v: string): void {
+    if (!l.driver) return;
+    const driver = l.driver;
+    this.picks.update((all) => ({ ...all, [driver]: { ...all[driver], [key]: v } }));
+  }
+
+  /** the count cell box shows when the loop asks for one, or one was typed */
+  wantsCount(l: LoopPlanLoop): boolean {
+    return /count cell/i.test(l.why ?? "") || !!this.pick(l, "count_cell") || !!l.suggested_count_cell;
+  }
+
+  useSuggested(l: LoopPlanLoop): void {
+    if (l.suggested_count_cell) {
+      this.setPick(l, "count_cell", l.suggested_count_cell);
+      void this.preview();
+    }
+  }
+
+  /** the value the loop has now, shown greyed in an empty box */
+  shown(v: number | null | undefined): string {
+    return v === null || v === undefined ? "type it" : String(v);
   }
 
   async preview(): Promise<void> {

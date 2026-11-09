@@ -4,7 +4,7 @@ import { firstValueFrom } from "rxjs";
 import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PlainCodesGlossary, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopChoices, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PlainCodesGlossary, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -122,13 +122,20 @@ export class ApiService {
     return firstValueFrom(this.http.post<AutoFixStatus>(`${this.s(id)}/auto-fix/stop`, {}));
   }
 
-  mindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean; fixed_ranges?: boolean } = {}): Promise<{ version_id: string; plan: LoopPlan }> {
+  mindLoopPlan(id: string, o: LoopChoices = {}): Promise<{ version_id: string; plan: LoopPlan }> {
     let params = new HttpParams();
-    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "" && v !== false) params = params.set(k, String(v));
+    for (const [k, v] of Object.entries(o)) {
+      if (v === undefined || v === "" || v === false) continue;
+      if (k === "loops") {
+        if (Object.keys(v as object).length) params = params.set(k, JSON.stringify(v)); // each loop's choices, as JSON
+        continue;
+      }
+      params = params.set(k, String(v));
+    }
     return firstValueFrom(this.http.get<{ version_id: string; plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan`, { params }));
   }
 
-  applyMindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean; fixed_ranges?: boolean } = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
+  applyMindLoopPlan(id: string, o: LoopChoices = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
     return firstValueFrom(this.http.post<ApplyOutcome & { plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan/apply`, { ...o, reanalyze: true }));
   }
 

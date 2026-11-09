@@ -39,6 +39,8 @@ _VAR_ASSIGN_RE = re.compile(r"^\s*(?:Dim\s+[^:]+:\s*)?([A-Za-z_]\w*)\s*=")
 _OFFSET_RE = re.compile(r"\.Offset\(\s*(?P<r>[^,]+?)\s*,\s*(?P<c>[^)]+?)\s*\)", re.IGNORECASE)
 _RANGE_NAME_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)(?:\.Value2?)?""", re.IGNORECASE)
 _SAFE_EXPR_RE = re.compile(r"^[\d\s+\-*/().]+$")
+# the driver set to an item of a named list: X = GroupGrid(i + 1, 1).Value  (row, column of the name's range)
+_NAMED_ITEM_RE = re.compile(r"=\s*(?P<name>[A-Za-z_]\w*)\(\s*(?P<row>[^,()]+?)\s*,\s*(?P<col>\d+)\s*\)(?:\.Value2?)?\s*$", re.IGNORECASE)
 
 
 # --- small helpers --------------------------------------------------------------------------------
@@ -249,10 +251,51 @@ def _bound_var(bound: dict[str, Any]) -> str | None:
     return m.group(1) if m else None
 
 
+_PLAIN_REF_RE = re.compile(r"^=\s*(?:(?P<sheet>'(?:[^']|'')+'|[^\W\d][\w.]*)!)?\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>\d+)\s*$")
+_PLAIN_NAME_RE = re.compile(r"^=\s*(?P<name>[A-Za-z_\\][\w.]*)\s*$")
+
+
+def _follow_refs(analysis: dict[str, Any], sheet: str, ref: str, hops: int = 6) -> tuple[str, str] | None:
+    """The cell a chain of plain references (=C10, =Ctrl_01!C18, =CalcYear) ends on: the first
+    cell of the chain that holds no formula. None when a link is anything else."""
+    from .model_map import _Names
+
+    names = _Names(analysis["workbooks"][0].get("defined_names", []) or [])
+    for _ in range(hops):
+        r = parse_ref(ref)
+        if not r:
+            return None
+        held = _held(analysis, sheet, r["c1"], r["r1"])
+        if not (isinstance(held, str) and held.startswith("=")):
+            return sheet, ref.replace("$", "").upper()
+        m = _PLAIN_REF_RE.match(held)
+        if m:
+            if m.group("sheet"):
+                sheet = m.group("sheet").strip("'").replace("''", "'")
+            ref = f"{m.group('col').upper()}{m.group('row')}"
+            continue
+        m = _PLAIN_NAME_RE.match(held)
+        target = names.ref(m.group("name")) if m else None
+        t_sheet, t_ref = _split(target) if target else (None, "")
+        if not t_sheet or not parse_ref(t_ref.replace("$", "")):
+            return None
+        sheet, ref = t_sheet, t_ref.replace("$", "")
+    return None
+
+
 def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any) -> tuple[int | None, dict[str, Any]]:
-    """The number a loop bound stands for, and where it came from."""
+    """The number a loop bound stands for, and where it came from. A chosen bound is a number, or
+    a cell (Sheet!A1) whose number is read: that cell then plays the part of the macro's own."""
     if override not in (None, ""):
         n = _as_int(override)
+        if n is None and isinstance(override, str) and "!" in override:
+            sheet, ref = _split(override.strip())
+            ref = ref.replace("$", "").upper()
+            r = parse_ref(ref) if sheet else None
+            if r and not r["whole_column"] and not r["whole_row"] and r["c1"] == r["c2"] and r["r1"] == r["r2"]:
+                # read like the macro's own bound cell (a plain reference chain is followed)
+                n, src = _bound_value(analysis, {"kind": "cell", "cell": f"{sheet}!{ref}"}, None)
+                return n, {**src, "chosen": True, "text": override.strip()}
         return n, {"kind": "chosen", "value": n}
     if bound.get("kind") == "literal":
         n = _as_int(bound.get("value"))
@@ -262,6 +305,17 @@ def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any)
         if sheet:
             v, formula = _number_at(analysis, sheet, ref)
             n = _as_int(v)
+            if formula is not None:
+                # =C10, =CalcYear, =Ctrl_01!C18 ...: the plain reference chain ends on the cell that
+                # holds the number itself, which MM_LOOP can read as the count (it never changes)
+                end = _follow_refs(analysis, sheet, ref)
+                if end is not None:
+                    e_sheet, e_ref = end
+                    ev, ef = _number_at(analysis, e_sheet, e_ref)
+                    if ef is None and _as_int(ev) is not None and (n is None or _as_int(ev) == n):  # no stored value (a file never calculated): the end's
+                        n = _as_int(ev)
+                        return n, {"kind": "cell", "cell": f"{e_sheet}!{e_ref}", "name": bound.get("name"), "value": n, "formula": None,
+                                   "via": bound["cell"], "text": f"{bound['cell']} -> {e_sheet}!{e_ref}"}
             return n, {"kind": "cell", "cell": bound["cell"], "name": bound.get("name"), "value": n, "formula": formula}
     return None, {"kind": "unknown", "text": bound.get("text")}
 
@@ -496,6 +550,80 @@ def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: in
             "how": f"{d['cell']} takes each item of {fixed}" + (" and every item added after it" if use_dynamic else "") + " in turn, through MM_LOOP"}
 
 
+def _named_item(analysis: dict[str, Any], names: Any, d: dict[str, Any]) -> dict[str, Any] | None:
+    """X = List(i + k, c).Value where List is a defined name: the sheet, the column and the row
+    expression of item i, and the number of filled cells the list holds from item `first` down
+    (what the macro's End(xlDown) count gives)."""
+    m = _NAMED_ITEM_RE.search(str(d.get("statement") or ""))
+    var = d.get("loop_var") or ""
+    if not m or not var or not re.search(rf"\b{re.escape(var)}\b", m.group("row")):
+        return None
+    ref = names.ref(m.group("name")) if names else None
+    sheet, r_text = _split(ref) if ref else (None, "")
+    r = parse_ref(r_text.replace("$", "")) if sheet else None
+    if not r or r["whole_column"] or r["whole_row"]:
+        return None
+    col = r["c1"] + int(m.group("col")) - 1
+
+    def row_of(i: int) -> int | None:
+        k = _eval_shift(m.group("row"), var, i)
+        return None if k is None else r["r1"] + k - 1
+
+    return {"list": m.group("name"), "sheet": sheet, "col": col, "row_of": row_of}
+
+
+def _dropdown_item(analysis: dict[str, Any], d: dict[str, Any], first: int) -> dict[str, Any] | None:
+    """A counter driver whose own dropdown lists the loop's values (0, 1, 2, 3 under the cell the
+    macro counts to the end of): the list, item i at its (i - first + 1)-th row. Only a one-column
+    list of whole numbers that run first, first + 1, ... without a gap."""
+    drv_sheet, drv_ref = _split(d["cell"])
+    dd = _dropdown_at(analysis, drv_sheet, drv_ref) if drv_sheet else None
+    m = re.match(r"a dropdown list \((.+)\)$", dd or "")
+    if not m:
+        return None
+    sheet, ref = _split(m.group(1).strip().lstrip("="))
+    sheet = sheet or drv_sheet
+    r = parse_ref(ref.replace("$", ""))
+    if not r or r["c1"] != r["c2"] or r["whole_column"] or r["whole_row"]:
+        return None
+    n = _filled_down(analysis, sheet, r["c1"], r["r1"])
+    if n < 1 or any(_as_int(_held(analysis, sheet, r["c1"], r["r1"] + k)) != first + k for k in range(n)):
+        return None
+    top = r["r1"]
+    # fixed range: nothing says the list has a header row, and Mind takes a grid's first row as its header
+    return {"list": f"the dropdown of {d['cell']}", "sheet": sheet, "col": r["c1"], "row_of": lambda i: top + i - first, "fixed": True}
+
+
+def _filled_down(analysis: dict[str, Any], sheet: str, col: int, row: int) -> int:
+    """How many filled cells run down from (col, row) without a gap."""
+    _, max_row = _sheet_max(analysis, sheet)
+    n = 0
+    while row + n <= max_row and _held(analysis, sheet, col, row + n) not in (None, ""):
+        n += 1
+    return n
+
+
+def _named_list_loop(analysis: dict[str, Any], d: dict[str, Any], item: dict[str, Any], name: str, first: int, last: int, dynamic: bool, counted: bool) -> dict[str, Any]:
+    """The driver takes item i of a named list: MM_LOOP over the list's cells for i = first..last.
+    `counted`: the last item was counted from the list (the macro counts to its end), so with
+    `dynamic` the range follows the list in Mind (MM_COLUMN) and items added to it join the loop."""
+    sheet, col = item["sheet"], item["col"]
+    r_first, r_last = item["row_of"](first), item["row_of"](last)
+    if r_first is None or r_last is None or r_first < 1 or r_last < r_first:
+        return {"status": "not_built", "why": f"cannot place items {first} to {last} of {item['list']}"}
+    c = num_to_col(col)
+    fixed = f"{_qs(sheet)}!{c}{r_first}:{c}{r_last}"
+    use_dynamic = dynamic and counted and not item.get("fixed")
+    rng = f"MM_COLUMN({_qs(sheet)}!{c}{r_first})" if use_dynamic else fixed
+    notes = [f"the range follows the list: {rng} reads to the end of the list's grid in Mind, so items added to it join the loop"] if use_dynamic else []
+    if counted:
+        notes.insert(0, f"{last - first + 1} items counted in {fixed}, as the macro counts them (to the end of the list)")
+    drv_sheet, drv_ref = _split(d["cell"])
+    cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": rng, "range_fixed": fixed, "formula": f'=MM_LOOP("{name}",{rng})', "header": None}
+    return {"kind": "list", "status": "ready", "cells": [cell], "source_sheet": sheet, "unit": "item", "example_range": rng, "notes": notes, "dynamic": use_dynamic,
+            "how": f"{d['cell']} takes each item of {fixed} ({item['list']})" + (" and every item added after it" if use_dynamic else "") + " in turn, through MM_LOOP"}
+
+
 def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, first_src: dict[str, Any], last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
     """The driver is the loop counter itself (a cell the macro sets to its counter): MM_LOOP over
     a cell holding the count gives 1..n; another first value needs the IndexStart / IndexEnd
@@ -503,6 +631,25 @@ def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first:
     drv_sheet, drv_ref = _split(d["cell"])
     notes: list[str] = []
     ops_extra: list[dict[str, Any]] = []
+    if first < 1:
+        # e.g. scenario 0 .. n-1: MM_LOOP counts 1..n in a cell holding the count, the driver takes the shift
+        count = last - first + 1
+        shift = f"{first - 1:+d}"
+        if not count_cell:
+            return {"status": "needs_decision", "kind": "counter", "cells": [], "notes": [],
+                    "why": f"the loop runs from {first}: MM_LOOP counts 1 to {count} in a cell that holds the count, and the driver is that value {shift}. Name a free cell for it (count cell) and the plan writes {count} there.",
+                    "how": f"{d['cell']} is the loop counter itself ({first} to {last})"}
+        sheet, ref = _split(count_cell)
+        ref = ref.replace("$", "").upper()
+        if not sheet or not parse_ref(ref):
+            return {"status": "not_built", "why": f"the count cell {count_cell!r} is not Sheet!Cell"}
+        n_text = f"{_qs(sheet)}!{ref}"
+        ops_extra.append({"op": "set_value", "sheet": sheet, "cell": ref, "before": _held(analysis, sheet, parse_ref(ref)["c1"], parse_ref(ref)["r1"]), "after": count, "note": f"the count of the loop {name} (chosen cell)"})
+        notes.append(f"{count_cell} gets the count {count}; the driver is the loop value {shift}, so it runs {first} to {last}")
+        formula = f'=MM_LOOP("{name}",{n_text}){shift}'
+        cell = {"cell": d["cell"], "sheet": drv_sheet, "ref": drv_ref, "range": n_text, "formula": formula, "header": None}
+        return {"kind": "counter", "status": "ready", "cells": [cell], "source_sheet": None, "unit": "value", "example_range": n_text, "notes": notes, "extra_ops": ops_extra,
+                "how": f"{d['cell']} counts from {first} to {last} ({n_text} holds the count {count}), through MM_LOOP"}
     if last_src.get("kind") == "cell" and last_src.get("formula") is None:
         n_cell = last_src["cell"]
         n_text = f"{_qs(_split(n_cell)[0])}!{_split(n_cell)[1]}"
@@ -609,14 +756,37 @@ def _complete_header(analysis: dict[str, Any], t_sheet: str, t_cells: list[tuple
     return ops, f"the header row {top - 1} above the block is completed in {cells} (Mind reads a grid's first row as its header; an empty cell there splits the block into several grids)"
 
 
+def _free_cell(analysis: dict[str, Any], driver: str) -> str | None:
+    """An empty cell on the driver's row, two columns past the sheet's used range (the column
+    between them takes its label): a place for a loop's count that touches nothing."""
+    sheet, ref = _split(driver)
+    r = parse_ref(ref.replace("$", "")) if sheet else None
+    if not r:
+        return None
+    max_col, _ = _sheet_max(analysis, sheet)
+    col = max(max_col, r["c1"]) + 2
+    if col > 16384 or _held(analysis, sheet, col, r["r1"]) not in (None, "") or _held(analysis, sheet, col - 1, r["r1"]) not in (None, ""):
+        return None
+    return f"{_qs(sheet)}!{num_to_col(col)}{r['r1']}"
+
+
+def _driver_key(cell: str) -> str:
+    """A cell as a key: sheet without quotes, reference without $, upper case."""
+    sheet, ref = _split(str(cell or ""))
+    return f"{sheet or ''}!{ref.replace('$', '').upper()}"
+
+
 def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, names: dict[str, str] | None = None, name: str | None = None,
-                    first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, dynamic: bool = True, max_result_cells: int = MAX_RESULT_CELLS) -> dict[str, Any]:
+                    first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, dynamic: bool = True, max_result_cells: int = MAX_RESULT_CELLS,
+                    loops: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """The Mind loop for the map's run loop: what goes where, with the operations that write it.
 
     `names` maps a driver cell to the loop name wanted; `name` is the shorthand for the first
     loop; `first` / `last` override the bounds read from the workbook; `count_cell` is where a
     counted loop's size may be written when the workbook has no cell for it; `clear_old` also
-    empties what an earlier run left in the areas the macro clears (listed either way)."""
+    empties what an earlier run left in the areas the macro clears (listed either way).
+    `loops` holds each loop's own choices, by driver cell: {"Sheet!C27": {"name", "first", "last",
+    "count_cell"}}; first / last are a number or a cell holding one. They win over the shorthands."""
     from .model_map import _Names
 
     wb0 = analysis["workbooks"][0]
@@ -630,15 +800,39 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
     names = dict(names or {})
     if name and drivers:
         names.setdefault(drivers[0]["cell"], name)
+    chosen = {_driver_key(k): v for k, v in (loops or {}).items() if isinstance(v, dict)}
+    driver_keys = {_driver_key(x["cell"]) for x in drivers}
     ops: list[dict[str, Any]] = []
     built: dict[str, dict[str, Any]] = {}  # loop var -> loop entry
     placeholders: dict[str, int] = {}  # bound variables the macro's statements use -> their value
+    count_cells: dict[str, str] = {}  # count cell -> the loop whose count it holds
     for idx, d in enumerate(drivers):
-        first_n, first_src = _bound_value(analysis, d.get("from") or {}, first if idx == 0 else None)
-        last_n, last_src = _bound_value(analysis, d.get("to") or {}, last if idx == 0 else None)
-        loop_name = loop_name_from(names.get(d["cell"]) or d.get("name") or (_split(d["set_from"])[0] if d.get("set_from") else None) or d["loop_var"])
+        ch = chosen.get(_driver_key(d["cell"])) or {}
+        ch_first = ch.get("first") if ch.get("first") not in (None, "") else (first if idx == 0 else None)
+        ch_last = ch.get("last") if ch.get("last") not in (None, "") else (last if idx == 0 else None)
+        ch_count = str(ch.get("count_cell") or "").strip() or count_cell
+        first_n, first_src = _bound_value(analysis, d.get("from") or {}, ch_first)
+        last_n, last_src = _bound_value(analysis, d.get("to") or {}, ch_last)
+        loop_name = loop_name_from(str(ch.get("name") or "").strip() or names.get(d["cell"]) or d.get("name") or (_split(d["set_from"])[0] if d.get("set_from") else None) or d["loop_var"])
         entry: dict[str, Any] = {"name": loop_name, "driver": d["cell"], "driver_name": d.get("name"), "label": d.get("label"), "macro": d.get("macro"), "loop_var": d["loop_var"],
                                  "source": d.get("set_from"), "first": first_n, "last": last_n, "first_from": first_src, "last_from": last_src, "count": None, "cells": [], "notes": [], "status": "ready", "kind": None, "how": d.get("how")}
+        entry["chosen"] = {k: ch[k] for k in ("name", "first", "last", "count_cell") if ch.get(k) not in (None, "")}
+        item = _named_item(analysis, nm, d) if not d.get("set_from") else None
+        if item is None and d.get("how") == "the loop value itself" and first_n is not None and last_n is None and ch_last in (None, ""):
+            item = _dropdown_item(analysis, d, first_n)
+        counted = False
+        if item is not None and first_n is not None and last_n is None and ch_last in (None, ""):
+            r0 = item["row_of"](first_n)
+            n_items = _filled_down(analysis, item["sheet"], item["col"], r0) if r0 and r0 >= 1 else 0
+            if n_items:
+                last_n, counted = first_n + n_items - 1, True
+                last_src = {"kind": "counted", "value": last_n, "text": f"the filled cells of {item['list']}"}
+                entry.update(last=last_n, last_from=last_src)
+        bad = [f"the {w} value {typed!r} is not a number nor a cell holding one" for w, typed, n in (("first", ch_first, first_n), ("last", ch_last, last_n)) if n is None and typed not in (None, "")]
+        if bad:
+            entry.update(status="needs_decision", why="; ".join(bad))
+            plan["loops"].append(entry)
+            continue
         if first_n is None or last_n is None:
             entry.update(status="needs_decision", why="the first or last value of the loop could not be read from the workbook (" + ", ".join(x for x in (first_src.get("text"), last_src.get("text")) if x) + "): type them in")
             plan["loops"].append(entry)
@@ -661,16 +855,48 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 placeholders[bv] = v
         set_from = str(d.get("set_from") or "")
         how = str(d.get("how") or "")
-        if set_from and f"<{d['loop_var']}>" in set_from:
+        if item is not None:
+            res = _named_list_loop(analysis, d, item, loop_name, first_n, last_n, dynamic, counted)
+        elif set_from and f"<{d['loop_var']}>" in set_from:
             res = _table_loop(analysis, d, loop_name, first_n, last_n, dynamic=dynamic)
         elif how == "the loop value itself":
-            res = _counter_loop(analysis, d, loop_name, first_n, last_n, first_src, last_src, count_cell)
+            res = _counter_loop(analysis, d, loop_name, first_n, last_n, first_src, last_src, ch_count)
         elif set_from and _OFFSET_RE.search(str(d.get("statement") or "")):
             res = _list_loop(analysis, d, loop_name, first_n, last_n, dynamic=dynamic)
         elif set_from and "through" in how:
-            res = _derived_loop(analysis, d, nm, loop_name, first_n, last_n, last_src, count_cell)
+            res = _derived_loop(analysis, d, nm, loop_name, first_n, last_n, last_src, ch_count)
         else:
             res = {"status": "not_built", "why": f"the macro sets the driver in a way the plan cannot write as MM_LOOP: {d.get('statement')}"}
+        if res.get("status") == "ready":
+            # one count cell per loop, never a driver: two loops writing one cell would both be wrong
+            mine = [_driver_key(f"{o['sheet']}!{o['cell']}") for o in res.get("extra_ops") or [] if o.get("op") == "set_value"]
+            why = None
+            for c in mine:
+                if c in driver_keys:
+                    why = f"the count cell {c} is a loop's driver cell: pick a free cell"
+                elif c in count_cells:
+                    why = f"the count cell {c} already holds the count of the loop {count_cells[c]}: pick another free cell"
+                if why:
+                    break
+            held = next((o for o in res.get("extra_ops") or [] if o.get("op") == "set_value" and o.get("before") not in (None, "")), None)
+            if why is None and held is not None:
+                why = f"the count cell {held['sheet']}!{held['cell']} is not empty (it holds {str(held['before'])[:60]!r}): pick an empty cell" + (f", e.g. {_free_cell(analysis, d['cell'])}" if _free_cell(analysis, d["cell"]) else "")
+            if why:
+                res = {"status": "needs_decision", "kind": res.get("kind"), "cells": [], "notes": [], "why": why, "suggested_count_cell": _free_cell(analysis, d["cell"])}
+            else:
+                count_cells.update({c: loop_name for c in mine})
+                # a lone number has no label: Mind may leave it out; the cell to its left says what it is
+                for o in list(res.get("extra_ops") or []):
+                    if o.get("op") != "set_value":
+                        continue
+                    r = parse_ref(o["cell"])
+                    if r and r["c1"] > 1 and _held(analysis, o["sheet"], r["c1"] - 1, r["r1"]) in (None, ""):
+                        res["extra_ops"].append({"op": "set_value", "sheet": o["sheet"], "cell": f"{num_to_col(r['c1'] - 1)}{r['r1']}", "before": None, "after": f"{loop_name} count",
+                                                 "note": f"the label of the count of the loop {loop_name}, so Mind reads the count as a titled cell"})
+        elif res.get("status") == "needs_decision" and "count cell" in str(res.get("why") or ""):
+            res["suggested_count_cell"] = _free_cell(analysis, d["cell"])
+            if res["suggested_count_cell"]:
+                res["why"] = str(res["why"]) + f" A free cell: {res['suggested_count_cell']}."
         pre_notes = list(entry["notes"])
         entry.update({k: v for k, v in res.items() if k != "extra_ops"})
         entry["notes"] = pre_notes + list(entry.get("notes") or [])

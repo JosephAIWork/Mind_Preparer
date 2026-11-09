@@ -1,13 +1,7 @@
 <div class="panel">
-  <p class="hint">The macro's run loop as MM_LOOP in the driver cells and MM_RESULT in the block each pass writes. Change the choices, preview, then write.</p>
+  <p class="hint">The macro's run loops as MM_LOOP in the driver cells and MM_RESULT in the block each pass writes. Each loop has its own choices: leave a box empty to keep what the model says. First and last take a number or a cell (Sheet!A1). Preview, then write.</p>
 
-  <div class="row" data-show-me="loop-choices">
-    <label class="field">Loop name <input type="text" [value]="name()" (input)="name.set(value($event))" placeholder="from the model" /></label>
-    <label class="field">First value <input type="text" [value]="first()" (input)="first.set(value($event))" placeholder="from the model" /></label>
-    <label class="field">Last value <input type="text" [value]="last()" (input)="last.set(value($event))" placeholder="from the model" /></label>
-    @if (needsCount()) {
-      <label class="field">Cell to hold the count <input type="text" [value]="countCell()" (input)="countCell.set(value($event))" placeholder="Sheet!A1" /></label>
-    }
+  <div class="row">
     <label class="check"><input type="checkbox" [checked]="clearOld()" (change)="clearOld.set(!clearOld())" /> Also empty the areas the macro clears</label>
     <label class="check" title="By default the ranges follow the table (MM_COLUMN / MM_ROW): rows added to the input table join the loop in Mind."><input type="checkbox" [checked]="fixedRanges()" (change)="fixedRanges.set(!fixedRanges())" /> Fixed ranges (the rows of today only)</label>
     <button cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
@@ -32,6 +26,17 @@
             @if (l.source) { <span class="mono">from {{ l.source }}</span> }
             @if (l.macro) { <span>macro {{ l.macro }}</span> }
           </div>
+          @if (l.driver) {
+            <div class="row loop-choices" [attr.data-show-me]="$first ? 'loop-choices' : null">
+              <label class="field">Name <input type="text" [value]="pick(l, 'name')" (input)="setPick(l, 'name', value($event))" (keyup.enter)="preview()" [placeholder]="l.name" /></label>
+              <label class="field">First <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.first)" /></label>
+              <label class="field">Last <input type="text" [value]="pick(l, 'last')" (input)="setPick(l, 'last', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.last)" /></label>
+              @if (wantsCount(l)) {
+                <label class="field">Count cell <input type="text" [value]="pick(l, 'count_cell')" (input)="setPick(l, 'count_cell', value($event))" (keyup.enter)="preview()" [placeholder]="l.suggested_count_cell || 'Sheet!A1 (empty)'" /></label>
+                @if (l.suggested_count_cell && !pick(l, 'count_cell')) { <button class="link" (click)="useSuggested(l)">Use {{ l.suggested_count_cell }}</button> }
+              }
+            </div>
+          }
           @if (l.label) { <p class="card__caution">{{ l.label }}</p> }
           @for (n of l.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
           @if (l.why) { <p class="card__caution">{{ l.why }}</p> }

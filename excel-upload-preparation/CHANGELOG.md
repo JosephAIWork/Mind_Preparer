@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased (9 November 2026): each Mind loop with its own choices
+
+- **Advanced › Mind loop: every loop card has its own Name / First / Last boxes**, and a Count cell
+  box when the loop asks for one (with "Use <free cell>"). First and last take a number or a cell
+  (Sheet!A1). Sent as `loops` by driver cell (`GET .../mind-loop-plan?loops=<json>`, POST
+  `{"loops": {...}}`); the old shorthands (`name`, `first`, `last`, `count_cell`) still work.
+- **More loops are built from the workbook alone** (seen on the Tokyo tool):
+  - a driver set to item i of a named list (`GroupGrid(i + 1, 1)`): MM_LOOP over the list, its end
+    counted as the macro counts it (to the last filled cell);
+  - a counter whose own dropdown lists its values (0, 1, 2, 3): MM_LOOP over that list (fixed range);
+  - a bound reached through plain references (`=C10`, `=CalcYear`) reads the cell holding the number.
+- **A workbook-level name wins over a sheet's own name of the same spelling** (the macros'
+  `ThisWorkbook.Names("GroupName")`): the loop goes in the cell the macro writes, not a copy.
+- **Count cells are safe**: never a filled cell, a driver, or another loop's count cell; a label
+  ("<loop> count") is written to its left; a loop starting below 1 counts 1..n and shifts
+  (`=MM_LOOP("Scenario",X1)-1`).
+
 ## 1.12.4 (9 November 2026): outside input files as Mind inputs (the Tokyo IFRS 17 tool)
 
 - **A model and its input files, picked together.** The upload takes several files at once (File

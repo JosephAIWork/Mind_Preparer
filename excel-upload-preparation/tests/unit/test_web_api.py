@@ -717,6 +717,38 @@ def test_mind_loop_plan_route_previews_and_writes_the_loop(client, tmp_path, mon
     assert client.get("/api/sessions/nope/mind-loop-plan").status_code == 404
 
 
+def test_mind_loop_plan_route_takes_each_loops_choices(client, tmp_path, monkeypatch):
+    """1.12.5: `loops` carries each loop's own choices by driver cell (JSON in the GET, an object in
+    the POST); what is written is what the preview showed."""
+    import json as _json
+
+    import openpyxl
+
+    from app import model_map
+    from tests.unit.test_loop_choices import TWO_RUNS, _book
+
+    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("M1_Main", TWO_RUNS)])
+    sid = _upload(client, _book(tmp_path))["sessionId"]
+    plan = client.get(f"/api/sessions/{sid}/mind-loop-plan").json()["plan"]
+    assert [lp["status"] for lp in plan["loops"]] == ["ready"] * 4
+    picks = {"Ctrl_01!C27": {"last": "3", "count_cell": "Ctrl_01!H27"}, "RollForward!B4": {"name": "Group"}}
+    chosen = client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"loops": _json.dumps(picks)}).json()["plan"]
+    by_name = {lp["name"]: lp for lp in chosen["loops"]}
+    assert by_name["Scenario"]["cells"][0]["formula"] == '=MM_LOOP("Scenario",Ctrl_01!H27)-1' and "Group" in by_name
+    assert client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"loops": "{not json"}).status_code == 422
+    assert client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={"loops": ["a list"]}).status_code == 422
+    res = client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={"loops": picks})
+    assert res.status_code == 200, res.text
+    from app.formula_utils import STORAGE_PREFIX_RE
+
+    written = openpyxl.load_workbook(server.SESSIONS[sid].current_path)
+    assert STORAGE_PREFIX_RE.sub("", written["Ctrl_01"]["C27"].value) == '=MM_LOOP("Scenario",Ctrl_01!H27)-1'
+    assert written["Ctrl_01"]["H27"].value == 4 and written["Ctrl_01"]["G27"].value == "Scenario count"
+    assert STORAGE_PREFIX_RE.sub("", written["RollForward"]["B4"].value) == '=MM_LOOP("Group",MM_COLUMN(Ctrl_02!C20))'
+    assert written["Maturity"]["B4"].value == "=RollForward!B4"  # the sheet's copy keeps following
+    written.close()
+
+
 def test_model_map_route_reads_the_analysed_copy(client, flagged_model_broken_xlsx):
     """1.9.0: the Model map screen's data -- sections present, cached per version, 409 before an analysis."""
     sid = _upload(client, flagged_model_broken_xlsx)["sessionId"]

@@ -180,6 +180,16 @@
   }
 }
 
+// each loop's own choices, inside its card: smaller boxes
+.loop-choices {
+  margin: $spacing-03 0;
+  gap: $spacing-04;
+
+  .field input[type="text"] {
+    width: 9rem;
+  }
+}
+
 .check {
   display: inline-flex;
   align-items: center;

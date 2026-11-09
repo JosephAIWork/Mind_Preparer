@@ -136,11 +136,20 @@ class _Names:
     def __init__(self, defined_names: list[dict[str, Any]]):
         self.by_name: dict[str, str] = {}
         self.canonical: dict[str, str] = {}
+        global_names: set[str] = set()
         for d in defined_names or []:
             n, v = d.get("name"), str(d.get("value") or "").strip()
             if n and v and "#REF!" not in v and not v.startswith("="):
-                self.by_name[str(n).upper()] = v
-                self.canonical[str(n).upper()] = str(n)
+                key = str(n).upper()
+                is_global = d.get("local_sheet_id") is None
+                # a workbook-level name wins over a sheet's own name of the same spelling: the macros'
+                # ThisWorkbook.Names("X") (and Range("X") run from a module) mean the workbook's one
+                if key in global_names and not is_global:
+                    continue
+                if is_global:
+                    global_names.add(key)
+                self.by_name[key] = v
+                self.canonical[key] = str(n)
         self.by_ref: dict[str, str] = {}
         for n, v in self.by_name.items():
             self.by_ref.setdefault(v.replace("$", "").upper(), self.canonical[n])

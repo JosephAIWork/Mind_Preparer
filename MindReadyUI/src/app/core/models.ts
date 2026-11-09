@@ -281,6 +281,18 @@ export interface LoopPlanLoop {
   status: "ready" | "needs_decision" | "not_built";
   kind?: string;
   why?: string;
+  /** an empty cell the plan offers for the loop's count, when it needs one */
+  suggested_count_cell?: string | null;
+  /** the choices this loop was built with */
+  chosen?: LoopChoice;
+}
+
+/** One loop's own choices; first / last are a number or a cell holding one (Sheet!A1). */
+export interface LoopChoice {
+  name?: string;
+  first?: string;
+  last?: string;
+  count_cell?: string;
 }
 
 export interface LoopPlanOutput {
@@ -333,6 +345,8 @@ export interface LoopChoices {
   clear_old?: boolean;
   /** the old X2:X6 ranges instead of MM_COLUMN / MM_ROW that follow the table */
   fixed_ranges?: boolean;
+  /** each loop's own choices, by driver cell */
+  loops?: Record<string, LoopChoice>;
 }
 
 export interface AppHealth {
