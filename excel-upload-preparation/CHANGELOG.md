@@ -24,7 +24,22 @@
   6 Mind inputs, 46,800 formulas moved, no computed value changed; in Mind 6 of 6 inputs SUCCESS and
   Mind = Excel on the result grid (120 of 120 numbers); a "next quarter" (two inputs changed, model
   not re-uploaded) gives Excel's new answer too (120 of 120).
-- `scripts/night_chain.py` writes UTF-8 (a Japanese sheet name stopped it on a Hebrew console).
+- **Hardened after an independent review** (4 reviewers, each finding challenged by a refuter on
+  another model; 11 findings, none refuted, 10 fixed): a plain OK message box no longer counts as an
+  early stop (Windows gives a lone OK button control id 2); a macro that clears every area first is
+  paired correctly; whole-column clears of a file not picked are put back; the model's own
+  Workbook_Open does not run and a box there cannot hang the job; when making the Mind inputs would
+  change a value the import version stays current and nothing is offered for Mind; input files changed
+  after a bring-in are noticed (fingerprint) and Run in Mind refuses stale CSVs; Do everything retries
+  a failed bring-in; numbers that could not be checked stop the chain; the macro's message box reads
+  correctly on a Windows of another language ("BBA_01のinput領域には93項目まで…" instead of mojibake).
+- **RZS-006** leaves the Mind inputs made from outside files alone: their size is the model's import
+  area, as the model's own macro keeps it, and their CSVs are written at exactly that size.
+- Final check on Tokyo through the app: Acceptable by Mind (0 blocking), then the app's own Run in
+  Mind: numbers match (1,703,906 cells), the 6 input files SUCCESS in Mind's Inputs window, run
+  consistent with the audit trail, converged; 56 untitled grids in Mind (76 in 1.12.3).
+- `scripts/night_chain.py` writes UTF-8 (a Japanese sheet name stopped it on a Hebrew console) and takes
+  `--inputs <folder>`.
 
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 
