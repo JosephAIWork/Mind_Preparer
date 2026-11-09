@@ -4,7 +4,8 @@ Starts the server on the port in settings.yaml and opens the browser once it ans
 package, the built screens sit next to this file in `ui/`; from the source it is the same as
 run_mind_ready_web.bat. The single-file MindReady.exe unpacks itself out of sight, so a
 settings.yaml placed next to the .exe is read instead of its own copy. When the program cannot
-start, the window stays open on the message.
+start, the window stays open on the message. A shared copy past its end date (app/expiry.py) says
+so the same way, and nothing starts.
 """
 from __future__ import annotations
 
@@ -38,6 +39,15 @@ def _open_when_ready(port: int) -> None:
 
 
 def _run() -> None:
+    from app import expiry
+
+    # First, before the server and the browser: a copy past its end date only says so.
+    verdict = expiry.at_start()
+    if verdict.expired:
+        print(verdict.message)
+        _wait("\nPress Enter to close this window.")
+        return
+
     from app.settings import SETTINGS
     from app.web import server
 
@@ -45,6 +55,8 @@ def _run() -> None:
     if not server._port_is_taken(port):  # already running: server.main() opens it itself
         threading.Thread(target=_open_when_ready, args=(port,), daemon=True).start()
     print("Mind Ready -- close this window to stop it.")
+    if verdict.expires:
+        print(f"This copy works until {expiry.long_date(verdict.expires)}.")
     server.main()
 
 
@@ -62,10 +74,10 @@ def main() -> None:
         _wait()
 
 
-def _wait() -> None:
+def _wait(prompt: str = "\nMind Ready could not start (see above). Press Enter to close this window.") -> None:
     """Keep the window open on the message (a double-clicked program's window closes on exit)."""
     try:
-        input("\nMind Ready could not start (see above). Press Enter to close this window.")
+        input(prompt)
     except Exception:
         pass
 

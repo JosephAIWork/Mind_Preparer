@@ -2,16 +2,19 @@ import { Component, OnInit, inject, signal } from "@angular/core";
 import { ActivatedRoute, Router, RouterLink, RouterLinkActive, RouterOutlet } from "@angular/router";
 import { UIShellModule } from "carbon-components-angular";
 import { ApiService } from "./core/api.service";
+import { ExpiredNotice } from "./core/expired-notice";
+import { ExpiryService } from "./core/expiry";
 import { FeedbackDialog } from "./core/feedback-dialog";
 import { FeedbackService } from "./core/feedback.service";
 import { SessionStore } from "./core/session.store";
 
 /** The shell: Mind's dark Carbon header, the two places (main screen, Advanced), the version, and
- *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed). */
+ *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed). A shared
+ *  copy also says until when it works; once it stopped working, the notice replaces everything. */
 @Component({
   selector: "mr-root",
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog, ExpiredNotice],
   templateUrl: "./app.html",
   styleUrl: "./app.scss",
 })
@@ -21,6 +24,7 @@ export class App implements OnInit {
   private router = inject(Router);
   readonly store = inject(SessionStore);
   readonly feedback = inject(FeedbackService);
+  readonly expiry = inject(ExpiryService);
   readonly version = signal("");
   readonly rules = signal<number | null>(null);
 
@@ -30,6 +34,7 @@ export class App implements OnInit {
       .then((h) => {
         this.version.set(h.version);
         this.rules.set(h.rules ?? null);
+        this.expiry.fromHealth(h);
         document.title = `Mind Ready Beta ${h.version}`;
       })
       .catch(() => {});

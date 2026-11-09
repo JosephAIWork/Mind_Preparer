@@ -55,6 +55,7 @@ from app import excel_worker  # noqa: E402
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
 from app import ai_key, feedback  # noqa: E402
+from app import expiry  # noqa: E402  (through the module: tests replace its checker)
 from app.settings import SETTINGS  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, check_api_key, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
@@ -103,9 +104,11 @@ _API_PAGES = {} if SETTINGS.api_pages else {"docs_url": None, "redoc_url": None,
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """At start: end the hidden Excels a Mind Ready stopped abruptly left behind, and make closing the
-    window end this one's first (app/excel_com.py)."""
+    window end this one's first (app/excel_com.py). A shared copy with an end date also asks the
+    internet's date, in the background (app/expiry.py; nothing for the developer version)."""
     from app.excel_com import clean_leftover_excels, on_window_close
 
+    expiry.start_network_check()
     ended = clean_leftover_excels()
     if ended:
         print(f"Closed {ended} hidden Excel(s) left behind the last time Mind Ready was stopped.", flush=True)
@@ -113,7 +116,27 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
+class _ExpiryGate:
+    """After a shared copy's end date (app/expiry.py) every API call but /api/health answers 410 with
+    the plain message, which the screens show instead of the app; the screens' own files still load, to
+    show it. A plain ASGI middleware: streamed answers and downloads pass through it untouched. The
+    decision is reused for a minute, so a call costs nothing more."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if path.startswith("/api/") and path != "/api/health":
+            verdict = expiry.current()
+            if verdict.expired:
+                await JSONResponse(verdict.refusal(), status_code=410)(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
 app = FastAPI(lifespan=_lifespan, title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev", **_API_PAGES)
+app.add_middleware(_ExpiryGate)
 _ENGINE: RulesEngine | None = None
 
 
@@ -1077,6 +1100,9 @@ def health() -> dict[str, Any]:
         "autofix": True,
         # several files per upload, POST .../inputs and .../outside-inputs/run (app/outside_inputs.py)
         "outside_inputs": True,
+        # a shared copy's end date (app/expiry.py): "expires": "2026-12-15", "days_left", "expired" and
+        # its message; all None / False for the developer version. Answered after the date too.
+        **expiry.current().health(),
     }
 
 

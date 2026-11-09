@@ -306,6 +306,13 @@ export interface AppHealth {
   excel?: boolean | string;
   assistant?: boolean | string;
   frontend?: string;
+  /** a shared copy's last working day, "2026-12-15" (null: no end date, the developer version) */
+  expires?: string | null;
+  /** 0 on the last day */
+  days_left?: number | null;
+  /** past the date: every other call answers 410 with `expired_message` */
+  expired?: boolean;
+  expired_message?: string | null;
 }
 
 /** GET/POST /api/assistant-key: never the key itself. `message`: saved but not checked (gateway unreachable). */
