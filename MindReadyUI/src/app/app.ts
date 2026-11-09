@@ -5,13 +5,15 @@ import { ApiService } from "./core/api.service";
 import { FeedbackDialog } from "./core/feedback-dialog";
 import { FeedbackService } from "./core/feedback.service";
 import { SessionStore } from "./core/session.store";
+import { ShowMeOverlay } from "./core/show-me-overlay";
 
 /** The shell: Mind's dark Carbon header, the two places (main screen, Advanced), the version, and
- *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed). */
+ *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed), and the
+ *  "Show me" pointer's overlay (once, above everything). */
 @Component({
   selector: "mr-root",
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog, ShowMeOverlay],
   templateUrl: "./app.html",
   styleUrl: "./app.scss",
 })

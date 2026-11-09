@@ -17,7 +17,7 @@
   <h3 class="panel__h">Did the numbers change?</h3>
   <p class="hint">Recalculates the original and the current version in Excel and compares every cell through the row-insert map. Content writes are skipped; formula rewrites must keep the value.</p>
   <div class="row">
-    <button cdsButton="secondary" size="md" (click)="check()" [disabled]="checking()">{{ numbers() ? "Check again" : "Check the numbers" }}</button>
+    <button cdsButton="secondary" size="md" data-show-me="deliver-numbers" (click)="check()" [disabled]="checking()">{{ numbers() ? "Check again" : "Check the numbers" }}</button>
     @if (checking()) { <cds-inline-loading [state]="'active'" loadingText="Comparing… a few minutes for a large model"></cds-inline-loading> }
   </div>
   @if (error()) { <div class="result result--error"><strong>Failed</strong><span>{{ error() }}</span></div> }

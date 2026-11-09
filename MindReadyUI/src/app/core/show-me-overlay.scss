@@ -1,0 +1,112 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+// Above everything (Carbon's header is 8000, its modals 9000), and never in the way of a click:
+// only the bubble's own button takes one.
+:host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 9100;
+  pointer-events: none;
+}
+
+.show-me__ring {
+  position: fixed;
+  border: 2px solid theme.$focus;
+  border-radius: 4px;
+  box-shadow: 0 0 0 4px theme.$highlight;
+  pointer-events: none;
+  animation: show-me-in 200ms ease-out;
+}
+
+.show-me__arrow {
+  position: fixed;
+  fill: none;
+  stroke: theme.$focus;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+  // a fade in, then a slow gentle pulse: one arrow at a time, nothing that jumps
+  animation:
+    show-me-in 150ms ease-out,
+    show-me-pulse 2.4s ease-in-out 150ms infinite;
+}
+
+.show-me__bubble {
+  position: fixed;
+  width: max-content;
+  max-width: 18rem;
+  display: flex;
+  align-items: center;
+  gap: $spacing-04;
+  padding: $spacing-03 $spacing-04;
+  background: theme.$background-inverse;
+  color: theme.$text-inverse;
+  border-radius: 2px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  @include type.type-style("body-compact-01");
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+
+  &--shown {
+    opacity: 1;
+  }
+}
+
+.show-me__done {
+  pointer-events: auto;
+  flex-shrink: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: theme.$link-inverse;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &:focus {
+    outline: 1px solid theme.$focus-inverse;
+    outline-offset: 2px;
+  }
+}
+
+@keyframes show-me-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes show-me-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .show-me__ring,
+  .show-me__arrow {
+    animation: none;
+  }
+
+  .show-me__bubble {
+    transition: none;
+  }
+}

@@ -1,7 +1,7 @@
 <div class="panel">
   <p class="hint">The macro's run loop as MM_LOOP in the driver cells and MM_RESULT in the block each pass writes. Change the choices, preview, then write.</p>
 
-  <div class="row">
+  <div class="row" data-show-me="loop-choices">
     <label class="field">Loop name <input type="text" [value]="name()" (input)="name.set(value($event))" placeholder="from the model" /></label>
     <label class="field">First value <input type="text" [value]="first()" (input)="first.set(value($event))" placeholder="from the model" /></label>
     <label class="field">Last value <input type="text" [value]="last()" (input)="last.set(value($event))" placeholder="from the model" /></label>

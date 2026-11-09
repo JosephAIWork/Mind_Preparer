@@ -48,6 +48,12 @@
   consistent with the audit trail, converged; 56 untitled grids in Mind (76 in 1.12.3).
 - `scripts/night_chain.py` writes UTF-8 (a Japanese sheet name stopped it on a Hebrew console) and takes
   `--inputs <folder>`.
+- **"Show me" pointers.** Next to every instruction that sends the user somewhere (the banner's next
+  step, "Apply the blocking repairs in Prep", "Check them under Advanced › Deliver", "on the Outside
+  files card", "paste an AI key under Advanced › Assistant") a quiet "Show me" link: one arrow with a
+  short bubble at the next click ("Click Advanced", "Click Prep actions") until the place itself,
+  outlined, with "Got it"; Esc or a click elsewhere ends it, and it never takes a click from the page.
+  "Fix that under Advanced" now names the tab. `docs/SHOW_ME.md`.
 
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 

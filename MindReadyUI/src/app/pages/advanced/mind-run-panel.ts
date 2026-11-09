@@ -4,6 +4,7 @@ import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { MindLoopEvent, MindLoopIteration, MindLoopReport, MindRunOptionsInfo, MindRunTiming, MindRunVersion, MindSignIn } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { ShowMeLink } from "../../core/show-me-link";
 
 /** The app running itself against real Mind: prepare, gates, upload, convert, run, decide; one run at a time.
  *  Before the click: which version goes up (always the latest), the changes to make first (ticks) and a
@@ -11,7 +12,7 @@ import { SessionStore } from "../../core/session.store";
 @Component({
   selector: "mr-mind-run-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule],
+  imports: [CommonModule, ButtonModule, ShowMeLink],
   templateUrl: "./mind-run-panel.html",
   styleUrl: "./panels.scss",
 })

@@ -9,6 +9,7 @@ import {
   pickedFilesProblem, withOutsideStep,
 } from "../core/models";
 import { SessionStore } from "../core/session.store";
+import { ShowMeLink } from "../core/show-me-link";
 import { KeyBox } from "./advanced/key-box";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
@@ -86,11 +87,15 @@ const STEPS: { id: StepId; label: string; check: string }[] = [
   { id: "recalc", label: "Recalculate", check: "no formula error that was not already in the original" },
 ];
 
+/** Where to fix what stopped a step of Do everything: the Advanced tab that lists it (the errors the
+ *  fixer left are in the recalculation's list). The outside step's own card is on this screen. */
+const FIX_UNDER: Record<Exclude<StepId, "outside">, string> = { fixAll: "Recalculate", prepare: "Prep actions", loop: "Mind loop", recalc: "Recalculate" };
+
 /** The main screen: one workbook, the buttons that do the work on their own, one download. */
 @Component({
   selector: "mr-home",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox],
+  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink],
   templateUrl: "./home.page.html",
   styleUrl: "./home.page.scss",
 })
@@ -969,7 +974,7 @@ export class HomePage implements OnDestroy {
     const ready = p.loops.filter((l) => l.status === "ready");
     const parts = ready.map((l) => `${l.name} (${l.first} to ${l.last})`);
     const open = p.loops.filter((l) => l.status !== "ready").length;
-    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (see Advanced)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
+    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (Advanced › Mind loop)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
   }
 
   /** The plan says the first row of the table is a header row: the loop then starts at 2. */
@@ -1097,7 +1102,7 @@ export class HomePage implements OnDestroy {
           return;
         }
         if (!ok) {
-          const where = step.id === "outside" ? "See the Outside files card above" : "Fix that under Advanced";
+          const where = step.id === "outside" ? "See the Outside files card above" : `Fix that under Advanced › ${FIX_UNDER[step.id]}`;
           this.chainLine.set(`Stopped at "${step.label}": ${r.line.replace(/\.$/, "")}. ${where}, then press Do everything again.`);
           return;
         }

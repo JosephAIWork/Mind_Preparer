@@ -94,7 +94,7 @@
     <p class="hint">Names every untitled grid from the captions, labels and headers around it, through the assistant.</p>
     <button cdsButton="tertiary" size="md" (click)="suggest()" [disabled]="suggesting()">{{ suggesting() ? "Naming…" : "Suggest names" }}</button>
     @if (suggestions(); as sg) {
-      <p class="hint">{{ sg.message || (sg.names.length + " suggestions" + (sg.applied ? ", added to the Prep plan" : "")) }}</p>
+      <p class="hint">{{ suggestLine(sg) }}<mr-show-me [text]="suggestLine(sg)"></mr-show-me></p>
       @if (sg.names.length) {
         <ul class="plain">
           @for (n of sg.names.slice(0, 40); track n.grid) { <li><span class="mono">{{ n.grid }}</span> → #{{ n.suggested || n.deterministic }}</li> }

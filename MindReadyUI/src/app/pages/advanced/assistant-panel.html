@@ -1,5 +1,5 @@
 <div class="panel chat">
-  <mr-key-box></mr-key-box>
+  <div data-show-me="assistant-key"><mr-key-box></mr-key-box></div>
   @if (target(); as t) {
     <div class="chat__target">
       <span>Asking about <strong>{{ targetText(t) }}</strong></span>
@@ -12,7 +12,7 @@
 
   <div class="chat__log">
     @for (m of store.chatHistory(); track trackMsg($index, m)) {
-      <div class="bubble" [class.bubble--user]="m.role === 'user'" [class.bubble--note]="m.note" [class.bubble--ok]="m.tone === 'success'" [class.bubble--warn]="m.tone === 'warning'">{{ m.content }}</div>
+      <div class="bubble" [class.bubble--user]="m.role === 'user'" [class.bubble--note]="m.note" [class.bubble--ok]="m.tone === 'success'" [class.bubble--warn]="m.tone === 'warning'">{{ m.content }}@if (m.role !== "user") {<mr-show-me [text]="m.content"></mr-show-me>}</div>
     }
     @if (streaming()) {
       <div class="bubble bubble--draft">
@@ -22,7 +22,7 @@
   </div>
 
   @if (error()) {
-    <div class="result result--error"><strong>The assistant failed</strong><span>{{ error() }}</span></div>
+    <div class="result result--error"><strong>The assistant failed</strong><span>{{ error() }}<mr-show-me [text]="error()"></mr-show-me></span></div>
   }
 
   @if (proposal(); as p) {

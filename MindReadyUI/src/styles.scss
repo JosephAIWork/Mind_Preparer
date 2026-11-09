@@ -40,3 +40,8 @@ p {
 a {
   color: theme.$link-primary;
 }
+
+// "Show me" scrolls a place into the window: its top stays clear of the fixed header (3rem).
+[data-show-me] {
+  scroll-margin-top: 4.5rem;
+}

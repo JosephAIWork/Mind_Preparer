@@ -5,6 +5,7 @@ import { ButtonModule, ContentSwitcherModule, NotificationModule, TagModule } fr
 import { ApiService, errorText } from "../core/api.service";
 import { Finding, Grid, Status } from "../core/models";
 import { SessionStore } from "../core/session.store";
+import { ShowMeLink } from "../core/show-me-link";
 import { AssistantPanel } from "./advanced/assistant-panel";
 import { DeliverPanel } from "./advanced/deliver-panel";
 import { GridNamerPanel } from "./advanced/grid-namer-panel";
@@ -27,7 +28,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
