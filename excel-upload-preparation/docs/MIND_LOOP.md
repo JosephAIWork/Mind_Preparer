@@ -146,6 +146,26 @@ browser (`--browser` forces it) when there is none or it expired. Upload, conver
 have no MCP tool: they stay in the browser. Verified 2026-10-15 on UC-1 with a seventh policy row: run
 Success / Consistent in 6.5 s, a loop of size 6, 50 of 50 cells the same as the macro.
 
+## The loop goes to Mind with Prep's formula repairs (1.12.5)
+
+A loop written on a version Prep has not repaired yet would go to Mind with formulas Mind computes
+otherwise. On the Tokyo tool (2026-11-09) that made every formula of six calculation sheets NaN: their
+B3 reads the sheet name through `CELL("filename")`, which Mind answers with the workbook's name alone
+(see MIND_VS_EXCEL.md). The loop plan therefore takes Prep's plan for the same version and writes the
+formula repairs it still has with the loop (`loop_builder.FORMULA_REPAIRS`: the main screen's "Fix the
+formulas" set, among them FRM-012's CELL / INFO freeze and FRM-014's OFFSET ranges). A cell the loop
+writes keeps the loop. The plan lists them (`repairs`, a note, a line on the loop panel);
+`repairs: false` on the API leaves them out and the note says Mind will compute other values. In Do
+everything the Prep step runs first, so nothing is left for the loop to add.
+
+Proven in real Mind (2026-11-09), Mind's test after the upload:
+- the loop written on the unrepaired version through the app (6 CELL freezes and 84 OFFSET ranges
+  written with it; zzz_mindready_tokyo_loops_probe_7): 14,737 differences before, 75 after, none a value:
+  67 check cells that are 0 in Excel and a rounding residue below 0.00002 in Mind (B47-B46 of two equal
+  totals near a billion), and 8 cells holding the text "TRUE" that the test reads as 1 on Excel's side;
+- the Do-everything version plus the four loops through the app (84 OFFSET ranges written with it;
+  zzz_mindready_tokyo_loops_2): 63 differences, the same two kinds (55 residues below 0.000004, 8 "TRUE").
+
 ## A driver cell must not have a dropdown (1.11.3)
 
 Mind reads a cell with a list dropdown (data validation) as an input and drops its formula: an MM_LOOP

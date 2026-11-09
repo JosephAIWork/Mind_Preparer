@@ -1142,3 +1142,140 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )
+
+
+# --- FRM-014: arithmetic on a range that OFFSET returns -----------------------------------------
+# =SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)) (the Tokyo IFRS 17 tool, BBA_01!B45 and
+# 27 more per calculation sheet): Excel gives -16,220; Mind gave -5,513,051 -- the last cell of the
+# second range. -OFFSET(...) and (1-OFFSET(...))*OFFSET(...) came out wrong too, while the same
+# arithmetic on the written-out range (1-$H$4:$H$6) and SUMPRODUCT over OFFSET ranges alone were right
+# (probe workbook in real Mind, 2026-11-09). An OFFSET whose arguments are all numbers always
+# designates the same cells: it is written as that range, which Excel computes the same.
+_ARITH_OPS = set("+-*/^")
+_ANCHOR_RE = re.compile(r"^(?P<prefix>(?:'[^']*(?:''[^']*)*'|[^'!]+)!)?(?P<cd>\$?)(?P<col>[A-Za-z]{1,3})(?P<rd>\$?)(?P<row>\d+)$")
+_MAX_ROW, _MAX_COL = 1048576, 16384
+
+
+def _const_int(text: str) -> int | None:
+    """The value of a constant whole-number expression (5, 1200-3, 2+3, 2*6), else None."""
+    import ast
+
+    s = (text or "").strip()
+    if not s or not re.fullmatch(r"[\d\s+\-*()]+", s) or "**" in s:
+        return None
+    try:
+        node = ast.parse(s, mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+
+    def ev(n: Any) -> int | None:
+        if isinstance(n, ast.Constant) and type(n.value) is int:
+            return n.value
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
+            v = ev(n.operand)
+            return None if v is None else (v if isinstance(n.op, ast.UAdd) else -v)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Add, ast.Sub, ast.Mult)):
+            a, b = ev(n.left), ev(n.right)
+            if a is None or b is None:
+                return None
+            return a + b if isinstance(n.op, ast.Add) else a - b if isinstance(n.op, ast.Sub) else a * b
+        return None
+
+    v = ev(node)
+    return v if v is not None and abs(v) <= _MAX_ROW else None
+
+
+def _arith_operand(masked: str, start: int, end: int) -> bool:
+    """The call masked[start:end] is an operand of + - * / ^ (bare brackets around it allowed; the
+    bracket of a function call around it is not bare: SUM(OFFSET(...))*2 multiplies the SUM)."""
+    i, opened = start - 1, 0
+    while i >= 0 and (masked[i].isspace() or masked[i] == "("):
+        if masked[i] == "(":
+            if i > 0 and (masked[i - 1].isalnum() or masked[i - 1] in "_."):
+                break  # a function's own bracket: what follows the call inside it decides
+            opened += 1
+        i -= 1
+    if i >= 0 and masked[i] in _ARITH_OPS:
+        return True
+    j, closed = end, 0
+    while j < len(masked) and (masked[j].isspace() or (masked[j] == ")" and closed < opened)):
+        closed += masked[j] == ")"
+        j += 1
+    return j < len(masked) and masked[j] in _ARITH_OPS
+
+
+def offset_as_range(args: list[str]) -> str | None:
+    """OFFSET(anchor, rows, cols[, height, width]) with a one-cell anchor and numbers for the rest, as
+    the range it designates (the anchor's $ signs and sheet kept); None when that is not so, or when the
+    range is a single cell or falls off the sheet."""
+    if not 3 <= len(args) <= 5:
+        return None
+    m = _ANCHOR_RE.match(args[0].strip())
+    if not m:
+        return None
+    nums = [_const_int(a) for a in args[1:3]] + [(_const_int(a) if a.strip() else 1) for a in args[3:5]]
+    nums += [1] * (4 - len(nums))
+    if any(v is None for v in nums):
+        return None
+    dr, dc, h, w = nums
+    if h < 1 or w < 1 or h * w == 1:
+        return None
+    r1, c1 = int(m.group("row")) + dr, col_to_num(m.group("col")) + dc
+    r2, c2 = r1 + h - 1, c1 + w - 1
+    if r1 < 1 or c1 < 1 or r2 > _MAX_ROW or c2 > _MAX_COL:
+        return None
+    cd, rd = m.group("cd"), m.group("rd")
+    return f"{m.group('prefix') or ''}{cd}{num_to_col(c1)}{rd}{r1}:{cd}{num_to_col(c2)}{rd}{r2}"
+
+
+def offset_arithmetic_as_range(formula: str) -> str | None:
+    """The formula with every OFFSET that is an operand of arithmetic and designates a fixed range
+    written as that range; None when there is none."""
+    from ..formula_utils import find_calls_detailed
+
+    if not formula or not formula.startswith("=") or "OFFSET" not in formula.upper():
+        return None
+    masked = mask_strings(formula)
+    out, last, changed = [], 0, False
+    for c in find_calls_detailed(formula, "OFFSET"):
+        if c["start"] < last:  # inside an OFFSET already written out
+            continue
+        rng = offset_as_range(c["args"]) if _arith_operand(masked, c["start"], c["end"]) else None
+        if rng is None:
+            continue
+        out.append(formula[last:c["start"]])
+        out.append(rng)
+        last = c["end"]
+        changed = True
+    if not changed:
+        return None
+    out.append(formula[last:])
+    return "".join(out)
+
+
+def offset_range_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
+    """FRM-014: arithmetic on a range that OFFSET returns (1-OFFSET(A1,2,0,3,1) inside SUMPRODUCT) -- Mind computes another number."""
+    wb0 = analysis["workbooks"][0]
+    sites = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        fixed = offset_arithmetic_as_range(formula)
+        if fixed is None:
+            continue
+        array = several_cells(f)
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed,
+                      "issue": SEVERAL_CELLS if array else None, "array": bool(f.get("array_ref"))})
+    observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for s in sites if s["suggested_formula"])}
+    if not sites:
+        return finding("PASS", "No formula does arithmetic on a range that OFFSET returns.", observed)
+    first = sites[0]
+    return finding(
+        "ERROR",
+        f"{len(sites)} formula(s) do arithmetic on a range that OFFSET returns, such as SUMPRODUCT(1-OFFSET(...),OFFSET(...)): Mind computes another number for them "
+        "(confirmed in real Mind: -5,513,051 for Excel's -16,220; the same arithmetic on the written-out range was right). "
+        f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
+        + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
+        + f". The Prep action 'Write a fixed OFFSET range out where arithmetic uses it' rewrites {observed['with_proposal']} of them; Excel's values stay the same.",
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    )

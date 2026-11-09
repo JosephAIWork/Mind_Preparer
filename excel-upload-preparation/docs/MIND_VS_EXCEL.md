@@ -458,6 +458,43 @@ which is exactly what the model should give.
 
 The demo files are kept outside the app.
 
+## The Tokyo loop model: CELL("filename") and OFFSET in arithmetic (2026-11-09)
+
+**The case.** The four loops of the anonymized Tokyo IFRS 17 tool (MM_LOOP in Ctrl_01!C22, C27 and
+ロールフォワード!B4, B6) were written on a version Prep had not repaired yet. Mind's test listed 14,737
+differences: "Mind value: NaN" on every formula of BBA_01..BBA_05 and VFA_01.
+
+**What caused the NaN -- not the loops.** B3 of each of these sheets is
+`=RIGHT(CELL("filename",B3),LEN(CELL("filename",B3))-FIND("]",CELL("filename",B3)))`, the sheet's own
+name, and B4 = `VLOOKUP($B$3,...)` is the key of every lookup on the sheet. Probe workbooks with and
+without an MM_LOOP (zzz_mindready_tokyo_loops_probe_1 and _2) gave the same answer: Mind's
+`CELL("filename",B3)` is the workbook's name alone (`tiny_loop`, no path, no `[...]`), so FIND("]")
+fails, B3 is NaN, and everything keyed on it is NaN. FRM-012 freezes such a formula to what Excel shows
+(="BBA_01"); the Do-everything version had it, the loop test file had not.
+
+**A second difference, in the repaired version too.** With B3 frozen, the model without loops and the
+model with the four loops (both through the app) still had 396 / 402 differences, all from one formula
+shape, 14 per calculation sheet (B45, B48, ... B96) and the Result_CF cells that copy them:
+`SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))+...`. A probe workbook
+(zzz_mindready_tokyo_loops_probe_4 and _6) showed:
+
+| Formula | Excel | Mind |
+| --- | --- | --- |
+| `SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))` | -16,220 | -5,513,051 (the last cell of O4:O6) |
+| `SUMPRODUCT(1-OFFSET($H$2,2,0,3,1))` | 0.0029 | 0 |
+| `SUMPRODUCT((1-OFFSET(...))*OFFSET(...))` | -16,220 | -0 |
+| `SUMPRODUCT(-OFFSET(...),OFFSET(...))` | 16,608,022 | -5,541,417 |
+| `SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))` | -16,220 | same |
+| `SUMPRODUCT(OFFSET(...),OFFSET(...))`, `SUM(OFFSET(...))-SUMPRODUCT(...)` | | same |
+
+So arithmetic on a range that OFFSET returns is wrong in Mind; the same arithmetic on the written-out
+range is right, and so is OFFSET passed to SUMPRODUCT as it is. **FRM-014** finds it; the Prep action
+**Write a fixed OFFSET range out where arithmetic uses it** writes an OFFSET whose arguments are all
+numbers (2, 0, 3, 1, also 1200-3) as the range it designates (`1-$H$4:$H$6`) where it is an operand of
++ - * / ^. An OFFSET with a cell among its arguments is reported, not rewritten.
+
+**Same in Mind (do not "fix"):** `1-OFFSET($H$2,5,0)` (one cell), `SUMPRODUCT(...)/OFFSET($H$2,5,0)`.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

@@ -26,7 +26,7 @@ def _upload(client, path: Path, mode: str = "plan") -> dict:
 
 def test_health_reports_engine_facts(client):
     body = client.get("/api/health").json()
-    assert body["rules"] == 109 and isinstance(body["excel"], bool) and isinstance(body["assistant"], bool)
+    assert body["rules"] == 110 and isinstance(body["excel"], bool) and isinstance(body["assistant"], bool)
 
 
 def test_plain_codes_give_the_screens_the_servers_own_words(client):
@@ -46,7 +46,7 @@ def test_upload_returns_the_front_end_contracts(client, flagged_model_broken_xls
     grid = next(g for s in summary["sheets"] for g in s["grids"] if g["anchor"] == "A4")
     assert grid["title"] == "#Assumptions /Reorder /Inpt" and sorted(grid["flag_names"]) == ["inpt", "reorder"]
     assert set(grid) >= {"display_name", "ref", "header_values", "inner_title_cells", "formula_count"}
-    assert report["status"] == "NOT_SUPPORTED" and report["summary"]["finding_count"] == 109
+    assert report["status"] == "NOT_SUPPORTED" and report["summary"]["finding_count"] == 110
     assert all({"rule_id", "status", "confidence", "evidence", "location", "message", "readiness_impact", "correction_available", "source"} <= set(f) for f in report["findings"])
     assert {a["id"] for a in plan} >= {"flag_spelling", "loop_name_case", "create_grid_titles"}
     # every code travels with its plain name: the findings, the Prep actions, the blocking list, the delta
@@ -406,7 +406,7 @@ def test_deferred_upload_reports_size_and_sheets_then_scans_without_the_skipped_
     assert (summary["sheet_count"], summary["ignored_sheet_count"], summary["total_sheet_count"]) == (2, 1, 3)
     assert summary["size"]["above_threshold"] is True
     assert not any(f["location"].get("sheet") == "Outputs" for f in out["report"]["findings"])
-    assert out["report"]["summary"]["finding_count"] == 109  # every rule still runs
+    assert out["report"]["summary"]["finding_count"] == 110  # every rule still runs
     scan = client.get(f"/api/sessions/{sid}/status").json()
     assert scan["state"] == "ready" and scan["overall"] == 1.0 and scan["error"] is None and scan["elapsed_s"] >= 0
     assert {s["stage"] for s in scan["stages"]} >= {"copy", "load", "inventory", "names", "rules", "report", "plan"}

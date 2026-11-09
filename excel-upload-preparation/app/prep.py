@@ -1538,6 +1538,30 @@ def plan_line_breaks_as_char(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
+def plan_offset_ranges(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-014: an OFFSET with numbers for its rows, columns, height and width, used in arithmetic
+    (1-OFFSET($H$2,2,0,3,1) inside SUMPRODUCT), is written as the range it designates ($H$4:$H$6):
+    the same cells in Excel, and the number Excel computes in Mind too (it computed another one)."""
+    from .validators.mind_values import offset_range_arithmetic
+
+    ops, skipped = [], []
+    try:
+        finding = offset_range_arithmetic(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    for s in (finding.get("observed") or {}).get("sites", []):
+        if not s["suggested_formula"]:
+            skipped.append(f"{s['sheet']}!{s['cell']}: {s.get('issue') or 'no rewrite proposed'}")
+            continue
+        note = "arithmetic on a range OFFSET returns: Mind computes another number; the same cells written out give Excel's number in Mind too"
+        if s.get("array"):
+            # a single-cell array formula: written back as a one-cell array so Excel accepts the overwrite
+            ops.append(_op("set_array_formula", "offset_ranges", "FRM-014", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+        else:
+            ops.append(_op("set_formula", "offset_ranges", "FRM-014", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+    return ops, skipped
+
+
 def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list[str]]:
     """FRM-012: a formula that calls CELL(...) or INFO(...) becomes the value it shows,
     written as a formula (="<the path>" or =12): Mind cannot answer what those ask, and the value
@@ -1756,6 +1780,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), down the whole filled-down block; Excel returns the same values ('Did the numbers change?' proves it)", "planner": plan_guard_blank_arithmetic},
     {"id": "freeze_environment_formulas", "title": "Write what CELL / INFO formulas show today in their place", "rule_ids": ["FRM-012"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: CELL(\"filename\") / INFO() ask Excel about the file and the session, which Mind cannot answer; the text or number Excel shows today is written instead", "planner": plan_freeze_environment_formulas},
+    {"id": "offset_ranges", "title": "Write a fixed OFFSET range out where arithmetic uses it", "rule_ids": ["FRM-014"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: 1-OFFSET($H$2,2,0,3,1) becomes 1-$H$4:$H$6, the cells that OFFSET designates (its arguments are numbers, so always the same cells); Excel's values stay the same", "planner": plan_offset_ranges},
     {"id": "line_breaks_as_char", "title": "Write line breaks inside text as CHAR(10)", "rule_ids": ["FRM-011"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a line break typed inside quotes becomes \"...\"&CHAR(10)&\"...\"; the text Excel shows is the same", "planner": plan_line_breaks_as_char},
     {"id": "keep_error_cells", "title": "Keep an error cell an error in Mind (arithmetic on \"\" with no IFERROR)", "rule_ids": ["FRM-013"], "default_on": True, "level": BLOCKING,

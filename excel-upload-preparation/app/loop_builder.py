@@ -34,6 +34,16 @@ RULE_ID = "LOOP-001"
 MAX_RESULT_CELLS = 60_000  # MM_RESULT formulas one plan writes at most (items x cells of the block)
 MAX_CLEARS = 5_000
 
+# The Prep actions that rewrite formulas so Mind computes what Excel does (the main screen's "Fix the
+# formulas"). A loop model built on a version where they are not applied yet goes to Mind with them:
+# on the Tokyo IFRS 17 tool the loop was written before Prep, and CELL("filename") on BBA_01..VFA_01!B3
+# (the sheet's own name, the key of every lookup on the sheet) was NaN in Mind, so every formula of
+# those six calculation sheets was NaN too (14,737 differences in Mind's test, 2026-11-09).
+FORMULA_REPAIRS = (
+    "fix_broken_refs", "fix_broken_refs_whole", "expand_3d_references", "freeze_external_links", "direct_references", "freeze_spill_refs",
+    "guard_blank_arithmetic", "freeze_environment_formulas", "offset_ranges", "line_breaks_as_char", "keep_error_cells", "empty_cells_as_zero",
+)
+
 _PH_RE = re.compile(r"<([A-Za-z_]\w*)>")
 _VAR_ASSIGN_RE = re.compile(r"^\s*(?:Dim\s+[^:]+:\s*)?([A-Za-z_]\w*)\s*=")
 _OFFSET_RE = re.compile(r"\.Offset\(\s*(?P<r>[^,]+?)\s*,\s*(?P<c>[^)]+?)\s*\)", re.IGNORECASE)
@@ -778,7 +788,7 @@ def _driver_key(cell: str) -> str:
 
 def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, names: dict[str, str] | None = None, name: str | None = None,
                     first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, dynamic: bool = True, max_result_cells: int = MAX_RESULT_CELLS,
-                    loops: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+                    loops: dict[str, dict[str, Any]] | None = None, prep_plan: list[dict[str, Any]] | None = None, repairs: bool = True) -> dict[str, Any]:
     """The Mind loop for the map's run loop: what goes where, with the operations that write it.
 
     `names` maps a driver cell to the loop name wanted; `name` is the shorthand for the first
@@ -786,7 +796,10 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
     counted loop's size may be written when the workbook has no cell for it; `clear_old` also
     empties what an earlier run left in the areas the macro clears (listed either way).
     `loops` holds each loop's own choices, by driver cell: {"Sheet!C27": {"name", "first", "last",
-    "count_cell"}}; first / last are a number or a cell holding one. They win over the shorthands."""
+    "count_cell"}}; first / last are a number or a cell holding one. They win over the shorthands.
+    `prep_plan` is Prep's plan for the same version (app.prep.plan_actions): the formula repairs it
+    still has (FORMULA_REPAIRS, on by default) are written with the loop unless `repairs` is False,
+    so the version that goes to Mind computes what Excel does."""
     from .model_map import _Names
 
     wb0 = analysis["workbooks"][0]
@@ -1074,6 +1087,8 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         if c.get("read_by") and n:
             plan["notes"].append(f"{c['resolved'] if c.get('resolved') else c['target']} is cleared although not asked: {c['read_by']} reads it, so what an earlier run left there would be added to every loop value in Mind (the macro clears it before its loop)")
 
+    if ops:
+        _add_repairs(plan, ops, prep_plan, repairs)
     plan["operations"] = ops
     ready = [le for le in plan["loops"] if le["status"] == "ready"]
     if ready:
@@ -1089,6 +1104,31 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
     if any(le["status"] == "needs_decision" for le in plan["loops"]):
         plan["notes"].append("A loop needs a decision before it can be written: see its line.")
     return plan
+
+
+def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: list[dict[str, Any]] | None, write: bool) -> None:
+    """The formula repairs Prep still has for this version, written with the loop (or only named when
+    `write` is False). A cell the loop writes keeps the loop's formula."""
+    taken = {(o["sheet"], str(o.get("cell") or "").upper()) for o in ops}
+    plan["repairs"] = []
+    for a in prep_plan or []:
+        if a.get("id") not in FORMULA_REPAIRS or not a.get("default_on") or not a.get("operations"):
+            continue
+        mine = [o for o in a["operations"] if (o.get("sheet"), str(o.get("cell") or "").upper()) not in taken]
+        if not mine:
+            continue
+        plan["repairs"].append({"id": a["id"], "title": a.get("title") or a["id"], "count": len(mine), "written": write})
+        if write:
+            ops.extend(mine)
+            plan["counts"]["repairs"] = plan["counts"].get("repairs", 0) + len(mine)
+            taken.update((o.get("sheet"), str(o.get("cell") or "").upper()) for o in mine)
+    if not plan["repairs"]:
+        return
+    listed = "; ".join(f"{r['title']} ({r['count']})" for r in plan["repairs"])
+    if write:
+        plan["notes"].append(f"Written with the loop, so Mind computes what Excel does: {listed}. Prep had not applied these formula repairs to this version yet.")
+    else:
+        plan["notes"].append(f"Not written with the loop: {listed}. Until Prep applies them, Mind computes other values than Excel for these formulas.")
 
 
 def describe(plan: dict[str, Any]) -> str:

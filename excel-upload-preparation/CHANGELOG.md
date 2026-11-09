@@ -2,6 +2,21 @@
 
 ## Unreleased (9 November 2026): each Mind loop with its own choices
 
+- **The Mind loop is written with the formula repairs Prep still has** for the version (CELL / INFO
+  frozen, INDIRECT written out, ...: the "Fix the formulas" set). Found on Tokyo: the four loops were
+  written before Prep, and `CELL("filename")` in B3 of the six calculation sheets -- the key of every
+  lookup there -- is NaN in Mind (Mind answers with the workbook's name alone, no "]"), so Mind's test
+  showed NaN on every formula of those sheets (14,737 cells). Not the loops: a probe gives the same NaN
+  without any loop. The loop panel lists the repairs; `repairs: false` leaves them out.
+- **New rule FRM-014 "math on a range that OFFSET returns"** and the Prep action **Write a fixed OFFSET
+  range out where arithmetic uses it**: `SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))` is
+  -16,220 in Excel and -5,513,051 in Mind (probe workbook in real Mind); written as `1-$H$4:$H$6` Mind
+  gives Excel's number. Tokyo: 84 formulas (14 per calculation sheet), 396 differences in Mind's test
+  of the Do-everything version without loops.
+- Proven in real Mind on Tokyo with its four loops, built through the app: Mind's test went from 14,737
+  differences to 63 (Do-everything version + loops, zzz_mindready_tokyo_loops_2) and 75 (loop written
+  on the unrepaired version), none a value: check cells that are 0 in Excel and a rounding residue below
+  0.00002 in Mind, and the text "TRUE" read as 1 on Excel's side.
 - **Advanced › Mind loop: every loop card has its own Name / First / Last boxes**, and a Count cell
   box when the loop asks for one (with "Use <free cell>"). First and last take a number or a cell
   (Sheet!A1). Sent as `loops` by driver cell (`GET .../mind-loop-plan?loops=<json>`, POST

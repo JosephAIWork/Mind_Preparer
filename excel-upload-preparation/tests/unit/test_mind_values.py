@@ -421,3 +421,79 @@ def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin
     assert out["status"] == "APPLIED"
     res = compare_workbooks(src, Path(out["output_path"]), Moves())
     assert res["clean"] is True
+
+
+# --- FRM-014: arithmetic on a range OFFSET returns (Tokyo BBA_01!B45, 2026-11-09) -------------------
+# In real Mind SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)) gave -5,513,051 for Excel's -16,220,
+# -OFFSET(..) and (1-OFFSET(..))*OFFSET(..) were wrong too; the same arithmetic on $H$4:$H$6 was right.
+TOKYO_B45 = ("=SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))+SUMPRODUCT(OFFSET($H$2,5,0,1200-3,1),"
+             "OFFSET($O$2,5,0,1200-3,1))/OFFSET($H$2,5,0)*(1-OFFSET($H$2,5,0))")
+
+
+@pytest.mark.parametrize("formula, expected", [
+    # only the OFFSET under arithmetic; a range SUMPRODUCT reads as it is, a single cell and 1200-3 stay
+    (TOKYO_B45, "=SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))+SUMPRODUCT(OFFSET($H$2,5,0,1200-3,1),"
+                "OFFSET($O$2,5,0,1200-3,1))/OFFSET($H$2,5,0)*(1-OFFSET($H$2,5,0))"),
+    ("=SUMPRODUCT(-OFFSET(H2,2,0,3,1),O4:O6)", "=SUMPRODUCT(-H4:H6,O4:O6)"),
+    ("=SUMPRODUCT((1-OFFSET('My Sheet'!$H2,2,0,3,1))*OFFSET($O$2,2,0,3,1))", "=SUMPRODUCT((1-'My Sheet'!$H4:$H6)*$O$4:$O$6)"),
+    ("=SUMPRODUCT(OFFSET(A1,1,0,,2)^2)", "=SUMPRODUCT(A2:B2^2)"),
+    ("=SUMPRODUCT(OFFSET(A1,2+3,0,2*2,1)*2)", "=SUMPRODUCT(A6:A9*2)"),
+    ("=SUMPRODUCT(OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))", None),      # no arithmetic on it: Mind is right
+    ("=SUM(OFFSET(A1,1,1,2,2))*2", None),                                  # the SUM is multiplied, not the range
+    ("=1-OFFSET(A1,B1,0,3,1)", None),                                      # rows from a cell: not a fixed range
+    ("=1-OFFSET(A1,1,0)", None),                                           # one cell: Mind is right
+    ("=1-OFFSET(A2,-5,0,3,1)", None),                                      # off the sheet: left alone
+    ('="1-OFFSET(A1,1,0,3,1)"', None),                                     # text
+])
+def test_offset_arithmetic_is_written_as_the_range(formula, expected):
+    assert mind_values.offset_arithmetic_as_range(formula) == expected
+
+
+def test_frm_014_names_the_formula_and_prep_rewrites_it(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "BBA_01"
+    ws["G3"], ws["H3"], ws["O3"] = "Month", "Rate", "Premium"
+    for r in range(4, 10):
+        ws.cell(r, 7, r - 4)
+        ws.cell(r, 8, 1 - (r - 4) / 1000)
+        ws.cell(r, 15, 100 + r)
+    ws["A45"], ws["B45"] = "LF", "=SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))"
+    ws["A46"], ws["B46"] = "Plain", "=SUMPRODUCT(OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))"
+    p = tmp_path / "offset.xlsx"
+    wb.save(p)
+    wb.close()
+    analysis = build_analysis(p, tmp_path / "w", "o")
+    f = _finding(analysis, "FRM-014")
+    assert f["status"] == "ERROR" and [s["cell"] for s in f["observed"]["sites"]] == ["B45"]
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["offset_ranges"]
+    assert a["level"] == "blocking" and a["default_on"] and a["count"] == 1
+    assert a["operations"][0]["after"] == "=SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))"
+
+
+@needs_excel
+def test_frm_014_rewrite_keeps_excel_values(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Calc"
+    ws["G3"], ws["H3"], ws["O3"] = "Month", "Rate", "Premium"
+    for r in range(4, 1204):
+        ws.cell(r, 7, r - 4)
+        ws.cell(r, 8, 1 - (r - 4) / 1000)
+        ws.cell(r, 15, -5_500_000 + 28 * r)
+    ws["A45"], ws["B45"] = "LF", TOKYO_B45
+    ws["A46"], ws["B46"] = "Neg", "=SUMPRODUCT(-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))"
+    ws["A47"], ws["B47"] = "Times", "=SUMPRODUCT((1-OFFSET($H$2,2,0,3,1))*OFFSET($O$2,2,0,3,1))"
+    p = tmp_path / "offset_values.xlsx"
+    wb.save(p)
+    wb.close()
+    src = _calculated(p)
+    analysis = build_analysis(src, tmp_path / "w", "v")
+    a = {x["id"]: x for x in plan_actions(analysis, {"findings": []})}["offset_ranges"]
+    assert a["count"] == 3
+    out = apply_operations(src, tmp_path / "prep", a["operations"])
+    assert out["status"] == "APPLIED"
+    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    assert res["clean"] is True and res["counts"]["good_to_other"] == 0
+    assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-014")["status"] == "PASS"
+

@@ -77,6 +77,7 @@ FIX_HINTS: dict[str, str] = {
     "STR-008": "Apply the Prep action 'Give a lone text cell that formulas read a title of its own': a '#' title above the cell makes it a one-cell grid Mind imports.",
     "REF-002": "Apply the Prep action 'Freeze external links': each reference to another workbook becomes the copy Excel kept of that cell (NA() where it kept none) and the link is broken; a whole-range reference is left for a person.",
     "FRM-013": "Apply the Prep action 'Keep an error cell an error in Mind': IF(cell=\"\",NA(),...) makes the cell an error in Excel and in Mind alike.",
+    "FRM-014": "Apply the Prep action 'Write a fixed OFFSET range out where arithmetic uses it': 1-OFFSET($H$2,2,0,3,1) becomes 1-$H$4:$H$6, the same cells; Mind computes it as Excel does.",
     "FRM-012": "Apply the Prep action 'Write what CELL / INFO formulas show today in their place': the formula becomes the text or number Excel shows; Mind cannot answer CELL(\"filename\") or INFO().",
     "FRM-011": "Apply the Prep action 'Write line breaks inside text as CHAR(10)': the break typed inside the quotes becomes \"...\"&CHAR(10)&\"...\", the same text in Excel and in Mind.",
     "FRM-009": "Apply the Prep action 'Read empty cells as 0 where they are compared': N() goes around the reading of the empty cell (or around the reference / lookup that lands on it), so it is 0 in Excel and in Mind.",

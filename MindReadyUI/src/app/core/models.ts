@@ -333,8 +333,10 @@ export interface LoopPlan {
   operations?: LoopPlanOperation[];
   operation_count: number;
   notes?: string[];
-  counts?: { loop_cells?: number; result_cells?: number; cleared?: number; extra?: number };
+  counts?: { loop_cells?: number; result_cells?: number; cleared?: number; extra?: number; repairs?: number };
   how_it_runs?: string;
+  /** the formula repairs Prep still had for this version: written with the loop (written = false: only named) */
+  repairs?: { id: string; title: string; count: number; written: boolean }[];
 }
 
 export interface LoopChoices {
@@ -385,6 +387,7 @@ export const FORMULA_ACTION_IDS = new Set([
   "freeze_spill_refs",
   "guard_blank_arithmetic",
   "freeze_environment_formulas",
+  "offset_ranges",
   "line_breaks_as_char",
   "keep_error_cells",
   "empty_cells_as_zero",

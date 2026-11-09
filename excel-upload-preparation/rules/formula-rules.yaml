@@ -279,3 +279,24 @@ rules:
   fail_if:
   - A cell shows #VALUE! because its formula does arithmetic on a cell that holds "", with no IFERROR.
   severity_source: BLOCKER
+- id: FRM-014
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Arithmetic on a range that OFFSET returns -- SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)): Mind computes another number (the last cell of a range); on the written-out range ($H$4:$H$6) it computes what Excel does.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-11-09, the Tokyo IFRS 17 tool and a probe workbook)
+    article: FRM-014
+  validation:
+    deterministic: true
+    implementation: validators.formula.offset_range_arithmetic
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula does arithmetic (+ - * / ^) on a range that OFFSET returns.
+  fail_if:
+  - A formula does arithmetic on a range of several cells that OFFSET returns.
+  severity_source: BLOCKER

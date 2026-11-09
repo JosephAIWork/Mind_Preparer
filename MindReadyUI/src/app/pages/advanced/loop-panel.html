@@ -63,6 +63,12 @@
         </p>
       }
       @if (p.how_it_runs) { <p class="hint">{{ p.how_it_runs }}</p> }
+      @if (p.repairs?.length) {
+        <p class="card__caution" data-test="loop-repairs">
+          {{ p.repairs![0].written ? "Written with the loop, so Mind computes what Excel does:" : "Not written with the loop (Mind will compute other values until Prep applies them):" }}
+          @for (r of p.repairs!; track r.id) { {{ r.title }} ({{ r.count }}){{ $last ? "." : ";" }} }
+        </p>
+      }
 
       <div class="bar">
         <div class="row">
