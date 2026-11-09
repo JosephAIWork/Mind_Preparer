@@ -4,7 +4,7 @@ import { firstValueFrom } from "rxjs";
 import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopChoices, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PlainCodesGlossary, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, SheetCells, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -137,6 +137,29 @@ export class ApiService {
 
   applyMindLoopPlan(id: string, o: LoopChoices = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
     return firstValueFrom(this.http.post<ApplyOutcome & { plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan/apply`, { ...o, reanalyze: true }));
+  }
+
+  /** The Mind instances plan: one copy of the model per value of the key column; `key` a header or a column letter, `keys` present|all. */
+  mindInstancesPlan(id: string, o: InstanceChoices = {}): Promise<{ version_id: string; plan: InstancePlan }> {
+    let params = new HttpParams();
+    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") params = params.set(k, String(v));
+    return firstValueFrom(this.http.get<{ version_id: string; plan: InstancePlan }>(`${this.s(id)}/mind-instances-plan`, { params }));
+  }
+
+  /** Writes the instances into a new version, then the main workbook beside it and the zip of both. */
+  applyMindInstancesPlan(id: string, o: InstanceChoices = {}): Promise<InstancesOutcome> {
+    return firstValueFrom(this.http.post<InstancesOutcome>(`${this.s(id)}/mind-instances-plan/apply`, { ...o, reanalyze: true }));
+  }
+
+  /** The zip with both files (the model copy and the main workbook); 404 until something was written. */
+  mindInstancesDownloadUrl(id: string): string {
+    return `${this.s(id)}/mind-instances/download`;
+  }
+
+  /** Where instances or a loop would help, ranked (nothing written); `assistant` adds the assistant's explanation on top. Slow: up to two minutes on a big model. */
+  instanceFinder(id: string, assistant = false, refresh = false): Promise<{ version_id: string; finder: FinderResult }> {
+    const params = new HttpParams().set("assistant", assistant ? "1" : "0").set("refresh", refresh ? "1" : "0");
+    return firstValueFrom(this.http.get<{ version_id: string; finder: FinderResult }>(`${this.s(id)}/instance-finder`, { params }));
   }
 
   versions(id: string): Promise<Version[]> {

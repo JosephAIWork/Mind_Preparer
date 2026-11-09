@@ -66,7 +66,9 @@ from app.model_map import build_model_map
 from app import model_map as model_map_module  # noqa: E402  (read_vba through the module: tests replace it)
 from app import outside_inputs  # noqa: E402  (through the module: tests replace run_import / apply_mind_inputs)
 from app import stand_in_inputs  # noqa: E402  (through the module: tests replace make_stand_ins / assistant_ask)
-from app.loop_builder import build_loop_plan  # noqa: E402
+from app.loop_builder import _add_repairs, build_loop_plan  # noqa: E402
+from app.instance_builder import build_instance_plan, write_main_workbook, zip_for_mind  # noqa: E402
+from app.instance_finder import EMPTY_ASSISTANT, find_instances, make_finder_advisor, merge_assistant  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Finding, Status, aggregate_status  # noqa: E402
 from app.plain_codes import cite_all, glossary, is_com_error, plain_com_error, plain_com_errors_in, plain_error, rule_name  # noqa: E402
@@ -206,6 +208,17 @@ class Session:
     # input was made) -> the fingerprint of the picked files it read (_inputs_fingerprint). A line counts
     # as brought in only through one of these, and only while the picked files are still those.
     brought_in_files: dict[str, str] = field(default_factory=dict)
+    # The instance finder's result (where instances or a loop would help) for the analysed version, and
+    # the assistant's block on it for that same version once it was asked and answered
+    instance_finder: dict[str, Any] | None = None
+    instance_finder_version_id: str | None = None
+    instance_finder_assistant: dict[str, Any] | None = None
+    # The instance builder's plan with no key chosen and keys=present, built once per version: the
+    # panel's preview and the finder's "builder" line both ask for exactly this plan
+    instance_plan_default: dict[str, Any] | None = None
+    instance_plan_default_version_id: str | None = None
+    # The zip of the last "Build the Mind instances" (the model + its main workbook), None until one is built
+    instances_zip: Path | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     # one Apply at a time: two at once would both copy the same version and the last one to finish
     # would become current without the other's changes
@@ -284,9 +297,15 @@ def _add_version(
 
 
 def _public_op(o: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in o.items() if k != "cells"}
+    """An operation as the screen and the change log get it: long lists cut short (the first 50
+    cells; the first 20 values of a set_range_values, with their count)."""
+    out = {k: v for k, v in o.items() if k not in ("cells", "values")}
     if "cells" in o:
         out["cells"] = list(o["cells"])[:50]
+    if "values" in o:
+        values = list(o["values"])
+        out["values"] = values[:20]
+        out["values_count"] = len(values)
     return out
 
 
@@ -969,6 +988,10 @@ _STEPS = {
     "/api/sessions/{session_id}/auto-fix": "Fix all issues",
     "/api/sessions/{session_id}/mind-loop-plan": "Build the Mind loop",
     "/api/sessions/{session_id}/mind-loop-plan/apply": "Build the Mind loop",
+    "/api/sessions/{session_id}/mind-instances-plan": "Build the Mind instances",
+    "/api/sessions/{session_id}/mind-instances-plan/apply": "Build the Mind instances",
+    "/api/sessions/{session_id}/mind-instances/download": "Build the Mind instances",
+    "/api/sessions/{session_id}/instance-finder": "Find where instances could help",
     "/api/sessions/{session_id}/recalculate": "Recalculate",
     "/api/sessions/{session_id}/numbers-check": "Compare the numbers",
     "/api/sessions/{session_id}/chat": "Assistant",
@@ -1116,6 +1139,8 @@ def health() -> dict[str, Any]:
         # a shared copy's end date (app/expiry.py): "expires": "2026-12-15", "days_left", "expired" and
         # its message; all None / False for the developer version. Answered after the date too.
         **expiry.current().health(),
+        # GET .../instance-finder ("Find where instances could help": the finder is not a rule)
+        "finder": True,
     }
 
 
@@ -1373,7 +1398,7 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     if res.get("failed"):
-        step = {"loop": "Build the Mind loop", "assistant": "Assistant", "formula": "Formula fix"}.get(source, "Fix the formulas")
+        step = {"loop": "Build the Mind loop", "instances": "Build the Mind instances", "assistant": "Assistant", "formula": "Formula fix"}.get(source, "Fix the formulas")
         out.update(_problem_fields(_report_problem(None, step, s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
     return out
 
@@ -2950,6 +2975,195 @@ def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={}))
     out = _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True)))
     out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
     return out
+
+
+# --- Mind instances (one copy of the model per key of the model-point table) ----------------
+def _instances_stem(s: Session) -> str:
+    """The uploaded workbook's file stem with only letters, digits and underscores: the model's
+    name in Mind and the start of every file this feature writes."""
+    original = _original_path(s) or s.current_path
+    stem = re.sub(r"[^A-Za-z0-9_]+", "_", Path(original).stem).strip("_")
+    return stem or "model"
+
+
+def _instance_plan_of(s: Session, key: Any, keys: Any) -> dict[str, Any]:
+    """The Mind instances plan for the current version with the caller's choices: the key column
+    (a header text or a column letter; empty = the plan's own choice) and which keys the main
+    workbook lists ("present" = only keys that have rows, "all" = every key of the macro's list).
+    The plan with no key and keys=present is kept per version: the panel's preview and the instance
+    finder both ask for exactly that one. A key or keys=all is built fresh every time.
+
+    As with the Mind loop, the formula repairs Prep still has for this version (CELL / INFO frozen,
+    OFFSET ranges written out, ...) are written with a ready plan: a version that goes to Mind before
+    Prep must compute what Excel does (Tokyo: CELL("filename") made every calculation sheet NaN)."""
+    keys = str(keys or "present").strip().lower()
+    if keys not in ("present", "all"):
+        raise HTTPException(status_code=422, detail="keys must be 'present' or 'all'")
+    key = str(key).strip() if key is not None else ""
+    mp = _model_map_of(s)
+    default = key == "" and keys == "present"
+    if default and s.instance_plan_default is not None and s.instance_plan_default_version_id == s.current_version_id:
+        return s.instance_plan_default
+    analysis = s.result["workbook_analysis"]
+    try:
+        loop_plan = build_loop_plan(analysis, mp)
+        plan = build_instance_plan(analysis, mp, loop_plan=loop_plan, key=key or None, keys=keys, model_name=f"{_instances_stem(s)}_instances")
+        if plan.get("status") == "ready" and plan.get("operations"):
+            plan.setdefault("counts", {})
+            _add_repairs(plan, plan["operations"], s.plan, True, what="the instances")
+            plan["operation_count"] = len(plan["operations"])
+            plan["counts"]["operations"] = len(plan["operations"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"instances plan failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
+    plan = json.loads(json.dumps(plan, default=str))
+    if default:
+        s.instance_plan_default, s.instance_plan_default_version_id = plan, s.current_version_id
+    return plan
+
+
+@app.get("/api/sessions/{session_id}/mind-instances-plan")
+def mind_instances_plan(session_id: str, key: str = "", keys: str = "present") -> dict[str, Any]:
+    """The macro's run loop as Mind instances -- one copy of the model per value of a key column of
+    the model-point table, a loop inside each copy over its own rows, and a second small main
+    workbook with the keys and the results -- as a plan (nothing written): the loop, the table, the
+    key and its candidates, the output block, the operations, and what cannot be built and why."""
+    s = _session(session_id)
+    plan = _instance_plan_of(s, key, keys)
+    public = {k: v for k, v in plan.items() if k != "operations"}
+    operations = list(plan.get("operations") or [])
+    public["operations"] = [_public_op(o) for o in operations[:200]]
+    public["operation_count"] = len(operations)
+    return {"version_id": s.current_version_id, "plan": public}
+
+
+@app.post("/api/sessions/{session_id}/mind-instances-plan/apply")
+def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Write the Mind instances plan (built again from the same choices, so what is written is what
+    was shown) into a new version and re-analyse it; then copy that version under the model's Mind
+    name, write the main workbook beside it and zip both for the download. Once the version exists
+    a failure of the main-workbook step is reported in `warnings`, not raised: the version stays."""
+    s = _session(session_id)
+    _refuse_while_fixing(session_id)
+    plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"))
+    ops = list(plan.get("operations") or [])
+    if not ops:
+        raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))
+    out = _apply_and_version(s, ops, "instances", "Mind instances", bool(payload.get("reanalyze", True)))
+    stem = _instances_stem(s)
+    main = plan.get("main") if isinstance(plan.get("main"), dict) else {}
+    model_file = str(main.get("model_file") or f"{stem}_instances{s.current_path.suffix}")
+    main_file = str(main.get("file") or f"{stem}_Main.xlsx")
+    s.instances_zip = None  # an older zip belongs to an older version
+    warnings: list[str] = []
+    download: str | None = None
+    status = out["result"]["status"]
+    # a refused change (the key column, the driver, a result cell) leaves a model the plan does not
+    # describe: no main workbook and no zip for it. A paste-area cell that stayed is not that.
+    refused = [f for f in out["result"].get("failed") or [] if f.get("op") != "clear_cell"]
+    if status == "APPLIED" or (status == "PARTIAL" and not refused):
+        try:
+            folder = s.work_dir / "instances" / str(out["version"]["id"])
+            folder.mkdir(parents=True, exist_ok=True)
+            model_path = folder / model_file  # the external references of the main workbook use this name
+            shutil.copyfile(s.current_path, model_path)
+            main_path = folder / main_file
+            with perf_stage("instances_main_workbook", file=main_path.name, keys=len(main.get("keys") or [])):
+                out["main_workbook"] = write_main_workbook(plan, model_path, main_path)
+            s.instances_zip = Path(zip_for_mind(model_path, main_path, folder / f"{stem}_instances.zip"))
+            download = f"/api/sessions/{s.id}/mind-instances/download"
+        except Exception as exc:
+            warnings.append(f"The main workbook could not be written: {type(exc).__name__}: {str(exc)[:200]}. The new version of the model exists; build the instances again to retry.")
+    elif status == "PARTIAL":
+        where = ", ".join(f"{f.get('sheet')}!{f.get('cell') or f.get('ref') or f.get('row') or f.get('column')}" for f in refused[:4])
+        warnings.append(f"{len(refused)} change(s) were refused ({where}{', …' if len(refused) > 4 else ''}): the new version is not the model the plan describes, "
+                        "so the main workbook and the zip were not made. Look at the refused changes, then build the instances again.")
+    else:
+        warnings.append("The changes were not written into the model, so the main workbook and the zip were not made.")
+    out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
+    out["download"] = download
+    out["files"] = [model_file, main_file]
+    out["warnings"] = warnings
+    return json.loads(json.dumps(out, default=str))
+
+
+@app.get("/api/sessions/{session_id}/mind-instances/download")
+def mind_instances_download(session_id: str):
+    """Both files of the last "Build the Mind instances" -- the model and its main workbook -- as one
+    zip, to upload together to one Mind project."""
+    s = _session(session_id)
+    path = s.instances_zip
+    if path is None or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="nothing built yet")
+    return FileResponse(str(path), media_type="application/zip", filename=f"{_instances_stem(s)}_instances.zip")
+
+
+# --- Instance finder (where Mind instances or a loop would help; nothing written) -------------
+def _builder_block(s: Session, result: dict[str, Any]) -> dict[str, Any]:
+    """The builder's real choice of key for this version -- its plan with no key chosen, built once
+    per version and kept (the panel's preview computes exactly this plan) -- compared with the
+    finder's top dimension that has a key. Falls back to the finder's own rule block (`source`
+    "rule") when the plan cannot be built."""
+    if s.instance_plan_default is None or s.instance_plan_default_version_id != s.current_version_id:
+        try:
+            _instance_plan_of(s, "", "present")  # fills the cache: the builder's sheet reads happen once per version
+        except HTTPException:
+            return dict(result.get("builder") or {})
+    plan_key = (s.instance_plan_default or {}).get("key") or {}
+    top = next((d for d in result.get("dimensions") or [] if d.get("key")), None)
+    # None when there is nothing to compare -- no column dimension, or a plan without a key (a looped table
+    # with no text column) -- so the panel shows no builder line instead of "another key: column null"
+    same = (top["key"].get("column") == plan_key.get("column")) if (top and plan_key.get("column")) else None
+    return {"column": plan_key.get("column"), "header": plan_key.get("header"), "chosen_by": plan_key.get("chosen_by"),
+            "candidates": [c.get("column") for c in plan_key.get("candidates") or [] if isinstance(c, dict)],
+            "matches_top": same, "source": "plan"}
+
+
+def _instance_finder_of(s: Session, refresh: bool = False) -> dict[str, Any]:
+    """The instance finder's result for the current analysed version, built once per version. A new
+    version or `refresh` builds it again and forgets the assistant's block."""
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    if s.instance_finder is None or refresh or s.instance_finder_version_id != s.current_version_id:
+        mp = _model_map_of(s)
+        analysis = s.result["workbook_analysis"]
+        try:
+            with perf_stage("instance_finder", file=s.current_path.name, formulas=len(analysis["workbooks"][0].get("formulas") or [])):
+                loop_plan = build_loop_plan(analysis, mp)
+                result = json.loads(json.dumps(find_instances(analysis, mp, loop_plan=loop_plan), default=str))
+                result["builder"] = _builder_block(s, result)
+                s.instance_finder = result
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"instance finder failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
+        s.instance_finder_version_id = s.current_version_id
+        s.instance_finder_assistant = None
+    return s.instance_finder
+
+
+@app.get("/api/sessions/{session_id}/instance-finder")
+def instance_finder(session_id: str, assistant: str = "0", refresh: str = "0") -> dict[str, Any]:
+    """Where Mind instances or a loop would help: grouping columns of the looped table, repeated
+    blocks and sheets, near copies -- ranked, with evidence; nothing written. `assistant=1` adds the
+    assistant's explanation and order on top (the deterministic result alone when there is no key or
+    no answer: the assistant never turns into an error). `refresh=1` builds the result again."""
+    s = _session(session_id)
+    result = _instance_finder_of(s, _truthy(refresh))
+    if not _truthy(assistant):
+        return {"version_id": s.current_version_id, "finder": result}
+    if s.instance_finder_assistant is None:
+        advise = make_finder_advisor()
+        if advise is None:
+            block = {**EMPTY_ASSISTANT, "asked": True, "available": False, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
+        else:
+            try:  # last line of defence: the assistant never turns into an error
+                with perf_stage("instance_finder_assistant", file=s.current_path.name):
+                    block = advise(result)
+            except Exception as exc:
+                block = {**EMPTY_ASSISTANT, "asked": True, "available": True, "message": f"Request failed: {type(exc).__name__}"}
+        if block.get("available") and not block.get("message"):
+            s.instance_finder_assistant = block  # an answer is kept per version; no key or a failed call is asked again next time
+    else:
+        block = s.instance_finder_assistant
+    return {"version_id": s.current_version_id, "finder": merge_assistant(result, block)}
 
 
 @app.get("/api/sessions/{session_id}/cells")

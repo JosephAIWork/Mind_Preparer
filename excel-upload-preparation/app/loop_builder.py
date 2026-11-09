@@ -1106,9 +1106,10 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
     return plan
 
 
-def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: list[dict[str, Any]] | None, write: bool) -> None:
+def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: list[dict[str, Any]] | None, write: bool, what: str = "the loop") -> None:
     """The formula repairs Prep still has for this version, written with the loop (or only named when
-    `write` is False). A cell the loop writes keeps the loop's formula."""
+    `write` is False). A cell the loop writes keeps the loop's formula. `what` names the step in the
+    note ("the loop", "the instances")."""
     taken = {(o["sheet"], str(o.get("cell") or "").upper()) for o in ops}
     plan["repairs"] = []
     for a in prep_plan or []:
@@ -1126,9 +1127,9 @@ def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: lis
         return
     listed = "; ".join(f"{r['title']} ({r['count']})" for r in plan["repairs"])
     if write:
-        plan["notes"].append(f"Written with the loop, so Mind computes what Excel does: {listed}. Prep had not applied these formula repairs to this version yet.")
+        plan["notes"].append(f"Written with {what}, so Mind computes what Excel does: {listed}. Prep had not applied these formula repairs to this version yet.")
     else:
-        plan["notes"].append(f"Not written with the loop: {listed}. Until Prep applies them, Mind computes other values than Excel for these formulas.")
+        plan["notes"].append(f"Not written with {what}: {listed}. Until Prep applies them, Mind computes other values than Excel for these formulas.")
 
 
 def describe(plan: dict[str, Any]) -> str:

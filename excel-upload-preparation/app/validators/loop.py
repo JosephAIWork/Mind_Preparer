@@ -397,7 +397,10 @@ def _resizable_grids(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for g in all_grids(analysis):
         flags = set(g["flag_names"])
-        resizable = bool(flags & set(RESIZE_ROW_FLAGS + RESIZE_COL_FLAGS)) or "input" in flags or "inputlink" in flags or "instancesplit" in flags
+        # not an /InstanceSplit grid: each copy keeps a subset of the template's rows, never more, and Mind reads a
+        # fixed range over its whole column as the copy's column (COUNTA over the key column counted each copy's
+        # rows in a real Mind project, 29 October 2026)
+        resizable = bool(flags & set(RESIZE_ROW_FLAGS + RESIZE_COL_FLAGS)) or "input" in flags or "inputlink" in flags
         if not resizable:
             for (s, cell) in setsize_cells:
                 if s == g["sheet"]:

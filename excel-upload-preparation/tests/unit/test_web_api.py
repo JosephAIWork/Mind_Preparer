@@ -27,6 +27,7 @@ def _upload(client, path: Path, mode: str = "plan") -> dict:
 def test_health_reports_engine_facts(client):
     body = client.get("/api/health").json()
     assert body["rules"] == 110 and isinstance(body["excel"], bool) and isinstance(body["assistant"], bool)
+    assert body["autofix"] is True and body["finder"] is True  # Fix all automatically; Find where instances could help
 
 
 def test_plain_codes_give_the_screens_the_servers_own_words(client):
@@ -812,3 +813,338 @@ def test_a_second_apply_is_refused_while_one_runs(client, plain_grid_xlsx, tmp_p
         s.apply_lock.release()
     assert client.post(f"/api/sessions/{sid}/apply", json=op).status_code == 200
     assert not s.apply_lock.locked()
+
+
+def test_mind_instances_plan_route_finds_nothing_without_a_macro(client, plain_grid_xlsx):
+    """Build the Mind instances: GET .../mind-instances-plan on a workbook with no macro says found False and
+    plans no change; the apply then refuses (422), a bad `keys` is refused (422), and the download is a 404
+    until something is built."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    body = client.get(f"/api/sessions/{sid}/mind-instances-plan").json()
+    assert set(body) == {"version_id", "plan"} and body["version_id"] == "ver-001"
+    plan = body["plan"]
+    assert plan["found"] is False and plan["operations"] == [] and plan["operation_count"] == 0
+    assert client.get(f"/api/sessions/{sid}/mind-instances-plan", params={"keys": "some"}).status_code == 422
+    res = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={})
+    assert res.status_code == 422 and res.json()["detail"].startswith("nothing to write")
+    res = client.get(f"/api/sessions/{sid}/mind-instances/download")
+    assert res.status_code == 404 and res.json()["detail"] == "nothing built yet"
+    assert client.get("/api/sessions/nope/mind-instances-plan").status_code == 404
+    assert client.get("/api/sessions/nope/mind-instances/download").status_code == 404
+
+
+def test_mind_instances_apply_writes_the_version_then_the_main_workbook_and_the_zip(client, plain_grid_xlsx, tmp_path, monkeypatch):
+    """POST .../mind-instances-plan/apply: the new version first (source "instances"), then a copy of it under
+    the model's Mind name, the main workbook beside it, both zipped for GET .../mind-instances/download. The
+    builder and Excel are stood in for here: what is checked is the route's wiring, and that a failure of
+    the main-workbook step is a warning on an answer that still carries the new version."""
+    import io
+    import zipfile
+
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    monkeypatch.setattr(server, "_tracked_apply", _fake_apply(tmp_path))
+    seen: dict = {}
+
+    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None):
+        seen.update(key=key, keys=keys, model_name=model_name, loop_plan=loop_plan is not None)
+        op = {"op": "set_value", "action_id": "mind_instances", "rule_id": "INST-001", "sheet": "Data", "cell": "Z9", "before": None, "after": 1}
+        return {"found": True, "status": "ready", "notes": [], "operations": [op],
+                "main": {"file": f"{model_name}_Main.xlsx", "model_file": f"{model_name}.xlsx", "keys": ["a", "b"], "grids": []}}
+
+    def fake_main(plan, model_path, main_path):
+        assert Path(model_path).is_file() and Path(model_path).name == plan["main"]["model_file"] and Path(main_path).parent == Path(model_path).parent
+        Path(main_path).write_bytes(b"main")
+        return {"grids": 3, "formulas": 7}
+
+    def fake_zip(model_path, main_path, zip_path):
+        with zipfile.ZipFile(zip_path, "w") as z:
+            z.write(model_path, Path(model_path).name)
+            z.write(main_path, Path(main_path).name)
+        return Path(zip_path)
+
+    monkeypatch.setattr(server, "build_instance_plan", fake_plan)
+    monkeypatch.setattr(server, "write_main_workbook", fake_main)
+    monkeypatch.setattr(server, "zip_for_mind", fake_zip)
+    res = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"key": "Product", "keys": "all", "reanalyze": False})
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert seen == {"key": "Product", "keys": "all", "model_name": "plain_grid_instances", "loop_plan": True}
+    assert out["version"]["id"] == "ver-002" and out["version"]["source"] == "instances" and out["version"]["label"].startswith("v2 — Mind instances:")
+    assert out["files"] == ["plain_grid_instances.xlsx", "plain_grid_instances_Main.xlsx"] and out["download"] == f"/api/sessions/{sid}/mind-instances/download"
+    assert "operations" not in out["plan"] and out["warnings"] == [] and out["main_workbook"] == {"grids": 3, "formulas": 7}
+    dl = client.get(out["download"])
+    assert dl.status_code == 200 and dl.headers["content-type"] == "application/zip" and "plain_grid_instances.zip" in dl.headers["content-disposition"]
+    assert sorted(zipfile.ZipFile(io.BytesIO(dl.content)).namelist()) == ["plain_grid_instances.xlsx", "plain_grid_instances_Main.xlsx"]
+    # the plan route keeps the operations to 200 and says how many there are
+    plan = client.get(f"/api/sessions/{sid}/mind-instances-plan").json()["plan"]
+    assert plan["operation_count"] == 1 and plan["operations"][0]["cell"] == "Z9"
+
+    def failing_main(plan, model_path, main_path):
+        raise RuntimeError("Excel is not here")
+
+    monkeypatch.setattr(server, "write_main_workbook", failing_main)
+    out = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"reanalyze": False}).json()
+    assert out["version"]["id"] == "ver-003" == server.SESSIONS[sid].current_version_id and out["download"] is None
+    assert len(out["warnings"]) == 1 and "Excel is not here" in out["warnings"][0]
+    assert client.get(f"/api/sessions/{sid}/mind-instances/download").status_code == 404  # the old zip is of an older version
+
+
+def test_mind_instances_apply_makes_no_zip_when_a_change_was_refused(client, plain_grid_xlsx, tmp_path, monkeypatch):
+    """A PARTIAL apply with a refused change that matters (the key column here) leaves a model the plan
+    does not describe: the version exists, but no main workbook and no zip, and a warning says so. A
+    paste-area cell that stayed (clear_cell) does not stop the zip."""
+    import shutil
+
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    failed_ops: list = []
+
+    def partial_apply(s, ops, reanalyze, defer_verify=False, source=None):
+        out = tmp_path / f"applied_{len(s.versions)}.xlsx"
+        shutil.copyfile(s.current_path, out)
+        return {"status": "PARTIAL", "output_path": str(out), "applied": list(ops), "failed": list(failed_ops), "verified_opens_in_excel": True,
+                "change_log_entry": {"output_sha256": "0" * 64}}
+
+    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None):
+        op = {"op": "set_value", "action_id": "mind_instances", "rule_id": "INST-001", "sheet": "Data", "cell": "Z9", "before": None, "after": 1}
+        return {"found": True, "status": "ready", "notes": [], "operations": [op],
+                "main": {"file": f"{model_name}_Main.xlsx", "model_file": f"{model_name}.xlsx", "keys": ["a", "b"], "grids": []}}
+
+    calls: list = []
+
+    def fake_main(plan, model_path, main_path):
+        calls.append(main_path)
+        Path(main_path).write_bytes(b"main")
+        return {"grids": 1, "formulas": 0}
+
+    monkeypatch.setattr(server, "_tracked_apply", partial_apply)
+    monkeypatch.setattr(server, "build_instance_plan", fake_plan)
+    monkeypatch.setattr(server, "write_main_workbook", fake_main)
+    monkeypatch.setattr(server, "_report_problem", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_problem_fields", lambda *a, **k: {})
+    failed_ops[:] = [{"op": "set_range_values", "action_id": "mind_instances", "rule_id": "INST-001", "sheet": "Data", "ref": "B6:B13", "cell": "B6:B13",
+                      "values": [["k1"], [None]], "error": "Excel accepted the values but the last cell written is still empty"}]
+    out = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"reanalyze": False}).json()
+    assert out["version"]["id"] == "ver-002" and out["result"]["status"] == "PARTIAL" and out["download"] is None and calls == []
+    assert len(out["warnings"]) == 1 and "1 change(s) were refused (Data!B6:B13)" in out["warnings"][0] and "the zip were not made" in out["warnings"][0]
+    assert client.get(f"/api/sessions/{sid}/mind-instances/download").status_code == 404
+    # only a paste-area cell stayed: the files are still made
+    failed_ops[:] = [{"op": "clear_cell", "action_id": "mind_instances", "rule_id": "INST-001", "sheet": "Data", "cell": "V13", "error": "protected"}]
+    out = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"reanalyze": False}).json()
+    assert out["version"]["id"] == "ver-003" and out["download"] == f"/api/sessions/{sid}/mind-instances/download" and len(calls) == 1 and out["warnings"] == []
+    assert client.get(out["download"]).status_code == 200
+
+
+def test_the_step_map_names_the_mind_instances_routes():
+    """A problem on any of the three routes is reported under the step "Build the Mind instances"."""
+    paths = ["/api/sessions/{session_id}/mind-instances-plan", "/api/sessions/{session_id}/mind-instances-plan/apply", "/api/sessions/{session_id}/mind-instances/download"]
+    assert all(server._STEPS[p] == "Build the Mind instances" for p in paths)
+    assert set(paths) <= {getattr(r, "path", "") for r in server.app.routes}
+
+
+def test_instance_finder_route_answers_without_a_macro(client, plain_grid_xlsx, monkeypatch):
+    """Find where instances could help: GET .../instance-finder on a workbook with no macro and nothing
+    repeated answers the finder's result with no dimension (nothing written, the assistant not asked), the
+    builder's line taken from the builder's own plan -- or from the finder's rule when that plan cannot be
+    built; 404 for an unknown session, 409 before the scan."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    res = client.get(f"/api/sessions/{sid}/instance-finder")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert set(body) == {"version_id", "finder"} and body["version_id"] == "ver-001"
+    finder = body["finder"]
+    assert finder["schema"] == "instance-finder/1" and finder["dimensions"] == [] and finder["counts"]["dimensions"] == 0
+    assert finder["assistant"] == server.EMPTY_ASSISTANT and finder["builder"]["source"] == "plan" and finder["builder"]["matches_top"] is None
+    assert client.get("/api/sessions/nope/instance-finder").status_code == 404
+    with plain_grid_xlsx.open("rb") as f:
+        pending = client.post("/api/sessions", files={"file": (plain_grid_xlsx.name, f, "application/octet-stream")}, data={"mode": "plan", "defer": "1"}).json()
+    assert pending["pending"] is True
+    res = client.get(f"/api/sessions/{pending['sessionId']}/instance-finder")
+    assert res.status_code == 409 and res.json()["detail"] == "no analysis yet"
+    # the builder's plan cannot be built: the finder still answers, its builder line from its own rule
+
+    def broken_plan(*a, **k):
+        raise RuntimeError("no plan today")
+
+    monkeypatch.setattr(server, "build_instance_plan", broken_plan)
+    sid2 = _upload(client, plain_grid_xlsx)["sessionId"]
+    assert client.get(f"/api/sessions/{sid2}/mind-instances-plan").status_code == 500
+    res = client.get(f"/api/sessions/{sid2}/instance-finder")
+    assert res.status_code == 200, res.text
+    assert res.json()["finder"]["builder"]["source"] == "rule" and res.json()["finder"]["dimensions"] == []
+
+
+def test_instance_finder_route_caches_per_version_and_takes_the_assistant_flag(client, tmp_path, monkeypatch):
+    """The finder runs once per version (two GETs, one run) and the builder's plan with no key is built once
+    for the panel's preview and the finder together, so the finder's builder line is the builder's real choice
+    ("plan"). ?assistant=1 adds the assistant's order and words on top -- one gateway call, kept per version
+    -- and ?assistant=0 after it is the plain result again. No key, a gateway that fails and an advisor that
+    raises all answer 200 with the deterministic result and a message, and are asked again next time. A new
+    version (as Apply makes one) rebuilds the finder's result, the default plan and forgets the assistant's block."""
+    from app import instance_finder, model_map
+    from tests.unit.test_instance_builder import MACRO, _book  # the invented one-row-at-a-time model and its macro
+
+    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("Module1", MACRO.format(k=2))])
+    sid = _upload(client, _book(tmp_path))["sessionId"]
+    finder_calls: list = []
+    plan_calls: list = []
+    real_find, real_plan = server.find_instances, server.build_instance_plan
+
+    def counting_find(*a, **k):
+        finder_calls.append(1)
+        return real_find(*a, **k)
+
+    def counting_plan(*a, **k):
+        plan_calls.append(1)
+        return real_plan(*a, **k)
+
+    monkeypatch.setattr(server, "find_instances", counting_find)
+    monkeypatch.setattr(server, "build_instance_plan", counting_plan)
+    plan = client.get(f"/api/sessions/{sid}/mind-instances-plan").json()["plan"]  # the panel's preview at its start
+    assert plan["found"] is True and plan["key"]["column"] == "C" and plan["key"]["chosen_by"] == "macro" and plan_calls == [1]
+    first = client.get(f"/api/sessions/{sid}/instance-finder")
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["version_id"] == "ver-001" and finder_calls == [1] and plan_calls == [1]  # the default plan was not built again
+    finder = body["finder"]
+    top = finder["dimensions"][0]
+    assert top["rank"] == 1 and top["key"]["column"] == "C" and top["key"]["header"] == "Group" and "macro" in top["kinds"]
+    assert finder["builder"] == {"column": "C", "header": "Group", "chosen_by": "macro", "candidates": ["C", "E"], "matches_top": True, "source": "plan"}
+    assert finder["assistant"]["asked"] is False and top.get("assistant_rank") is None
+    assert client.get(f"/api/sessions/{sid}/instance-finder").json() == body and finder_calls == [1]  # same version, same answer
+    assert client.get(f"/api/sessions/{sid}/mind-instances-plan").json()["plan"] == plan and plan_calls == [1]  # the kept plan
+    client.get(f"/api/sessions/{sid}/mind-instances-plan", params={"key": "E"})
+    assert plan_calls == [1, 1]  # a chosen key is built fresh
+    # the assistant's pass: the finder module's own names are patched, never app.llm
+    gateway: list = []
+
+    def fake_chat(messages, system_prompt, **kwargs):
+        gateway.append(kwargs)
+        assert "### Dimension 1" in messages[0]["content"] and "Milliman Mind" in system_prompt
+        return {"available": True, "text": 'Here you are:\n{"ranking": [1], "explanations": {"1": "The groups repeat."}, "edits": {"1": ["none"]}, "extra": []}', "message": None}
+
+    monkeypatch.setattr(instance_finder, "llm_available", lambda: True)
+    monkeypatch.setattr(instance_finder, "chat_completion", fake_chat)
+    res = client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "1"})
+    assert res.status_code == 200, res.text
+    with_ai = res.json()["finder"]
+    block = with_ai["assistant"]
+    assert block["asked"] is True and block["available"] is True and block["ranking"] == [1] and block["text"] == "The groups repeat." and block["message"] is None
+    assert with_ai["dimensions"][0]["assistant_rank"] == 1 and with_ai["dimensions"][0]["assistant_text"] == "The groups repeat." and with_ai["dimensions"][0]["assistant_edits"] == ["none"]
+    assert with_ai["dimensions"][1]["assistant_rank"] is None
+    assert len(gateway) == 1 and gateway[0]["timeout"] == 90 and gateway[0]["max_tokens"] == 2000
+    # the deterministic part is untouched by the assistant
+    assert [(d["rank"], d["score"], d["evidence"], d["fit"]) for d in with_ai["dimensions"]] == [(d["rank"], d["score"], d["evidence"], d["fit"]) for d in finder["dimensions"]]
+    # asked twice: one gateway call (the answer is kept per version); assistant=0 is the plain result again
+    assert client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "true"}).json()["finder"] == with_ai and len(gateway) == 1
+    plain = client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "0"}).json()["finder"]
+    assert plain == finder and plain["assistant"]["asked"] is False and finder_calls == [1]
+    # no key: 200 with the deterministic result and the message (refresh=1 builds the result again and forgets the answer)
+    monkeypatch.setattr(instance_finder, "llm_available", lambda: False)
+    res = client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "1", "refresh": "1"})
+    assert res.status_code == 200, res.text
+    block = res.json()["finder"]["assistant"]
+    assert block["asked"] is True and block["available"] is False and block["message"] == "No AI key is saved yet: paste one under Advanced > Assistant."
+    assert finder_calls == [1, 1] and plan_calls == [1, 1] and len(gateway) == 1
+    # a key saved after that: the next tick asks (a "no key" answer is not kept)
+    monkeypatch.setattr(instance_finder, "llm_available", lambda: True)
+    assert client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "1"}).json()["finder"]["assistant"]["ranking"] == [1] and len(gateway) == 2
+
+    def broken_chat(messages, system_prompt, **kwargs):
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(instance_finder, "chat_completion", broken_chat)
+    res = client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "1", "refresh": "1"})
+    assert res.status_code == 200, res.text
+    out = res.json()["finder"]
+    assert out["assistant"]["asked"] is True and out["assistant"]["available"] is True and out["assistant"]["message"] == "Request failed: RuntimeError"
+    assert out["assistant"]["ranking"] is None and out["dimensions"][0]["key"]["column"] == "C" and out["dimensions"][0]["assistant_rank"] is None
+    # the route's own last line of defence: an advisor that raises is a message, not an error
+    monkeypatch.setattr(server, "make_finder_advisor", lambda *a, **k: _raising_advice)
+    res = client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "1"})
+    assert res.status_code == 200 and res.json()["finder"]["assistant"]["message"] == "Request failed: ValueError" and finder_calls == [1, 1, 1]
+    # a new version, as Apply makes one: the finder runs again, the default plan is built again, the kept assistant block is forgotten
+    s = server.SESSIONS[sid]
+    s.instance_finder_assistant = {**server.EMPTY_ASSISTANT, "asked": True, "available": True, "text": "stale"}
+    s.paths["ver-002"] = s.paths[s.current_version_id]
+    s.current_version_id = "ver-002"
+    monkeypatch.setattr(server, "make_finder_advisor", lambda *a, **k: None)
+    res = client.get(f"/api/sessions/{sid}/instance-finder", params={"assistant": "1"})
+    assert res.status_code == 200, res.text
+    assert res.json()["version_id"] == "ver-002" and finder_calls == [1, 1, 1, 1] and plan_calls == [1, 1, 1]
+    assert res.json()["finder"]["assistant"]["text"] is None and res.json()["finder"]["assistant"]["message"] == "No AI key is saved yet: paste one under Advanced > Assistant."
+    assert client.get(f"/api/sessions/{sid}/instance-finder").json()["version_id"] == "ver-002" and finder_calls == [1, 1, 1, 1] and plan_calls == [1, 1, 1]
+
+
+def test_mind_instances_are_written_with_the_formula_repairs_prep_still_has(client, tmp_path, monkeypatch):
+    """As with the Mind loop (Tokyo, 9 November 2026): a version built before Prep goes to Mind with the
+    formula repairs Prep still has, so Mind computes what Excel does. Here SUMPRODUCT on arithmetic over
+    an OFFSET range (FRM-014: another number in Mind) is written out as its range in the same Apply. A
+    cell the builder writes keeps the builder's formula, and a plan that is not ready gets no repairs."""
+    import openpyxl
+
+    from app import model_map
+    from tests.unit.test_instance_builder import MACRO, MACRO_WITHOUT_COUNT_CELL, _book
+
+    path = _book(tmp_path)
+    wb = openpyxl.load_workbook(path)
+    ws = wb.create_sheet("Extra")
+    ws["G3"], ws["H3"], ws["O3"] = "Month", "Rate", "Premium"
+    for r in range(4, 10):
+        ws.cell(r, 7, r - 4)
+        ws.cell(r, 8, 1 - (r - 4) / 1000)
+        ws.cell(r, 15, 100 + r)
+    ws["A45"], ws["B45"] = "LF", "=SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))"
+    wb.save(path)
+    wb.close()
+    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("Module1", MACRO.format(k=2))])
+    sid = _upload(client, path)["sessionId"]
+    plan = client.get(f"/api/sessions/{sid}/mind-instances-plan").json()["plan"]
+    assert plan["status"] == "ready" and plan["key"]["column"] == "C"
+    ops = {(o["sheet"], o.get("cell") or o.get("ref")): o for o in plan["operations"]}
+    assert ops[("Extra", "B45")]["after"] == "=SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))" and ops[("Extra", "B45")]["action_id"] == "offset_ranges"
+    assert not ops[("Extra", "B45")].get("after_inserts")  # the Extra sheet gets no insert: written where it is
+    assert ops[("Calc", "D2")]["after"].startswith("=MM_LOOPINSTANCE(")  # the builder's own cells, as before
+    assert plan["repairs"] == [{"id": "offset_ranges", "title": plan["repairs"][0]["title"], "count": 1, "written": True}]
+    assert plan["counts"]["repairs"] == 1 and plan["operation_count"] == len(plan["operations"])
+    assert any(n.startswith("Written with the instances, so Mind computes what Excel does:") for n in plan["notes"])
+    # a plan that is not ready (no count cell) writes nothing, repairs included
+    monkeypatch.setattr(model_map, "read_vba", lambda _p: [("Module1", MACRO_WITHOUT_COUNT_CELL)])
+    sid2 = _upload(client, path)["sessionId"]
+    plan2 = client.get(f"/api/sessions/{sid2}/mind-instances-plan").json()["plan"]
+    assert plan2["status"] != "ready" and plan2["operation_count"] == 0 and not plan2.get("repairs")
+
+
+def _raising_advice(result: dict) -> dict:
+    raise ValueError("the advisor broke")
+
+
+def test_the_finder_builder_line_says_nothing_when_the_plan_has_no_key(client, plain_grid_xlsx):
+    """A looped table with no text column gives the builder a plan without a key: `matches_top` is None (the panel
+    shows no builder line), not False with "another key: column null"; with a key it is the comparison with the
+    finder's top column; with no column dimension it is None too."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    s.instance_plan_default_version_id = s.current_version_id
+    top = {"dimensions": [{"key": {"column": "C"}}]}
+    s.instance_plan_default = {"key": {"column": None, "header": None, "chosen_by": "heuristic", "candidates": []}}
+    assert server._builder_block(s, top) == {"column": None, "header": None, "chosen_by": "heuristic", "candidates": [], "matches_top": None, "source": "plan"}
+    s.instance_plan_default = {"key": {"column": "E", "header": "Region", "chosen_by": "heuristic", "candidates": [{"column": "C"}, {"column": "E"}]}}
+    assert server._builder_block(s, top)["matches_top"] is False and server._builder_block(s, top)["candidates"] == ["C", "E"]
+    s.instance_plan_default = {"key": {"column": "C", "header": "Group", "chosen_by": "macro", "candidates": [{"column": "C"}]}}
+    assert server._builder_block(s, top)["matches_top"] is True
+    assert server._builder_block(s, {"dimensions": []})["matches_top"] is None
+
+
+def test_the_step_map_names_the_instance_finder_route():
+    """A problem on the finder route is reported under its own step, and the route exists."""
+    path = "/api/sessions/{session_id}/instance-finder"
+    assert server._STEPS[path] == "Find where instances could help"
+    assert path in {getattr(r, "path", "") for r in server.app.routes}
+
+
+def test_a_set_range_values_op_is_shown_with_twenty_values_and_their_count():
+    """A set_range_values op carries one value per row of a whole column: the screen and the change log get
+    the first 20 and the count, not the column."""
+    public = server._public_op({"op": "set_range_values", "sheet": "Data", "ref": "A7:A106", "values": [[i] for i in range(100)]})
+    assert public["values"] == [[i] for i in range(20)] and public["values_count"] == 100 and public["ref"] == "A7:A106"
+    assert "values" not in server._public_op({"op": "set_value", "sheet": "Data", "cell": "A1", "after": 1})

@@ -38,7 +38,7 @@ from typing import Any
 import openpyxl
 
 from .change_apply import append_change_log, plan_loop_case_fix
-from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place, verify_opens_in_excel
+from .excel_com import close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
 from .feedback import failed_op_facts
 from .formula_utils import (
     cell_refs_in_formula,
@@ -70,7 +70,9 @@ PIVOT_MODES = {
     "formulas": "Turn every pivot table into formulas",
 }
 DEFAULT_PIVOT_MODE = "values"
-CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula"}
+# set_range_values (1.12.5, the Mind instances): one block of plain values written in one go
+# {sheet, ref: "A7:A94938", cell: the same, values: [[v], [v], ...] one list per row, note}
+CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula", "set_range_values"}
 HIDE_MARKER = "&&Hide"
 EXCEL_SHEET_NAME_MAX = 31
 TITLE_NAME_MAX = 60
@@ -2200,8 +2202,55 @@ def _write_formulas(rng: Any, o: dict[str, Any], sheet: str, target: str) -> Non
 
 def _op_target(o: dict[str, Any]) -> str:
     """'Sheet!Cell' (or row / column / the sheet alone) an operation writes to, for progress messages."""
-    where = o.get("range") or o.get("cell") or (f"row {o['row']}" if o.get("row") is not None else None) or (f"column {o['column']}" if o.get("column") else None)
+    where = o.get("range") or o.get("cell") or o.get("ref") or (f"row {o['row']}" if o.get("row") is not None else None) or (f"column {o['column']}" if o.get("column") else None)
     return f"{o['sheet']}!{where}" if where else str(o["sheet"])
+
+
+def _range_values_of(o: dict[str, Any]) -> tuple[dict[str, Any], list[list[Any]]]:
+    """A set_range_values operation checked: (the parsed range, the values, one list per row, as many
+    columns as the range)."""
+    ref = str(o.get("ref") or o.get("cell") or "").replace("$", "").upper()
+    r = parse_ref(ref)
+    if not r or r["whole_column"] or r["whole_row"] or r.get("sheet"):
+        raise ValueError(f"{o['sheet']}!{ref}: set_range_values needs a range like A7:A20 (no sheet in it)")
+    values = o.get("values")
+    rows, cols = r["r2"] - r["r1"] + 1, r["c2"] - r["c1"] + 1
+    if not isinstance(values, list) or len(values) != rows or any(not isinstance(row, (list, tuple)) or len(row) != cols for row in values):
+        raise ValueError(f"{o['sheet']}!{ref}: the range has {rows} row(s) of {cols} column(s); the values must be one list per row with that many items")
+    return r, [list(row) for row in values]
+
+
+def _applied_record(o: dict[str, Any]) -> dict[str, Any]:
+    """The operation as the log keeps it: the values of a set_range_values are counted, not copied."""
+    if "values" not in o:
+        return o
+    return {k: v for k, v in o.items() if k != "values"} | {"values_count": len(o["values"])}
+
+
+def _write_range_values(ws: Any, o: dict[str, Any]) -> dict[str, Any]:
+    """set_range_values through Excel: one assignment for the whole block (a key column of 95,000 rows
+    in a moment, where one write per cell is ~8 COM calls each). Text that Excel would read as a
+    formula gets the text prefix; None empties the cell."""
+    r, values = _range_values_of(o)
+    target = r["ref"]
+    rng = ws.Range(target)
+    try:
+        _merged_guard(rng, o["sheet"], target)
+        rng.Value2 = tuple(tuple(excel_text(v) for v in row) for row in values)
+        # read back the cell that holds the LAST NON-EMPTY planned value (not the range's last cell:
+        # the plan may end with empty rows, a table whose last row has no key for instance)
+        spot = next(((i, j) for i in range(len(values) - 1, -1, -1) for j in range(len(values[i]) - 1, -1, -1) if values[i][j] not in (None, "")), None)
+        if spot is not None:
+            tail = rng.Cells(spot[0] + 1, spot[1] + 1)
+            try:
+                got = tail.Value2
+            finally:
+                tail = None
+            if got in (None, ""):
+                raise ValueError(f"{o['sheet']}!{target}: Excel accepted the values but the last cell written is still empty (protected, merged or otherwise refused)")
+    finally:
+        rng = None
+    return _applied_record(o)
 
 
 def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None, excel: Any = None, wb: Any = None) -> tuple[list[dict], list[dict]]:
@@ -2216,7 +2265,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
     covered: set[tuple[str, str]] = set()
     for o in operations:
         if o["op"] in CELL_OPS:
-            for c in _cells_of(o.get("range") or o.get("cell")):
+            for c in _cells_of(o.get("range") or o.get("cell") or o.get("ref")):
                 covered.add((o["sheet"], c))
     dismantled: set[tuple[str, str]] = set()
     # (sheet, cell) -> [[GETPIVOTDATA call, the reference it became]] when a pivot was turned into cells:
@@ -2393,6 +2442,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             record = _write_cell(ws, o)
         elif o["op"] == "set_array_formula":
             record = _write_array(ws, o)
+        elif o["op"] == "set_range_values":
+            record = _write_range_values(ws, o)
         elif o["op"] == "unprotect_sheet":
             ws.Unprotect()
         elif o["op"] == "remove_validation":
@@ -2607,6 +2658,13 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
                 _remove_validation_openpyxl(ws, o["cell"])
                 applied.append(o)
                 continue
+            if o["op"] == "set_range_values":
+                r, values = _range_values_of(o)
+                for i, row in enumerate(values):
+                    for j, v in enumerate(row):
+                        ws.cell(row=r["r1"] + i, column=r["c1"] + j).value = v
+                applied.append(_applied_record(o))
+                continue
             if o["op"] == "set_formula" and o.get("block_cells"):
                 # a formula filled down (_fill_down_blocks): each cell gets it moved to its own row, as Excel's fill does
                 from openpyxl.formula.translate import Translator
@@ -2721,8 +2779,8 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
         "source_sha256": source_sha256,
         "output_path": str(copy_path),
         "output_sha256": sha256_of(copy_path),
-        "applied": [{k: v for k, v in o.items() if k != "cells"} | ({"cells": len(o["cells"])} if "cells" in o else {}) for o in applied],
-        "failed": failed,
+        "applied": [{k: v for k, v in _applied_record(o).items() if k != "cells"} | ({"cells": len(o["cells"])} if "cells" in o else {}) for o in applied],
+        "failed": [_applied_record(o) for o in failed],
         "verified_opens_in_excel": verification.get("opens"),
         "warnings": warnings,
     }

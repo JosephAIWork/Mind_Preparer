@@ -12,6 +12,7 @@ import { ShowMeLink } from "../core/show-me-link";
 import { AssistantPanel } from "./advanced/assistant-panel";
 import { DeliverPanel } from "./advanced/deliver-panel";
 import { GridNamerPanel } from "./advanced/grid-namer-panel";
+import { InstancesPanel } from "./advanced/instances-panel";
 import { LoopPanel } from "./advanced/loop-panel";
 import { MapPanel } from "./advanced/map-panel";
 import { MindRunPanel } from "./advanced/mind-run-panel";
@@ -31,7 +32,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink, ReadinessBanner],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, InstancesPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink, ReadinessBanner],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })

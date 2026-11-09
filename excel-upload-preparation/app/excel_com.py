@@ -483,14 +483,20 @@ def verify_opens_in_excel(path: Path) -> dict[str, Any]:
     return info
 
 
+# text Excel would turn into a number, a date or a time when assigned: a digit first, or a sign,
+# a point, a bracket or a currency sign and then a digit ("001", "1E3", "-5", "10:30", "2024-01", "$5")
+_NUMERIC_TEXT_RE = re.compile(r"^\s*[+\-.(]?\s*[$€£]?\s*\d")
+
+
 def excel_text(value: Any) -> Any:
-    """Make a Python value safe to assign through Range.Value2: strings that
-    Excel would parse as a formula get the text-prefix apostrophe, None
-    becomes ''."""
+    """Make a Python value safe to assign through Range.Value2: a string stays a string. Text that
+    Excel would parse as a formula, a number, a date or a boolean ("=A1", "-x", "001", "1E3",
+    "2024-01", "TRUE") gets the text-prefix apostrophe (Excel keeps the text as it is; the
+    apostrophe is not part of the cell's value); None becomes ''."""
     if value is None:
         return ""
     if isinstance(value, str):
-        if value[:1] in ("=", "+", "@") or value[:1] == "-" and len(value) > 1 and not value[1:2].isdigit():
+        if value[:1] in ("=", "+", "@", "-") or _NUMERIC_TEXT_RE.match(value) or value.strip().upper() in ("TRUE", "FALSE"):
             value = "'" + value
         if len(value) > 32000:
             value = value[:32000] + "..."

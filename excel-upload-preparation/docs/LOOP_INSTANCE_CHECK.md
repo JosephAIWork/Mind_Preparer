@@ -1,10 +1,14 @@
 # Where a loop or instances would fit: a structure check (prototype, 2026-10-22)
 
-Status: **prototype only, not in the app.** Scripts: `tools/structure_check/`
+Status: **the finder is in the app since 1.12.5** (`app/instance_finder.py` with `app/finder_shapes.py`,
+`app/finder_patterns.py` and `app/finder_grouping.py`; `docs/INSTANCE_FINDER.md`); the scripts below
+stay as the prototype's record. The builder half of plan item 3 is in the app since 1.12.5
+(`app/instance_builder.py`, `docs/MIND_INSTANCES.md`). Scripts: `tools/structure_check/`
 (`extract.py`, `analyze.py`, `report.py`, `build_control.py`; how to run them in
 its README). Nothing in `app/` imports them; they import the app's R1C1 parser
 (`app.autofix.parse_r1c1`) read-only. Their `data/` folder holds client formulas
-and is git-ignored. Start the implementation from these scripts.
+and is git-ignored. The app's finder was ported from these scripts in pure Python:
+no Excel, it reads the app's own scan and turns every formula into R1C1 itself.
 
 ## Plan (order agreed 2026-10-26)
 
@@ -17,8 +21,18 @@ and is git-ignored. Start the implementation from these scripts.
    that range. A loop that stops on a computed condition is listed as not built, with the
    reason. Every new form with a test, as the `For` loops have. About 2-3 h.
 2. **Grid naming and flags.**
-3. **Where instances and loops would help** -- this prototype; its first part is the merge
-   below ("Next step: merge findings by the input they step through").
+3. **Where instances and loops would help.** Both halves are done. The **builder** (1.12.5)
+   turns the macro's run loop into Mind instances -- one copy of the model per key of the
+   model-point table, a loop inside each copy over that copy's rows, a main workbook with the
+   keys and the results (`app/instance_builder.py`, Advanced > Mind loop > Mind instances,
+   `docs/MIND_INSTANCES.md`). The **finder** (1.12.5) points to where a loop or instances would
+   help -- the grouping column of the looped table, repeated blocks, repeated sheets, near
+   copies -- blind and deterministic, merged into dimensions by the input the copies step
+   through and ranked, with the cells that read the macro's paste area sorted by what each
+   needs in Mind (`app/instance_finder.py`, the **Where instances could help** section of the
+   same panel, `docs/INSTANCE_FINDER.md`). What remains: the other VBA loop keywords (item 1),
+   the grid flags (item 2), a run-time prediction (formula counts are not run time), and copies
+   across separate workbooks.
 
 ## Purpose
 
@@ -26,8 +40,9 @@ Check a workbook for structure that a Mind loop or Mind instances would express,
 to remove repeated formulas or to compute every choice in one run. It **checks;
 it does not choose.** Every finding lists three options (loop, instances, leave
 as is), each with "fits / does not fit as is" and the reasons. "Leave as is" is
-always listed. Mind's own cost note is stated: instances use more RAM and CPU
-than loops.
+always listed. The cost note is stated as the team's own observation from its
+Mind projects, not a sentence of Mind's documentation: instances use more
+memory and processor than loops.
 
 ## How it reads a workbook
 
@@ -81,7 +96,7 @@ Extraction time through Excel: UC-2 76 s, UC-3 194 s.
    the model map reads dropdowns and macros.
 6. Copies across separate workbooks are not covered.
 
-## Next step for plan item 3 (not done): merge findings by the input they step through
+## Merge findings by the input they step through (done in 1.12.5)
 
 Header labels are only what the author typed: they can be missing, wrong or
 inconsistent ("Cat A" / "Category A"), or formulas. So do not merge on labels.
@@ -96,6 +111,17 @@ reader -- never as proof.
 Expected result on UC-3: a few named dimensions (e.g. the category table, the
 year table, the cluster switch) instead of 200 lines.
 
-## If it goes into the app later
+Done in 1.12.5: `app/instance_finder.py` merges every finding by the anchors its copies
+read -- a table column, a list, an area cut into slots, a band, a fill, a group of sheets
+-- including copies that step by a computed index (`ROW()`, `COLUMN()`, `COUNTA`, `MATCH`),
+which the prototype's relative-reference test could not see, and lists that hold the same
+values. The macro's own chain (the lookup column, the list it matches into, the slots it
+pastes into) is one dimension with them. A header stays a label, never evidence. The blind
+check of the app's finder is on UC-2 and is recorded in `docs/INSTANCE_FINDER.md`; UC-3 has
+not been through the app's finder yet.
 
-A read-only "Structure check" next to the model map: it reports, never writes.
+## In the app
+
+It went into the instances panel under Advanced > Mind loop, not next to the model map: the
+**Where instances could help** section (1.12.5), below the instances builder, so that **Use as
+the key** can fill the builder with the column it found. It reports, never writes.

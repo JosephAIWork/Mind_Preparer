@@ -41,6 +41,36 @@ the two honest cases below.
   listed as not built, with why. `scripts/check_loop_plan.py` proves the
   wiring in Excel against the macro (a client model: 60 of 60 cells the same).
 
+- **Mind instances** (1.12.5): under Advanced > Mind loop, the macro's run
+  loop as Mind instances instead of one loop -- for a macro that runs one
+  policy at a time and adds each policy's results to its group's block. One
+  copy of the model per value of a key column of the model-point table (a
+  tariff, a product, a group; chosen from a dropdown, the macro's own lookup
+  column by default) and a loop inside each copy over that copy's own rows.
+  In the model: the table becomes a `#<Name> /InstanceSplit` grid keyed by
+  that column, the count cell counts the copy's rows, the driver gets
+  `MM_LOOPINSTANCE`, the block the macro copies out per pass becomes
+  `MM_RESULT` sums, and the paste area is emptied; the formula repairs Prep
+  still has are written with it. A second small workbook, `<stem>_Main.xlsx`,
+  holds the keys (`/InstanceKeys`, the model's file name as header) and the
+  results: one row per key through `MM_INSTANCE`, and the whole output block
+  as plain links (in Mind a plain link to a copied workbook is the sum over
+  the copies). Both files come as one zip: in Mind, drop them together on an
+  empty project (keep the file names). Checked in a real Mind project (29
+  October 2026: 0 differences from Excel's sums by key; 10 November 2026:
+  small probes). `docs/MIND_INSTANCES.md`.
+
+- **Where instances could help** (1.12.5): below the instances builder, the
+  button **Find where instances could help** reads every formula of the
+  model and its macro and points to what repeats: a column of the looped
+  table that splits its rows into groups, the same formulas side by side in
+  one sheet, sheets with the same layout, and near copies with the edits
+  that would unify them. Blind and deterministic (pure Python over the scan,
+  no Excel, no model call), ranked, each with whether instances, a loop or
+  leaving it fit, and why. **Use as the key** fills the builder. It writes
+  nothing. With an AI key, a tick adds the assistant's explanation and order
+  on top; the findings never change. `docs/INSTANCE_FINDER.md`.
+
 - **Model map** (1.9.0): a screen (and `GET .../model-map`, `python -m
   app.model_map`) that says where a model's inputs are, which cell the run
   loop sets and what bounds it, which settings stay for a run but change
@@ -252,7 +282,8 @@ the two honest cases below.
   retired, `MIND_READY_DIST` can still point at its `dist`). The main screen
   is three one-click buttons (Fix all issues, Fix the formulas, Build the
   Mind loop) and a download; everything else -- findings, Prep actions,
-  Recalculate, Mind loop choices, Model map, Grid Namer, Assistant, Run in
+  Recalculate, Mind loop choices, the Mind instances and where instances could
+  help, Model map, Grid Namer, Assistant, Run in
   Mind, Deliver, Versions -- is under **Advanced**. The built `dist` is
   committed; rebuild with `npm install && npx ng build --configuration
   production` in `MindReadyUI`.

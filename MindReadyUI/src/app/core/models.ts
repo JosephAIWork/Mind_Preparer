@@ -351,6 +351,300 @@ export interface LoopChoices {
   loops?: Record<string, LoopChoice>;
 }
 
+// ---- Mind instances (app/instance_builder.py) ------------------------------------------------
+export type InstanceStatus = "ready" | "needs_decision" | "not_built";
+
+/** The run loop every copy shares: MM_LOOPINSTANCE in the driver, COUNTA in the count cell, the biggest count in the max cell. */
+export interface InstancePlanLoop {
+  name?: string;
+  driver?: string;
+  count_cell?: string;
+  max_cell?: string;
+  formula?: string;
+  macro?: string;
+  kind?: string;
+}
+
+/** The model-point table the loop reads through (INDEX / OFFSET on the driver). */
+export interface InstancePlanTable {
+  sheet?: string;
+  ref?: string;
+  header_row?: number;
+  first_row?: number;
+  last_row?: number;
+  rows?: number;
+  columns?: number;
+}
+
+/** A text column of the table that could be the key: its letter, header and number of distinct values. */
+export interface InstanceKeyCandidate {
+  column: string;
+  header: string;
+  distinct: number;
+  /** true when the count comes from the first rows of a long table only ("10+ values") */
+  sampled?: boolean;
+}
+
+/** The macro's paste area: emptied, because the copies' results live in the block. */
+export interface InstancePlanClear {
+  area: string;
+  cells: number;
+  status: string;
+  over?: number;
+  why?: string | null;
+}
+
+/** The key column: one copy of the model per distinct value. */
+export interface InstancePlanKey {
+  column?: string;
+  header?: string;
+  distinct?: number;
+  /** key value -> number of rows */
+  counts?: Record<string, number>;
+  candidates?: InstanceKeyCandidate[];
+  chosen_by?: "macro" | "heuristic" | "user";
+}
+
+/** The table as a split grid: the title "#<Name> /InstanceSplit" above it, the key column first. */
+export interface InstancePlanSplitGrid {
+  title_cell?: string;
+  title?: string;
+  header_cell?: string;
+  inserted_rows?: number;
+  inserted_column?: boolean | string | null;
+}
+
+/** The block the macro copies out on every pass: every formula cell becomes MM_RESULT(...). */
+export interface InstancePlanOutput {
+  block?: string;
+  source_sheet?: string;
+  cells?: number;
+  example?: string;
+  status: InstanceStatus | "nothing_to_do" | string;
+  why?: string;
+}
+
+/** One operation as the backend shows it (a set_range_values op comes with at most 20 values and `values_count`). */
+export interface InstancePlanOperation extends LoopPlanOperation {
+  ref?: string;
+  row?: number;
+  column?: string;
+  values?: unknown[][];
+  values_count?: number;
+}
+
+export interface InstancePlanMainGrid {
+  title: string;
+  rows?: number;
+  cols?: number;
+  what?: string;
+  /** set on the per-copy grids entry: how many grids of that shape (one per key) */
+  count?: number;
+}
+
+/** The second, small workbook: the keys and the results, saved next to the model. */
+export interface InstancePlanMain {
+  file: string;
+  model_file: string;
+  keys: (string | number)[];
+  grids: InstancePlanMainGrid[];
+}
+
+/** GET .../mind-instances-plan: the macro's run loop as Mind instances, one copy of the model per key value. */
+export interface InstancePlan {
+  found: boolean;
+  status: InstanceStatus;
+  notes?: string[];
+  loop?: InstancePlanLoop | null;
+  table?: InstancePlanTable | null;
+  key?: InstancePlanKey | null;
+  split_grid?: InstancePlanSplitGrid | null;
+  outputs?: InstancePlanOutput[];
+  clears?: InstancePlanClear[];
+  operations?: InstancePlanOperation[];
+  operation_count: number;
+  counts?: { key_values?: number; result_cells?: number; cleared?: number; inserted_rows?: number; repairs?: number };
+  /** the formula repairs Prep still had for this version: written with the instances, as with the Mind loop */
+  repairs?: { id: string; title: string; count: number; written: boolean }[];
+  main?: InstancePlanMain | null;
+  how_it_runs?: string;
+}
+
+/** The user's choices: the key column (a header text or a column letter) and which keys the main workbook lists. */
+export interface InstanceChoices {
+  key?: string;
+  /** "present" = only the key values that have rows (default); "all" = every value of the list the macro reads */
+  keys?: "present" | "all";
+}
+
+/** POST .../mind-instances-plan/apply: the Apply outcome, the plan (without operations), the zip's URL and the two file names. */
+/** POST .../mind-instances-plan/apply: `download` is null when the zip was not made (a change refused, the main workbook failed); `warnings` say why. */
+export type InstancesOutcome = Omit<ApplyOutcome, "plan"> & { plan: InstancePlan; download: string | null; files: string[]; warnings?: string[] };
+
+// ---- Where instances could help (app/instance_finder.py) ---------------------------------------
+export type FinderFits = "yes" | "partly" | "no";
+
+/** One line of evidence: what was seen, where, how many. */
+export interface FinderEvidence {
+  kind: "macro" | "lookups" | "branches" | "stepping" | "keyed" | "list" | "bands" | "sheets" | "counts" | string;
+  text: string;
+  cells?: string[];
+  count?: number;
+  per_copy?: number;
+  vba?: string[];
+}
+
+/** The grouping column of a P1 dimension: "Use as the key" fills the builder with `column`. */
+export interface FinderKey {
+  sheet: string;
+  column: string;
+  header?: string | null;
+  table?: string;
+  distinct: number;
+  rows: number;
+  biggest?: { value: string | number; rows: number };
+  smallest?: { value: string | number; rows: number };
+  balance?: number;
+  /** key value -> number of rows (at most 12 keys, then "…": how many more) */
+  counts?: Record<string, number>;
+  type?: string;
+  keyed_formulas?: number;
+  keyed_tables?: string[];
+  mapped_through?: { cell: string; name?: string | null; table?: string | null }[];
+  branch_formulas?: number;
+  branch_literals_count?: number;
+  literals_are_values?: number;
+}
+
+/** A repeated block: its copies along rows, columns or sheets, and how alike they are. */
+export interface FinderBlock {
+  sheet: string;
+  axis: "rows" | "columns" | "sheets";
+  where: string;
+  copies: number;
+  per_copy: number;
+  computed?: string | null;
+  diff?: Record<string, number>;
+  chain_share?: number;
+}
+
+/** One cell the copies disagree on, and what to do with it. */
+export interface FinderEdit {
+  cell: string;
+  values_per_copy?: (string | number | null)[];
+  literals_per_copy?: string[];
+  formulas_per_copy?: string[];
+  action: string;
+}
+
+export interface FinderReaderClass {
+  count: number;
+  example?: string | null;
+  text: string;
+}
+
+/** Cells that read the macro's paste area, by what they need in Mind. */
+export interface FinderReaders {
+  all_slots: FinderReaderClass;
+  fixed_slot: FinderReaderClass;
+  computed_slot: FinderReaderClass;
+  keyed_slot: FinderReaderClass;
+  follow_adders: FinderReaderClass;
+}
+
+export interface FinderFit {
+  fits: FinderFits;
+  reasons: string[];
+}
+
+/** The cells to unify before the copies can be one model (each list capped at 40; the counts are complete). */
+export interface FinderEdits {
+  numbers: FinderEdit[];
+  formula_numbers: FinderEdit[];
+  logic: FinderEdit[];
+  size: FinderEdit[];
+  numbers_count: number;
+  formula_numbers_count: number;
+  logic_count: number;
+  size_count: number;
+  branches?: { count: number; action: string } | null;
+}
+
+/** One dimension: a thing the model repeats over (a key column, a list, copies of a block or a sheet). */
+export interface FinderDimension {
+  id: string;
+  rank: number;
+  score: number;
+  label: string;
+  label_from?: string;
+  headline: string;
+  kinds: string[];
+  key?: FinderKey | null;
+  copies: number;
+  biggest_copy?: number;
+  formulas_saved: number;
+  cells_changed: number;
+  evidence: FinderEvidence[];
+  blocks?: FinderBlock[];
+  readers?: FinderReaders | null;
+  cross_reads?: { from: string; to: string; cells: number }[];
+  edits?: FinderEdits;
+  fit: { instances: FinderFit; loop: FinderFit; leave: FinderFit };
+  assistant_rank?: number | null;
+  assistant_text?: string | null;
+  assistant_edits?: string[];
+}
+
+/** Copies set aside: each one reads the one before it, so they cannot run side by side. */
+export interface FinderChain {
+  label: string;
+  copies: number;
+  per_copy: number;
+  chain_share: number;
+  why: string;
+  cells?: string[];
+}
+
+/** The assistant's view on top of the deterministic result; `asked` is false when the tick was off. */
+export interface FinderAssistant {
+  asked: boolean;
+  available: boolean;
+  text: string | null;
+  ranking: number[] | null;
+  explanations: Record<string, string>;
+  edits: Record<string, string[]>;
+  extra: { headline: string; why: string; cells: string[]; flag: string }[];
+  message: string | null;
+}
+
+/** The builder's own key next to the finder's top dimension (`source` "plan" = the builder's real plan, "rule" = the finder's re-run of its rule). */
+export interface FinderBuilder {
+  column?: string | null;
+  header?: string | null;
+  chosen_by?: string | null;
+  candidates?: string[];
+  matches_top?: boolean | null;
+  source?: "plan" | "rule" | string;
+}
+
+/** GET .../instance-finder: where instances or a loop would help, ranked; nothing written. */
+export interface FinderResult {
+  schema: string;
+  version: string;
+  file: string;
+  counts: { sheets: number; formulas: number; dimensions: number; chains: number; time_axes: number; seconds: number; reload_seconds?: number };
+  dimensions: FinderDimension[];
+  chains: FinderChain[];
+  macro_loops: { name: string; driver: string; kind: string; status: string; handled_by: string; first?: number | string | null; last?: number | string | null }[];
+  switches?: { cell: string; name?: string | null; readers: number }[];
+  builder?: FinderBuilder | null;
+  ignored?: Record<string, number>;
+  ignored_detail?: { filled_areas?: { sheet: string; where: string; cells: number }[] };
+  skipped: string[];
+  truncated?: Record<string, boolean>;
+  assistant: FinderAssistant;
+}
+
 export interface AppHealth {
   version: string;
   rules?: number;

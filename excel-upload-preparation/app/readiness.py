@@ -241,7 +241,7 @@ def plan_counts(plan: list[dict[str, Any]]) -> dict[str, int]:
 
 # --- what an Apply did --------------------------------------------------------------
 STATUS_RANK = {"PASS": 0, "WARNING": 1, "REQUIRES_USER_INPUT": 2, "NOT_SUPPORTED": 3, "ERROR": 4}
-MANUAL_SOURCES = {"assistant": "Assistant fix", "formula_replacement": "Formula fix"}
+MANUAL_SOURCES = {"assistant": "Assistant fix", "formula_replacement": "Formula fix", "mind_loop": "Mind loop", "mind_instances": "Mind instances"}
 
 
 def _plural(n: int, word: str) -> str:

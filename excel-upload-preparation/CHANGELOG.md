@@ -1,5 +1,134 @@
 # Changelog
 
+## Unreleased (10 November 2026): Mind instances and where instances could help
+
+Built in October on a side branch as 1.13.0 and 1.14.0 and never released; brought onto this branch
+and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes, per-loop choices).
+
+- **Written with the formula repairs Prep still has**, as the Mind loop is now: a version built before
+  Prep goes to Mind with CELL / INFO frozen, OFFSET ranges written out and the rest of the "Fix the
+  formulas" set, so Mind computes what Excel does. A cell the builder writes keeps the builder's
+  formula; a plan that is not ready writes nothing. The plan's notes list the repairs.
+- **Checked again in Mind on 10 November 2026** with three small invented projects
+  (`docs/MIND_INSTANCES.md`): each copy runs MM_LOOPINSTANCE to its own count; `MM_INSTANCE` reads one
+  copy by key cell, literal key or index, and on a looped cell gives only the first pass -- the builder
+  points it at the `MM_RESULT` cells, so it is right; a plain link is the sum over the copies. Nothing
+  in the builder had to change.
+
+### Mind instances (the builder)
+
+- **Build the Mind instances** (Advanced > Mind loop, the Mind instances section below the loop). The
+  macro's run loop turned into Mind instances: one copy of the model per value of a key column of the
+  model-point table (a tariff, a product, a group), a loop inside each copy over that copy's own rows,
+  and a second small workbook -- the main one, which Mind does not copy -- with the keys and the results.
+  Preview, write it into a new version, then download both files as one zip and drop them together on
+  an empty Mind project (`app/instance_builder.py`; `GET` / `POST /api/sessions/{id}/mind-instances-plan`
+  `[/apply]`, `GET .../mind-instances/download`; `docs/MIND_INSTANCES.md`).
+- **What changes in the model.** The model-point table becomes a split grid: a key column as its first
+  column, the key of every row under the header `Instance key`, the title `#<Name> /InstanceSplit`
+  directly above and an empty row above the title (the column and the rows inserted where needed). The
+  loop's count cell gets `=COUNTA(<key column>)`, so each copy counts its own rows; a free cell holds
+  the biggest count -- the loop size -- with a label; the driver cell gets
+  `=MM_LOOPINSTANCE("<loop name>", <size cell>, <count cell>)` -- plus 1 when the range the loop
+  indexes starts on the header row (the macro ran `2 To n`), so every pass reads a data row. Every
+  formula of the block the macro copies out on each pass becomes `=MM_RESULT(<its source cell>)`, the
+  sum over the copy's loop; the macro's paste area is emptied; a free cell shows the copy's key,
+  `=MM_INSTANCEKEY("<first key>")`, with a label. Filled columns touching the table on its left are part
+  of the grid in Mind's eyes, so the key column goes before them (and a headerless one gets a header).
+  Cells that only read the paste area are left as they are and listed (they show 0 in a copy).
+- **The main workbook** `<stem>_Main.xlsx`, written through Excel next to the model so its references
+  resolve: sheet Instances with `#<key header> instances /InstanceKeys` (the model's file name as header,
+  one row per key); sheet Summary with `#Results by <key header>` (one row per key, one column per row of
+  the output block, each `=MM_INSTANCE(<model cell>, <key>)`) and `#All copies` (the whole output block
+  as plain links to the model, its header row kept, with a Total row: in Mind a plain link to a copied
+  workbook is the sum over the copies, checked in a real project). Keys stay what they are: a text
+  key like `001` is written as text in the model's key column and in the main workbook alike. In Excel
+  every grid shows the one copy Excel has.
+- **The choices.** The key: a dropdown of the table's text columns with 2 to 200 distinct values, each
+  with its row count. The default is the column the macro itself looks the loop row up in, else a header
+  that says tariff, product, group, portfolio, segment, class, category, type, country, fund, treaty or
+  cohort, else the column with the fewest values. "Every key of the list, even without rows" makes a copy
+  per value of the list the macro reads, when the app finds it. The model is uploaded as
+  `<stem>_instances` with its own extension; Mind finds the workbook to copy by that name, so the files
+  keep their names.
+- **A loop without a count cell** is not built: the plan says so in one sentence, and the loop panel's
+  choice of a count cell comes first. The builder takes the first counter loop of the loop plan that has
+  one.
+- **A new change, `set_range_values`** (`app/prep.py`): one range written in one go, through Excel or
+  openpyxl, counted in the change log like the other changes. The key column of a long table is one
+  change, not one per row. After the write through Excel the last cell planned to hold something is read
+  back (not the range's last cell, which is empty by design when the table's last rows have no key).
+  `excel_text` now keeps every string a string: text Excel would turn into a number, a date or a
+  boolean (`001`, `1E3`, `2024-01`, `TRUE`) gets the text prefix.
+- **A refused change** (the key column, the driver, a result cell) leaves a model the plan does not
+  describe: the version is kept, but the main workbook and the zip are not made, and the answer says
+  which changes were refused. A paste-area cell that stayed does not stop the zip.
+- **Two fixes on the way.** RZS-006 no longer counts an `/InstanceSplit` grid as resizable: a copy keeps a subset of the template's
+  rows, never more, and Mind reads a fixed range over the whole key column as the copy's column -- so the
+  readiness verdict no longer turns red right after the instances are built. The outcome card names the
+  Mind loop and Mind instances steps.
+- **In Mind:** the two files of the hand-built prototype this builder mirrors, dropped together on an
+  empty project, converted, tested and ran as one (28 October 2026; the results-by-key grid matched the
+  macro's sums by key). This builder's own two files, made through the API from the fixed model cut to
+  the macro's 19 test policies (29 October 2026): converted and tested as one project, run in 3 s, the
+  results-by-key grid (3 x 128) and the all-copies grid (128 x 10) equal to Excel's sums by tariff, 0
+  differences, Total row equal.
+- The feedback message names the step "Build the Mind instances". The guide for the Mind team has a
+  section on it.
+
+### Where instances could help (the finder)
+
+- **Find where instances could help** (Advanced > Mind loop, the Mind instances section, a button
+  below the builder). The app reads every formula of the model and its macro and points to what
+  repeats: a column of the looped table that splits its rows into groups (one copy of the model per
+  value), the same formulas side by side in one sheet (bands of columns or of rows), sheets with the
+  same layout and formulas, and near copies that differ only in typed-in numbers or in a few cells of
+  logic -- with the edits that would unify them. Each place is a card: one plain sentence, whether
+  instances, a loop or leaving it as it is fit (yes, partly, no) and why, and **Use as the key**,
+  which fills the builder's key column and previews the instances. The finder is blind -- no hint of
+  what the key is -- and deterministic: pure Python over the scan the app already made, no Excel, no
+  numpy, no model call; the same workbook gives the same answer. It writes nothing. With an AI key
+  saved, the tick **Explain and rank with the assistant** adds a plain explanation and the assistant's
+  order on top; the findings themselves never change (`app/instance_finder.py`,
+  `app/finder_shapes.py`, `app/finder_patterns.py`, `app/finder_grouping.py`;
+  `GET /api/sessions/{id}/instance-finder` `[?assistant=1][&refresh=1]`;
+  `python -m app.instance_finder <workbook> [--json] [--assistant]`; `docs/INSTANCE_FINDER.md`).
+- **Merged into dimensions** by the input the copies step through, never by labels. The column the
+  macro looks the loop row up in, the list it matches the value into and the slots it pastes each
+  pass into are one dimension; so are blocks on other sheets whose copies read consecutive rows or
+  column slots of that area, including blocks that step by a computed index -- `OFFSET` with
+  `ROW()`, `COLUMN()`, an expanding `COUNTA` or a `MATCH` on the key -- and two lists that hold the
+  same values. Lookups keyed by the current row's value, also through a mapping table, and formulas
+  that branch on it with `IF(<key>="...")` count as evidence; a header word is shown as a hint and
+  weighs nothing. Chains (each copy reads the one before it) are set aside with the reason; time axes
+  and fills that join nothing are counted, not reported.
+- **Cells reading the macro's paste area, by class**, each with what it needs in Mind. Cells that add
+  every slot up move to the main workbook as plain links to the copied model -- there a link is the
+  sum over the copies; inside a copy they would see only that copy. Rows that each read one slot by a
+  computed index become one row per copy in the main workbook. The block that reads the current key's
+  slot and adds the pass to it stays as it is: in a copy it is the copy's own block, and `MM_RESULT`
+  does the adding. Cells reading one fixed slot need `MM_INSTANCE(cell, key)`. The builder
+  listed all of these as "left as they are"; the finder says what to do with each.
+- **Checked on the use case** against the builder's own choice (`docs/INSTANCE_FINDER.md`, "The
+  blind result on the 2c use case"): the finder runs blind on the same session as the builder's plan,
+  and the two JSON answers are set side by side, fact by fact -- the table, the key column and its
+  header, the evidence, the distinct values and rows, the other candidates, the cells reading the
+  paste area by class, the time taken. `builder.matches_top` says in the JSON whether both pick the
+  same column. On the use case it does: the finder's first place is the builder's key column on the
+  19-row cut, on the full fixed model (26 groups over 94,932 rows) and on the raw file, with the
+  macro's grouping as its first evidence; the finder adds what the builder leaves as it is -- which
+  cells read the paste area and what each needs in Mind -- and the lookups and branches keyed by the
+  column.
+- **Limits.** Chains are set aside, not solved. Formula counts are not run time: Mind's speed and
+  memory are not predicted (the biggest copy's row count is the nearest hint). The request is one
+  long GET -- up to about two minutes on 350,000 formulas, no background job yet; a step the budget
+  cut is written in `skipped` in plain words, nothing is skipped silently. The app keeps two workbooks
+  open: after a third upload or an Apply the finder has to read the workbook again before it starts
+  (minutes on a 28 MB model) and says so, with the seconds, in its answer. Sheet copies are matched at
+  the same addresses, so a copy shifted by a row is not seen. Copies across separate workbooks are not
+  covered. A block or sheet dimension is reported with its edits; the builder builds grouping columns
+  only.
+
 ## Unreleased (9 November 2026): each Mind loop with its own choices
 
 - **The Mind loop is written with the formula repairs Prep still has** for the version (CELL / INFO
