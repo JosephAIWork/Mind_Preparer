@@ -105,7 +105,7 @@
                 <button
                   cdsButton="primary"
                   size="md"
-                  data-show-me="outside-bring-in"
+                  [attr.data-show-me]="oi.matched ? 'outside-bring-in' : null"
                   (click)="runOutside()"
                   [disabled]="busy() || !oi.matched"
                   [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in || oi.brought_in_reason ? 'Starts again from the version before the first bring-in' : '')"
@@ -113,9 +113,11 @@
               }
               @if (oi.missing.length && oi.assistant && (!oi.brought_in || outsideFailed())) {
                 <!-- no files: the assistant reads the import macro and makes stand-ins from the model's own numbers -->
+                <!-- with no file matched, "Bring in" is greyed out: the pointer goes to this button instead -->
                 <button
                   cdsButton="secondary"
                   size="md"
+                  [attr.data-show-me]="oi.matched ? null : 'outside-bring-in'"
                   (click)="runOutside(false, true)"
                   [disabled]="busy()"
                   [title]="busyHint() || 'The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.'"
