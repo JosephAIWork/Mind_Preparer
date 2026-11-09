@@ -64,6 +64,7 @@ from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.model_map import build_model_map
 from app import model_map as model_map_module  # noqa: E402  (read_vba through the module: tests replace it)
 from app import outside_inputs  # noqa: E402  (through the module: tests replace run_import / apply_mind_inputs)
+from app import stand_in_inputs  # noqa: E402  (through the module: tests replace make_stand_ins / assistant_ask)
 from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Finding, Status, aggregate_status  # noqa: E402
@@ -181,10 +182,6 @@ class Session:
     # input was made) -> the fingerprint of the picked files it read (_inputs_fingerprint). A line counts
     # as brought in only through one of these, and only while the picked files are still those.
     brought_in_files: dict[str, str] = field(default_factory=dict)
-    # the user chose to go on without the outside files (POST .../outside-inputs/skip): the data the
-    # import macro brought in last stays in the workbook as plain numbers (INP-010 warns, no longer
-    # blocks). Adding input files or starting a bring-in takes the choice back.
-    outside_skipped: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     # one Apply at a time: two at once would both copy the same version and the last one to finish
     # would become current without the other's changes
@@ -756,7 +753,12 @@ def _main_name(s: Session) -> str:
 
 
 def _inputs_public(s: Session) -> list[dict[str, Any]]:
-    return [{"name": i["name"], "bytes": i["bytes"]} for i in s.inputs]
+    return [{"name": i["name"], "bytes": i["bytes"], "stand_in": bool(i.get("stand_in"))} for i in s.inputs]
+
+
+def _stand_in_names(s: Session) -> set[str]:
+    """The input files the assistant made (stand-ins), not the user: a real file of the same name replaces one."""
+    return {i["name"] for i in s.inputs if i.get("stand_in")}
 
 
 def _check_input_names(names: list[str]) -> None:
@@ -905,15 +907,21 @@ def _outside_public(s: Session) -> dict[str, Any] | None:
     else:
         summary = "The macros open outside files, but which macro brings them in is not clear."
     brought_in, why_not = _brought_in_state(s) if s.versions else (False, None)
+    made = _stand_in_names(s)
     return {
         "imports": True,
         "macro": oi["vba"].get("import_macro"),
         "calls": [{"procedure": c.get("procedure"), "call": c.get("call"), "line": c.get("line")} for c in oi["vba"].get("imports") or []],
         "rows": [
             {"cell": f"{r['sheet']}!{r['cell']}", "expected": r.get("expected"), "keys": list(r.get("keys") or []), "target_sheet": r.get("target_sheet"),
-             "file": r.get("file"), "how": r.get("how"), "candidates": list(r.get("candidates") or [])}
+             "file": r.get("file"), "how": r.get("how"), "candidates": list(r.get("candidates") or []), "stand_in": r.get("file") in made}
             for r in rows
         ],
+        # the matched files the assistant made (stand-ins built from the model's own numbers): best
+        # results come with the actual files -- INP-010 and the card say so
+        "stand_ins": [r["file"] for r in rows if r.get("file") in made],
+        # the assistant can make the missing files (an AI key is saved)
+        "assistant": llm_available(),
         "matched": int(match["matched"]),
         "missing": [f"{r['sheet']}!{r['cell']}" for r in match["missing"]],
         "extra": list(match["extra"]),
@@ -922,9 +930,6 @@ def _outside_public(s: Session) -> dict[str, Any] | None:
         # why the line's bring-in does not count, in words (the input files changed since, it did not
         # finish); None when brought in or when the line never went through one
         "brought_in_reason": why_not,
-        # the user chose to go on without the files: the model keeps the numbers it holds (only for a
-        # line that never went through a bring-in)
-        "skipped": bool(s.outside_skipped) and not brought_in and why_not is None,
         # the /Input grids the bring-in made for this line (their size is the model's import area)
         "mind_inputs": [Path(n).stem for n in _mind_input_files(_mind_inputs_dir_for(s))] if s.versions else [],
     }
@@ -959,7 +964,6 @@ _STEPS = {
     "/api/sessions/{session_id}/inputs": "Input files",
     "/api/sessions/{session_id}/outside-inputs": "Bring in the outside files",
     "/api/sessions/{session_id}/outside-inputs/run": "Bring in the outside files",
-    "/api/sessions/{session_id}/outside-inputs/skip": "Go on without the outside files",
     "/api/assistant-key": "AI key",
 }
 
@@ -2072,7 +2076,8 @@ def numbers_check(session_id: str) -> dict[str, Any]:
 
 # --- bringing the outside files in (app/outside_inputs.py) --------------------------------------
 _OUTSIDE_TITLES = {
-    "start": "Starting", "import": "Running the workbook's import macro", "scan": "Checking the workbook with the outside data",
+    "start": "Starting", "stand_ins": "Making stand-in input files with the assistant",
+    "import": "Running the workbook's import macro", "scan": "Checking the workbook with the outside data",
     "mind_inputs": "Making the Mind inputs", "numbers": "Checking that no computed value changed", "rescan": "Checking the new version", "done": "Done",
 }
 
@@ -2265,7 +2270,60 @@ def _bring_in_summary(report: dict[str, Any], made: dict[str, Any] | None, numbe
     return "; ".join(parts) + "." + (f" {note}" if note else "")
 
 
-def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stage, say) -> dict[str, Any]:
+_STAND_IN_NOTE = ("Made with stand-in input files from the assistant, built from the numbers the model already holds: "
+                  "best results come with the actual input files (add them, then bring them in again).")
+
+
+def _make_stand_ins(s: Session, base_path: Path, macro: str, stage, say) -> str | None:
+    """The missing files of the import table, made by the assistant from the model's own numbers and
+    proven with the model's own macro before anything is kept (app/stand_in_inputs.py); then kept as
+    picked files marked stand_in (a real file of the same name replaces one). None: nothing missing."""
+    rows = _match_rows(s)
+    missing = [r for r in rows if not r.get("file")]
+    if not missing:
+        return None
+    ask = stand_in_inputs.assistant_ask()
+    if ask is None:
+        raise _BringInStopped("The assistant is not set up, so it cannot make the missing input files: "
+                              "add the actual files, or paste an AI key under Advanced › Assistant.")
+    need = [f"{r['sheet']}!{r['cell']}" for r in missing]
+    real: dict[str, Path] = {}
+    for r in rows:
+        p = _input_path(s, r.get("file"))
+        if p is not None and p.is_file():
+            real[f"{r['sheet']}!{r['cell']}"] = p
+    stage("stand_ins", f"Making {len(need)} stand-in input file{'' if len(need) == 1 else 's'} with the assistant")
+    work = s.work_dir / "stand_ins" / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    excel_worker.release(s.id)  # the stand-in steps open the model in Excels of their own
+    with perf_stage("outside_inputs_stand_ins", file=base_path.name, files=len(need)):
+        made = stand_in_inputs.make_stand_ins(base_path, rows, need, macro, model_map_module.read_vba(base_path), work, ask,
+                                              real_files=real, messages=((s.outside_inputs or {}).get("vba") or {}).get("messages") or [],
+                                              progress=say)
+    s.outside_run["stand_ins"] = {"ok": bool(made.get("ok")), "explain": made.get("explain"), "files": sorted(p.name for p in (made.get("files") or {}).values()),
+                                  "left_out": list(made.get("left_out") or []),
+                                  "attempts": [{"n": a.get("n"), "problem": a.get("problem"), "details": a.get("details")} for a in made.get("attempts") or []]}
+    if not made.get("ok"):
+        n = len(made.get("attempts") or [])
+        raise _BringInStopped(f"The assistant could not make input files the workbook's macro accepts ({n} attempt{'' if n == 1 else 's'}): "
+                              f"{made.get('problem')}. Nothing was changed: add the actual input files.")
+    if not made["files"] and not real:
+        raise _BringInStopped("The model holds no data for its input files, so the assistant had nothing to make stand-ins from. "
+                              "Nothing was changed: add the actual input files.")
+    for path in made["files"].values():
+        dest = _input_folder(s) / Path(path).name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+        _keep_input(s, dest)["stand_in"] = True
+    _rematch(s)
+    left = [next((str(r.get("expected") or (r.get("keys") or [None])[0] or k) for r in missing if f"{r['sheet']}!{r['cell']}" == k), k)
+            for k in made.get("left_out") or []]
+    if left:
+        return (_STAND_IN_NOTE + f" No stand-in for {', '.join(left[:6])}{' ...' if len(left) > 6 else ''}: the model holds no data for "
+                f"{'it' if len(left) == 1 else 'them'} and zeros would change a result, so {'its block stays' if len(left) == 1 else 'their blocks stay'} as the model holds {'it' if len(left) == 1 else 'them'}.")
+    return _STAND_IN_NOTE
+
+
+def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stage, say, stand_ins: bool = False) -> dict[str, Any]:
     """The job: the workbook's own import macro on a copy of `base` with the matched files -> the
     "import" version -> its scan (every sheet: a formula that reads an import area may be anywhere)
     -> each area a Mind input, on a copy -> every computed value of that copy compared with the
@@ -2278,6 +2336,7 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
 
     oi = s.outside_inputs or {}
     macro = oi["vba"]["import_macro"]
+    made_note = _make_stand_ins(s, s.paths[base["id"]], macro, stage, say) if stand_ins else None
     rows = (oi.get("match") or {}).get("rows") or []
     files: dict[str, Path] = {}
     for r in rows:
@@ -2290,8 +2349,11 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
     imported = run_dir / "import" / base_path.name
     excel_worker.release(s.id)  # one Excel per session: the macro runs in an Excel of its own
     stage("import", f"Running the workbook's import macro {macro} with {len(files)} file{'' if len(files) == 1 else 's'}")
+    # a stand-in is not a real import: its row of the import table keeps the model's own status
+    restore = {f"{r['sheet']}!{r['cell']}" for r in rows if r.get("file") in _stand_in_names(s)}
     with perf_stage("outside_inputs_import", file=base_path.name, files=len(files)):
-        report = outside_inputs.run_import(base_path, rows, files, macro, imported, run_dir, progress=say, messages=oi["vba"].get("messages") or [])
+        report = outside_inputs.run_import(base_path, rows, files, macro, imported, run_dir, progress=say, messages=oi["vba"].get("messages") or [],
+                                           **({"restore_rows": restore} if restore else {}))
     if not _import_ok(report) or not imported.is_file():
         raise _BringInStopped(_import_stopped(report))
     s.current_version_id = base["id"]  # the new line starts from the version the macro ran on
@@ -2301,6 +2363,9 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
         "import": _import_public(report, v_import), "mindInputs": None, "versions": [v_import["id"]], "download": None, "numbers": None,
         "base_version_id": base["id"], "notes": [note] if note else [],
     }
+    if made_note:
+        result["notes"].append(made_note)
+        result["standIns"] = s.outside_run.get("stand_ins")
     not_picked = [str(e.get("expected") or e.get("cell")) for e in report.get("files") or [] if not e.get("file")]
     if not_picked:
         result["notes"].append(f"Not picked, so their data stays in the workbook as it was: {', '.join(not_picked[:6])}" + (" ..." if len(not_picked) > 6 else "") + ".")
@@ -2357,10 +2422,12 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
     with contextlib.suppress(Exception):  # INP-010 of the last scan ran before this record
         _patch_outside_finding(s, s.result)
     result["summary"] = _bring_in_summary(report, made, result["numbers"], note)
+    if _stand_in_names(s) & {str(r.get("file")) for r in rows}:
+        result["summary"] += " " + _STAND_IN_NOTE
     return result
 
 
-def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool) -> None:
+def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stand_ins: bool = False) -> None:
     st = s.outside_run
 
     def stage(name: str, message: str) -> None:
@@ -2377,7 +2444,7 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
         return f"{short} holds the outside data, but the rest did not finish: {text}"
 
     try:
-        st["result"] = _bring_in(s, base, note, check_numbers, stage, say)
+        st["result"] = _bring_in(s, base, note, check_numbers, stage, say, stand_ins)
         st.update(state="done", stage="done", title="Done", message=st["result"]["summary"])
     except _MindInputsRefused as exc:  # says which version holds the outside data itself
         st.update(state="error", error=str(exc))
@@ -2416,7 +2483,13 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
         raise HTTPException(status_code=422, detail="Which macro brings the outside files in is not clear: they cannot be brought in automatically.")
     if not oi["table"]:
         raise HTTPException(status_code=422, detail="No cell of the workbook names the outside files: they cannot be brought in automatically.")
-    if not (oi.get("match") or {}).get("matched"):
+    # standIns: the assistant makes the missing files from the model's own numbers first (the user has
+    # only the workbook, or some of the files); best results come with the actual files
+    missing = [r for r in _match_rows(s) if not r.get("file")]
+    stand_ins = bool(payload.get("standIns")) and bool(missing)
+    if stand_ins and not llm_available():
+        raise HTTPException(status_code=409, detail="The assistant is not set up, so it cannot make the missing input files: add the actual files, or paste an AI key under Advanced › Assistant.")
+    if not stand_ins and not (oi.get("match") or {}).get("matched"):
         raise HTTPException(status_code=422, detail="None of the picked files goes with the workbook: add the outside files first.")
     if not com_available():
         raise HTTPException(status_code=409, detail="Bringing in the outside files needs Excel on this machine.")
@@ -2430,12 +2503,11 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
         raise HTTPException(status_code=422, detail=f"{base['label'].split(' — ')[0]} has no macros left to run: bring the outside files in on the uploaded workbook.")
     if not s.apply_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Wait a moment: changes are still being written.")
-    s.outside_skipped = False  # bringing them in takes back "go on without them"
     now = time.time()
     s.outside_run = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now, "finished": None,
                      "result": None, "error": None, "versions": [], "base_version_id": base["id"]}
     try:
-        threading.Thread(target=_bring_in_worker, args=(s, base, note, bool(payload.get("checkNumbers", True))), name=f"outside-inputs-{session_id}", daemon=True).start()
+        threading.Thread(target=_bring_in_worker, args=(s, base, note, bool(payload.get("checkNumbers", True)), stand_ins), name=f"outside-inputs-{session_id}", daemon=True).start()
     except Exception:
         s.outside_run.update(state="error", error="the job could not start", finished=time.time())
         s.apply_lock.release()
@@ -2464,6 +2536,8 @@ def outside_inputs_state(session_id: str) -> dict[str, Any]:
         "versions": list(st.get("versions") or []),
         "incident": st.get("incident"),
         "problem": st.get("problem"),
+        # the stand-in files the assistant made (or tried to): each try's outcome, also when it failed
+        "standIns": st.get("stand_ins"),
     }
 
 
@@ -2478,41 +2552,12 @@ def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str
         raise HTTPException(status_code=422, detail="Pick the input files to add.")
     _check_input_names([Path(f.filename or "").name for f in picked])
     main_key = outside_inputs.normalize_name(_main_name(s))
-    added: set[str] = set()
     for f in picked:
         if outside_inputs.normalize_name(Path(f.filename or "").name) != main_key:  # the workbook is not its own input
-            added.add(_keep_input(s, _save_upload(f, _input_folder(s)))["name"])
+            _keep_input(s, _save_upload(f, _input_folder(s)))
     _rematch(s)
-    if any(r.get("file") in added for r in _match_rows(s)):
-        s.outside_skipped = False  # a file the macro reads was added: it is meant to be brought in
     _patch_outside_finding(s, s.result)
     return {"inputs": _inputs_public(s), "outsideInputs": _outside_public(s), "readiness": s.readiness()}
-
-
-@app.post("/api/sessions/{session_id}/outside-inputs/skip")
-def skip_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Go on without the outside files (`skip`, default true), or take that back (`skip: false`): the
-    data the import macro brought in last stays in the workbook as plain numbers. Mind runs on them
-    and cannot swap them each quarter, so INP-010 warns instead of blocking and Do everything leaves
-    the bring-in out. For a user who has only the workbook. Adding input files or starting a bring-in
-    takes the choice back; refused (409) once the line went through a bring-in (bring them in again)."""
-    s = _session(session_id)
-    _refuse_while_bringing_in(s)
-    if not s.outside_inputs:
-        raise HTTPException(status_code=422, detail="Nothing to go on without: the workbook's macros open no outside file.")
-    skip = bool((payload or {}).get("skip", True))
-    if skip:
-        brought_in, why_not = _brought_in_state(s) if s.versions else (False, None)
-        if brought_in:
-            raise HTTPException(status_code=409, detail="The outside files are brought in already: nothing to go on without.")
-        if why_not:
-            raise HTTPException(status_code=409, detail=f"This workbook went through a bring-in already ({why_not}): bring the files in again instead.")
-    s.outside_skipped = skip
-    _patch_outside_finding(s, s.result)
-    out: dict[str, Any] = {"outsideInputs": _outside_public(s), "readiness": s.readiness()}
-    if s.result:
-        out["report"] = {k: v for k, v in s.result["validation_report"].items() if k != "_version_id"}
-    return out
 
 
 # --- fix all automatically ----------------------------------------------------------------

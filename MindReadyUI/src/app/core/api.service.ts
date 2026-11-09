@@ -3,7 +3,7 @@ import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, ValidationReport, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -58,16 +58,9 @@ export class ApiService {
 
   /** Starts bringing the outside files in (a background job: the model's own import macro, then the
    *  Mind inputs); refused (409) while another long job runs on the session. */
-  startOutsideInputs(id: string): Promise<{ running: boolean }> {
-    return firstValueFrom(this.http.post<{ running: boolean }>(`${this.s(id)}/outside-inputs/run`, {}));
-  }
-
-  /** Go on without the outside files (`skip`), or take that back: the model keeps the numbers its macro
-   *  brought in last, INP-010 warns instead of blocking. Answers the new card, verdict and findings. */
-  skipOutsideInputs(id: string, skip = true): Promise<{ outsideInputs: OutsideInputs | null; readiness?: Readiness | null; report?: ValidationReport }> {
-    return firstValueFrom(
-      this.http.post<{ outsideInputs: OutsideInputs | null; readiness?: Readiness | null; report?: ValidationReport }>(`${this.s(id)}/outside-inputs/skip`, { skip }),
-    );
+  startOutsideInputs(id: string, standIns = false): Promise<{ running: boolean }> {
+    // standIns: the assistant first makes the missing files from the numbers the model holds
+    return firstValueFrom(this.http.post<{ running: boolean }>(`${this.s(id)}/outside-inputs/run`, standIns ? { standIns: true } : {}));
   }
 
   /** Where that job is (stage), and its result or error once it has ended. */

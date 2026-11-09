@@ -19,18 +19,28 @@ uploading the model again.
 4. Download the model and **Mind inputs.zip** (one CSV per input). Run in Mind uploads both.
    Each quarter: put the new CSVs in Mind's **Inputs** window, then Run.
 
-### Only the workbook, no input files
+### Without the input files: stand-ins made with the assistant (`app/stand_in_inputs.py`)
 
-The app still finds what the macro reads and lists every file as missing; INP-010 blocks and
-"Do everything" stops at its first step, saying what to do. Two ways on:
+When files are missing, **Make them with AI** on the Outside files card (and "Do everything",
+behind the scenes, when the assistant is set up) has the assistant make them:
 
-- **Add files** on the Outside files card (or drop them there): no new upload of the model.
-- **Go on without them** (same card): the model keeps the numbers its macro brought in last
-  (they are saved in the workbook as plain values). Mind runs on those numbers but cannot swap
-  them each quarter. INP-010 becomes a warning, the banner no longer blocks on it, and "Do
-  everything" leaves the bring-in out. **Undo** on the card takes the choice back; adding a
-  file or starting a bring-in takes it back too. Offered only while the version never went
-  through a bring-in (`POST /api/sessions/{id}/outside-inputs/skip`, body `{"skip": true|false}`).
+1. The assistant reads the import macro (the VBA of the import chain), the import table and the
+   shape of every sheet the files fill (where its labels, constant numbers and formulas are).
+2. It answers with a small recipe per file: the fixed cells the macro searches for ("Description")
+   and the blocks to copy from the model (values only, transposed when the macro transposes), or
+   a block of zeros where the model holds no data (its file was missing when the model last ran).
+3. The app builds the files in an Excel of its own **from the numbers the model already holds**,
+   runs the model's own macro on a copy with them, and checks every cell of every area the macro
+   writes against the model (a 0 where the model is empty counts as equal), then every computed
+   value. When something differs, the assistant is shown what happened -- the macro's message
+   boxes, the cells that differ -- and tries again (4 tries, low thinking effort: ~1 min a try).
+   Zeros that would change a result are left out: that block stays as the model holds it.
+4. The proven files become the session's input files, marked **stand-in**, and the usual bring-in
+   follows: Mind inputs, CSVs, the numbers check. INP-010 then warns (it does not block): best
+   results come with the actual input files. Adding an actual file replaces its stand-in, and the
+   files are brought in again.
+
+Without an AI key the app says so and asks for the actual files.
 
 ## How it works (`app/outside_inputs.py`)
 

@@ -694,7 +694,7 @@ def _pid_alive(pid: int) -> bool:
 
 def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path], macro: str, out_path: Path,
                work_dir: Path, timeout_s: int = 900, progress: ProgressFn | None = None,
-               messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+               messages: list[dict[str, Any]] | None = None, restore_rows: Iterable[str] | None = None) -> dict[str, Any]:
     """Run the workbook's own import macro on a copy with the picked files, watch it, save
     the result to `out_path` (path cells restored to their formulas).
 
@@ -703,6 +703,10 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
     "file not found"; both are put back from the upload).
 
     messages: scan_vba(...)["messages"] -- to show a message box's text as the VBA source writes it.
+
+    restore_rows: rows ("sheet!cell") whose import-table row gets the upload's own content back after
+    the run, as for a missing file: a stand-in file (app/stand_in_inputs.py) is not a real import, so
+    the macro's own bookkeeping there (the time of the import, "file not found") stays as it was.
 
     Returns {ok, macro, seconds, files: [{cell, file, expected, exact, opened, areas, cleared}],
     kept: [...], dialogs: [{title, message, message_repaired, source, buttons, pressed}],
@@ -816,6 +820,8 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
             ws, _row = row_cells[e["cell"]]
             ws.Range(e["cell"].split("!", 1)[1]).Formula = originals[e["cell"]]
         missing = [e for e in report["files"] if not e["file"]]
+        again = set(restore_rows or ())
+        missing += [e for e in report["files"] if e["file"] and e["cell"] in again]
         if missing or seen["orphans"]:
             orig_copy = run_dir / ("upload_" + workbook.name)
             shutil.copy2(workbook, orig_copy)

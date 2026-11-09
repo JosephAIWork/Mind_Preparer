@@ -176,6 +176,7 @@ def chat_completion(
     temperature: float = 0.2,
     timeout: int = 120,
     on_delta: Callable[[str], None] | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Send a multi-turn conversation (`messages`: [{role: user|assistant,
     content: str}, ...]) through the gateway's Anthropic Messages
@@ -183,7 +184,9 @@ def chat_completion(
     {available, text, message}. With `on_delta` the reply is streamed and
     every text chunk is passed to it as it arrives; a gateway that answers a
     streamed request with plain JSON is read the old way. `temperature` is
-    only sent to models that accept it (see `_takes_temperature`)."""
+    only sent to models that accept it (see `_takes_temperature`); `effort`
+    replaces MIND_READY_EFFORT for this call (a task that needs the model to
+    think, such as reading a macro: app/stand_in_inputs.py)."""
     found = find_api_key()
     if found is None:
         return {"available": False, "text": None, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
@@ -202,8 +205,8 @@ def chat_completion(
             payload["temperature"] = temperature
         else:
             payload["max_tokens"] = max_tokens + THINKING_HEADROOM_TOKENS
-            if MODEL_EFFORT:
-                payload["output_config"] = {"effort": MODEL_EFFORT}
+            if effort or MODEL_EFFORT:
+                payload["output_config"] = {"effort": effort or MODEL_EFFORT}
         stream = on_delta is not None and _streaming_on()
         if stream:
             payload["stream"] = True

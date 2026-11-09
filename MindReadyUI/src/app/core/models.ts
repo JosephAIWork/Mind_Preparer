@@ -764,6 +764,8 @@ export interface OutsideInputRow {
   /** the picked file that goes with this row (null: missing) */
   file: string | null;
   how: "exact" | "key" | null;
+  /** that file is a stand-in the assistant made from the numbers the model holds, not the user's */
+  stand_in?: boolean;
   /** the picked files that could fit, when more than one does */
   candidates: string[];
 }
@@ -789,13 +791,18 @@ export interface OutsideInputs {
   brought_in_reason?: string | null;
   /** the Mind inputs (/Input grids) the bring-in made for the current line */
   mind_inputs?: string[];
-  /** the user chose to go on without the files: the model keeps the numbers it holds (INP-010 warns) */
-  skipped?: boolean;
+  /** the matched files the assistant made (stand-ins from the model's own numbers): best results come
+   *  with the actual files */
+  stand_ins?: string[];
+  /** the assistant is set up: it can make the missing files ("Make them with AI") */
+  assistant?: boolean;
 }
 
 export interface InputFile {
   name: string;
   bytes: number;
+  /** made by the assistant, not picked by the user */
+  stand_in?: boolean;
 }
 
 export interface OutsideImportFile {
@@ -857,6 +864,9 @@ export interface OutsideRunResult {
   numbers?: { ran?: boolean; clean?: boolean | null; verdict?: string; counts?: Record<string, number> } | null;
   /** what the user should know, in plain words (a file not picked, an area that stays inside the model) */
   notes?: string[];
+  /** the stand-in files the assistant made first (when the user had none): how the macro reads a file,
+   *  the rows left without one, and each attempt's outcome */
+  standIns?: { ok: boolean; explain?: string | null; files?: string[]; left_out?: string[]; attempts?: { n: number; problem: string | null; details?: string[] }[] } | null;
 }
 
 /** GET .../outside-inputs: the background job that brings the outside files in. */
@@ -874,6 +884,8 @@ export interface OutsideRunStatus {
   /** the latest progress line of the stage, and the seconds since the job started */
   message?: string | null;
   elapsed_s?: number;
+  /** the stand-in files the assistant made (or tried to): each try's outcome, also when it failed */
+  standIns?: OutsideRunResult["standIns"];
 }
 
 /** The model workbook itself (the main file of an upload). */
@@ -1004,10 +1016,24 @@ export function outsideButtonLabel(o: OutsideInputs, failed: boolean): string {
 export function outsideSkipReason(o: OutsideInputs | null, unchecked = false): string {
   if (!o) return "The model's macros open no outside files";
   if (o.brought_in) return unchecked ? "Already brought in (the computed values were not checked)" : "Already brought in";
-  if (o.skipped) return "Going on without the outside files: the model keeps the numbers it holds";
   if (!o.rows.length) return "No cell names the files the macro opens: their data stays inside the model";
   if (!o.macro) return "Which macro brings the outside files in is not clear: their data stays inside the model";
   return "";
+}
+
+/** The warning while stand-ins the assistant made are in use, or "": they reproduce the numbers the
+ *  model holds, but the actual files are what the model was built for. */
+export function outsideStandInLine(o: OutsideInputs | null): string {
+  const n = o?.stand_ins?.length ?? 0;
+  if (!o || !n) return "";
+  return `${n === o.rows.length ? "All" : `${n} of ${o.rows.length}`} input files are stand-ins the AI assistant made from the numbers the model already holds. Best results come with the actual input files: add them, then bring them in again.`;
+}
+
+/** What to do when files are missing, in words: add them, or let the assistant make them. */
+export function outsideAddLine(o: OutsideInputs | null): string {
+  return o?.assistant
+    ? `Add the model's input files on the Outside files card (Add files), or press "Make them with AI" there: the assistant makes stand-ins from the numbers the model holds (best results come with the actual files).`
+    : "Add the model's input files on the Outside files card (Add files).";
 }
 
 /** The card's line when the current line no longer counts as brought in (the server's reason), or "". */
@@ -1019,25 +1045,30 @@ export function outsideReasonLine(o: OutsideInputs | null): string {
 /** "Bring in the outside files" when the server's estimate has no such step, with the measures of
  *  app/estimate.py: the model's own import macro and the making of the Mind inputs each start Excel,
  *  open and save the workbook; each new version is scanned again; the numbers check opens both. */
-export function outsideStepEstimate(basis: Partial<ChainEstimate["basis"]> | undefined): ChainEstimateStep {
+export function outsideStepEstimate(basis: Partial<ChainEstimate["basis"]> | undefined, standIns = false): ChainEstimateStep {
   const mb = Math.max(0, basis?.file_mb ?? 0);
   const scan = basis?.scan_s && basis.scan_s > 0 ? basis.scan_s : 30;
   const open = 5 + 8 + 0.3 * mb;
   const save = 10 + 0.18 * mb;
   const fixed = 2 * (open + save) + 10 + 2 * (open + 10 + save) + 0.2 * scan; // import, Mind inputs, numbers check
+  // stand-ins: the assistant reads the macro (1-3 min a try, up to 3 tries), the files are built, the
+  // macro runs once more on them and every computed value is compared
+  const made = standIns ? { low: 90 + 2 * (open + save), mid: 240 + 3 * (open + save), high: 3 * 300 + 6 * (open + save) } : { low: 0, mid: 0, high: 0 };
   return {
     id: "outside",
-    low_s: Math.round(fixed + 10 + 2 * 0.7 * scan),
-    mid_s: Math.round(fixed + 60 + 2 * 1.2 * scan),
-    high_s: Math.round(fixed + 300 + 2 * 1.5 * scan),
-    why: "the model's own import macro (seconds to minutes, by the number of files), the Mind inputs, two scans and the numbers check",
+    low_s: Math.round(fixed + 10 + 2 * 0.7 * scan + made.low),
+    mid_s: Math.round(fixed + 60 + 2 * 1.2 * scan + made.mid),
+    high_s: Math.round(fixed + 300 + 2 * 1.5 * scan + made.high),
+    why:
+      (standIns ? "the AI assistant making the missing input files (checked with the model's own macro), then " : "") +
+      "the model's own import macro (seconds to minutes, by the number of files), the Mind inputs, two scans and the numbers check",
   };
 }
 
 /** The chain's estimate with the outside step in it when that step will run and the server did not count it. */
-export function withOutsideStep(e: ChainEstimate | null, include: boolean): ChainEstimate | null {
+export function withOutsideStep(e: ChainEstimate | null, include: boolean, standIns = false): ChainEstimate | null {
   if (!e || !include || e.steps.some((s) => s.id === "outside")) return e;
-  const step = outsideStepEstimate(e.basis);
+  const step = outsideStepEstimate(e.basis, standIns);
   return {
     ...e,
     steps: [step, ...e.steps],

@@ -112,23 +112,21 @@
                   [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in || oi.brought_in_reason ? 'Starts again from the version before the first bring-in' : '')"
                 >{{ outsideButton(oi) }}</button>
               }
-              @if (!oi.brought_in && !oi.brought_in_reason && !oi.skipped) {
+              @if (oi.missing.length && oi.assistant && (!oi.brought_in || outsideFailed())) {
+                <!-- no files: the assistant reads the import macro and makes stand-ins from the model's own numbers -->
                 <button
-                  cdsButton="ghost"
+                  cdsButton="secondary"
                   size="md"
-                  (click)="skipOutside(true)"
-                  [disabled]="busy() || skippingOutside()"
-                  [title]="busyHint() || 'No files? The model keeps the numbers it already holds (from the last time its macro ran). Mind runs on them but cannot swap them each quarter.'"
-                >Go on without them</button>
+                  (click)="runOutside(false, true)"
+                  [disabled]="busy()"
+                  [title]="busyHint() || 'The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.'"
+                >Make them with AI</button>
               }
             </div>
           }
         </div>
-        @if (oi.skipped) {
-          <p class="outside__skipped">
-            Going on without the outside files: the model keeps the numbers it already holds, and Mind cannot swap them each quarter.
-            <button class="link" (click)="skipOutside(false)" [disabled]="busy() || skippingOutside()">Undo</button>
-          </p>
+        @if (standInLine(oi); as line) {
+          <p class="outside__standin">{{ line }}</p>
         }
         @if (oi.rows.length) {
           <ul class="outside__rows">
@@ -137,12 +135,17 @@
                 <bdi>{{ rowLabel(r) }}</bdi>
                 <span class="outside__arrow">→</span>
                 <bdi class="outside__file">{{ r.file || "missing" }}</bdi>
+                @if (r.stand_in) { <span class="outside__tag" title="Made by the AI assistant from the numbers the model holds">stand-in</span> }
                 @if (!r.file && r.candidates.length) { <span class="outside__note">could be <bdi>{{ r.candidates.join(" or ") }}</bdi></span> }
                 @if (r.target_sheet) { <span class="outside__note">(fills <bdi>{{ r.target_sheet }}</bdi>)</span> }
               </li>
             }
           </ul>
-          @if (oi.missing.length) { <p class="outside__note">A missing file keeps the data the model already holds.</p> }
+          @if (oi.missing.length) {
+            <p class="outside__note">
+              A missing file keeps the data the model already holds{{ oi.assistant ? ", unless the AI assistant makes a stand-in for it (best results come with the actual input files)" : "" }}.
+            </p>
+          }
         }
         @if (oi.extra.length) { <p class="outside__note">Not used: <bdi>{{ oi.extra.join(", ") }}</bdi></p> }
         @if (addingInputs()) { <cds-inline-loading [state]="'active'" loadingText="Adding the files…"></cds-inline-loading> }

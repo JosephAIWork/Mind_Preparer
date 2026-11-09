@@ -17,7 +17,7 @@ import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from app import model_map, outside_inputs
+from app import model_map, outside_inputs, stand_in_inputs
 from app.estimate import estimate_mind_run
 from app.readiness import compute_readiness
 from app.validators.io import inp_010
@@ -105,8 +105,9 @@ def _wait(client, sid: str, timeout: float = 120) -> dict:
 
 # --- the Excel steps, replaced ------------------------------------------------------------------
 def _fake_run_import(calls: list, gate: threading.Event | None = None, stopped: bool = False):
-    def run_import(workbook, rows, files, macro, out_path, work_dir, timeout_s=900, progress=None, messages=None):
-        calls.append({"workbook": Path(workbook), "rows": rows, "files": dict(files), "macro": macro, "messages": messages})
+    def run_import(workbook, rows, files, macro, out_path, work_dir, timeout_s=900, progress=None, messages=None, restore_rows=None):
+        calls.append({"workbook": Path(workbook), "rows": rows, "files": dict(files), "macro": macro, "messages": messages,
+                      "restore_rows": sorted(restore_rows or [])})
         if gate is not None:
             assert gate.wait(60)
         if progress:
@@ -490,71 +491,6 @@ def test_inp_010_says_what_is_left_to_do():
     unfinished = inp_010(None, {}, {"outside_inputs": {**oi, "brought_in_reason": "the last bring-in did not finish"}})
     assert unfinished["status"] == "ERROR" and ": the last bring-in did not finish (5 of 6 picked" in unfinished["message"]
     assert inp_010(None, {}, {"outside_inputs": {**oi, "brought_in": True, "brought_in_reason": "ignored"}})["status"] == "PASS"
-    # the user has only the workbook and chose to go on without the files: a warning, not a block
-    went_on = inp_010(None, {}, {"outside_inputs": {**oi, "matched": 0, "skipped": True}})
-    assert went_on["status"] == "WARNING" and went_on["observed"]["skipped"] is True and went_on["message"] == (
-        "You chose to go on without the outside files: the data the macro calcCF brought in last stays in the workbook as plain numbers. "
-        "Mind runs on those numbers and cannot swap them each quarter; to make them Mind inputs, add the files and use Bring in the outside files.")
-    # a line that went through a bring-in is not "without the files": still asked to bring them in again
-    assert inp_010(None, {}, {"outside_inputs": {**oi, "skipped": True, "brought_in_reason": "the last bring-in did not finish"}})["status"] == "ERROR"
-    assert inp_010(None, {}, {"outside_inputs": {**oi, "skipped": True, "brought_in": True}})["status"] == "PASS"
-
-
-def test_with_only_the_workbook_the_user_can_go_on_without_the_files_and_take_it_back(client, macros, tmp_path):
-    main = _main_book(tmp_path)
-    body = _upload_picked(client, main, [])  # the workbook alone
-    sid = body["sessionId"]
-    s = server.SESSIONS[sid]
-    oi = body["outsideInputs"]
-    assert oi["matched"] == 0 and len(oi["missing"]) == 6 and oi["skipped"] is False and oi["brought_in"] is False
-    assert _finding(body["report"])["status"] == "ERROR" and body["readiness"]["next_step"]["label"] == "Bring in the outside files"
-    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 422  # nothing to bring in with
-    # go on without them: INP-010 warns, nothing blocks on it, the next step is no longer the bring-in
-    res = client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={})
-    assert res.status_code == 200, res.text
-    out = res.json()
-    assert out["outsideInputs"]["skipped"] is True and s.outside_skipped is True
-    f = _finding(out["report"])
-    assert f["status"] == "WARNING" and f["message"].startswith("You chose to go on without the outside files: the data the macro calcCF brought in last")
-    assert "INP-010" not in out["report"]["summary"]["blocking_rule_ids"]
-    assert all(b["rule_id"] != "INP-010" for b in out["readiness"]["blocking"])
-    assert (out["readiness"]["next_step"] or {}).get("label") != "Bring in the outside files"
-    assert [v["id"] for v in s.versions] == ["ver-001"]  # the workbook itself is not touched
-    # a new scan (as after every fix) keeps the choice
-    again = client.post(f"/api/sessions/{sid}/reanalyze", json={})
-    assert again.status_code == 200, again.text
-    assert _finding(again.json()["report"])["status"] == "WARNING" and again.json()["outsideInputs"]["skipped"] is True
-    assert client.get(f"/api/sessions/{sid}").json()["outsideInputs"]["skipped"] is True
-    # take it back: blocking again
-    back = client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={"skip": False}).json()
-    assert back["outsideInputs"]["skipped"] is False and _finding(back["report"])["status"] == "ERROR"
-    assert back["readiness"]["next_step"]["label"] == "Bring in the outside files"
-    # go on without them again; a file the macro does not read leaves the choice as it is
-    assert client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={}).json()["outsideInputs"]["skipped"] is True
-    other = client.post(f"/api/sessions/{sid}/inputs", files=[_part("notes.csv", b"x")]).json()
-    assert other["outsideInputs"]["skipped"] is True and other["outsideInputs"]["extra"] == ["notes.csv"]
-    # a file it reads: meant to be brought in, the choice is taken back
-    added = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"an input file")]).json()
-    assert added["outsideInputs"]["skipped"] is False and added["outsideInputs"]["matched"] == 1
-    assert _finding(s.result["validation_report"])["status"] == "ERROR"
-
-
-def test_go_on_without_the_files_is_refused_after_a_bring_in_and_a_bring_in_takes_it_back(client, macros, excel_steps, tmp_path):
-    main = _main_book(tmp_path)
-    sid = _upload_picked(client, main, INPUTS)["sessionId"]
-    s = server.SESSIONS[sid]
-    # chosen first (allowed: never brought in), then a bring-in starts: the choice is taken back
-    assert client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={}).status_code == 200 and s.outside_skipped is True
-    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
-    st = _wait(client, sid)
-    assert st["state"] == "done" and s.outside_skipped is False
-    assert st["outsideInputs"]["brought_in"] is True and st["outsideInputs"]["skipped"] is False
-    # brought in: nothing to go on without
-    res = client.post(f"/api/sessions/{sid}/outside-inputs/skip", json={})
-    assert res.status_code == 409 and "brought in already" in res.json()["detail"]
-    # a workbook whose macros open nothing has nothing to go on without
-    plain = _upload_picked(client, _main_book(tmp_path / "plain", name="plain.xlsx"), [])["sessionId"]
-    assert client.post(f"/api/sessions/{plain}/outside-inputs/skip", json={}).status_code == 422
 
 
 def test_the_next_step_brings_the_outside_files_in_before_prep():
@@ -849,3 +785,103 @@ def test_the_fingerprint_follows_the_content_of_the_matched_files(tmp_path):
     s.inputs = [{"name": "a.xlsm", "path": "x", "bytes": 1, "sha256": "1" * 64}]
     assert server._inputs_fingerprint(s, rows) == first
     assert server._inputs_fingerprint(s, [rows[0], {**rows[1], "file": "a.xlsm"}]) != first  # a row matched since
+
+
+# --- 7. no input files: stand-ins made with the assistant ------------------------------------------------
+def _fake_stand_ins(calls: list, ok: bool = True, left_out: tuple = ()):
+    """make_stand_ins replaced: one file per row asked for, named as the model expects (or nothing)."""
+    def make(model, rows, need, macro, modules, work_dir, ask, real_files=None, messages=None, progress=None, **_k):
+        calls.append({"need": list(need), "real": sorted(real_files or {}), "macro": macro, "ask": ask("system", "user")})
+        if progress:
+            progress("Asking the assistant how the input files look (attempt 1 of 3)")
+        if not ok:
+            return {"ok": False, "files": {}, "left_out": [], "explain": None, "problem": "the assistant did not answer",
+                    "attempts": [{"n": n, "problem": "the assistant did not answer", "details": []} for n in (1, 2, 3)]}
+        work_dir = Path(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        by_key = {f"{r['sheet']}!{r['cell']}": r for r in rows}
+        files = {}
+        for k in need:
+            if k in left_out:
+                continue
+            p = work_dir / f"2026Q1_2026_{by_key[k]['keys'][0]}.xlsm"
+            p.write_bytes(b"a stand-in")
+            files[k] = p
+        return {"ok": True, "files": files, "left_out": list(left_out), "explain": "Items down, months across.", "problem": None,
+                "numbers": {"ran": True, "clean": True}, "attempts": [{"n": 1, "problem": None, "details": []}]}
+
+    return make
+
+
+def _assistant_on(monkeypatch, calls: list, **kw) -> None:
+    monkeypatch.setattr(server, "llm_available", lambda: True)
+    monkeypatch.setattr(stand_in_inputs, "assistant_ask", lambda: (lambda system, user: "the assistant's answer"))
+    monkeypatch.setattr(stand_in_inputs, "make_stand_ins", _fake_stand_ins(calls, **kw))
+
+
+def test_with_only_the_workbook_the_assistant_makes_stand_ins_that_are_brought_in(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, [])["sessionId"]  # the workbook alone
+    s = server.SESSIONS[sid]
+    monkeypatch.setattr(server, "llm_available", lambda: False)
+    assert client.get(f"/api/sessions/{sid}").json()["outsideInputs"]["assistant"] is False
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"standIns": True})
+    assert res.status_code == 409 and "The assistant is not set up" in res.json()["detail"]
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 422  # nothing picked, nothing to make
+    calls: list = []
+    _assistant_on(monkeypatch, calls)
+    assert client.get(f"/api/sessions/{sid}").json()["outsideInputs"]["assistant"] is True
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"standIns": True})
+    assert res.status_code == 202, res.text
+    st = _wait(client, sid)
+    assert st["state"] == "done", st
+    (call,) = calls
+    assert call["need"] == [f"Ctrl_01!H{r}" for r in range(35, 41)] and call["real"] == [] and call["macro"] == "calcCF"
+    assert call["ask"] == "the assistant's answer"  # the app's assistant is what the job asks
+    oi = st["outsideInputs"]
+    assert oi["matched"] == 6 and oi["brought_in"] is True and sorted(oi["stand_ins"]) == sorted(INPUTS) and all(r["stand_in"] for r in oi["rows"])
+    assert all(i["stand_in"] for i in st["inputs"])
+    assert len(excel_steps["import"][0]["files"]) == 6  # the macro ran on the stand-ins
+    # and their rows of the import table keep the model's own status (a stand-in is not a real import)
+    assert excel_steps["import"][0]["restore_rows"] == [f"Ctrl_01!H{r}" for r in range(35, 41)]
+    result = st["result"]
+    assert result["summary"].endswith("best results come with the actual input files (add them, then bring them in again).")
+    assert result["standIns"]["ok"] is True and result["standIns"]["explain"] == "Items down, months across."
+    f = _finding(s.result["validation_report"])
+    assert f["status"] == "WARNING" and "6 of 6 are stand-ins the assistant made from the numbers the model already holds" in f["message"]
+    assert "Best results come with the actual input files" in f["message"] and f["observed"]["stand_ins"] == oi["stand_ins"]
+    assert all(b["rule_id"] != "INP-010" for b in s.readiness()["blocking"])
+    # the actual file arrives: it replaces its stand-in, and the line has to be brought in again
+    out = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"the real BBA_01")]).json()
+    assert INPUTS[0] not in out["outsideInputs"]["stand_ins"] and len(out["outsideInputs"]["stand_ins"]) == 5
+    assert out["outsideInputs"]["brought_in"] is False and out["outsideInputs"]["brought_in_reason"] == "the input files changed since they were brought in"
+    assert _finding(s.result["validation_report"])["status"] == "ERROR"
+
+
+def test_stand_ins_only_for_the_missing_files_a_failure_changes_nothing_and_empty_areas_are_said(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS[:4])["sessionId"]
+    s = server.SESSIONS[sid]
+    calls: list = []
+    _assistant_on(monkeypatch, calls, ok=False)
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"standIns": True}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "error" and st["error"] == (
+        "The assistant could not make input files the workbook's macro accepts (3 attempts): the assistant did not answer. "
+        "Nothing was changed: add the actual input files.")
+    assert calls[0]["need"] == ["Ctrl_01!H39", "Ctrl_01!H40"] and len(calls[0]["real"]) == 4
+    assert [v["id"] for v in s.versions] == ["ver-001"] and not any(i.get("stand_in") for i in s.inputs) and excel_steps["import"] == []
+    # the model holds nothing for VFA_01: no stand-in for it, its block stays; BBA_05's stand-in comes in with the 4 real files
+    _assistant_on(monkeypatch, calls, left_out=("Ctrl_01!H40",))
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"standIns": True}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "done", st
+    assert st["outsideInputs"]["stand_ins"] == [INPUTS[4]] and st["outsideInputs"]["missing"] == ["Ctrl_01!H40"]
+    assert excel_steps["import"][-1]["restore_rows"] == ["Ctrl_01!H39"]  # the real files' rows show their import
+    notes = " ".join(st["result"]["notes"])
+    assert "No stand-in for VFA_01: the model holds no data for it and zeros would change a result, so its block stays as the model holds it." in notes
+    # standIns with every file there: nothing to make, the plain bring-in
+    calls.clear()
+    client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[5], b"the real VFA_01")])
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"standIns": True}).status_code == 202
+    assert _wait(client, sid)["state"] == "done" and calls == []

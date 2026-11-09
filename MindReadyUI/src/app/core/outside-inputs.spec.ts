@@ -6,7 +6,7 @@ import type { HomePage } from "../pages/home.page";
 import { ApiService } from "./api.service";
 import {
   ChainEstimate, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, firstClause, inputFilesProblem, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel,
-  outsideSkipReason, pickedFilesProblem, withOutsideStep,
+  outsideAddLine, outsideSkipReason, outsideStandInLine, outsideStepEstimate, pickedFilesProblem, withOutsideStep,
 } from "./models";
 import { SessionStore } from "./session.store";
 
@@ -196,8 +196,6 @@ describe("the Outside files card in words", () => {
     expect(outsideSkipReason(null)).toBe("The model's macros open no outside files");
     expect(outsideSkipReason(outside({ rows: [] }))).toMatch(/^No cell names the files/);
     expect(outsideSkipReason(outside({ macro: null }))).toMatch(/^Which macro brings the outside files in is not clear/);
-    // the user has only the workbook and chose to go on without the files
-    expect(outsideSkipReason(outside({ matched: 0, skipped: true }))).toBe("Going on without the outside files: the model keeps the numbers it holds");
   });
 
   it("says why the files are not brought in any more", () => {
@@ -206,6 +204,32 @@ describe("the Outside files card in words", () => {
     expect(outsideReasonLine(outside())).toBe("");
     expect(outsideReasonLine(outside({ brought_in: true, brought_in_reason: "ignored" }))).toBe("");
     expect(outsideReasonLine(null)).toBe("");
+  });
+});
+
+describe("stand-in files made with the assistant, in words", () => {
+  it("warns while stand-ins are in use: best results come with the actual files", () => {
+    expect(outsideStandInLine(outside())).toBe("");
+    expect(outsideStandInLine(null)).toBe("");
+    expect(outsideStandInLine(outside({ stand_ins: ["2026Q1_2026_BBA_01.xlsm", "2026Q1_2026_BBA_02.xlsm"] }))).toBe(
+      "All input files are stand-ins the AI assistant made from the numbers the model already holds. Best results come with the actual input files: add them, then bring them in again.",
+    );
+    expect(outsideStandInLine(outside({ stand_ins: ["2026Q1_2026_BBA_02.xlsm"] }))).toMatch(/^1 of 2 input files are stand-ins/);
+  });
+
+  it("says what to do when files are missing: add them, or let the assistant make them", () => {
+    expect(outsideAddLine(outside({ assistant: true }))).toMatch(/^Add the model's input files .* or press "Make them with AI" there/);
+    expect(outsideAddLine(outside({ assistant: true }))).toContain("best results come with the actual files");
+    expect(outsideAddLine(outside({ assistant: false }))).toBe("Add the model's input files on the Outside files card (Add files).");
+  });
+
+  it("counts the assistant's work in the outside step's time", () => {
+    const basis = { file_mb: 10, scan_s: 40, scan_measured: true, stored_errors: 0, blocking_ops: 0 };
+    const plain = outsideStepEstimate(basis);
+    const made = outsideStepEstimate(basis, true);
+    expect(made.low_s).toBeGreaterThan(plain.low_s);
+    expect(made.mid_s).toBeGreaterThan(plain.mid_s + 200);
+    expect(made.why).toMatch(/^the AI assistant making the missing input files/);
   });
 });
 
@@ -280,6 +304,7 @@ describe("ApiService and the input files", () => {
     const started = api.startOutsideInputs("s1");
     const run = http.expectOne("/api/sessions/s1/outside-inputs/run");
     expect(run.request.method).toBe("POST");
+    expect(run.request.body).toEqual({});
     run.flush({ running: true }, { status: 202, statusText: "Accepted" });
     expect((await started).running).toBe(true);
 
@@ -288,21 +313,12 @@ describe("ApiService and the input files", () => {
     expect(get.request.method).toBe("GET");
     get.flush({ outsideInputs: null, running: false, stage: null, result: null, error: null });
     expect((await status).running).toBe(false);
-  });
 
-  it("goes on without the outside files, and takes that back", async () => {
-    const skipped = api.skipOutsideInputs("s1");
-    const req = http.expectOne("/api/sessions/s1/outside-inputs/skip");
-    expect(req.request.method).toBe("POST");
-    expect(req.request.body).toEqual({ skip: true });
-    req.flush({ outsideInputs: outside({ matched: 0, skipped: true }), readiness: null });
-    expect((await skipped).outsideInputs?.skipped).toBe(true);
-
-    const back = api.skipOutsideInputs("s1", false);
-    const undo = http.expectOne("/api/sessions/s1/outside-inputs/skip");
-    expect(undo.request.body).toEqual({ skip: false });
-    undo.flush({ outsideInputs: outside({ matched: 0 }) });
-    expect((await back).outsideInputs?.skipped).toBeUndefined();
+    const made = api.startOutsideInputs("s1", true);
+    const withAi = http.expectOne("/api/sessions/s1/outside-inputs/run");
+    expect(withAi.request.body).toEqual({ standIns: true });
+    withAi.flush({ running: true }, { status: 202, statusText: "Accepted" });
+    expect((await made).running).toBe(true);
   });
 });
 
@@ -331,30 +347,23 @@ interface Fake {
   /** the answers of GET .../outside-inputs, in order (the last one repeats) */
   statuses: OutsideRunStatus[];
   starts: number;
+  /** the standIns choice of each start */
+  standIns: boolean[];
   autoFixStarts: number;
-  /** the skip choices sent (POST .../outside-inputs/skip) */
-  skips: boolean[];
 }
 
 function fakeServer(statuses: OutsideRunStatus[]): Fake {
-  const f: Fake = { api: null as unknown as ApiService, statuses, starts: 0, autoFixStarts: 0, skips: [] };
+  const f: Fake = { api: null as unknown as ApiService, statuses, starts: 0, standIns: [], autoFixStarts: 0 };
   let last: OutsideRunStatus | undefined;
   f.api = {
     outsideInputs: () => {
       last = f.statuses.shift() ?? last;
       return last ? Promise.resolve(last) : Promise.reject(new Error("no status"));
     },
-    startOutsideInputs: () => {
+    startOutsideInputs: (_id: string, standIns = false) => {
       f.starts++;
+      f.standIns.push(standIns);
       return Promise.resolve({ running: true });
-    },
-    // the server's answer to the choice: the card as it is now, and from then on GET says the same
-    skipOutsideInputs: (_id: string, skip = true) => {
-      f.skips.push(skip);
-      const o = { ...(last?.outsideInputs ?? outside({ matched: 0 })), skipped: skip };
-      last = status(o);
-      f.statuses = [];
-      return Promise.resolve({ outsideInputs: o, readiness: null });
     },
     // Do everything went on past the outside step: the fake stops it at the next one
     startAutoFix: () => {
@@ -460,29 +469,46 @@ describe("the Outside files card and Do everything", () => {
     expect(f.autoFixStarts).toBe(1);
   });
 
-  it("with only the workbook: Do everything stops and says how to go on without the files; then it goes on", async () => {
-    const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] }), row("Ctrl_01!H36", { keys: ["BBA_02"] })], matched: 0, missing: ["Ctrl_01!H35", "Ctrl_01!H36"] });
+  it("with only the workbook, Do everything has the assistant make the files behind the scenes", async () => {
+    const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] }), row("Ctrl_01!H36", { keys: ["BBA_02"] })], matched: 0, missing: ["Ctrl_01!H35", "Ctrl_01!H36"], assistant: true });
+    const made = outside({
+      rows: [row("Ctrl_01!H35", { keys: ["BBA_01"], file: "2026Q1_2026_BBA_01.xlsm", stand_in: true }), row("Ctrl_01!H36", { keys: ["BBA_02"], file: "2026Q1_2026_BBA_02.xlsm", stand_in: true })],
+      matched: 2, brought_in: true, assistant: true, stand_ins: ["2026Q1_2026_BBA_01.xlsm", "2026Q1_2026_BBA_02.xlsm"],
+    });
+    const f = fakeServer([status(alone), running(alone), status(made, { state: "done", result: result() })]);
+    open(f, alone);
+    await page.runAll();
+    expect(f.starts).toBe(1);
+    expect(f.standIns).toEqual([true]);
+    expect(page.steps()[0].state).toBe("done");
+    expect(f.autoFixStarts).toBe(1); // and the chain went on
+    expect(page.standInLine(store.outsideInputs()!)).toMatch(/^All input files are stand-ins the AI assistant made/);
+  });
+
+  it("without the assistant, Do everything stops and says to add the files", async () => {
+    const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] })], matched: 0, missing: ["Ctrl_01!H35"], assistant: false });
     const f = fakeServer([status(alone)]);
     open(f, alone);
     await page.runAll();
     expect(f.starts).toBe(0);
     expect(page.steps()[0]).toMatchObject({ id: "outside", state: "failed", line: "No input file matched yet" });
-    expect(page.outsideCard().detail).toContain('press "Go on without them" there: the model keeps the numbers it already holds');
+    expect(page.outsideCard().detail).toBe("Add the model's input files on the Outside files card (Add files).");
     expect(f.autoFixStarts).toBe(0);
-    // the choice: the card's stop is answered, and Do everything leaves the bring-in out
-    await page.skipOutside(true);
-    expect(f.skips).toEqual([true]);
-    expect(store.outsideInputs()?.skipped).toBe(true);
-    expect(page.outsideCard().tone).not.toBe("error");
-    expect(page.outsideWillRun()).toBe(false); // the time estimate of Do everything leaves the step out too
-    await page.runAll();
-    expect(f.starts).toBe(0);
-    expect(page.steps()[0]).toMatchObject({ state: "skipped", line: "Going on without the outside files: the model keeps the numbers it holds" });
-    expect(f.autoFixStarts).toBe(1); // the chain went on to Fix all issues
-    // and back: the step runs (and stops) again
-    await page.skipOutside(false);
-    expect(store.outsideInputs()?.skipped).toBe(false);
-    await page.runAll();
-    expect(page.steps()[0]).toMatchObject({ state: "failed", line: "No input file matched yet" });
+  });
+
+  it("the card's button makes the missing files with the assistant, the others stay as picked", async () => {
+    const some = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"], file: "2026Q1_2026_BBA_01.xlsm", how: "key" }), row("Ctrl_01!H36", { keys: ["BBA_02"] })], matched: 1, missing: ["Ctrl_01!H36"], assistant: true });
+    const f = fakeServer([running(some), status(outside({ brought_in: true, assistant: true }), { state: "done", result: result() })]);
+    open(f, some);
+    expect(await page.runOutside(false, true)).toBe(true);
+    expect(f.standIns).toEqual([true]);
+  });
+
+  it("with every file there, nothing is made: the plain bring-in", async () => {
+    const all = outside({ assistant: true });
+    const g = fakeServer([running(all), status(outside({ brought_in: true }), { state: "done", result: result() })]);
+    open(g, all);
+    await page.runOutside(false, true);
+    expect(g.standIns).toEqual([false]);
   });
 });

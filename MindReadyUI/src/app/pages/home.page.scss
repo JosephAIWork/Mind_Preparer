@@ -131,12 +131,20 @@
     color: theme.$text-error;
   }
 
-  // the user chose to go on without the files: said plainly, with a way back
-  &__skipped {
+  // stand-in files from the assistant are in use: said plainly, with what gives the best results
+  &__standin {
     @include type.type-style("body-compact-01");
     color: theme.$text-secondary;
     border-left: 3px solid theme.$support-warning;
     padding-left: $spacing-03;
+  }
+
+  &__tag {
+    @include type.type-style("label-01");
+    color: theme.$text-secondary;
+    border: 1px solid theme.$support-warning;
+    border-radius: 2px;
+    padding: 0 $spacing-02;
   }
 
   &__result {

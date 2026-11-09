@@ -176,20 +176,23 @@ def inp_010(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     observed = {
         "imports": True, "macro": macro, "calls": oi.get("calls") or [], "files": len(rows), "matched": int(oi.get("matched") or 0),
         "missing": [_file_label(r) for r in missing], "extra": list(oi.get("extra") or []), "brought_in": bool(oi.get("brought_in")),
-        "brought_in_reason": reason, "skipped": bool(oi.get("skipped")),
+        "brought_in_reason": reason,
         "sites": [{"sheet": str(r["cell"]).rsplit("!", 1)[0], "cell": str(r["cell"]).rsplit("!", 1)[1]} for r in rows if "!" in str(r.get("cell") or "")],
     }
     location = observed["sites"][0] if observed["sites"] else None
-    if oi.get("brought_in"):
-        return finding("PASS", "The outside files are brought in: Mind needs no macro for them.", observed, location)
-    if oi.get("skipped") and not reason:
-        # the user has only the workbook: what the macro brought in last runs in Mind as it is
-        who = f"the macro {macro}" if macro else "the macros"
+    made = [str(x) for x in oi.get("stand_ins") or []]
+    observed["stand_ins"] = made
+    if oi.get("brought_in") and made:
+        # brought in, but from files the assistant made from the model's own numbers: works, and the
+        # Mind team can swap the CSVs -- yet the actual files are what the model was built for
         return finding(
             "WARNING",
-            f"You chose to go on without the outside files: the data {who} brought in last stays in the workbook as plain numbers. "
-            "Mind runs on those numbers and cannot swap them each quarter; to make them Mind inputs, add the files and use Bring in the outside files.",
+            f"The outside files are brought in, but {len(made)} of {len(rows) or len(made)} {'is a stand-in' if len(made) == 1 else 'are stand-ins'} the assistant made "
+            f"from the numbers the model already holds ({', '.join(made[:6])}{' ...' if len(made) > 6 else ''}). "
+            "Best results come with the actual input files: add them, then use Bring in the outside files again.",
             observed, location)
+    if oi.get("brought_in"):
+        return finding("PASS", "The outside files are brought in: Mind needs no macro for them.", observed, location)
     if not macro:
         return finding("WARNING", "The macros open outside files, but which macro brings them in is not clear: the data they brought in last stays in the workbook as it is.", observed, location)
     if not rows:

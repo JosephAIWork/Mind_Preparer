@@ -20,12 +20,14 @@
   OFFSET from inside it, a range that covers only part of it) stays in the model and is reported.
 - **Run in Mind uploads the input files** through the Inputs window after the template step.
 - **New rule INP-010 "Outside input files"**: blocking until the outside files are brought in.
-- **Only the workbook, no input files: "Go on without them".** The Outside files card lists every
-  file as missing and "Do everything" stops at its first step, saying what to do: add the files
-  (no new upload), or go on without them -- the model keeps the numbers its macro brought in last
-  (Mind runs on them, it cannot swap them each quarter). INP-010 then warns instead of blocking and
-  "Do everything" leaves the bring-in out; Undo, adding a file or starting a bring-in takes the
-  choice back (`POST .../outside-inputs/skip`).
+- **No input files? "Make them with AI".** When files are missing, the assistant reads the import
+  macro and the model's sheets and describes each file; the app builds stand-ins from the numbers
+  the model already holds, proves them with the model's own macro (every written cell equals the
+  model's, then every computed value; the assistant tries again with what went wrong, 4 tries) and
+  brings them in as usual. "Do everything" does it behind the scenes when files are missing.
+  INP-010 then warns instead of blocking -- best results come with the actual input files -- and an
+  actual file added later replaces its stand-in (`POST .../outside-inputs/run {"standIns": true}`,
+  `app/stand_in_inputs.py`; `chat_completion(effort=)` for this one call).
 - Proven on the Tokyo tool (anonymized, invented input files): 6 of 6 files matched, import 11 s,
   6 Mind inputs, 46,800 formulas moved, no computed value changed; in Mind 6 of 6 inputs SUCCESS and
   Mind = Excel on the result grid (120 of 120 numbers); a "next quarter" (two inputs changed, model

@@ -125,7 +125,7 @@ rules:
   pass_if:
   - The macros open no outside file.
   - The current version descends from the version a finished bring-in made, and the picked input files are still the ones it read.
-  - (WARNING, not blocking) The user chose to go on without the files (Go on without them) on a version that never went through a bring-in -- the data the macro brought in last stays in the workbook as plain numbers.
+  - (WARNING, not blocking) Brought in, but from stand-in files the assistant made from the numbers the model already holds -- best results come with the actual input files.
   fail_if:
   - A macro opens outside files and they are not brought in yet.
   - The input files changed since they were brought in, or the last bring-in did not finish (it stopped half-way, or its Mind inputs would change a computed value).

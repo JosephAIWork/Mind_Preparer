@@ -5,7 +5,7 @@ import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModu
 import { ApiService, errorText } from "../core/api.service";
 import {
   ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus,
-  appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason,
+  appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
   pickedFilesProblem, withOutsideStep,
 } from "../core/models";
 import { SessionStore } from "../core/session.store";
@@ -118,7 +118,6 @@ export class HomePage implements OnDestroy {
   /** the input files sent with the workbook (the upload's answer), for the note when its macros open none */
   readonly pickedInputs = signal<InputFile[]>([]);
   readonly addingInputs = signal(false);
-  readonly skippingOutside = signal(false);
   readonly inputsError = signal("");
   readonly cardDragOver = signal(false);
   /** the last run on this page failed (the job stopped, its check failed, it could not start): the card offers "Try again" */
@@ -144,14 +143,15 @@ export class HomePage implements OnDestroy {
    *  cells name them, and they are not in the current version yet. */
   readonly outsideWillRun = computed(() => {
     const o = this.store.outsideInputs();
-    return !!o && !o.brought_in && !o.skipped && this.canBringIn(o);
+    return !!o && !o.brought_in && this.canBringIn(o);
   });
   /** The server's estimate, with the outside step in it when that step runs and the server left it out. */
   readonly fullEstimate = computed(() => {
     const include = this.chainRunning()
       ? this.steps().some((s) => s.id === "outside" && (s.state === "waiting" ? this.outsideWillRun() : s.state !== "skipped"))
       : this.outsideWillRun();
-    return withOutsideStep(this.estimate(), include);
+    const o = this.store.outsideInputs();
+    return withOutsideStep(this.estimate(), include, !!o && !!o.assistant && o.missing.length > 0);
   });
   readonly estimateLine = computed(() => {
     const e = this.fullEstimate();
@@ -481,6 +481,11 @@ export class HomePage implements OnDestroy {
     return outsideRowLabel(r);
   }
 
+  /** The warning while stand-ins the assistant made are in use ("" when none). */
+  standInLine(o: OutsideInputs): string {
+    return outsideStandInLine(o);
+  }
+
   /** The app can run the model's own import: it knows the macro and the cells that name the files. */
   canBringIn(o: OutsideInputs): boolean {
     return o.rows.length > 0 && !!o.macro;
@@ -508,9 +513,11 @@ export class HomePage implements OnDestroy {
   }
 
   /** Bring in the outside files: the model's own import macro runs on a copy with the matched files, then
-   *  each file's area becomes a Mind input (a background job, followed every second). From Do everything
-   *  (`strict`) a missing file stops the chain: add it, or bring in the others with the card's button. */
-  async runOutside(strict = false): Promise<boolean> {
+   *  each file's area becomes a Mind input (a background job, followed every second). `standIns`: the
+   *  assistant first makes the missing files from the numbers the model holds ("Make them with AI").
+   *  From Do everything (`strict`) missing files are made that way behind the scenes when the assistant
+   *  is set up; without it they stop the chain: add them, or bring in the others with the card's button. */
+  async runOutside(strict = false, standIns = false): Promise<boolean> {
     const id = this.store.sessionId();
     const o = this.store.outsideInputs();
     if (!id || !o || this.outside().running) return false;
@@ -520,18 +527,14 @@ export class HomePage implements OnDestroy {
       this.outside.set({ running: false, fraction: null, line: "The app cannot bring these files in", detail: this.outsideLead(o), tone: "error" });
       return false;
     }
-    if (!o.matched) {
-      this.outside.set({
-        running: false,
-        fraction: null,
-        line: "No input file matched yet",
-        detail: 'Add the model\'s input files on the Outside files card (Add files). Without them, press "Go on without them" there: the model keeps the numbers it already holds.',
-        tone: "error",
-      });
+    const missing = o.rows.filter((r) => !r.file).map((r) => outsideRowLabel(r));
+    if (strict && missing.length && o.assistant) standIns = true; // the user did not add them: the assistant makes them
+    if (!missing.length) standIns = false;
+    if (!o.matched && !standIns) {
+      this.outside.set({ running: false, fraction: null, line: "No input file matched yet", detail: outsideAddLine(o), tone: "error" });
       return false;
     }
-    const missing = o.rows.filter((r) => !r.file).map((r) => outsideRowLabel(r));
-    if (strict && missing.length) {
+    if (strict && missing.length && !standIns) {
       this.outside.set({
         running: false,
         fraction: null,
@@ -542,9 +545,9 @@ export class HomePage implements OnDestroy {
       return false;
     }
     this.inputsError.set("");
-    this.outside.set({ running: true, fraction: null, line: "Starting…", detail: "", tone: "idle" });
+    this.outside.set({ running: true, fraction: null, line: standIns ? "Making the missing input files with the assistant…" : "Starting…", detail: "", tone: "idle" });
     try {
-      await this.api.startOutsideInputs(id);
+      await this.api.startOutsideInputs(id, standIns);
     } catch (e) {
       // refused: it may run already (started before a reload, or in another tab): then follow that run
       const st = await this.api.outsideInputs(id).catch(() => null);
@@ -735,34 +738,6 @@ export class HomePage implements OnDestroy {
       this.inputsError.set(errorText(e));
     } finally {
       this.addingInputs.set(false);
-    }
-  }
-
-  /** Go on without the outside files (`skip`), or take that back: for a user who has only the workbook.
-   *  The model keeps the numbers its macro brought in last (Mind runs on them, it cannot swap them each
-   *  quarter); INP-010 warns instead of blocking and Do everything leaves the bring-in out. Adding files
-   *  or bringing them in takes the choice back (the server does it). */
-  async skipOutside(skip: boolean): Promise<void> {
-    const id = this.store.sessionId();
-    if (!id || this.skippingOutside()) return;
-    if (this.busy()) {
-      this.inputsError.set(`Wait: ${this.busyHint()}.`);
-      return;
-    }
-    this.inputsError.set("");
-    this.skippingOutside.set(true);
-    try {
-      const out = await this.api.skipOutsideInputs(id, skip);
-      this.store.applyAnalysis({ outsideInputs: out.outsideInputs, readiness: out.readiness ?? undefined, report: out.report });
-      if (this.outside().tone === "error") {
-        // the last stop was "no input file matched yet": the choice answers it
-        this.outside.set(idle());
-        this.outsideFailed.set(false);
-      }
-    } catch (e) {
-      this.inputsError.set(errorText(e));
-    } finally {
-      this.skippingOutside.set(false);
     }
   }
 
