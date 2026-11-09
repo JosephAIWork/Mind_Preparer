@@ -130,7 +130,7 @@ def test_changes_excel_did_not_write_are_summed_up_by_rule_with_their_shapes():
 
 def test_the_plain_sentence_for_changes_excel_did_not_write():
     text = server._plain_problem(None, "Fix the formulas", [{"rule_id": "FRM-012"}, {"rule_id": "STR-008"}])
-    assert text.startswith("Fix the formulas: Excel did not accept 2 of the changes (rule FRM-012, STR-008).")
+    assert text.startswith("Fix the formulas: Excel did not accept 2 of the changes, for FRM-012 (a formula asks Excel about its own file), STR-008 (a formula reads a lone text cell).")
 
 
 def test_feedback_from_the_header_has_no_incident():

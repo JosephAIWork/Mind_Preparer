@@ -29,9 +29,10 @@ from .formula_utils import STORAGE_PREFIX_RE, parse_ref, ref_text
 from .grids import all_grids
 from .inventory import cell_value
 from .llm import chat_completion
+from .plain_codes import cite
 from .prep import validate_proposal
 
-MAX_CONTEXT_CHARS = 14000
+MAX_CONTEXT_CHARS = 14000  # the pack's facts, findings and Prep actions; the rules' plain names come on top (each named once)
 MAX_RETRIEVAL_CHARS = 6000
 MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
@@ -63,6 +64,7 @@ Rules for you:
 - Anything you state about Mind -- what it accepts, refuses, requires, computes or displays -- must come from the Mind documentation the tool holds: the rule findings, the "## Function support" block, the KB extracts and the rule texts in the context. Your general knowledge of Excel or of "actuarial platforms" is NOT evidence about Mind: never conclude "Mind will accept this" or "this is a non-issue" from it. If the tool's material says nothing about a point, say exactly that ("the Mind documentation held by the tool does not cover X") and stop there.
 - Ground every answer in the context; quote rule ids, sheet!cell locations and grid names. If the context doesn't contain what is needed, look it up (below) or say what is missing instead of guessing.
 - Explain findings in plain language and say concretely what to change in Excel to fix them.
+- Whenever you name a rule id, give its plain name with it, as the context does: "FRM-009 (an empty cell is compared with a number)"; and say what an Excel error value means the first time you mention it ("#REF!: the formula points at a cell that no longer exists").
 - Whether Mind accepts an Excel function is decided by the tool's own lists (the Mind supported-function list, the functions accepted on other evidence, and the MM_ registry, applied by rule FRM-002), never by general knowledge. When the context has a "## Function support" block, state its verdict as the answer ("IFERROR is on the Mind supported list" / "the Mind documentation does not list NUMBERVALUE: it neither confirms nor refuses it"); never hedge with "most platforms" or "should be fine". A function the Mind documentation does not list is NOT unsupported and NOT a blocker: say the documentation is silent, and do not propose to replace it unless the user asks for a replacement.
 - `_xlfn.`, `_xlws.`, `_xludf.` and `_xll.` in front of a function name are Excel's internal storage prefixes (Excel writes them for functions newer than Excel 2007 and for add-in calls). They are not a compatibility-mode artefact, not a defect and not something to fix; the rules strip them before checking the function name. If a user asks about one, say exactly that in one sentence.
 - When you replace a function with another, keep the formula's behaviour on blank cells, text and errors: e.g. NUMBERVALUE("") returns 0 but VALUE("") returns #VALUE!, so wrap the replacement (IF(x="",0,VALUE(x))) when the original tolerated blanks; the app recalculates the file in Excel afterwards and every new error is counted against the fix.
@@ -139,19 +141,35 @@ def build_context_pack(analysis: dict[str, Any], validation_report: dict[str, An
         if standalone:
             lines.append("- standalone text: " + "; ".join(f"{c['cell']}='{str(c['text'])[:24]}'" for c in standalone))
 
+    # A rule's plain name goes with its first mention only (the assistant has it from there on), and
+    # the names come on top of `max_chars`: they never push out the end of the pack -- the last
+    # findings and the Prep actions -- that fitted before the names were added.
+    named: set[str] = set()
+    names_chars = 0
+
+    def cite_once(rule_id: Any) -> str:
+        nonlocal names_chars
+        rid = str(rule_id)
+        if rid in named:
+            return rid
+        named.add(rid)
+        text = cite(rid)
+        names_chars += len(text) - len(rid)
+        return text
+
     rep = validation_report
     lines.append(f"\n# Findings -- overall {rep['status']}; counts {rep['summary']['status_counts']}")
     non_pass = [x for x in rep["findings"] if x["status"] != "PASS"]
     order = {"ERROR": 0, "REQUIRES_USER_INPUT": 1, "NOT_SUPPORTED": 2, "WARNING": 3}
     for x in sorted(non_pass, key=lambda x: (order.get(x["status"], 9), x["rule_id"])):
-        lines.append(f"- [{x['status']}] {x['rule_id']} @ {_location(x)}: {_trim(x['message'], 420)}")
+        lines.append(f"- [{x['status']}] {cite_once(x['rule_id'])} @ {_location(x)}: {_trim(x['message'], 420)}")
     lines.append("- PASS: " + ", ".join(x["rule_id"] for x in rep["findings"] if x["status"] == "PASS"))
 
     if prep_actions:
         lines.append("\n# Prep actions the app can apply (user selects and approves them in 'Prep workbook')")
         for a in prep_actions:
-            lines.append(f"- {a['title']} ({a['id']}, rules {', '.join(a['rule_ids'])}): {a['count']} change(s) planned{'; skipped: ' + '; '.join(a['skipped'][:3]) if a.get('skipped') else ''}")
-    return _trim("\n".join(lines), max_chars)
+            lines.append(f"- {a['title']} ({a['id']}, rules {', '.join(cite_once(r) for r in a['rule_ids'])}): {a['count']} change(s) planned{'; skipped: ' + '; '.join(a['skipped'][:3]) if a.get('skipped') else ''}")
+    return _trim("\n".join(lines), max_chars + names_chars)
 
 
 def _cells_block(analysis: dict[str, Any], sheet: str, ref: dict[str, Any], grids: list[dict[str, Any]]) -> str:
@@ -230,7 +248,7 @@ def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[st
         rid = f"{m.group(1)}-{m.group(2)}"
         x = findings.get(rid)
         if x:
-            out.append(f"## Finding {rid}\nstatus {x['status']} | severity {x.get('severity')} | location {_location(x)}\n{x['message']}\nobserved: {_trim(json.dumps(x.get('observed'), default=str), 1800)}")
+            out.append(f"## Finding {cite(rid)}\nstatus {x['status']} | severity {x.get('severity')} | location {_location(x)}\n{x['message']}\nobserved: {_trim(json.dumps(x.get('observed'), default=str), 1800)}")
 
     mentioned_sheets = [n for n in sorted(sheet_names, key=len, reverse=True) if n.lower() in q_low]
     for m in CELL_REF_RE.finditer(question):

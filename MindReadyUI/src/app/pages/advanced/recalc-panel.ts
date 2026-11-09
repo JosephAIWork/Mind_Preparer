@@ -2,18 +2,21 @@ import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
+import { CodeName } from "../../core/code-name";
+import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
 /** A full recalculation in Excel, and what it found: genuine errors, the add-in gap, new vs already there. */
 @Component({
   selector: "mr-recalc-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, CodeName],
   templateUrl: "./recalc-panel.html",
   styleUrl: "./panels.scss",
 })
 export class RecalcPanel {
   private api = inject(ApiService);
+  private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
   readonly running = signal(false);
   readonly error = signal("");
@@ -29,10 +32,21 @@ export class RecalcPanel {
     const list = this.result()?.formula_errors ?? [];
     return this.showAll() ? list : list.slice(0, 200);
   });
+  /** What each error value the panel shows means -- in the error list or in the message (#NAME? on the
+   *  add-in gap) -- once each. */
+  readonly legend = computed(() => {
+    const r = this.result();
+    return r ? this.codes.legend([...(r.formula_errors ?? []).map((e) => e.error), ...this.codes.valuesIn(r.message)]) : [];
+  });
   readonly chip = computed(() => {
     const s = this.result()?.status;
     return s === "PASS" ? "chip chip--ok" : s === "ERROR" ? "chip chip--error" : s ? "chip chip--warn" : "chip";
   });
+
+  /** The meaning of an error value, for the cell's tooltip. */
+  meaning(value: string): string {
+    return this.codes.meaning(value) ?? "";
+  }
 
   ask(e: { sheet: string; cell: string; error: string; formula?: string }, addinGap = false): void {
     this.store.ask({ kind: "recalc", rule_id: "RECALC", sheet: e.sheet, cell: e.cell, error: e.error, formula: e.formula, addin_gap: addinGap });

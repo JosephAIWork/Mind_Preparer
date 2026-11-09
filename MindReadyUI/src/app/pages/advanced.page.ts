@@ -3,7 +3,9 @@ import { Component, computed, inject, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
 import { ButtonModule, ContentSwitcherModule, NotificationModule, TagModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
+import { CodeName } from "../core/code-name";
 import { Finding, Grid, Status } from "../core/models";
+import { PlainCodes } from "../core/plain-codes";
 import { SessionStore } from "../core/session.store";
 import { AssistantPanel } from "./advanced/assistant-panel";
 import { DeliverPanel } from "./advanced/deliver-panel";
@@ -27,12 +29,13 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
 export class AdvancedPage {
   private api = inject(ApiService);
+  private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
   readonly onlyOpen = signal(true);
   readonly tab = this.store.advancedTab;
@@ -92,6 +95,8 @@ export class AdvancedPage {
     const rank: Record<string, number> = { ERROR: 0, REQUIRES_USER_INPUT: 1, NOT_SUPPORTED: 2, WARNING: 3, PASS: 4 };
     return [...list].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.rule_id.localeCompare(b.rule_id));
   });
+  /** The table's rows: each finding with what the error values its message quotes mean, once each. */
+  readonly rows = computed(() => this.findings().map((f) => ({ f, meanings: this.codes.meaningsIn(f.message) })));
   readonly manualActions = computed(() => this.store.plan().filter((a) => a.level === "blocking" || a.level === "optional"));
   readonly versionsNewestFirst = computed(() => [...this.store.versions()].reverse());
 
@@ -105,14 +110,14 @@ export class AdvancedPage {
     return [loc.sheet, loc.cell ?? loc.ref].filter(Boolean).join("!");
   }
 
-  ruleList(list: { rule_id: string }[]): string {
-    const ids = list.map((d) => d.rule_id);
-    return ids.length > 8 ? ids.slice(0, 8).join(", ") + ` and ${ids.length - 8} more` : ids.join(", ");
+  /** A chip shows the code; its tooltip says it in plain words. */
+  chipTip(f: Finding): string {
+    return this.codes.name(f.rule_id, f.rule_name) ?? f.message;
   }
 
   askAbout(f: Finding): void {
     const loc = (f.location ?? {}) as { sheet?: string; cell?: string; ref?: string };
-    this.store.ask({ kind: "finding", rule_id: f.rule_id, sheet: loc.sheet, cell: loc.cell ?? loc.ref });
+    this.store.ask({ kind: "finding", rule_id: f.rule_id, rule_name: f.rule_name, sheet: loc.sheet, cell: loc.cell ?? loc.ref });
   }
 
   changesOpen(id: string): boolean {

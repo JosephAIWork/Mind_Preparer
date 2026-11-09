@@ -55,6 +55,9 @@
   not come yet, from a clock once set ahead, is put right by the internet's date at start); the
   developer version has no date (`app/expiry.py`, docs/SHARING.md). Build the screens first
   (`npx ng build`): build.py does not package a copy with a date from screens that cannot show it.
+- **Plain English next to every code**: "FRM-009 · an empty cell is compared with a number" on the screens, in the
+  texts and in the Excel report (`rules/plain_names.yaml`, required by a test); Excel's error values get their meaning
+  once, Excel / VBA errors a plain sentence with Excel's words in brackets (`app/plain_codes.py`, docs/PLAIN_CODES.md).
 
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 

@@ -4,8 +4,16 @@
   @if (byHand().length) {
     <h3 class="panel__h">By hand ({{ byHand().length }})</h3>
     <ul class="plain">
-      @for (b of byHand(); track $index) {
-        <li><span class="mono">{{ b.rule_id }}</span> {{ b.message }}</li>
+      @for (row of byHandRows(); track $index) {
+        <li>
+          <strong><mr-code [code]="row.b.rule_id" [name]="row.b.rule_name"></mr-code></strong>
+          <div>{{ row.b.message }}</div>
+          @if (row.meanings.length) {
+            <ul class="meanings">
+              @for (m of row.meanings; track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+            </ul>
+          }
+        </li>
       }
     </ul>
   }
@@ -66,7 +74,7 @@
         <span class="card__count">{{ a.count }} change{{ a.count === 1 ? "" : "s" }}</span>
       </label>
       <div class="card__meta">
-        <span class="mono">{{ a.rule_ids.join(", ") }}</span>
+        <span>@for (r of a.rule_ids; track r; let i = $index, last = $last) {<mr-code [code]="r" [name]="a.rule_names?.[i]"></mr-code>@if (!last) {, }}</span>
         @if (a.level_note) {
           <span>{{ a.level_note }}</span>
         }

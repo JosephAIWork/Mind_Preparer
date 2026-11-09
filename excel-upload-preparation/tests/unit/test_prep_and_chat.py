@@ -10,6 +10,7 @@ from app.config import load_config
 from app.excel_com import com_available
 from app.inventory import build_analysis
 from app.modes import plan_mode
+from app.plain_codes import rule_name, rule_names
 from app.prep import apply_operations, formula_replacement_op, plan_actions
 from app.rules_engine import RulesEngine
 from app.validators import run_rule
@@ -130,11 +131,32 @@ def test_context_pack_and_retrieval_are_grounded(tmp_path, flagged_model_broken_
     ctx = chat_context.build_context_pack(result["workbook_analysis"], result["validation_report"], plan)
     assert "## Model" in ctx and "## Settings" in ctx and "/Reorder /Inpt" in ctx
     assert "[ERROR] RES-002" in ctx and "Prep actions" in ctx
-    assert len(ctx) <= chat_context.MAX_CONTEXT_CHARS
+    # the budget, and the rules' plain names on top of it (each rule named once at most)
+    assert len(ctx) <= chat_context.MAX_CONTEXT_CHARS + sum(len(f" ({n})") for n in rule_names().values())
     detail = chat_context.retrieve("why does RES-002 fail, and what is in Model!J6? show the Params grid", result["workbook_analysis"], result["validation_report"])
     assert "## Finding RES-002" in detail
     assert "J6 = =MM_RESULT(J5,\"scenario\",1)" in detail
     assert "## Grid Params" in detail and "PossibleValues" in detail
+
+
+def test_the_rules_names_never_push_out_the_end_of_the_context(tmp_path, flagged_model_broken_xlsx, monkeypatch):
+    """Each rule is named once, the first time the pack cites it, and the names come on top of the
+    pack's budget: a pack that only just fitted before the names were added still ends with its last
+    findings and every Prep action."""
+    result, _ = _run(tmp_path, flagged_model_broken_xlsx)
+    analysis, report = result["workbook_analysis"], result["validation_report"]
+    plan = plan_actions(analysis, report)
+    named = chat_context.build_context_pack(analysis, report, plan)
+    with monkeypatch.context() as m:
+        m.setattr(chat_context, "cite", lambda rule_id: str(rule_id))  # the pack as it was before the names
+        bare = chat_context.build_context_pack(analysis, report, plan, max_chars=10**9)
+    tight = chat_context.build_context_pack(analysis, report, plan, max_chars=len(bare))
+    assert len(named) > len(bare) and tight == named  # nothing cut
+    assert tight.splitlines()[-1].startswith(f"- {plan[-1]['title']} ({plan[-1]['id']}, rules ")
+    assert all(f"({a['id']}, rules " in tight for a in plan)
+    for rid in {x["rule_id"] for x in report["findings"] if x["status"] != "PASS"}:
+        if rule_name(rid):
+            assert tight.count(f"{rid} ({rule_name(rid)})") == 1, rid
 
 
 def test_answer_question_keeps_history_and_uses_the_gateway(tmp_path, plain_grid_xlsx, monkeypatch):

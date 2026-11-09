@@ -1,26 +1,35 @@
 import { CommonModule } from "@angular/common";
-import { Component, OnInit, inject, signal } from "@angular/core";
+import { Component, OnInit, computed, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
-import { CellWindow, MapCell, ModelMap } from "../../core/models";
+import { CodeName } from "../../core/code-name";
+import { CellWindow, MapCell, ModelMap, WindowCell } from "../../core/models";
+import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
 /** Where the model's inputs, loop driver, run settings and outputs are, read from the VBA, names and formulas. */
 @Component({
   selector: "mr-map-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, CodeName],
   templateUrl: "./map-panel.html",
   styleUrl: "./panels.scss",
 })
 export class MapPanel implements OnInit {
   private api = inject(ApiService);
+  private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
   readonly map = signal<ModelMap | null>(null);
   readonly loading = signal(false);
   readonly error = signal("");
   readonly peek = signal<{ key: string; window: CellWindow | null; error: string } | null>(null);
   readonly showAll = signal<Set<string>>(new Set());
+  /** What each error value in the open cell window means, once each, under the window -- as the
+   *  Recalculate list does. A cell marked as an error that is no error value (a '#Title') has none. */
+  readonly peekLegend = computed(() => {
+    const w = this.peek()?.window;
+    return w ? this.codes.cellsLegend(w.rows.flatMap((r) => r.cells)) : [];
+  });
 
   ngOnInit(): void {
     void this.load(false);
@@ -50,6 +59,11 @@ export class MapPanel implements OnInit {
   text(v: unknown): string {
     if (v === null || v === undefined) return "";
     return typeof v === "object" ? JSON.stringify(v) : String(v);
+  }
+
+  /** A window cell's tooltip: its formula, and for an error value what it means. */
+  tip(c: WindowCell): string {
+    return this.codes.cellTip(c.formula, c.error ? c.value : null);
   }
 
   async show(ref: string): Promise<void> {

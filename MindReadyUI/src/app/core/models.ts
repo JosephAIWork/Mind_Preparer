@@ -5,7 +5,8 @@ export type Mode = "plan" | "prep_loops" | "fix_formulas" | "structure_fix";
 
 export interface Finding {
   rule_id: string;
-  rule_name?: string;
+  /** the rule's plain name ("an empty cell is compared with a number"), shown next to its code */
+  rule_name?: string | null;
   category?: string;
   status: Status;
   severity?: string;
@@ -50,6 +51,8 @@ export interface PrepAction {
   id: string;
   title: string;
   rule_ids: string[];
+  /** each rule's plain name, in the order of `rule_ids` */
+  rule_names?: (string | null)[];
   default_on: boolean;
   level: "blocking" | "optional";
   level_note?: string;
@@ -75,6 +78,7 @@ export interface Version {
 
 export interface ReadinessBlocking {
   rule_id: string;
+  rule_name?: string | null;
   status: Status;
   message: string;
   location?: Record<string, unknown>;
@@ -93,7 +97,14 @@ export interface Readiness {
   optional_count: number;
   prep?: { blocking_ops: number; optional_ops: number };
   recalc?: { ran: boolean; clean: boolean; version_id?: string; formula_errors?: number; new_errors?: number; preexisting_errors?: number; addin_gap_errors?: number; message?: string } | null;
-  next_step?: { screen: string; label: string; detail?: string; rule_id?: string } | null;
+  next_step?: { screen: string; label: string; detail?: string; rule_id?: string; rule_name?: string | null } | null;
+}
+
+/** GET /api/plain-codes: the plain words for every code the screens show -- each rule's name
+ *  (rules/plain_names.yaml) and what each of Excel's error values means (app/plain_codes.py). */
+export interface PlainCodesGlossary {
+  rules: Record<string, string>;
+  errors: Record<string, string>;
 }
 
 export interface PrepProgress {
@@ -180,11 +191,35 @@ export function failedCount(r: ApplyResult | null | undefined): number {
   return Array.isArray(f) ? f.length : Number(f) || 0;
 }
 
-/** The first refusals, as "Sheet!A1: reason". */
+/** Room for the reason of one refused change: the server says it as a plain sentence with Excel's own
+ *  words in brackets ('Excel refused the action (a protected sheet, ...) (Excel said: "...")'), up to
+ *  about 170 characters for the common refusals -- all of it is shown. */
+const REASON_MAX = 200;
+
+/** `text` kept to about `max` characters, cut after a whole word with "…", never in the middle of one. */
+export function clipAtWord(text: string, max: number): string {
+  const t = (text ?? "").replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return (space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:(]+$/, "") + "…";
+}
+
+/** The first refusals, as "Sheet!A1: reason". Refusals with the same reason say it once ("S!B5, S!B6:
+ *  reason": a protected sheet refuses every change the same way), and a longer reason is cut after a
+ *  whole word. */
 export function failedText(r: ApplyResult | null | undefined, max = 3): string {
   const f = r?.failed;
   if (!Array.isArray(f) || !f.length) return "";
-  const parts = f.slice(0, max).map((o) => `${o.sheet}!${o["cell"] ?? ""}${o.error ? ": " + String(o.error).slice(0, 80) : ""}`);
+  const groups: { cells: string[]; reason: string }[] = [];
+  for (const o of f.slice(0, max)) {
+    const cell = `${o.sheet}!${o["cell"] ?? ""}`;
+    const reason = o.error ? clipAtWord(String(o.error), REASON_MAX) : "";
+    const same = groups.find((g) => g.reason === reason);
+    if (same) same.cells.push(cell);
+    else groups.push({ cells: [cell], reason });
+  }
+  const parts = groups.map((g) => g.cells.join(", ") + (g.reason ? ": " + g.reason : ""));
   return parts.join("; ") + (f.length > max ? `; … ${f.length - max} more` : "");
 }
 
@@ -418,6 +453,7 @@ export interface RecalcCell {
 export interface FixTarget {
   kind?: "finding" | "recalc" | "recalc-group";
   rule_id: string;
+  rule_name?: string | null;
   sheet?: string;
   cell?: string;
   error?: string;
@@ -704,6 +740,7 @@ export interface GridNamesResult {
 // ---- final chunk ------------------------------------------------------------------------------
 export interface DeltaEntry {
   rule_id: string;
+  rule_name?: string | null;
   from: Status;
   to: Status;
   note?: string;

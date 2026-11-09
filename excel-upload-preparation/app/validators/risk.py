@@ -11,6 +11,7 @@ from typing import Any
 from ..formula_utils import ref_text, called_functions, parse_ref
 from ..grids import all_grids, grid_containing
 from ..inventory import mm_calls
+from ..plain_codes import cite
 from ._common import finding, fmt_grids, fmt_sites, grid_location
 
 RESIZE_FLAGS = {"resize", "resizerow", "resizecolumn"}
@@ -101,7 +102,7 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
             f"Ensure that the column headers cover the entire array formula'). First: {first['sheet']}!{first['cell']} spans {first['array_ref']} but its grid "
             f"{first['grid']} stops at {first['grid_ref'].split(':')[-1]} (first cell outside: {first['first_cell_outside']}). "
             "Fix: extend the header row over every column the array covers (a merged header counts for all the columns it spans), or shorten the array. "
-            f"All: {fmt_sites(oversized)} (MM_RANGE placement is checked by RNG-001).",
+            f"All: {fmt_sites(oversized)}. MM_RANGE placement is checked by {cite('RNG-001')}.",
             {"oversized_array_formulas": oversized[:50]},
             location={"sheet": oversized[0]["sheet"], "cell": oversized[0]["cell"]},
             evidence="INFERENCE",

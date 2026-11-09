@@ -25,6 +25,7 @@ from typing import Any, Callable
 from .perf import record, stage
 from .excel_com import MM_XLL_ENV, close_quietly, com_available, excel_session, mm_addin_loaded, open_for_write, save_in_place
 from .formula_utils import called_functions, col_to_num, mask_strings, ref_text
+from .plain_codes import plain_error
 
 # Excel COM's Range.Value returns error cells as these negative integer xlErr*
 # constants, never as the display string -- confirmed empirically (Range.Text
@@ -461,5 +462,8 @@ def recalculate(copy_path: Path, save: bool = True) -> dict[str, Any]:
     try:
         with stage("recalculate", file=copy_path.name), excel_session() as excel:
             return _scan(excel, copy_path, save=save)
-    except Exception as exc:  # pragma: no cover -- requires a real Excel install to exercise
-        return _not_run("ERROR", f"Excel COM recalculation failed: {exc}")
+    except Exception as exc:
+        # Excel's error in plain words ("Excel closed or stopped answering ..."), never pywin32's tuple:
+        # this message reaches the screens inside a normal answer. The prefix stays as it is --
+        # server._recalc_out tells from it that the recalculation did not run.
+        return _not_run("ERROR", f"Excel COM recalculation failed: {plain_error(exc)}")

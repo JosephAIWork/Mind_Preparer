@@ -37,6 +37,12 @@
           @for (s of sampleRows(); track $index) { <tr><td>{{ s.kind }}</td><td class="mono">{{ s.original }}</td><td class="mono">{{ s.now }}</td><td class="mono">{{ s.was }}</td><td class="mono">{{ s.is }}</td></tr> }
         </tbody>
       </table>
+      @if (legend().length) {
+        <!-- what each error value in the samples means: once, not on every row -->
+        <ul class="meanings">
+          @for (m of legend(); track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+        </ul>
+      }
     }
   }
 </div>

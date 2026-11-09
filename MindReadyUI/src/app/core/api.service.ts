@@ -4,7 +4,7 @@ import { firstValueFrom } from "rxjs";
 import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  ApplyOutcome, AppHealth, AssistantKey, FeedbackMessage, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PlainCodesGlossary, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -21,6 +21,11 @@ export class ApiService {
 
   health(): Promise<AppHealth> {
     return firstValueFrom(this.http.get<AppHealth>(`${this.base}/health`));
+  }
+
+  /** The plain words for the codes the screens show: each rule's name, what each Excel error value means. */
+  plainCodes(): Promise<PlainCodesGlossary> {
+    return firstValueFrom(this.http.get<PlainCodesGlossary>(`${this.base}/plain-codes`));
   }
 
   /** Whether an AI gateway key is saved, and its last 4 characters (the key itself never comes back). */

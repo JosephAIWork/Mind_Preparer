@@ -56,6 +56,7 @@ from .formula_utils import (
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
 from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
 from .perf import record as perf_record, stage as perf_stage
+from .plain_codes import cite, is_com_error, plain_com_error, rule_name
 from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
@@ -765,7 +766,7 @@ def plan_create_grid_titles(
         if g.get("name") or id(g) in caption_handled or f"{g['sheet']}!{g['ref']}" in exclude:
             continue
         if g.get("inner_title_cells"):
-            skipped.append(f"{g['sheet']}!{g['ref']}: contains a trapped '#Title' (STR-001) -- separate the grids first")
+            skipped.append(f"{g['sheet']}!{g['ref']}: contains a trapped '#Title', {cite('STR-001')} -- separate the grids first")
             continue
         r0, c0 = g["first_row"], g["first_col"]
         name, source, label = _context_name(analysis, g, labels, consumed)
@@ -1972,7 +1973,9 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
         except Exception as exc:  # a planner bug must never hide the other actions
             ops, skipped = [], [f"planner error: {exc}"]
         out.append({
-            "id": a["id"], "title": a["title"], "rule_ids": a["rule_ids"], "default_on": a["default_on"],
+            "id": a["id"], "title": a["title"], "rule_ids": a["rule_ids"],
+            "rule_names": [rule_name(r) for r in a["rule_ids"]],  # the codes in plain words, in the same order
+            "default_on": a["default_on"],
             "level": a["level"], "level_note": a.get("level_note"), "caution": a.get("caution"),
             "operations": ops, "count": len(ops), "skipped": skipped,
         })
@@ -2044,10 +2047,11 @@ def _is_transient(exc: BaseException) -> bool:
 def _com_message(exc: BaseException, op: dict[str, Any] | None = None) -> str:
     """Excel's own message out of a pywin32 com_error, else a plain-English
     one: Excel often gives no text at all (just 0x800A03EC), which used to
-    reach the user as a raw tuple."""
+    reach the user as a raw tuple. The common errors ("Type mismatch", "Member not
+    found" ...) come out as a plain sentence with Excel's words in brackets (app/plain_codes.py)."""
     info = getattr(exc, "excepinfo", None)
     if info and len(info) > 2 and info[2]:
-        return str(info[2])
+        return plain_com_error(exc)
     scode = info[5] if info and len(info) > 5 else None
     if scode == EXCEL_REFUSED_FORMULA:
         formula = str((op or {}).get("after") or "")
@@ -2057,7 +2061,8 @@ def _com_message(exc: BaseException, op: dict[str, Any] | None = None) -> str:
         if formula.startswith("="):
             return "Excel refused this formula -- it is not a formula Excel can store (check the syntax and the function arguments)"
         return "Excel refused this change (error 0x800A03EC)"
-    return str(exc)
+    # the app's own refusals (a merged range, a cell already written) are plain words already
+    return plain_com_error(exc) if is_com_error(exc) else str(exc)
 
 
 def _break_external_link(wb: Any, o: dict[str, Any]) -> None:

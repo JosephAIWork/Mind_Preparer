@@ -29,6 +29,14 @@ def test_health_reports_engine_facts(client):
     assert body["rules"] == 109 and isinstance(body["excel"], bool) and isinstance(body["assistant"], bool)
 
 
+def test_plain_codes_give_the_screens_the_servers_own_words(client):
+    """GET /api/plain-codes: every rule's plain name and Excel's error values, the same glossary the
+    server uses (app/plain_codes.py) -- the screens never keep a list of their own."""
+    body = client.get("/api/plain-codes").json()
+    assert body["rules"]["FRM-009"] == "an empty cell is compared with a number" and len(body["rules"]) == len(server.engine().rules)
+    assert body["errors"]["#REF!"] == "the formula points at a cell that no longer exists" and "#N/A" in body["errors"]
+
+
 def test_upload_returns_the_front_end_contracts(client, flagged_model_broken_xlsx):
     body = _upload(client, flagged_model_broken_xlsx)
     assert set(body) >= {"sessionId", "summary", "report", "plan", "version"}
@@ -41,6 +49,10 @@ def test_upload_returns_the_front_end_contracts(client, flagged_model_broken_xls
     assert report["status"] == "NOT_SUPPORTED" and report["summary"]["finding_count"] == 109
     assert all({"rule_id", "status", "confidence", "evidence", "location", "message", "readiness_impact", "correction_available", "source"} <= set(f) for f in report["findings"])
     assert {a["id"] for a in plan} >= {"flag_spelling", "loop_name_case", "create_grid_titles"}
+    # every code travels with its plain name: the findings, the Prep actions, the blocking list, the delta
+    assert all(f["rule_name"] and f["rule_name"] == server.rule_name(f["rule_id"]) for f in report["findings"])
+    assert all(a["rule_names"] == [server.rule_name(r) for r in a["rule_ids"]] and all(a["rule_names"]) for a in plan)
+    assert all(b["rule_name"] == server.rule_name(b["rule_id"]) for b in body["readiness"]["blocking"])
     assert version["id"] == "ver-001" and version["source"] == "upload" and version["label"].startswith("v1")
 
 
@@ -465,10 +477,10 @@ def test_apply_says_what_it_did_repair_by_repair(client, flagged_model_broken_xl
     # two of the three rules it serves pass; the third still fails on fewer cells: said as it is
     headers = by_id["special_headers"]
     assert headers["verdict"] == "partial" and headers["level"] == "blocking" and headers["planned_after"] == 0
-    assert "EXP-003 still ERROR" in headers["summary"] and "by hand" in headers["summary"]
+    assert "EXP-003 (export settings grid has wrong columns or values) still ERROR" in headers["summary"] and "by hand" in headers["summary"]
     assert headers["applied"] == plan["special_headers"]["count"] == headers["planned_before"]
     moves = {r["rule_id"]: (r["from"], r["to"]) for r in headers["rules"]}
-    assert moves["PAR-002"] == ("ERROR", "PASS") and "PAR-002 ERROR -> PASS" in headers["summary"]
+    assert moves["PAR-002"] == ("ERROR", "PASS") and "PAR-002 (parameters grid has the wrong columns) ERROR -> PASS" in headers["summary"]
     assert {"PAR-002", "PRJ-002"} <= set(oc["resolved_blocking"])
     assert oc["blocking_after"] == out["readiness"]["blocking_count"]
     assert oc["blocking_after"] == oc["blocking_before"] - len(oc["resolved_blocking"]) + sum(1 for r in oc["remaining_blocking"] if r["new"])

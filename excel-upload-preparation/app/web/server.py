@@ -69,6 +69,7 @@ from app import stand_in_inputs  # noqa: E402  (through the module: tests replac
 from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Finding, Status, aggregate_status  # noqa: E402
+from app.plain_codes import cite_all, glossary, is_com_error, plain_com_error, plain_com_errors_in, plain_error, rule_name  # noqa: E402
 from app.validators import run_rule  # noqa: E402
 from app.readiness import OUTSIDE_RULE, STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
 from app.formula_utils import col_to_num, formula_memo  # noqa: E402
@@ -346,11 +347,11 @@ def _delta(previous: dict[str, Any] | None, current: dict[str, Any], version_id:
             continue
         before, after = STATUS_RANK.get(p["status"], 0), STATUS_RANK.get(f["status"], 0)
         if p["status"] != "PASS" and f["status"] == "PASS":
-            fixed.append({"rule_id": rid, "from": p["status"], "to": f["status"]})
+            fixed.append({"rule_id": rid, "rule_name": rule_name(rid), "from": p["status"], "to": f["status"]})
         elif after < before or (after == before and f["status"] != "PASS" and f["message"] != p["message"]):
-            improved.append({"rule_id": rid, "from": p["status"], "to": f["status"], "note": "status improved" if after < before else "same status, details changed"})
+            improved.append({"rule_id": rid, "rule_name": rule_name(rid), "from": p["status"], "to": f["status"], "note": "status improved" if after < before else "same status, details changed"})
         elif after > before:
-            regressed.append({"rule_id": rid, "from": p["status"], "to": f["status"]})
+            regressed.append({"rule_id": rid, "rule_name": rule_name(rid), "from": p["status"], "to": f["status"]})
     return {
         "version_id": version_id,
         "previous_version_id": previous.get("_version_id"),
@@ -513,7 +514,7 @@ def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer
         if res is None:
             res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
     except Exception as exc:
-        _apply_finish(s, error=f"apply failed: {exc}")
+        _apply_finish(s, error=f"apply failed: {plain_error(exc)}")
         raise
     if res["status"] == "NOT_APPLICABLE":
         _apply_finish(s, error=res.get("message", "nothing to apply"))
@@ -691,8 +692,8 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
             _scan_finish(s, error=str(exc.detail))
             raise
         except Exception as exc:
-            _scan_finish(s, error=f"analysis failed: {exc}")
-            raise HTTPException(status_code=500, detail=f"analysis failed: {exc}") from exc
+            _scan_finish(s, error=f"analysis failed: {plain_error(exc)}")
+            raise HTTPException(status_code=500, detail=f"analysis failed: {plain_error(exc)}") from exc
         _scan_finish(s)
         s.pending = False
         current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
@@ -1030,15 +1031,15 @@ def _plain_problem(exc: BaseException | None, step: str, failed_ops: list[dict[s
     """What stopped the user's work, in one plain sentence, for the box on their own screen (their
     workbook's words may appear here: it is not part of the message to the team)."""
     if failed_ops:
-        rules = sorted({str(o.get("rule_id")) for o in failed_ops if o.get("rule_id")})
+        # the rules the refused changes served, each with its plain name (the screens' own changes, "UI", are no rule)
+        rules = sorted({str(o.get("rule_id")) for o in failed_ops if rule_name(o.get("rule_id"))})
         return (
-            f"{step}: Excel did not accept {len(failed_ops)} of the changes" + (f" (rule {', '.join(rules[:4])})" if rules else "")
+            f"{step}: Excel did not accept {len(failed_ops)} of the changes" + (f", for {cite_all(rules[:4])}" if rules else "")
             + ". The other changes were made. The ones left out are listed with Excel's reason, and the check that follows shows what still blocks Mind."
         )
     said = ""
     if exc is not None:
-        info = getattr(exc, "excepinfo", None)
-        said = str(info[2]) if info and len(info) > 2 and info[2] else str(getattr(exc, "detail", "") or exc or type(exc).__name__)
+        said = plain_com_error(exc) if is_com_error(exc) else plain_com_errors_in(str(getattr(exc, "detail", "") or exc or type(exc).__name__))
     said = re.sub(r"\s+", " ", said).strip().rstrip(".")[:220]
     who = "The app" if step == "Other" else step
     return f"{who} stopped on an error" + (f": {said}" if said else "") + ". Your original file is not changed."
@@ -1066,7 +1067,8 @@ async def _http_error(request: Request, exc: StarletteHTTPException):
     if exc.status_code < 500:
         return await http_exception_handler(request, exc)
     incident = _problem_from_request(request, exc.__cause__ or exc)
-    body: dict[str, Any] = {"detail": exc.detail, **_problem_fields(incident)}
+    detail = plain_com_errors_in(exc.detail) if isinstance(exc.detail, str) else exc.detail
+    body: dict[str, Any] = {"detail": detail, **_problem_fields(incident)}
     return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
 
 
@@ -1074,8 +1076,19 @@ async def _http_error(request: Request, exc: StarletteHTTPException):
 async def _crash(request: Request, exc: Exception):
     """An error no route caught: a 500 with its incident."""
     incident = _problem_from_request(request, exc)
-    body: dict[str, Any] = {"detail": f"{type(exc).__name__}: {exc}"[:400], **_problem_fields(incident)}
+    body: dict[str, Any] = {"detail": _exc_text(exc)[:400], **_problem_fields(incident)}
     return JSONResponse(body, status_code=500)
+
+
+def _exc_text(exc: BaseException) -> str:
+    """An error no step expected, for the screen: Excel's errors said plainly, others with their type.
+    A sentence that already says what Excel did ("Excel stopped with an error and did not say why",
+    "Excel closed ...") stands alone: "Excel stopped with an error: " goes only in front of one that
+    does not name Excel ("the macro looked for a sheet ...", Excel's own words)."""
+    if not is_com_error(exc):
+        return plain_error(exc, with_type=True)
+    said = plain_com_error(exc)
+    return said if said.startswith("Excel ") else f"Excel stopped with an error: {said}"
 
 
 # --- API ----------------------------------------------------------------------------------
@@ -1104,6 +1117,13 @@ def health() -> dict[str, Any]:
         # its message; all None / False for the developer version. Answered after the date too.
         **expiry.current().health(),
     }
+
+
+@app.get("/api/plain-codes")
+def plain_codes() -> dict[str, Any]:
+    """The plain words for every code the screens show: each rule's name (rules/plain_names.yaml) and
+    what each of Excel's error values means -- one glossary, the same as the server's (app/plain_codes.py)."""
+    return glossary()
 
 
 @app.get("/api/assistant-key")
@@ -2150,12 +2170,6 @@ def _bring_in_base(s: Session) -> tuple[dict[str, Any], str | None]:
     return base, f"Brought in on {short}: {reason}. The changes made after {short} are not in this new line: run Do everything again."
 
 
-def _vba_error_text(err: str) -> str:
-    """Excel's own words in a COM error from a macro run ('Subscript out of range'), else the text as it is."""
-    m = re.search(r"\(\s*-?\d+\s*,\s*'[^']*'\s*,\s*'([^']+)'", err)
-    return m.group(1).strip() if m else err
-
-
 def _import_ok(report: dict[str, Any]) -> bool:
     """The import macro's run can be kept: the core's own verdict ("ok": no error, no early stop, every
     picked file opened and written), or -- from a core without it -- saved and not stopped early."""
@@ -2170,7 +2184,8 @@ def _import_stopped(report: dict[str, Any]) -> str:
     said = [x for x in said if x]
     not_opened = [str(e["file"]) for e in report.get("files") or [] if e.get("file") and not e.get("opened")]
     not_written = [str(e["file"]) for e in report.get("files") or [] if e.get("file") and e.get("opened") and not e.get("areas")]
-    err = _vba_error_text(re.sub(r"\s+", " ", str(report.get("error") or "")).strip())
+    # a VBA / COM error in plain words, Excel's own in brackets ('Subscript out of range'), else the text as it is
+    err = plain_com_error(re.sub(r"\s+", " ", str(report.get("error") or "")).strip())
 
     def names(xs: list[str]) -> str:
         return ", ".join(xs[:6]) + (" ..." if len(xs) > 6 else "")
@@ -2481,7 +2496,7 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
         if exc.status_code >= 500:
             st.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
     except Exception as exc:  # the thread must never die silently
-        st.update(state="error", error=after_versions(f"{type(exc).__name__}: {exc}")[:400])
+        st.update(state="error", error=after_versions(_exc_text(exc))[:400])
         st.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
     finally:
         st.update(finished=time.time(), updated=time.time())
@@ -2718,7 +2733,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             if exc.status_code >= 500:
                 state.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Fix all issues", s)))
         except Exception as exc:  # the thread must never die silently
-            state.update(state="error", error=f"{type(exc).__name__}: {exc}"[:400], finished=time.time(), updated=time.time())
+            state.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
             state.update(_problem_fields(_report_problem(exc, "Fix all issues", s, stage=str(state.get("stage") or ""))))
 
     threading.Thread(target=worker, name=f"autofix-{session_id}", daemon=True).start()

@@ -2,18 +2,21 @@ import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
+import { CodeName } from "../../core/code-name";
+import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
 /** Deliver: the report workbooks to download, and the numbers check (did the values change?). */
 @Component({
   selector: "mr-deliver-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, CodeName],
   templateUrl: "./deliver-panel.html",
   styleUrl: "./panels.scss",
 })
 export class DeliverPanel {
   private api = inject(ApiService);
+  private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
   readonly building = signal(false);
   readonly checking = signal(false);
@@ -31,6 +34,8 @@ export class DeliverPanel {
     const s = this.numbers()?.samples ?? {};
     return Object.entries(s).flatMap(([kind, rows]) => rows.slice(0, 5).map((r) => ({ kind, ...r })));
   });
+  /** What each error value among the samples means ("#REF!" was a value, "#N/A" is now), once each. */
+  readonly legend = computed(() => this.codes.legend(this.sampleRows().flatMap((r) => [r.was, r.is])));
 
   url(name: string): string | null {
     const id = this.store.sessionId();

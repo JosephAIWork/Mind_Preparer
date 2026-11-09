@@ -36,9 +36,9 @@
           @if (delta(); as d) {
             <div class="delta">
               <strong>Since the previous analysis ({{ d.previous_version_id }} → {{ d.version_id }}):</strong>
-              @if (d.fixed.length) { <span class="delta__ok">{{ d.fixed.length }} fixed: {{ ruleList(d.fixed) }}</span> }
-              @if (d.improved.length) { <span class="delta__ok">{{ d.improved.length }} improved: {{ ruleList(d.improved) }}</span> }
-              @if (d.regressed.length) { <span class="delta__bad">{{ d.regressed.length }} regressed: {{ ruleList(d.regressed) }}</span> }
+              @if (d.fixed.length) { <span class="delta__ok">{{ d.fixed.length }} fixed: <ng-container *ngTemplateOutlet="ruleList; context: { $implicit: d.fixed }"></ng-container></span> }
+              @if (d.improved.length) { <span class="delta__ok">{{ d.improved.length }} improved: <ng-container *ngTemplateOutlet="ruleList; context: { $implicit: d.improved }"></ng-container></span> }
+              @if (d.regressed.length) { <span class="delta__bad">{{ d.regressed.length }} regressed: <ng-container *ngTemplateOutlet="ruleList; context: { $implicit: d.regressed }"></ng-container></span> }
               @if (d.fixed.length) { <label class="check"><input type="checkbox" [checked]="showFixed()" (change)="showFixed.set(!showFixed())" /> show the fixed rows</label> }
             </div>
           }
@@ -62,7 +62,7 @@
                       <div class="gcard__head"><span class="gcard__title">{{ g.grid.name ? "#" + g.grid.name : "untitled" }}</span><span class="mono dim">{{ g.grid.ref }}</span></div>
                       @if (g.findings.length) {
                         <div class="gcard__chips">
-                          @for (f of g.findings; track $index) { <button class="chip chip--button" [title]="f.message" (click)="askAbout(f)">{{ f.rule_id }}</button> }
+                          @for (f of g.findings; track $index) { <button class="chip chip--button" [title]="chipTip(f)" (click)="askAbout(f)">{{ f.rule_id }}</button> }
                         </div>
                       }
                     </div>
@@ -82,13 +82,20 @@
               </tr>
             </thead>
             <tbody>
-              @for (f of findings(); track $index) {
+              @for (row of rows(); track $index) {
                 <tr>
-                  <td class="mono">{{ f.rule_id }}</td>
-                  <td><cds-tag [type]="tag(f.status).type" size="sm">{{ tag(f.status).label }}</cds-tag></td>
-                  <td class="mono">{{ where(f) }}</td>
-                  <td>{{ f.message }}</td>
-                  <td class="ask">@if (f.status !== "PASS") { <button cdsButton="ghost" size="sm" (click)="askAbout(f)">Ask the assistant</button> }</td>
+                  <td class="rule"><mr-code [code]="row.f.rule_id" [name]="row.f.rule_name"></mr-code></td>
+                  <td><cds-tag [type]="tag(row.f.status).type" size="sm">{{ tag(row.f.status).label }}</cds-tag></td>
+                  <td class="mono">{{ where(row.f) }}</td>
+                  <td>
+                    {{ row.f.message }}
+                    @if (row.meanings.length) {
+                      <ul class="meanings">
+                        @for (m of row.meanings; track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+                      </ul>
+                    }
+                  </td>
+                  <td class="ask">@if (row.f.status !== "PASS") { <button cdsButton="ghost" size="sm" (click)="askAbout(row.f)">Ask the assistant</button> }</td>
                 </tr>
               }
             </tbody>
@@ -170,3 +177,9 @@
     }
   }
 </section>
+
+<!-- rules in a line of text: each code with its plain name, the first 8 -->
+<ng-template #ruleList let-list>
+  @for (e of list.slice(0, 8); track e.rule_id; let last = $last) {<mr-code [code]="e.rule_id" [name]="e.rule_name"></mr-code>@if (!last) {, }}
+  @if (list.length > 8) { and {{ list.length - 8 }} more}
+</ng-template>
