@@ -782,8 +782,13 @@ export interface OutsideInputs {
   extra: string[];
   /** one plain sentence: "6 of 6 input files matched." */
   summary: string;
-  /** the current version has the files brought in */
+  /** the current version has the files brought in: by a bring-in that finished, with the files picked now */
   brought_in: boolean;
+  /** why not, when the current line went through a bring-in that no longer counts ("the input files
+   *  changed since they were brought in", "the last bring-in did not finish"); null otherwise */
+  brought_in_reason?: string | null;
+  /** the Mind inputs (/Input grids) the bring-in made for the current line */
+  mind_inputs?: string[];
 }
 
 export interface InputFile {
@@ -845,8 +850,9 @@ export interface OutsideRunResult {
   download?: { zip: string; files: string[] } | null;
   /** one plain line: "6 outside files brought in; 6 Mind inputs made (IN_BBA_01, ...); no computed value changed." */
   summary: string;
-  /** the comparison of every computed value before and after the Mind inputs (when it ran) */
-  numbers?: { ran?: boolean; clean?: boolean | null; verdict?: string } | null;
+  /** the comparison of every computed value before and after the Mind inputs: `ran` false when it
+   *  could not run (the values were NOT checked); null when it was not asked for */
+  numbers?: { ran?: boolean; clean?: boolean | null; verdict?: string; counts?: Record<string, number> } | null;
   /** what the user should know, in plain words (a file not picked, an area that stays inside the model) */
   notes?: string[];
 }
@@ -855,6 +861,10 @@ export interface OutsideRunResult {
 export interface OutsideRunStatus {
   outsideInputs: OutsideInputs | null;
   running: boolean;
+  /** idle | running | done | error */
+  state?: string;
+  /** the versions the job made (also when it stopped half-way) */
+  versions?: string[];
   /** the stage in words ("Running the workbook's import macro") */
   stage: string | null;
   result: OutsideRunResult | null;
@@ -909,9 +919,11 @@ export function outsideRowLabel(r: OutsideInputRow): string {
 
 /** The outcome of "Bring in the outside files" in plain words, and whether Do everything may go on.
  *  It stops when the model's macro did not read every picked file (a file it did not open, or a
- *  question the app answered No), or when a computed value changed (values must never change).
- *  An area that stays inside the model is reported, not a stop. */
-export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" | "warn" | "error"; line: string; detail: string } {
+ *  question the app answered No), or when a computed value changed (values must never change) --
+ *  in red -- and, in amber, when the comparison of the computed values could not run (`unchecked`:
+ *  the files are in, the user goes on on purpose). An area that stays inside the model is reported,
+ *  not a stop. */
+export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" | "warn" | "error"; line: string; detail: string; unchecked: boolean } {
   const imp = r.import;
   const made = r.mindInputs;
   const picked = (imp?.files ?? []).filter((f) => f.file);
@@ -922,11 +934,15 @@ export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" |
   const declined = dialogs.find((d) => d.pressed && answer(d.pressed).toUpperCase() !== "OK");
   const stopped = !!imp?.stopped_early;
   const changed = !!r.numbers?.ran && r.numbers.clean === false;
+  // the comparison was asked for and could not run (Excel failed it): no value was checked
+  const unchecked = !stopped && !changed && !!r.numbers && r.numbers.ran === false;
   const kept = made?.kept ?? [];
   const inputs = made?.inputs ?? [];
   const notes = (r.notes ?? []).filter(Boolean);
   const line = !stopped
-    ? r.summary || `${inputs.length} Mind input${inputs.length === 1 ? "" : "s"} made`
+    ? unchecked
+      ? "The outside files are brought in, but the computed values were not checked"
+      : r.summary || `${inputs.length} Mind input${inputs.length === 1 ? "" : "s"} made`
     : notRead.length
       ? `The import macro stopped before it read every file (not read: ${nameList(notRead)})`
       : declined
@@ -939,7 +955,8 @@ export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" |
     kept.length ? `stays inside the model: ${kept.slice(0, 2).map((k) => `${k.sheet}!${k.ref} (${k.why})`).join("; ")}${kept.length > 2 ? `; … ${kept.length - 2} more` : ""}` : "",
   ];
   const detail = [
-    stopped ? r.summary : "",
+    unchecked ? `${(r.numbers?.verdict || "The comparison of the computed values could not run.").trim()} Check them under Advanced › Deliver (Check the numbers).` : "",
+    stopped || unchecked ? r.summary : "",
     imp ? `${picked.length - notRead.length} of ${picked.length} file${picked.length === 1 ? "" : "s"} read by the macro ${imp.macro}${imp.seconds != null ? ` (${Math.round(imp.seconds)} s)` : ""}` : "",
     dialogs.length ? `${dialogs.length} message box${dialogs.length === 1 ? "" : "es"} answered${dialogs[0].message ? `: "${dialogs[0].message.slice(0, 80)}"` : ""}` : "",
     made ? `${count(made.formulas_changed)} formula${made.formulas_changed === 1 ? "" : "s"} now read the Mind inputs${made.sums_split ? ` (${count(made.sums_split)} sums split in two)` : ""}` : "",
@@ -947,8 +964,53 @@ export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" |
   ]
     .filter(Boolean)
     .join(" · ");
-  const tone = stopped || changed ? "error" : kept.length || !inputs.length ? "warn" : "ok";
-  return { ok: !stopped && !changed, tone, line, detail };
+  const tone = stopped || changed ? "error" : unchecked || kept.length || !inputs.length ? "warn" : "ok";
+  return { ok: !stopped && !changed && !unchecked, tone, line, detail, unchecked };
+}
+
+/** The first clause of a message from the server, for a one-line status (the whole message goes in the
+ *  details): it ends at the first ". " or "; " outside quotes, and is cut at about 160 characters. */
+export function firstClause(text: string, max = 160): string {
+  const t = (text ?? "").trim();
+  let quoted = false;
+  let end = t.length;
+  for (let i = 0; i < t.length - 1; i++) {
+    const c = t[i];
+    if (c === '"' || c === "“" || c === "”") quoted = c === "“" ? true : c === "”" ? false : !quoted;
+    else if (!quoted && (c === "." || c === ";") && t[i + 1] === " ") {
+      end = i;
+      break;
+    }
+  }
+  const out = t.slice(0, end).replace(/[.;]+$/, "");
+  return out.length > max ? out.slice(0, max - 1).trimEnd() + "…" : out;
+}
+
+/** The label of the card's button that brings the outside files in: "Try again" after a run that
+ *  failed, the matched files only when some are missing, "Bring in again" when the current line was
+ *  brought in before (files changed since, or that bring-in did not finish). */
+export function outsideButtonLabel(o: OutsideInputs, failed: boolean): string {
+  if (failed) return "Try again";
+  if (o.matched && o.missing.length) return `Bring in the ${o.matched} matched file${o.matched === 1 ? "" : "s"}`;
+  if (o.brought_in || o.brought_in_reason) return "Bring in again";
+  return "Bring in the outside files";
+}
+
+/** Why "Do everything" skips the outside step ("" when it runs it): only when the current line has the
+ *  files brought in -- the server says so for a bring-in that finished, with the files picked now --
+ *  or when the app cannot bring them in. It runs after a failure too: the server then says not brought in. */
+export function outsideSkipReason(o: OutsideInputs | null, unchecked = false): string {
+  if (!o) return "The model's macros open no outside files";
+  if (o.brought_in) return unchecked ? "Already brought in (the computed values were not checked)" : "Already brought in";
+  if (!o.rows.length) return "No cell names the files the macro opens: their data stays inside the model";
+  if (!o.macro) return "Which macro brings the outside files in is not clear: their data stays inside the model";
+  return "";
+}
+
+/** The card's line when the current line no longer counts as brought in (the server's reason), or "". */
+export function outsideReasonLine(o: OutsideInputs | null): string {
+  const why = (o && !o.brought_in && o.brought_in_reason ? o.brought_in_reason : "").trim().replace(/\.$/, "");
+  return why ? `${why[0].toUpperCase()}${why.slice(1)}: bring them in again.` : "";
 }
 
 /** "Bring in the outside files" when the server's estimate has no such step, with the measures of

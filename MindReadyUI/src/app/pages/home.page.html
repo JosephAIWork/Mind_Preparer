@@ -103,13 +103,13 @@
             <div class="outside__buttons">
               <button cdsButton="tertiary" size="md" (click)="addPicker.click()" [disabled]="busy()" [title]="busyHint()">Add files</button>
               <input #addPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
-              @if (!oi.brought_in || canBringInAgain()) {
+              @if (!oi.brought_in || outsideFailed()) {
                 <button
                   cdsButton="primary"
                   size="md"
                   (click)="runOutside()"
                   [disabled]="busy() || !oi.matched"
-                  [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in ? 'Starts again from the version before the first bring-in: run Do everything again after it' : '')"
+                  [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in || oi.brought_in_reason ? 'Starts again from the version before the first bring-in' : '')"
                 >{{ outsideButton(oi) }}</button>
               }
             </div>
@@ -132,7 +132,7 @@
         @if (oi.extra.length) { <p class="outside__note">Not used: <bdi>{{ oi.extra.join(", ") }}</bdi></p> }
         @if (addingInputs()) { <cds-inline-loading [state]="'active'" loadingText="Adding the files…"></cds-inline-loading> }
         @if (inputsError()) { <p class="outside__error">{{ inputsError() }}</p> }
-        @if (outside(); as s) {
+        @if (outsideCard(); as s) {
           @if (s.running) {
             <div class="action__progress">
               <cds-progress-bar [label]="s.line" [helperText]="s.detail" [max]="100"></cds-progress-bar>
@@ -147,6 +147,13 @@
               <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
                 <span>{{ s.detail }}</span>
               </div>
+            }
+            @if (outsideUnchecked() && oi.brought_in && !chainRunning()) {
+              <!-- the computed values could not be compared: Do everything stopped; going on is the user's choice -->
+              <p class="outside__next">
+                <span>Check them under Advanced › Deliver (Check the numbers), or go on without the check.</span>
+                <button cdsButton="tertiary" size="sm" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">Go on without the check</button>
+              </p>
             }
           }
         }
@@ -189,9 +196,9 @@
       @if (steps().length) {
         <ol class="chain__steps">
           @for (s of steps(); track s.id) {
-            <li class="chain__step" [class.chain__step--running]="s.state === 'running'" [class.chain__step--done]="s.state === 'done'" [class.chain__step--failed]="s.state === 'failed'" [class.chain__step--skipped]="s.state === 'skipped'">
+            <li class="chain__step" [class.chain__step--running]="s.state === 'running'" [class.chain__step--done]="s.state === 'done'" [class.chain__step--failed]="s.state === 'failed'" [class.chain__step--stopped]="s.state === 'stopped'" [class.chain__step--skipped]="s.state === 'skipped'">
               <div class="chain__label">
-                <span class="dot" [class.dot--ok]="s.state === 'done'" [class.dot--error]="s.state === 'failed'" [class.dot--warn]="s.state === 'skipped'"></span>
+                <span class="dot" [class.dot--ok]="s.state === 'done'" [class.dot--error]="s.state === 'failed'" [class.dot--warn]="s.state === 'skipped' || s.state === 'stopped'"></span>
                 {{ s.label }}
                 <span class="chain__check">check: {{ s.check }}</span>
               </div>

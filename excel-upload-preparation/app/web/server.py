@@ -18,6 +18,7 @@ served from the same process with an SPA fallback, so one URL does it all:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import queue
@@ -176,6 +177,10 @@ class Session:
     outside_run: dict[str, Any] = field(default_factory=dict)  # the bring-in job (GET .../outside-inputs)
     mind_inputs_dir: str | None = None  # the CSV folder of the last successful bring-in
     mind_inputs_dirs: dict[str, str] = field(default_factory=dict)  # "mind_inputs" version id -> its CSV folder
+    # the bring-ins that FINISHED: the last version each made ("mind_inputs", or "import" when no Mind
+    # input was made) -> the fingerprint of the picked files it read (_inputs_fingerprint). A line counts
+    # as brought in only through one of these, and only while the picked files are still those.
+    brought_in_files: dict[str, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     # one Apply at a time: two at once would both copy the same version and the last one to finish
     # would become current without the other's changes
@@ -836,9 +841,49 @@ def _rematch(s: Session) -> None:
         s.outside_inputs["match"] = outside_inputs.match_files(s.outside_inputs["table"], [i["name"] for i in s.inputs])
 
 
+def _match_rows(s: Session) -> list[dict[str, Any]]:
+    """The rows of the import table, each with the picked file that goes with it (none: missing)."""
+    oi = s.outside_inputs or {}
+    if not oi:
+        return []
+    match = oi.get("match") or outside_inputs.match_files(oi["table"], [i["name"] for i in s.inputs])
+    return list(match.get("rows") or [])
+
+
+def _inputs_fingerprint(s: Session, rows: list[dict[str, Any]] | None = None) -> str:
+    """The picked files the rows of the import table read, as one sha256: each row's cell with the
+    content (sha256) of the file that goes with it, or none. A bring-in records it; a file replaced
+    since (same name, other content) or a row matched since changes it."""
+    sha = {i["name"]: i.get("sha256") or "" for i in s.inputs}
+    lines = sorted(
+        f"{r.get('sheet')}!{r.get('cell')}\t" + ((sha.get(r["file"]) or "?") if r.get("file") else "-")
+        for r in (_match_rows(s) if rows is None else rows)
+    )
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+# why a line that went through a bring-in does not count as brought in (INP-010 and the card say it)
+_FILES_CHANGED = "the input files changed since they were brought in"
+_NOT_FINISHED = "the last bring-in did not finish"
+
+
+def _brought_in_state(s: Session, version_id: str | None = None) -> tuple[bool, str | None]:
+    """Whether the line of `version_id` (default: the current version) has the outside files brought
+    in -- through a bring-in that finished, with the files picked now -- and, when its line went
+    through a bring-in that does not count, why (_FILES_CHANGED / _NOT_FINISHED; None otherwise)."""
+    line = _lineage(s, version_id or s.current_version_id)
+    for v in reversed(line):
+        recorded = s.brought_in_files.get(v["id"])
+        if recorded is not None:
+            return (True, None) if recorded == _inputs_fingerprint(s) else (False, _FILES_CHANGED)
+    if (s.outside_run or {}).get("state") != "running" and any(v.get("source") in ("import", "mind_inputs") for v in line):
+        return False, _NOT_FINISHED  # stopped half-way, or its Mind inputs were refused (they changed values)
+    return False, None
+
+
 def _brought_in(s: Session, version_id: str | None = None) -> bool:
-    """The version descends from one the outside files were brought into."""
-    return any(v.get("source") in ("import", "mind_inputs") for v in _lineage(s, version_id or s.current_version_id))
+    """The version descends from one a finished bring-in made, and the picked files are still the ones it read."""
+    return _brought_in_state(s, version_id)[0]
 
 
 def _outside_public(s: Session) -> dict[str, Any] | None:
@@ -855,6 +900,7 @@ def _outside_public(s: Session) -> dict[str, Any] | None:
         summary = "The macros open outside files, but no cell names them."
     else:
         summary = "The macros open outside files, but which macro brings them in is not clear."
+    brought_in, why_not = _brought_in_state(s) if s.versions else (False, None)
     return {
         "imports": True,
         "macro": oi["vba"].get("import_macro"),
@@ -868,7 +914,10 @@ def _outside_public(s: Session) -> dict[str, Any] | None:
         "missing": [f"{r['sheet']}!{r['cell']}" for r in match["missing"]],
         "extra": list(match["extra"]),
         "summary": summary,
-        "brought_in": _brought_in(s) if s.versions else False,
+        "brought_in": brought_in,
+        # why the line's bring-in does not count, in words (the input files changed since, it did not
+        # finish); None when brought in or when the line never went through one
+        "brought_in_reason": why_not,
         # the /Input grids the bring-in made for this line (their size is the model's import area)
         "mind_inputs": [Path(n).stem for n in _mind_input_files(_mind_inputs_dir_for(s))] if s.versions else [],
     }
@@ -1457,6 +1506,10 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
     why = _busy_with(s)
     if why:
         raise HTTPException(status_code=409, detail=f"Wait a moment: {why}. Run in Mind uploads the latest version, so start it once that has finished.")
+    if s.outside_inputs and _brought_in_state(s)[1] == _FILES_CHANGED:
+        # the version (and its Mind inputs) hold the data of the files picked before: never uploaded as current
+        raise HTTPException(status_code=409, detail="The input files changed since they were brought in: Run in Mind would use the data of the old files. "
+                                                    "Bring them in again first (the Outside files card on the main screen, or Do everything), then run in Mind.")
     # the outside files made Mind inputs for this line: uploaded through Mind's Inputs window after
     # the model is added and before the run (checked before the loop is registered as running)
     inputs_dir = _mind_inputs_dir_for(s)
@@ -2012,12 +2065,17 @@ def numbers_check(session_id: str) -> dict[str, Any]:
 # --- bringing the outside files in (app/outside_inputs.py) --------------------------------------
 _OUTSIDE_TITLES = {
     "start": "Starting", "import": "Running the workbook's import macro", "scan": "Checking the workbook with the outside data",
-    "mind_inputs": "Making the Mind inputs", "rescan": "Checking the new version", "numbers": "Checking that no computed value changed", "done": "Done",
+    "mind_inputs": "Making the Mind inputs", "numbers": "Checking that no computed value changed", "rescan": "Checking the new version", "done": "Done",
 }
 
 
 class _BringInStopped(Exception):
     """The job stopped for a reason the user can act on: said in plain words, no problem report."""
+
+
+class _MindInputsRefused(_BringInStopped):
+    """The Mind inputs would change a computed value: not kept. Its text says the whole story (which
+    version holds the outside data), so it is shown as it is."""
 
 
 def _bring_in_base(s: Session) -> tuple[dict[str, Any], str | None]:
@@ -2043,6 +2101,11 @@ def _bring_in_base(s: Session) -> tuple[dict[str, Any], str | None]:
     if base["id"] == s.current_version_id:
         return base, None
     short = base["label"].split(" — ")[0]
+    after = line[next(i for i, v in enumerate(line) if v["id"] == base["id"]) + 1:]
+    if why == "again" and all(v.get("source") in ("import", "mind_inputs") for v in after):
+        # only the versions of the earlier bring-in follow it (one that changed the files, or one that
+        # did not finish): the new line leaves nothing else out
+        return base, f"Brought in on {short}: the outside files were already brought in after it."
     reason = ("the outside files were already brought in after it" if why == "again"
               else "rows, columns or sheet names changed after it, and the workbook's macro writes to fixed places")
     return base, f"Brought in on {short}: {reason}. The changes made after {short} are not in this new line: run Do everything again."
@@ -2154,6 +2217,27 @@ def _register_mind_inputs(s: Session, made: dict[str, Any], run_dir: Path) -> di
     return {"zip": zip_path.name, "files": names}
 
 
+def _changed_values(numbers: dict[str, Any] | None) -> int:
+    """The computed values a numbers check found changed: now an error, another value, or no longer a formula."""
+    c = (numbers or {}).get("counts") or {}
+    return int(c.get("good_to_error", 0)) + int(c.get("good_to_other", 0)) + int(c.get("missing_good", 0))
+
+
+def _mind_inputs_refused(compared: dict[str, Any], v_import: dict[str, Any]) -> str:
+    """Why the Mind inputs are not kept (they would change computed values), in plain words, with the
+    first value that would change -- in the version that stays, where the user can look."""
+    n = _changed_values(compared)
+    what = f"{n:,} computed value{'' if n == 1 else 's'}" if n else "computed values"
+    short = v_import["label"].split(" — ")[0]
+    samples = compared.get("samples") or {}
+    first = next((x for kind in ("good_to_error", "good_to_other", "missing") for x in samples.get(kind) or []), None)
+    example = ""
+    if first and first.get("original"):
+        example = (f" For example {first['original']} would show {first['is']} instead of {first.get('was')}." if "is" in first
+                   else f" For example {first['original']} ({first.get('was')}) would no longer be a formula.")
+    return f"Making the Mind inputs would change {what}; the outside data stays inside the model ({short}); nothing else was changed.{example}"
+
+
 def _bring_in_summary(report: dict[str, Any], made: dict[str, Any] | None, numbers: dict[str, Any] | None, note: str | None) -> str:
     """One plain line: '6 outside files brought in; 6 Mind inputs made (IN_BBA_01, ...); no computed value changed.'"""
     opened = sum(1 for e in report.get("files") or [] if e.get("opened"))
@@ -2163,9 +2247,11 @@ def _bring_in_summary(report: dict[str, Any], made: dict[str, Any] | None, numbe
     if numbers and numbers.get("ran") and numbers.get("clean"):
         parts.append("no computed value changed")
     elif numbers and numbers.get("ran"):
-        c = numbers.get("counts") or {}
-        changed = int(c.get("good_to_error", 0)) + int(c.get("good_to_other", 0)) + int(c.get("missing_good", 0))
+        changed = _changed_values(numbers)
         parts.append(f"{changed:,} computed value{'' if changed == 1 else 's'} changed: see Compare the numbers")
+    elif numbers:  # the comparison was asked for and could not run (Excel failed it): said plainly
+        why = str(numbers.get("verdict") or "").strip().rstrip(".")
+        parts.append("the computed values were NOT checked" + (f" ({why})" if why else ""))
     else:
         parts.append("the computed values are not checked yet")
     return "; ".join(parts) + "." + (f" {note}" if note else "")
@@ -2174,8 +2260,12 @@ def _bring_in_summary(report: dict[str, Any], made: dict[str, Any] | None, numbe
 def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stage, say) -> dict[str, Any]:
     """The job: the workbook's own import macro on a copy of `base` with the matched files -> the
     "import" version -> its scan (every sheet: a formula that reads an import area may be anywhere)
-    -> each area a Mind input -> the "mind_inputs" version, its CSVs and zip for download -> its
-    scan -> the numbers of the two versions compared (`check_numbers`)."""
+    -> each area a Mind input, on a copy -> every computed value of that copy compared with the
+    import version's (`check_numbers`) -> only when none changed (or the comparison could not run:
+    said plainly, result["numbers"]["ran"] False) the "mind_inputs" version, its CSVs and zip for
+    download, and its scan. Mind inputs that would change a value are not kept (_MindInputsRefused):
+    the import version stays current and its line is not brought in. A bring-in counts once it got
+    to the end (s.brought_in_files, with the fingerprint of the files it read)."""
     from app.inventory import sha256_of
 
     oi = s.outside_inputs or {}
@@ -2186,6 +2276,7 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
         p = _input_path(s, r.get("file"))
         if p is not None and p.is_file():
             files[f"{r['sheet']}!{r['cell']}"] = p
+    fingerprint = _inputs_fingerprint(s, rows)  # the files this bring-in reads (added files are refused meanwhile)
     base_path = s.paths[base["id"]]
     run_dir = s.work_dir / "outside_inputs" / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
     imported = run_dir / "import" / base_path.name
@@ -2230,22 +2321,33 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
             result["notes"].append("No Mind input could be made" + (f": {why}" if why else "") + ". The outside data stays inside the model.")
             result["mindInputs"] = _mind_inputs_public(made, None)
         else:
-            v_made = _add_version(s, made_path, "mind_inputs", "Outside files made Mind inputs", _mind_inputs_log(made), None, sha256_of(made_path))
+            log = _mind_inputs_log(made)
+            compared: dict[str, Any] | None = None
+            if check_numbers:
+                # before anything is kept: Mind inputs that change a computed value never become a
+                # version, and their CSVs are never offered for download or to Run in Mind
+                stage("numbers", "Comparing every computed value with the version the files were brought into")
+                excel_worker.release(s.id)
+                compared = compare_workbooks(imported, made_path, Moves([log]), lambda _stage, message, *_a, **_k: say(message))
+                if compared.get("ran") and not compared.get("clean"):
+                    raise _MindInputsRefused(_mind_inputs_refused(compared, v_import))
+            v_made = _add_version(s, made_path, "mind_inputs", "Outside files made Mind inputs", log, None, sha256_of(made_path))
             s.outside_run.setdefault("versions", []).append(v_made["id"])
             result["versions"].append(v_made["id"])
             s.mind_inputs_dirs[v_made["id"]] = str(csv_dir)
             s.mind_inputs_dir = str(csv_dir)
             result["mindInputs"] = _mind_inputs_public(made, v_made)
             result["download"] = _register_mind_inputs(s, made, run_dir)
+            if compared is not None:  # clean, or the comparison could not run: "ran" False, said in the summary
+                result["numbers"] = _numbers_public(compared, v_made["id"])
             if made.get("kept"):
                 result["notes"].append(f"{len(made['kept'])} area(s) stay inside the model (Mind cannot swap them): {made['kept'][0].get('why')}")
             stage("rescan", "Checking the new version")
             _run_scan(s, made_path)
-            if check_numbers:
-                stage("numbers", "Comparing every computed value with the version the files were brought into")
-                excel_worker.release(s.id)
-                compared = compare_workbooks(imported, made_path, Moves([v_made["change_log"]]), lambda _stage, message, *_a, **_k: say(message))
-                result["numbers"] = _numbers_public(compared, v_made["id"])
+    # got to the end: the line counts as brought in, while the picked files are the ones read here
+    s.brought_in_files[result["versions"][-1]] = fingerprint
+    with contextlib.suppress(Exception):  # INP-010 of the last scan ran before this record
+        _patch_outside_finding(s, s.result)
     result["summary"] = _bring_in_summary(report, made, result["numbers"], note)
     return result
 
@@ -2269,6 +2371,8 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
     try:
         st["result"] = _bring_in(s, base, note, check_numbers, stage, say)
         st.update(state="done", stage="done", title="Done", message=st["result"]["summary"])
+    except _MindInputsRefused as exc:  # says which version holds the outside data itself
+        st.update(state="error", error=str(exc))
     except _BringInStopped as exc:
         st.update(state="error", error=after_versions(str(exc)))
     except HTTPException as exc:  # a scan refused or failed
@@ -2280,6 +2384,11 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
         st.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
     finally:
         st.update(finished=time.time(), updated=time.time())
+        if st.get("state") == "error":
+            # a job that stopped half-way leaves its line not brought in: INP-010 says why (its last
+            # scan ran while the job was still going)
+            with contextlib.suppress(Exception):
+                _patch_outside_finding(s, s.result)
         s.apply_lock.release()
 
 
@@ -2338,7 +2447,7 @@ def outside_inputs_state(session_id: str) -> dict[str, Any]:
         "running": st.get("state") == "running",
         "state": st.get("state") or "idle",
         "stage": st.get("title"),  # in words, for the screen ("Running the workbook's import macro")
-        "stage_id": st.get("stage"),  # start | import | scan | mind_inputs | rescan | numbers | done
+        "stage_id": st.get("stage"),  # start | import | scan | mind_inputs | numbers | rescan | done
         "message": st.get("message"),
         "elapsed_s": round((st.get("finished") or time.time()) - started, 1) if started else 0.0,
         "result": st.get("result"),

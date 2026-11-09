@@ -162,18 +162,21 @@ def inp_010(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     runs no macro and opens no outside file, so each file must become a Mind input the Mind team
     swaps in Mind's Input Manager. The facts come from the server, in config["outside_inputs"]:
     what the upload's macros open, the import table, the files the user picked with the workbook
-    and whether this version descends from the one they were brought into ("brought_in"). Without
-    them, or when the macros open nothing, there is nothing to do (PASS: the Status enum has no
-    NOT_APPLICABLE)."""
+    and whether this version descends from one a finished bring-in made, with the files picked now
+    ("brought_in"; when not, "brought_in_reason" says why for a line that went through a bring-in:
+    the input files changed since, or it did not finish). Without them, or when the macros open
+    nothing, there is nothing to do (PASS: the Status enum has no NOT_APPLICABLE)."""
     oi = (config or {}).get("outside_inputs")
     if not isinstance(oi, dict) or not oi.get("imports"):
         return finding("PASS", "Nothing to bring in: the macros open no outside file.", {"imports": False})
     rows = [r for r in oi.get("rows") or [] if isinstance(r, dict)]
     macro = oi.get("macro")
     missing = [r for r in rows if not r.get("file")]
+    reason = None if oi.get("brought_in") else (str(oi.get("brought_in_reason") or "").strip().rstrip(".") or None)
     observed = {
         "imports": True, "macro": macro, "calls": oi.get("calls") or [], "files": len(rows), "matched": int(oi.get("matched") or 0),
         "missing": [_file_label(r) for r in missing], "extra": list(oi.get("extra") or []), "brought_in": bool(oi.get("brought_in")),
+        "brought_in_reason": reason,
         "sites": [{"sheet": str(r["cell"]).rsplit("!", 1)[0], "cell": str(r["cell"]).rsplit("!", 1)[1]} for r in rows if "!" in str(r.get("cell") or "")],
     }
     location = observed["sites"][0] if observed["sites"] else None
@@ -188,6 +191,12 @@ def inp_010(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     if missing:
         names = [_file_label(r) for r in missing]
         picked += f", missing: {', '.join(names[:6])}" + (f" (+{len(names) - 6} more)" if len(names) > 6 else "")
+    if reason:  # brought in before, and that no longer counts: the files changed since, or it stopped half-way
+        return finding(
+            "ERROR",
+            f"The macro {macro} fills the workbook from {n} outside file{'' if n == 1 else 's'}, and Mind runs no macro: {reason} ({picked}). "
+            "Use Bring in the outside files to bring them in again.",
+            observed, location)
     return finding(
         "ERROR",
         f"The macro {macro} fills the workbook from {n} outside file{'' if n == 1 else 's'}, and Mind runs no macro: {picked}. Use Bring in the outside files.",

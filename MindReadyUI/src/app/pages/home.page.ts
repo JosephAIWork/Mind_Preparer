@@ -5,7 +5,8 @@ import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModu
 import { ApiService, errorText } from "../core/api.service";
 import {
   ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus,
-  appliedCount, failedCount, failedText, inputFilesProblem, isPending, nameList, outsideOutcome, outsideRowLabel, pickedFilesProblem, withOutsideStep,
+  appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason,
+  pickedFilesProblem, withOutsideStep,
 } from "../core/models";
 import { SessionStore } from "../core/session.store";
 import { KeyBox } from "./advanced/key-box";
@@ -69,7 +70,8 @@ interface Step {
   id: StepId;
   label: string;
   check: string;
-  state: "waiting" | "running" | "done" | "failed" | "skipped";
+  /** stopped: amber -- the step did its work, but a check could not run (the user goes on on purpose) */
+  state: "waiting" | "running" | "done" | "failed" | "stopped" | "skipped";
   line: string;
   detail: string;
   open?: boolean;
@@ -118,8 +120,10 @@ export class HomePage implements OnDestroy {
   readonly addingInputs = signal(false);
   readonly inputsError = signal("");
   readonly cardDragOver = signal(false);
-  /** files were added after the outside files were brought in: they come in with "Bring in again" */
-  private readonly addedSince = signal(false);
+  /** the last run on this page failed (the job stopped, its check failed, it could not start): the card offers "Try again" */
+  readonly outsideFailed = signal(false);
+  /** the last run brought the files in but could not compare the computed values: amber, and Do everything stops there */
+  readonly outsideUnchecked = signal(false);
   readonly pickAccept = PICK_ACCEPT;
   readonly loopPlan = signal<LoopPlan | null>(null);
   readonly steps = signal<Step[]>([]);
@@ -234,22 +238,24 @@ export class HomePage implements OnDestroy {
     const v = this.store.currentVersion();
     return id && v ? this.api.downloadUrl(id, v.file_name) : null;
   });
-  /** Brought in already, and files were added since (or a matched file is one the last bring-in did not
-   *  read): the card offers to bring them in again (the server starts a new line for it). */
-  readonly canBringInAgain = computed(() => {
+  /** What the Outside files card shows: the job's own state -- or, once the current version no longer
+   *  has the files brought in by that job (the server says why: files replaced or added since, a
+   *  bring-in that did not finish; or another version was chosen), that, not the old result. The
+   *  server is the one source: the same after a reload. */
+  readonly outsideCard = computed<ActionState>(() => {
+    const s = this.outside();
     const o = this.store.outsideInputs();
-    if (!o?.brought_in || !o.matched) return false;
-    if (this.addedSince()) return true;
-    const files = this.outsideResult()?.import?.files;
-    if (!files) return false;
-    const read = new Set(files.filter((f) => f.opened && f.file).map((f) => `${f.cell}|${f.file}`));
-    return o.rows.some((r) => r.file && !read.has(`${r.cell}|${r.file}`));
+    if (!o || o.brought_in || s.running || s.tone === "error") return s;
+    const why = outsideReasonLine(o);
+    if (why) return { running: false, fraction: null, line: why, detail: "", tone: "warn" };
+    return this.outsideResult() ? idle() : s;
   });
-  /** "Mind inputs.zip": one CSV per Mind input, made by the last Bring in the outside files */
+  /** "Mind inputs.zip": one CSV per Mind input, made by the last Bring in the outside files -- offered
+   *  only while the current version has them brought in (not the CSVs of files replaced since) */
   readonly zipUrl = computed(() => {
     const id = this.store.sessionId();
     const r = this.outsideResult();
-    return id && r?.download?.zip && r.mindInputs?.inputs?.length ? this.api.downloadUrl(id, r.download.zip) : null;
+    return id && this.store.outsideInputs()?.brought_in && r?.download?.zip && r.mindInputs?.inputs?.length ? this.api.downloadUrl(id, r.download.zip) : null;
   });
 
   // ---- the scan, as rows -------------------------------------------------------------------------
@@ -466,7 +472,8 @@ export class HomePage implements OnDestroy {
     this.outsideResult.set(null);
     this.inputsError.set("");
     this.cardDragOver.set(false);
-    this.addedSince.set(false);
+    this.outsideFailed.set(false);
+    this.outsideUnchecked.set(false);
   }
 
   rowLabel(r: OutsideInputRow): string {
@@ -486,21 +493,17 @@ export class HomePage implements OnDestroy {
     return o.summary;
   }
 
-  /** With files missing, the button says it brings in only the matched ones. */
+  /** "Try again" after a failed run; with files missing, it says it brings in only the matched ones;
+   *  "Bring in again" when the current line was brought in before (files changed since). */
   outsideButton(o: OutsideInputs): string {
-    if (o.brought_in) return "Bring in again";
-    return o.matched && o.missing.length ? `Bring in the ${o.matched} matched file${o.matched === 1 ? "" : "s"}` : "Bring in the outside files";
+    return outsideButtonLabel(o, this.outsideFailed());
   }
 
-  /** Why Do everything skips the outside step ("" when it runs it). It never brings them in a second
-   *  time: that starts a new line of versions, the card's "Bring in again" does it when asked. */
+  /** Why Do everything skips the outside step ("" when it runs it): only when the server says the
+   *  current line has the files brought in (a bring-in that finished, with the files picked now). It
+   *  runs again after a failed or half-way bring-in, and after input files were replaced or added. */
   private outsideSkip(): string {
-    const o = this.store.outsideInputs();
-    if (!o) return "The model's macros open no outside files";
-    if (o.brought_in) return this.canBringInAgain() ? 'Already brought in (the files added since come in with "Bring in again" on the Outside files card)' : "Already brought in";
-    if (!o.rows.length) return "No cell names the files the macro opens: their data stays inside the model";
-    if (!o.macro) return "Which macro brings the outside files in is not clear: their data stays inside the model";
-    return "";
+    return outsideSkipReason(this.store.outsideInputs(), this.outsideUnchecked());
   }
 
   /** Bring in the outside files: the model's own import macro runs on a copy with the matched files, then
@@ -510,6 +513,8 @@ export class HomePage implements OnDestroy {
     const id = this.store.sessionId();
     const o = this.store.outsideInputs();
     if (!id || !o || this.outside().running) return false;
+    this.outsideFailed.set(false);
+    this.outsideUnchecked.set(false);
     if (!this.canBringIn(o)) {
       this.outside.set({ running: false, fraction: null, line: "The app cannot bring these files in", detail: this.outsideLead(o), tone: "error" });
       return false;
@@ -538,6 +543,7 @@ export class HomePage implements OnDestroy {
       const st = await this.api.outsideInputs(id).catch(() => null);
       if (!st?.running) {
         this.outside.set({ running: false, fraction: null, line: "Not started", detail: errorText(e), tone: "error" });
+        this.outsideFailed.set(true);
         return false;
       }
       return await this.followOutside(id, true);
@@ -566,6 +572,7 @@ export class HomePage implements OnDestroy {
             continue;
           }
           this.outside.set({ running: false, fraction: null, line: "Lost the job", detail: errorText(e), tone: "error" });
+          this.outsideFailed.set(true);
           return false;
         }
         looks++;
@@ -583,11 +590,12 @@ export class HomePage implements OnDestroy {
         }
         await this.reloadSession(id); // the job's new versions, also when it stopped half-way
         if (st.error) {
-          this.outside.set({ running: false, fraction: null, line: "Could not bring in the outside files", detail: st.error, tone: "error" });
+          this.showOutsideError(st.error);
           return false;
         }
         if (!st.result) {
           this.outside.set({ running: false, fraction: null, line: "The job ended without a result", detail: "", tone: "error" });
+          this.outsideFailed.set(true);
           return false;
         }
         return this.showOutsideResult(st.result);
@@ -611,11 +619,20 @@ export class HomePage implements OnDestroy {
   /** The result on the card (and in the chain): the summary, then the details and the new versions. */
   private showOutsideResult(r: OutsideRunResult): boolean {
     this.outsideResult.set(r);
-    this.addedSince.set(false);
     const out = outsideOutcome(r);
     const labels = (r.versions ?? []).map((v) => this.store.versions().find((x) => x.id === v)?.label ?? "");
     this.outside.set({ running: false, fraction: null, line: out.line, detail: [out.detail, ...labels].filter(Boolean).join(" · "), tone: out.tone });
+    this.outsideFailed.set(out.tone === "error"); // the macro stopped early, or a value changed: "Try again"
+    this.outsideUnchecked.set(out.unchecked);
     return out.ok;
+  }
+
+  /** A job that stopped (the server's words: why, and which version holds the outside data): its first
+   *  clause as the card's line, all of it in the details (open), and "Try again" on the card. */
+  private showOutsideError(error: string): void {
+    this.outside.set({ running: false, fraction: null, line: firstClause(error) || "Could not bring in the outside files", detail: error, tone: "error", open: true });
+    this.outsideFailed.set(true);
+    this.outsideUnchecked.set(false);
   }
 
   /** The job may still run from before a reload or a visit to Advanced (follow it), or its result is there to show. */
@@ -629,11 +646,13 @@ export class HomePage implements OnDestroy {
       return; // nothing to pick up
     }
     if (st.outsideInputs) this.store.outsideInputs.set(st.outsideInputs);
+    // the card then follows the server: a result that no longer describes the current version (files
+    // replaced since, another version chosen) gives way to why (outsideCard)
     if (st.running) {
       this.showOutsideRunning(st, Date.now());
       await this.followOutside(id, true);
-    } else if (st.result) this.showOutsideResult(st.result);
-    else if (st.error) this.outside.set({ running: false, fraction: null, line: "Could not bring in the outside files", detail: st.error, tone: "error" });
+    } else if (st.error) this.showOutsideError(st.error);
+    else if (st.result) this.showOutsideResult(st.result);
   }
 
   /** The match and `brought_in` as the server has them now (a version restored under Advanced changes them). */
@@ -679,7 +698,9 @@ export class HomePage implements OnDestroy {
   }
 
   /** Add files: more input files (one of the same name replaces the old one); the server matches them
-   *  again. After a bring-in they come in with "Bring in again". */
+   *  again. After a bring-in, a file that changes what the model reads (a corrected file, a missing one)
+   *  makes the server say "not brought in" (with why): the card offers "Bring in again", Do everything
+   *  runs the step again. */
   async addInputs(files: File[]): Promise<void> {
     const id = this.store.sessionId();
     const o = this.store.outsideInputs();
@@ -698,8 +719,11 @@ export class HomePage implements OnDestroy {
     try {
       const out = await this.api.addInputs(id, files);
       this.store.applyAnalysis({ outsideInputs: out.outsideInputs, readiness: out.readiness ?? undefined });
-      if (this.outside().tone === "error") this.outside.set(idle()); // the last stop was about the files before
-      if (o.brought_in) this.addedSince.set(true); // they come in with "Bring in again"
+      if (this.outside().tone === "error") {
+        // the last stop was about the files before
+        this.outside.set(idle());
+        this.outsideFailed.set(false);
+      }
     } catch (e) {
       this.inputsError.set(errorText(e));
     } finally {
@@ -1052,7 +1076,16 @@ export class HomePage implements OnDestroy {
         }
         const r = states[step.id]();
         this.stepSeconds[step.id] = (Date.now() - this.stepT0) / 1000;
-        this.setStep(step.id, { state: ok ? "done" : "failed", line: r.line, detail: r.detail });
+        // the files are in, but no computed value could be compared: amber, and the chain stops -- going
+        // on is the user's choice (Do everything again skips the step: the server says brought in)
+        const unchecked = step.id === "outside" && !ok && this.outsideUnchecked();
+        this.setStep(step.id, { state: ok ? "done" : unchecked ? "stopped" : "failed", line: r.line, detail: r.detail });
+        if (unchecked) {
+          this.chainLine.set(
+            `Stopped at "${step.label}": the computed values were not checked. Check them under Advanced › Deliver (Check the numbers), or press Do everything again to go on without the check.`,
+          );
+          return;
+        }
         if (!ok) {
           const where = step.id === "outside" ? "See the Outside files card above" : "Fix that under Advanced";
           this.chainLine.set(`Stopped at "${step.label}": ${r.line.replace(/\.$/, "")}. ${where}, then press Do everything again.`);

@@ -315,7 +315,8 @@ def test_bring_in_makes_two_versions_the_mind_inputs_and_their_downloads(client,
     assert sorted(p.name for p in Path(s.mind_inputs_dir).iterdir()) == ["IN_BBA_01.csv"]
     # brought in: INP-010 passes, the verdict no longer asks for it
     after = client.get(f"/api/sessions/{sid}").json()
-    assert after["outsideInputs"]["brought_in"] is True and _finding(after["report"])["status"] == "PASS"
+    assert after["outsideInputs"]["brought_in"] is True and after["outsideInputs"]["brought_in_reason"] is None and _finding(after["report"])["status"] == "PASS"
+    assert list(s.brought_in_files) == ["ver-003"]  # the bring-in got to the end, with the files it read
     assert all(b["rule_id"] != "INP-010" for b in after["readiness"]["blocking"])
     assert (after["readiness"]["next_step"] or {}).get("label") != "Bring in the outside files"
     # the numbers baseline is now the version the files were brought into; CELL/INFO stay with the upload
@@ -460,7 +461,13 @@ def test_the_macro_runs_where_the_layout_is_still_the_uploads(tmp_path):
     assert note.endswith("run Do everything again.")
     s = _session(tmp_path / "again", [("upload", []), ("import", []), ("mind_inputs", [])])
     base, note = server._bring_in_base(s)
-    assert base["id"] == "ver-001" and "already brought in" in note
+    # only the earlier bring-in's own versions follow v1: the new line leaves nothing else out
+    assert base["id"] == "ver-001" and note == "Brought in on v1: the outside files were already brought in after it."
+    s = _session(tmp_path / "half", [("upload", []), ("import", [])])  # one that did not finish: tried again from v1
+    assert server._bring_in_base(s) == (s.versions[0], "Brought in on v1: the outside files were already brought in after it.")
+    s = _session(tmp_path / "later", [("upload", []), ("import", []), ("mind_inputs", []), ("prep", formula_fix)])
+    base, note = server._bring_in_base(s)
+    assert base["id"] == "ver-001" and "already brought in" in note and note.endswith("The changes made after v1 are not in this new line: run Do everything again.")
 
 
 # --- 5. INP-010 and the next step -------------------------------------------------------------------------
@@ -474,6 +481,15 @@ def test_inp_010_says_what_is_left_to_do():
     assert inp_010(None, {}, {"outside_inputs": {**oi, "brought_in": True}})["status"] == "PASS"
     assert inp_010(None, {}, {"outside_inputs": {**oi, "rows": []}})["status"] == "WARNING"  # no cell names the files
     assert inp_010(None, {}, {"outside_inputs": {**oi, "macro": None}})["status"] == "WARNING"
+    # brought in before, and that no longer counts: said, and asked again
+    stale = inp_010(None, {}, {"outside_inputs": {**oi, "brought_in_reason": "the input files changed since they were brought in"}})
+    assert stale["status"] == "ERROR" and stale["message"] == (
+        "The macro calcCF fills the workbook from 6 outside files, and Mind runs no macro: the input files changed since they were brought in "
+        "(5 of 6 picked, missing: VFA_01). Use Bring in the outside files to bring them in again.")
+    assert stale["observed"]["brought_in_reason"] == "the input files changed since they were brought in" and f["observed"]["brought_in_reason"] is None
+    unfinished = inp_010(None, {}, {"outside_inputs": {**oi, "brought_in_reason": "the last bring-in did not finish"}})
+    assert unfinished["status"] == "ERROR" and ": the last bring-in did not finish (5 of 6 picked" in unfinished["message"]
+    assert inp_010(None, {}, {"outside_inputs": {**oi, "brought_in": True, "brought_in_reason": "ignored"}})["status"] == "PASS"
 
 
 def test_the_next_step_brings_the_outside_files_in_before_prep():
@@ -588,3 +604,183 @@ def test_rzs_006_leaves_the_mind_inputs_made_from_outside_files_alone(tmp_path):
     res = rzs_006(None, analysis, {"outside_inputs": {"imports": True, "mind_inputs": ["IN_X"]}})
     assert res["status"] == "PASS", res["message"]
     assert "keep the import area's size" in res["message"]
+
+
+# --- 7. a bring-in counts once it got to the end, with the files picked now ---------------------------------------
+def _clean_compare(original, prepared, moves, progress=None):
+    return {"ran": True, "clean": True, "verdict": "The preparation changed no computed value (1 formula cells compared with the original).",
+            "counts": {"compared": 1, "same": 1, "good_to_error": 0, "good_to_other": 0, "missing_good": 0}, "regressions": []}
+
+
+def test_mind_inputs_that_would_change_a_value_are_not_kept_and_the_step_runs_again(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    seen = []
+
+    def changed(original, prepared, moves, progress=None):
+        seen.append((Path(original), Path(prepared)))
+        return {"ran": True, "clean": False, "verdict": "The preparation changed 3 computed value(s): 1 became errors, 2 became other values (9 formula cells compared with the original).",
+                "counts": {"compared": 9, "same": 6, "good_to_error": 1, "good_to_other": 2, "missing_good": 0},
+                "samples": {"good_to_error": [], "good_to_other": [{"original": "Calc!A3", "now": "Calc!A3", "was": "120", "is": "0"}], "missing": []},
+                "regressions": [("Calc", 3, 1, 120)]}
+
+    monkeypatch.setattr(server, "compare_workbooks", changed)
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "error" and st["result"] is None, st
+    assert st["error"] == ("Making the Mind inputs would change 3 computed values; the outside data stays inside the model (v2); nothing else was changed. "
+                           "For example Calc!A3 would show 0 instead of 120.")
+    # compared before anything was kept: only the import version, current; the Mind inputs never a version
+    (made_file,) = [p for _, p in seen]
+    assert seen[0][0] == s.paths["ver-002"] and made_file.parent.name == "mind_inputs" and made_file not in s.paths.values()
+    assert [v["id"] for v in s.versions] == ["ver-001", "ver-002"] and s.current_version_id == "ver-002" and st["versions"] == ["ver-002"]
+    # their CSVs are never registered: no download, nothing for Run in Mind
+    assert s.mind_inputs_dirs == {} and s.mind_inputs_dir is None and server._mind_inputs_dir_for(s) is None
+    assert "Mind inputs.zip" not in s.files and "IN_BBA_01.csv" not in s.files
+    assert client.get(f"/api/sessions/{sid}/files/Mind inputs.zip").status_code == 404
+    assert client.get(f"/api/sessions/{sid}/mind-loop/options").json()["inputs"] == []
+    # the line is not brought in: INP-010 and the verdict say so, and Do everything runs the step again
+    oi = st["outsideInputs"]
+    assert oi["brought_in"] is False and oi["brought_in_reason"] == "the last bring-in did not finish" and oi["mind_inputs"] == []
+    assert s.brought_in_files == {} and not s.apply_lock.locked()
+    f = _finding(s.result["validation_report"])
+    assert f["status"] == "ERROR" and "Mind runs no macro: the last bring-in did not finish (6 of 6 picked)" in f["message"]
+    page = client.get(f"/api/sessions/{sid}").json()
+    assert page["outsideInputs"]["brought_in"] is False and page["readiness"]["next_step"]["label"] == "Bring in the outside files"
+    # Try again: a new line from the version before (nothing else is left out of it); kept once no value changes
+    monkeypatch.setattr(server, "compare_workbooks", _clean_compare)
+    again = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert again.status_code == 202 and again.json()["base_version_id"] == "ver-001"
+    assert again.json()["note"] == "Brought in on v1: the outside files were already brought in after it."
+    st2 = _wait(client, sid)
+    assert st2["state"] == "done" and st2["error"] is None and st2["result"]["versions"] == ["ver-003", "ver-004"]
+    assert st2["outsideInputs"]["brought_in"] is True and st2["outsideInputs"]["brought_in_reason"] is None
+    assert server._mind_inputs_dir_for(s) and _finding(s.result["validation_report"])["status"] == "PASS"
+
+
+def test_a_comparison_that_could_not_run_keeps_the_mind_inputs_and_says_so(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    not_run = {"ran": False, "clean": None, "verdict": "Excel is not available here: the numbers could not be compared.", "counts": {}, "regressions": []}
+    monkeypatch.setattr(server, "compare_workbooks", lambda *a, **k: not_run)
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "done", st
+    r = st["result"]
+    assert r["versions"] == ["ver-002", "ver-003"] and s.current_version_id == "ver-003"
+    # a field the front end tests: Do everything stops there, the user goes on on purpose
+    assert r["numbers"]["ran"] is False and r["numbers"]["clean"] is None and r["numbers"]["version_id"] == "ver-003"
+    assert r["summary"] == ("6 outside files brought in; 1 Mind input made (IN_BBA_01); "
+                            "the computed values were NOT checked (Excel is not available here: the numbers could not be compared).")
+    assert r["download"]["zip"] == "Mind inputs.zip" and server._mind_inputs_dir_for(s)
+    assert st["outsideInputs"]["brought_in"] is True and _finding(s.result["validation_report"])["status"] == "PASS"
+
+
+def test_a_comparison_that_crashed_keeps_nothing_but_the_import(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+
+    def crash(*a, **k):
+        raise RuntimeError("Excel went away")
+
+    monkeypatch.setattr(server, "compare_workbooks", crash)
+    monkeypatch.setattr(server, "_report_problem", lambda *a, **k: None)  # no incident file from a test
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "error" and st["error"] == "v2 holds the outside data, but the rest did not finish: RuntimeError: Excel went away"
+    assert [v["id"] for v in s.versions] == ["ver-001", "ver-002"] and s.current_version_id == "ver-002"
+    assert server._mind_inputs_dir_for(s) is None and "Mind inputs.zip" not in s.files
+    assert st["outsideInputs"]["brought_in"] is False and st["outsideInputs"]["brought_in_reason"] == "the last bring-in did not finish"
+
+
+def test_a_bring_in_that_stopped_half_way_does_not_count(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    real_scan = server._run_scan
+
+    def scan(sess, path=None):
+        if path is not None and Path(path).parent.name == "mind_inputs":  # the scan of the Mind inputs version is refused
+            raise server.HTTPException(status_code=409, detail="a scan is already running for this session")
+        return real_scan(sess, path)
+
+    monkeypatch.setattr(server, "_run_scan", scan)
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "error" and st["error"] == "v3 holds the outside data, but the rest did not finish: a scan is already running for this session"
+    assert st["versions"] == ["ver-002", "ver-003"] and s.brought_in_files == {}
+    assert st["outsideInputs"]["brought_in"] is False and st["outsideInputs"]["brought_in_reason"] == "the last bring-in did not finish"
+    f = _finding(s.result["validation_report"])  # patched once the job stopped (its last scan ran while it was going)
+    assert f["status"] == "ERROR" and "the last bring-in did not finish" in f["message"]
+    # Do everything runs the step again, from the version before it
+    monkeypatch.setattr(server, "_run_scan", real_scan)
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert res.status_code == 202 and res.json()["base_version_id"] == "ver-001"
+    st = _wait(client, sid)
+    assert st["state"] == "done" and st["outsideInputs"]["brought_in"] is True and st["result"]["versions"] == ["ver-004", "ver-005"]
+
+
+def test_input_files_changed_since_the_bring_in_are_brought_in_again(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS[:5])["sessionId"]  # VFA_01 missing
+    s = server.SESSIONS[sid]
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    assert _wait(client, sid)["state"] == "done"
+    assert client.get(f"/api/sessions/{sid}/outside-inputs").json()["outsideInputs"]["brought_in"] is True
+    # a file no row wants, or the same file again with the same bytes: still brought in
+    out = client.post(f"/api/sessions/{sid}/inputs", files=[_part("notes.csv", b"a,b")]).json()
+    assert out["outsideInputs"]["brought_in"] is True and out["outsideInputs"]["brought_in_reason"] is None
+    out = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"an input file")]).json()
+    assert out["outsideInputs"]["brought_in"] is True
+    # a corrected file under the same name: the line no longer counts as brought in
+    out = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[0], b"BBA_01, corrected")]).json()
+    oi = out["outsideInputs"]
+    assert oi["brought_in"] is False and oi["brought_in_reason"] == "the input files changed since they were brought in"
+    f = _finding(s.result["validation_report"])
+    assert f["status"] == "ERROR" and f["message"] == (
+        "The macro calcCF fills the workbook from 6 outside files, and Mind runs no macro: the input files changed since they were brought in "
+        "(5 of 6 picked, missing: VFA_01). Use Bring in the outside files to bring them in again.")
+    assert out["readiness"]["next_step"]["label"] == "Bring in the outside files"
+    # the page reopened says the same: the card and Do everything follow it
+    page = client.get(f"/api/sessions/{sid}").json()
+    assert page["outsideInputs"]["brought_in"] is False and page["outsideInputs"]["brought_in_reason"] == oi["brought_in_reason"]
+    assert _finding(page["report"])["status"] == "ERROR"
+    # Run in Mind refuses: it would upload the version and the Mind inputs made from the old files
+    started = []
+    monkeypatch.setattr(server, "LoopConfig", _LoopConfig)
+    monkeypatch.setattr(server, "run_loop", lambda cfg, progress: started.append(cfg) or {"verdict": "converged", "iterations": []})
+    res = client.post(f"/api/sessions/{sid}/mind-loop", json={"skipMind": True, "actions": [], "useAssistant": False, "checkNumbers": False})
+    assert res.status_code == 409 and res.json()["detail"].startswith("The input files changed since they were brought in: Run in Mind would use the data of the old files.")
+    assert sid not in server.MIND_LOOPS and started == []
+    # the missing file too, then Bring in again: a new line that reads the files picked now
+    client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[5], b"the VFA file")])
+    assert client.get(f"/api/sessions/{sid}/outside-inputs").json()["outsideInputs"]["brought_in"] is False
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert res.status_code == 202 and res.json()["base_version_id"] == "ver-001"
+    st = _wait(client, sid)
+    assert st["state"] == "done" and st["outsideInputs"]["brought_in"] is True and st["outsideInputs"]["brought_in_reason"] is None
+    call = excel_steps["import"][-1]
+    assert call["files"]["Ctrl_01!H35"].read_bytes() == b"BBA_01, corrected" and call["files"]["Ctrl_01!H40"].read_bytes() == b"the VFA file"
+    assert _finding(s.result["validation_report"])["status"] == "PASS"
+    assert client.post(f"/api/sessions/{sid}/mind-loop", json={"skipMind": True, "actions": [], "useAssistant": False, "checkNumbers": False}).status_code == 200
+    for _ in range(200):
+        if server.MIND_LOOPS[sid]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert server.MIND_LOOPS[sid]["state"] == "done" and len(started) == 1
+
+
+def test_the_fingerprint_follows_the_content_of_the_matched_files(tmp_path):
+    s = server.Session(id=f"t{time.time_ns()}", work_dir=tmp_path, mode="plan")
+    rows = [{"sheet": "Ctrl_01", "cell": "H35", "file": "a.xlsm"}, {"sheet": "Ctrl_01", "cell": "H36", "file": None}]
+    s.inputs = [{"name": "a.xlsm", "path": "x", "bytes": 1, "sha256": "1" * 64}]
+    first = server._inputs_fingerprint(s, rows)
+    assert server._inputs_fingerprint(s, list(reversed(rows))) == first  # the order of the rows does not matter
+    s.inputs = [{"name": "a.xlsm", "path": "y", "bytes": 1, "sha256": "2" * 64}]  # same name, other content
+    assert server._inputs_fingerprint(s, rows) != first
+    s.inputs = [{"name": "a.xlsm", "path": "x", "bytes": 1, "sha256": "1" * 64}]
+    assert server._inputs_fingerprint(s, rows) == first
+    assert server._inputs_fingerprint(s, [rows[0], {**rows[1], "file": "a.xlsm"}]) != first  # a row matched since

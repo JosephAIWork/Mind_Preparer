@@ -147,6 +147,15 @@
     @include type.type-style("body-compact-01");
   }
 
+  &__next {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: $spacing-03;
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+  }
+
   &__aside {
     @include type.type-style("helper-text-01");
     color: theme.$text-helper;
@@ -443,6 +452,10 @@
 
     &--failed {
       border-left-color: theme.$support-error;
+    }
+
+    &--stopped {
+      border-left-color: theme.$support-warning;
     }
 
     &--skipped {

@@ -124,9 +124,10 @@ rules:
   on_unevaluable: NOT_SUPPORTED
   pass_if:
   - The macros open no outside file.
-  - The current version descends from the version the outside files were brought into.
+  - The current version descends from the version a finished bring-in made, and the picked input files are still the ones it read.
   fail_if:
   - A macro opens outside files and they are not brought in yet.
+  - The input files changed since they were brought in, or the last bring-in did not finish (it stopped half-way, or its Mind inputs would change a computed value).
   severity_source: BLOCKER
 - id: EXP-001
   version: 1.0.0
