@@ -51,8 +51,10 @@
 - **A shared copy stops on a date** (`build.py --expires 2026-12-15 --contact "..."`, 15 December
   2026 by default, `--no-expiry` for none): "Works until 15 Dec 2026" in the header, a line in the
   last 7 days, then a plain message at start and a calm page instead of the app (410 on every API
-  call); a clock moved back counts too; the developer version has no date (`app/expiry.py`,
-  docs/SHARING.md).
+  call); a clock moved back counts too (each build remembers its own latest date; a date that has
+  not come yet, from a clock once set ahead, is put right by the internet's date at start); the
+  developer version has no date (`app/expiry.py`, docs/SHARING.md). Build the screens first
+  (`npx ng build`): build.py does not package a copy with a date from screens that cannot show it.
 
 ## 1.12.3 (8 November 2026): sheet names in any language (the Tokyo IFRS 17 tool)
 

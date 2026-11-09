@@ -1,6 +1,8 @@
-"""A shared copy's end date (app/expiry.py): before / on / after the date, a clock moved back, the
-developer version without one, the server's 410 gate, the program's start message and the package
-build's EXPIRY file. The clock and the remembered date are injected; no real network."""
+"""A shared copy's end date (app/expiry.py): before / on / after the date, a clock moved back, a clock
+once set ahead (put right by the internet's date; every copy remembers its own date), the developer
+version without one, the server's 410 gate, the program's start message and the package build (its
+EXPIRY file, and never with screens that cannot show the date). The clock, the remembered dates and
+the internet's date are injected; no real network."""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,6 +11,7 @@ import json
 import urllib.error
 from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +24,7 @@ LAST_DAY = dt.date(2026, 12, 15)
 JOSEPH = EndDate(LAST_DAY, "Joseph Gestetner")
 STOPPED = "This copy of Mind Ready stopped working on 15 December 2026. Ask Joseph Gestetner for a new copy."
 BUILD_PY = Path(__file__).resolve().parents[2] / "tools" / "package" / "build.py"
+NOTICE_TS = Path(__file__).resolve().parents[3] / "MindReadyUI" / "src" / "app" / "core" / "expired-notice.ts"
 
 
 @pytest.fixture(autouse=True)
@@ -34,9 +38,19 @@ def checker(tmp_path: Path, today: dt.date, end: EndDate | None = JOSEPH) -> Che
     return Checker(end, today=lambda: today, state_file=tmp_path / "latest_date_seen.json")
 
 
-def remembered(tmp_path: Path) -> str | None:
+def remembered(tmp_path: Path, copy: str = expiry.DEVELOPER_COPY) -> str | None:
+    """The latest date seen `copy` remembers (JOSEPH, made in the tests, is the developer's)."""
     path = tmp_path / "latest_date_seen.json"
-    return json.loads(path.read_text(encoding="utf-8"))["latest"] if path.exists() else None
+    return json.loads(path.read_text(encoding="utf-8")).get(copy) if path.exists() else None
+
+
+def shared_copy(folder: Path, last_day: dt.date, built: str) -> EndDate:
+    """The end date of a shared copy, read from the EXPIRY file its build wrote."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "EXPIRY").write_text(expiry.end_date_text(last_day, "Joseph Gestetner", built), encoding="utf-8")
+    end = read_end_date(environ={}, path=folder / "EXPIRY")
+    assert end is not None and end.last_day == last_day
+    return end
 
 
 # --- the date --------------------------------------------------------------------------------------------
@@ -114,15 +128,80 @@ def test_an_unreadable_remembered_date_believes_the_clock(tmp_path):
     assert remembered(tmp_path) == "2026-12-01"
 
 
+# --- a clock once set ahead: the date remembered has not come yet ---------------------------------------
+def test_a_clock_set_ahead_once_is_put_right_by_the_internet_date_at_start(tmp_path):
+    copy = shared_copy(tmp_path / "copy", LAST_DAY, "2026-11-09T12:06:33")
+    assert checker(tmp_path, dt.date(2027, 11, 9), copy).verdict().expired  # one start with the clock a year ahead
+    assert remembered(tmp_path, copy.copy) == "2027-11-09"
+    # the clock put back right, no network: stopped, and the message shows the date that has not come yet
+    offline = checker(tmp_path, dt.date(2026, 11, 9), copy).verdict(ask=lambda: None)
+    assert (offline.expired, offline.reason) == (True, "clock")
+    assert offline.message == (
+        "This copy of Mind Ready stopped working: this computer says it is 9 November 2026, but it was already "
+        "9 November 2027. Set the right date, or ask Joseph Gestetner for a new copy."
+    )
+    # with a network the start asks the internet's date: 9 November 2026, so 2027 came from the clock
+    expiry.use(checker(tmp_path, dt.date(2026, 11, 9), copy))
+    started = expiry.at_start(ask=lambda: dt.date(2026, 11, 9))
+    assert (started.expired, started.days_left) == (False, 36)
+    assert remembered(tmp_path, copy.copy) == "2026-11-09"
+    assert not expiry.current().expired  # the server reuses the start's verdict
+
+
+def test_a_server_already_running_is_put_right_by_its_background_question(tmp_path):
+    checker(tmp_path, dt.date(2027, 1, 20)).verdict()  # one start with the clock set ahead
+    right = checker(tmp_path, dt.date(2026, 12, 1))
+    expiry.use(right)
+    assert expiry.current(now=lambda: 10.0).expired
+    expiry.start_network_check(right, fetch=lambda: dt.date(2026, 12, 1)).join(5)
+    assert remembered(tmp_path) == "2026-12-01"
+    assert not expiry.current(now=lambda: 10.0).expired  # decided again at once, not a minute later
+
+
+def test_a_clock_really_moved_back_stays_stopped_whatever_the_internet_says(tmp_path):
+    checker(tmp_path, dt.date(2026, 12, 20)).verdict()  # ran after the last day: stopped
+    back = checker(tmp_path, dt.date(2026, 12, 1))  # then the clock is put back to 1 December
+    v = back.verdict(ask=lambda: dt.date(2026, 12, 20))  # the internet agrees with the date remembered
+    assert (v.expired, v.reason) == (True, "clock")
+    assert remembered(tmp_path) == "2026-12-20"
+    assert not back.heard(dt.date(2026, 12, 18))  # up to 2 days earlier is time zones, not a clock set ahead
+    assert remembered(tmp_path) == "2026-12-20"
+    # the clock itself past the last day: stopped, and the internet is not asked
+    after = checker(tmp_path, dt.date(2026, 12, 21)).verdict(ask=lambda: pytest.fail("no question when the clock says it is over"))
+    assert (after.expired, after.reason, after.message) == (True, "date", STOPPED)
+
+
+def test_every_copy_remembers_its_own_date(tmp_path):
+    old = shared_copy(tmp_path / "old", LAST_DAY, "2026-11-09T12:06:33")
+    checker(tmp_path, dt.date(2027, 11, 9), old).verdict()  # the old copy once ran with the clock a year ahead
+    # a new copy works on the right date, even without a network: the old copy's date is not its own
+    later = shared_copy(tmp_path / "later", dt.date(2027, 3, 31), "2026-11-09T15:00:00")
+    rebuilt = shared_copy(tmp_path / "rebuilt", LAST_DAY, "2026-11-09T15:30:00")  # the same last day, built again
+    for new in (later, rebuilt):
+        v = checker(tmp_path, dt.date(2026, 11, 9), new).verdict(ask=lambda: None)
+        assert not v.expired, v.message
+        assert remembered(tmp_path, new.copy) == "2026-11-09"
+    assert remembered(tmp_path, old.copy) == "2027-11-09"  # each keeps its own
+    # the developer servers keep theirs apart from every shared copy
+    assert remembered(tmp_path) is None
+    assert not checker(tmp_path, dt.date(2026, 11, 9)).verdict().expired
+    assert remembered(tmp_path) == "2026-11-09"
+
+
 # --- where the date comes from --------------------------------------------------------------------------
 def test_the_env_var_first_then_the_expiry_file_the_earlier_date_wins(tmp_path):
     file = tmp_path / "EXPIRY"
-    assert read_end_date(environ={"MIND_READY_EXPIRES": "2026-12-15"}, path=file) == EndDate(LAST_DAY)
-    file.write_text(expiry.end_date_text(LAST_DAY, "Joseph Gestetner"), encoding="utf-8")
-    assert read_end_date(environ={}, path=file) == JOSEPH
-    # a developer's test date brings the copy's date forward; it can never push it back
-    assert read_end_date(environ={"MIND_READY_EXPIRES": "2026-11-12"}, path=file) == EndDate(dt.date(2026, 11, 12), "Joseph Gestetner")
-    assert read_end_date(environ={"MIND_READY_EXPIRES": "2027-06-30"}, path=file) == JOSEPH
+    assert read_end_date(environ={"MIND_READY_EXPIRES": "2026-12-15"}, path=file) == EndDate(LAST_DAY, copy="developer")
+    file.write_text(expiry.end_date_text(LAST_DAY, "Joseph Gestetner", "2026-11-09T12:06:33"), encoding="utf-8")
+    copy = "2026-12-15, built 2026-11-09T12:06:33"
+    assert read_end_date(environ={}, path=file) == EndDate(LAST_DAY, "Joseph Gestetner", copy=copy)
+    # a developer's test date brings the copy's date forward; it can never push it back, and the copy
+    # keeps its own name (the variable cannot make it forget the dates it saw)
+    assert read_end_date(environ={"MIND_READY_EXPIRES": "2026-11-12"}, path=file) == EndDate(dt.date(2026, 11, 12), "Joseph Gestetner", copy=copy)
+    assert read_end_date(environ={"MIND_READY_EXPIRES": "2027-06-30"}, path=file) == EndDate(LAST_DAY, "Joseph Gestetner", copy=copy)
+    # an EXPIRY file without its build time is named by its date
+    file.write_text('{"expires": "2026-12-15"}', encoding="utf-8")
+    assert read_end_date(environ={}, path=file) == EndDate(LAST_DAY, copy="2026-12-15")
 
 
 @pytest.mark.parametrize("env, text", [
@@ -199,11 +278,11 @@ def test_one_quick_head_request_a_refusal_still_says_the_date():
     assert expiry.internet_date(["https://a.example", "https://b.example"], opener=down) is None
 
 
-def test_the_internet_date_only_moves_the_latest_date_forward(tmp_path):
+def test_the_internet_date_moves_the_latest_date_forward(tmp_path):
     c = checker(tmp_path, dt.date(2026, 12, 1))
     c.verdict()
-    expiry.start_network_check(c, fetch=lambda: dt.date(2026, 11, 20)).join(5)
-    assert remembered(tmp_path) == "2026-12-01"  # an earlier date never moves it back
+    expiry.start_network_check(c, fetch=lambda: dt.date(2026, 11, 29)).join(5)
+    assert remembered(tmp_path) == "2026-12-01"  # up to 2 days earlier never moves it back (time zones)
     expiry.start_network_check(c, fetch=lambda: dt.date(2026, 12, 16)).join(5)
     assert remembered(tmp_path) == "2026-12-16"
     assert c.verdict().expired  # the internet says the last day is over, whatever the clock says
@@ -288,11 +367,40 @@ def build():
 
 
 def test_the_build_writes_the_expiry_file_the_app_reads(build, tmp_path):
-    path = build.write_expiry_file(tmp_path / "package-data", LAST_DAY, "Joseph Gestetner")
+    path = build.write_expiry_file(tmp_path / "package-data", LAST_DAY, "Joseph Gestetner", built="2026-11-09T12:06:33")
     assert path.name == "EXPIRY"
-    assert json.loads(path.read_text(encoding="utf-8")) == {"expires": "2026-12-15", "contact": "Joseph Gestetner"}
-    assert read_end_date(environ={}, path=path) == JOSEPH
-    assert read_end_date(environ={}, path=build.write_expiry_file(tmp_path / "b", LAST_DAY)) == EndDate(LAST_DAY)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"expires": "2026-12-15", "contact": "Joseph Gestetner", "built": "2026-11-09T12:06:33"}
+    assert read_end_date(environ={}, path=path) == EndDate(LAST_DAY, "Joseph Gestetner", copy="2026-12-15, built 2026-11-09T12:06:33")
+    # by default the time of the build: every build is its own copy for the dates it remembers
+    other = json.loads(build.write_expiry_file(tmp_path / "b", LAST_DAY).read_text(encoding="utf-8"))
+    assert other["contact"] is None and dt.datetime.fromisoformat(other["built"])
+
+
+def _screens(folder: Path, script: str) -> Path:
+    """Built screens as `ng build` leaves them: index.html and the script it loads."""
+    folder.mkdir(parents=True)
+    (folder / "index.html").write_text('<script src="main-X.js" type="module"></script>', encoding="utf-8")
+    (folder / "main-X.js").write_text(script, encoding="utf-8")
+    return folder
+
+
+def test_the_build_never_packages_screens_that_cannot_show_the_end_date(build, tmp_path, monkeypatch, capsys):
+    # the mark is the notice's own selector in the screens' source: renaming it there breaks this test
+    assert f'selector: "{build.END_DATE_NOTICE}"' in NOTICE_TS.read_text(encoding="utf-8")
+    older = _screens(tmp_path / "older", 'selectors:[["mr-root"]]')
+    newer = _screens(tmp_path / "newer", 'selectors:[["mr-root"]];selectors:[["mr-expired-notice"]]')
+    assert not build.screens_show_end_date(older) and build.screens_show_end_date(newer)
+
+    nuitka: list[list[str]] = []
+    monkeypatch.setattr(build, "subprocess", SimpleNamespace(call=lambda cmd, **kw: nuitka.append(cmd) or 1))  # 1: main() ends there
+    out = str(tmp_path / "out")
+    monkeypatch.setattr(build, "UI", older)
+    assert build.main([out, "--expires", "2099-12-31"]) == 2
+    assert nuitka == [] and not (tmp_path / "out" / "package-data" / "EXPIRY").exists()
+    assert "build them first (npx ng build in" in capsys.readouterr().out
+    assert build.main([out, "--no-expiry"]) == 1 and len(nuitka) == 1  # no end date: nothing to show
+    monkeypatch.setattr(build, "UI", newer)
+    assert build.main([out, "--expires", "2099-12-31"]) == 1 and len(nuitka) == 2
 
 
 def test_the_build_packages_it_next_to_version(build, tmp_path):

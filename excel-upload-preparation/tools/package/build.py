@@ -17,6 +17,10 @@ A copy to share stops working after an end date (docs/SHARING.md, app/expiry.py)
 last day it works, local time (by default 15 December 2026), --contact the person its message tells
 to ask for a new copy. Both go into a small file EXPIRY next to VERSION in the package. A copy that
 never stops needs --no-expiry, said explicitly.
+
+The package takes the screens as built in MindReadyUI/dist: build them first (npx ng build in
+MindReadyUI). A copy with an end date is never built from screens made before the end date was added
+(they could not show it).
 """
 from __future__ import annotations
 
@@ -36,6 +40,10 @@ from app.expiry import end_date_text, long_date, parse_day  # noqa: E402  (one f
 
 # The copies shared from 1.12.4 work through 15 December 2026 (Joseph, 9 November 2026).
 DEFAULT_EXPIRES = "2026-12-15"
+# The selector of the screens' notice for a copy past its end date (MindReadyUI/src/app/core/
+# expired-notice.ts). Built screens without it were made before the end date was added: they would
+# show neither "Works until" nor the stopped page, so a copy with a date is never packaged with them.
+END_DATE_NOTICE = "mr-expired-notice"
 START_HERE = """Mind Ready {version}
 
 Start: double-click MindReady.exe. A window opens (close it to stop Mind Ready) and the app opens in
@@ -74,13 +82,27 @@ def end_date(args: argparse.Namespace, today: dt.date | None = None) -> dt.date 
     return day
 
 
-def write_expiry_file(folder: Path, last_day: dt.date, contact: str = "") -> Path:
+def write_expiry_file(folder: Path, last_day: dt.date, contact: str = "", built: str | None = None) -> Path:
     """The EXPIRY file the package carries next to VERSION (app/expiry.py reads it). It is written in
-    the build folder, never next to the source's VERSION: there it would stop the developer servers."""
+    the build folder, never next to the source's VERSION: there it would stop the developer servers.
+    `built` (now, by default) makes this build its own copy for the dates it remembers: a date an
+    older copy saw never stops this one."""
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "EXPIRY"
-    path.write_text(end_date_text(last_day, contact), encoding="utf-8")
+    path.write_text(end_date_text(last_day, contact, built or dt.datetime.now().isoformat(timespec="seconds")), encoding="utf-8")
     return path
+
+
+def screens_show_end_date(ui: Path) -> bool:
+    """Whether the built screens in `ui` can show a copy's end date: one of their scripts holds the
+    notice (Angular cleans the folder at every build, so no older script is left beside them)."""
+    for script in ui.glob("*.js"):
+        try:
+            if END_DATE_NOTICE in script.read_text(encoding="utf-8", errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def nuitka_command(out: Path, version: str, onefile: bool, expiry_file: Path | None) -> list[str]:
@@ -119,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"the built screens are missing: {UI}")
         return 2
     last_day = end_date(args)
+    if last_day and not screens_show_end_date(UI):
+        print(f"the built screens cannot show the end date (they were built before it was added): build them first (npx ng build in {UI.parents[2]}), then run build.py again")
+        return 2
     data = out / "package-data"
     if last_day:
         expiry_file: Path | None = write_expiry_file(data, last_day, args.contact)
