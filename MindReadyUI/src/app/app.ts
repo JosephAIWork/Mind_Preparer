@@ -8,14 +8,16 @@ import { FeedbackDialog } from "./core/feedback-dialog";
 import { FeedbackService } from "./core/feedback.service";
 import { PlainCodes } from "./core/plain-codes";
 import { SessionStore } from "./core/session.store";
+import { ShowMeOverlay } from "./core/show-me-overlay";
 
 /** The shell: Mind's dark Carbon header, the two places (main screen, Advanced), the version, and
- *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed). A shared
- *  copy also says until when it works; once it stopped working, the notice replaces everything. */
+ *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed), and the
+ *  "Show me" pointer's overlay (once, above everything). A shared copy also says until when it works;
+ *  once it stopped working, the notice replaces everything. */
 @Component({
   selector: "mr-root",
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog, ExpiredNotice],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog, ExpiredNotice, ShowMeOverlay],
   templateUrl: "./app.html",
   styleUrl: "./app.scss",
 })

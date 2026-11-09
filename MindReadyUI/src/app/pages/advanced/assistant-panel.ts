@@ -8,13 +8,15 @@ import { CodeName } from "../../core/code-name";
 import { ChatMessage, FixTarget, Proposal, Version, appliedCount, failedCount, failedText } from "../../core/models";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
+import { chatIsAppWords } from "../../core/show-me";
+import { ShowMeLink } from "../../core/show-me-link";
 import { KeyBox } from "./key-box";
 
 /** The assistant: questions about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
 @Component({
   selector: "mr-assistant-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName, ShowMeLink],
   templateUrl: "./assistant-panel.html",
   styleUrl: "./panels.scss",
 })
@@ -38,6 +40,8 @@ export class AssistantPanel implements OnDestroy {
   private stop: (() => void) | null = null;
 
   readonly target = computed(() => this.store.fixTarget());
+  /** Only the app's own words in the chat get a "Show me", never the assistant's free text. */
+  readonly appWords = chatIsAppWords;
   readonly prompts = computed(() => {
     const t = this.target();
     if (!t) return ["What blocks this workbook in Mind?", "Which changes would you make first?"];

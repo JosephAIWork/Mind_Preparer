@@ -58,7 +58,7 @@
       <label class="field">Max rounds <input type="text" [value]="maxIterations()" (input)="maxIterations.set(num($event))" style="width: 4rem" /></label>
       <label class="check"><input type="checkbox" [checked]="runModel()" (change)="runModel.set(!runModel()); loadOptions()" /> Run the model after converting</label>
       <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set(!useAssistant()); loadOptions()" /> Let the assistant name grids</label>
-      <button cdsButton="primary" size="md" (click)="start()" [disabled]="!!options()?.busy">{{ report() ? "Run again" : "Run in Mind" }}</button>
+      <button cdsButton="primary" size="md" data-show-me="mind-run" (click)="start()" [disabled]="!!options()?.busy">{{ report() ? "Run again" : "Run in Mind" }}</button>
     </div>
   }
 
@@ -97,7 +97,7 @@
   }
 
   @if (error()) {
-    <div class="result result--error"><strong>Mind run</strong><span>{{ error() }}</span></div>
+    <div class="result result--error"><strong>Mind run</strong><span>{{ error() }}<mr-show-me [text]="error()"></mr-show-me></span></div>
   }
 
   @if (report(); as r) {

@@ -1,12 +1,14 @@
 import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
-import { ButtonModule, ContentSwitcherModule, NotificationModule, TagModule } from "carbon-components-angular";
+import { ButtonModule, ContentSwitcherModule, TagModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
 import { CodeName } from "../core/code-name";
 import { Finding, Grid, Status } from "../core/models";
 import { PlainCodes } from "../core/plain-codes";
+import { ReadinessBanner } from "../core/readiness-banner";
 import { SessionStore } from "../core/session.store";
+import { ShowMeLink } from "../core/show-me-link";
 import { AssistantPanel } from "./advanced/assistant-panel";
 import { DeliverPanel } from "./advanced/deliver-panel";
 import { GridNamerPanel } from "./advanced/grid-namer-panel";
@@ -29,7 +31,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink, ReadinessBanner],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })

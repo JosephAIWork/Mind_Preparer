@@ -3,8 +3,8 @@
 } @else {
   <cds-header name="Mind Ready" [brand]="brand">
     <cds-header-navigation>
-      <cds-header-item routerLink="/" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current" [routerLinkActiveOptions]="{ exact: true }">Main</cds-header-item>
-      <cds-header-item routerLink="/advanced" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current">Advanced</cds-header-item>
+      <cds-header-item data-show-me="nav-main" routerLink="/" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current" [routerLinkActiveOptions]="{ exact: true }">Main</cds-header-item>
+      <cds-header-item data-show-me="nav-advanced" routerLink="/advanced" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current">Advanced</cds-header-item>
     </cds-header-navigation>
     <cds-header-global>
       <button class="shell__feedback" (click)="feedback.open()">Send feedback</button>
@@ -37,4 +37,6 @@
     <router-outlet></router-outlet>
   </main>
   <mr-feedback-dialog></mr-feedback-dialog>
+  <!-- the "Show me" pointer: one arrow at the next click, above everything, never in the way of a click -->
+  <mr-show-me-overlay></mr-show-me-overlay>
 }

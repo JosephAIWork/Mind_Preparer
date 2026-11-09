@@ -1,7 +1,7 @@
 <div class="panel">
   <p class="hint">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call a file ready.</p>
   <div class="row">
-    <button cdsButton="primary" size="md" (click)="run()" [disabled]="running()">{{ result() ? "Recalculate again" : "Recalculate in Excel" }}</button>
+    <button cdsButton="primary" size="md" data-show-me="recalc-run" (click)="run()" [disabled]="running()">{{ result() ? "Recalculate again" : "Recalculate in Excel" }}</button>
     @if (running()) {
       <cds-inline-loading [state]="'active'" loadingText="Recalculating… tens of seconds to a few minutes"></cds-inline-loading>
     }
@@ -29,7 +29,7 @@
     }
 
     @if (r.formula_errors.length) {
-      <h3 class="panel__h">Formula errors ({{ r.formula_errors.length }})</h3>
+      <h3 class="panel__h" data-show-me="recalc-errors">Formula errors ({{ r.formula_errors.length }})</h3>
       <table class="list">
         <thead>
           <tr>

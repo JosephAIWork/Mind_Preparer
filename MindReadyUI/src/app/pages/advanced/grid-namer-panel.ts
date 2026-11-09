@@ -4,6 +4,7 @@ import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { Grid, GridNamerOutcome, GridNamesResult, MindFlag, SheetCells, failedCount } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { ShowMeLink } from "../../core/show-me-link";
 
 interface Rect {
   r1: number;
@@ -98,7 +99,7 @@ function parseExtraFlags(text: string): string[] {
 @Component({
   selector: "mr-grid-namer-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, ShowMeLink],
   templateUrl: "./grid-namer-panel.html",
   styleUrl: "./grid-namer-panel.scss",
 })
@@ -336,6 +337,12 @@ export class GridNamerPanel implements OnInit {
     } finally {
       this.suggesting.set(false);
     }
+  }
+
+  /** The suggestions' line: the server's words (no AI key: where to paste one), or how many names
+   *  were suggested and whether they went into the Prep plan (applied there). */
+  suggestLine(sg: GridNamesResult): string {
+    return sg.message || sg.names.length + " suggestions" + (sg.applied ? ", added to the Prep plan" : "");
   }
 
   value(event: Event): string {

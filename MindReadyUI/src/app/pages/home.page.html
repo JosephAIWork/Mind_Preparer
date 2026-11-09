@@ -79,21 +79,19 @@
       </div>
       <div class="file__actions">
         @if (downloadUrl(); as url) {
-          <a cdsButton="tertiary" size="md" [href]="url">Download this version</a>
+          <a cdsButton="tertiary" size="md" [href]="url" data-show-me="download">Download this version</a>
         }
         <button cdsButton="ghost" size="md" (click)="loadAnother()" [disabled]="busy()" [title]="busyHint()">Load another</button>
       </div>
     </header>
 
     @if (store.readiness(); as r) {
-      <cds-inline-notification
-        [notificationObj]="{ type: readinessKind(), title: readinessTitle(), message: readinessDetail(), lowContrast: true, showClose: false }"
-      ></cds-inline-notification>
+      <mr-readiness-banner [kind]="readinessKind()" [headline]="readinessTitle()" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
     }
 
     <!-- Outside files: the model's macros open other files -->
     @if (store.outsideInputs(); as oi) {
-      <section class="outside" [class.outside--over]="cardDragOver()" (dragover)="onCardDragOver($event)" (dragleave)="cardDragOver.set(false)" (drop)="onCardDrop($event)">
+      <section class="outside" data-show-me="outside-card" [class.outside--over]="cardDragOver()" (dragover)="onCardDragOver($event)" (dragleave)="cardDragOver.set(false)" (drop)="onCardDrop($event)">
         <div class="outside__head">
           <div>
             <h2 class="outside__title">Outside files</h2>
@@ -101,12 +99,13 @@
           </div>
           @if (canBringIn(oi)) {
             <div class="outside__buttons">
-              <button cdsButton="tertiary" size="md" (click)="addPicker.click()" [disabled]="busy()" [title]="busyHint()">Add files</button>
+              <button cdsButton="tertiary" size="md" data-show-me="outside-add" (click)="addPicker.click()" [disabled]="busy()" [title]="busyHint()">Add files</button>
               <input #addPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
               @if (!oi.brought_in || outsideFailed()) {
                 <button
                   cdsButton="primary"
                   size="md"
+                  data-show-me="outside-bring-in"
                   (click)="runOutside()"
                   [disabled]="busy() || !oi.matched"
                   [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in || oi.brought_in_reason ? 'Starts again from the version before the first bring-in' : '')"
@@ -149,7 +148,7 @@
         }
         @if (oi.extra.length) { <p class="outside__note">Not used: <bdi>{{ oi.extra.join(", ") }}</bdi></p> }
         @if (addingInputs()) { <cds-inline-loading [state]="'active'" loadingText="Adding the files…"></cds-inline-loading> }
-        @if (inputsError()) { <p class="outside__error">{{ inputsError() }}</p> }
+        @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
         @if (outsideCard(); as s) {
           @if (s.running) {
             <div class="action__progress">
@@ -158,18 +157,18 @@
           } @else if (s.line) {
             <div class="outside__result">
               <span class="dot" [class.dot--ok]="s.tone === 'ok'" [class.dot--warn]="s.tone === 'warn'" [class.dot--error]="s.tone === 'error'"></span>
-              <span>{{ s.line }}</span>
+              <span>{{ s.line }}<mr-show-me [text]="s.line"></mr-show-me></span>
               @if (s.detail) { <button class="link" (click)="toggle('outside')">{{ s.open ? "Hide details" : "View details" }}</button> }
             </div>
             @if (s.open && s.detail) {
               <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
-                <span>{{ s.detail }}</span>
+                <span>{{ s.detail }}<mr-show-me [text]="s.detail" [unless]="s.line"></mr-show-me></span>
               </div>
             }
             @if (outsideUnchecked() && oi.brought_in && !chainRunning()) {
               <!-- the computed values could not be compared: Do everything stopped; going on is the user's choice -->
               <p class="outside__next">
-                <span>Check them under Advanced › Deliver (Check the numbers), or go on without the check.</span>
+                <span>Check them under Advanced › Deliver (Check the numbers), or go on without the check.<mr-show-me to="deliver-numbers"></mr-show-me></span>
                 <button cdsButton="tertiary" size="sm" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">Go on without the check</button>
               </p>
             }
@@ -193,7 +192,7 @@
           <h2 class="chain__title">Do everything</h2>
           <p class="chain__text">{{ store.outsideInputs() ? "Bring in the outside files, fix all issues" : "Fix all issues" }}, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
           @if (store.pivots().length) {
-            <p class="chain__caveat">Pivot tables ({{ store.pivots().length }}): {{ store.pivotModes()[store.pivotMode()] || store.pivotMode() }}. Change it in Advanced › Prep actions.</p>
+            <p class="chain__caveat">Pivot tables ({{ store.pivots().length }}): {{ store.pivotModes()[store.pivotMode()] || store.pivotMode() }}. Change it in Advanced › Prep actions.<mr-show-me to="prep-pivots"></mr-show-me></p>
           }
           @if (chainRunning() && timerLine()) {
             <p class="chain__estimate"><strong>{{ timerLine() }}</strong></p>
@@ -204,7 +203,7 @@
           }
         </div>
         @if (!chainRunning()) {
-          <button cdsButton="primary" size="lg" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
+          <button cdsButton="primary" size="lg" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
         } @else if (chainStep()?.id === "fixAll" && !fixAll().stopping) {
           <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
         } @else {
@@ -224,16 +223,16 @@
                 <ng-container *ngTemplateOutlet="result; context: { s: stateOf(s.id), which: s.id, bare: true }"></ng-container>
               } @else if (s.line) {
                 <div class="chain__line">
-                  {{ s.line }}
+                  {{ s.line }}<mr-show-me [text]="s.line"></mr-show-me>
                   @if (s.detail) { <button class="link" (click)="toggleStep(s.id)">{{ s.open ? "Hide details" : "View details" }}</button> }
                 </div>
-                @if (s.open && s.detail) { <div class="action__result"><span>{{ s.detail }}</span></div> }
+                @if (s.open && s.detail) { <div class="action__result"><span>{{ s.detail }}<mr-show-me [text]="s.detail" [unless]="s.line"></mr-show-me></span></div> }
               }
             </li>
           }
         </ol>
       }
-      @if (chainLine()) { <p class="chain__text"><strong>{{ chainLine() }}</strong></p> }
+      @if (chainLine()) { <p class="chain__text"><strong>{{ chainLine() }}</strong><mr-show-me [text]="chainLine()"></mr-show-me></p> }
     </div>
 
     <div class="actions">
@@ -269,7 +268,7 @@
       <cds-tile class="action">
         <h2 class="action__title">Build the Mind loop</h2>
         <p class="action__text">Writes the macro's run loop as MM_LOOP and MM_RESULT formulas, from the model map, with the default choices.</p>
-        <p class="action__fact">{{ loopSummary() }}</p>
+        <p class="action__fact">{{ loopSummary() }}<mr-show-me [text]="loopSummary()"></mr-show-me></p>
         <div class="action__row">
           <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()" [title]="busyHint()">Build the Mind loop</button>
         </div>
@@ -282,14 +281,14 @@
         <p class="action__text">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call the file ready.</p>
         <p class="action__fact">{{ recalcFact() }}</p>
         <div class="action__row">
-          <button cdsButton="primary" size="lg" (click)="runRecalc()" [disabled]="busy()" [title]="busyHint()">Recalculate</button>
+          <button cdsButton="primary" size="lg" data-show-me="main-recalc" (click)="runRecalc()" [disabled]="busy()" [title]="busyHint()">Recalculate</button>
         </div>
         <ng-container *ngTemplateOutlet="result; context: { s: recalc(), which: 'recalc' }"></ng-container>
       </cds-tile>
     </div>
 
     <p class="advanced-link">
-      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }">Advanced</a>.
+      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }" data-show-me="link-advanced">Advanced</a>.
     </p>
   }
 </section>
@@ -310,6 +309,7 @@
         @if (s.detail) {
           <span>{{ s.detail }}</span>
         }
+        <mr-show-me [text]="s.line + ' · ' + s.detail"></mr-show-me>
       </div>
     }
   }

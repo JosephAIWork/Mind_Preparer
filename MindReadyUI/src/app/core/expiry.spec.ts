@@ -141,7 +141,12 @@ describe("the shell and the end date", () => {
   });
 
   async function draw(h: AppHealth): Promise<HTMLElement> {
-    const api = { health: () => Promise.resolve(h), resume: () => Promise.reject(new Error("no session")) } as unknown as ApiService;
+    // the shell also loads the plain names of the codes once (core/plain-codes.ts)
+    const api = {
+      health: () => Promise.resolve(h),
+      resume: () => Promise.reject(new Error("no session")),
+      plainCodes: () => Promise.resolve({ rules: {}, errors: {} }),
+    } as unknown as ApiService;
     TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: ApiService, useValue: api }] });
     TestBed.overrideComponent(AppClass, { set: { imports: [RouterOutlet, RouterLink, RouterLinkActive, ExpiredNotice], schemas: [NO_ERRORS_SCHEMA] } });
     const fixture = TestBed.createComponent(AppClass);

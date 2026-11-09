@@ -9,7 +9,9 @@ import {
   pickedFilesProblem, withOutsideStep,
 } from "../core/models";
 import { PlainCodes, meaningsText } from "../core/plain-codes";
+import { ReadinessBanner } from "../core/readiness-banner";
 import { SessionStore } from "../core/session.store";
+import { ShowMeLink } from "../core/show-me-link";
 import { KeyBox } from "./advanced/key-box";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
@@ -24,6 +26,8 @@ interface ActionState {
   open?: boolean;
   /** set after Stop: the fixer finishes the round it is in */
   stopping?: boolean;
+  /** Fix all issues: the errors it left could not be compared with the original (the comparison did not run) */
+  unchecked?: boolean;
 }
 
 const idle = (): ActionState => ({ running: false, fraction: null, line: "", detail: "", tone: "idle" });
@@ -87,11 +91,30 @@ const STEPS: { id: StepId; label: string; check: string }[] = [
   { id: "recalc", label: "Recalculate", check: "no formula error that was not already in the original" },
 ];
 
+/** Where to fix what stopped a step of Do everything: the Advanced tab where that step's work is done
+ *  by hand. The fixer has no tab of its own (stoppedWhere); the outside step's card is on this screen. */
+const FIX_UNDER: Record<Exclude<StepId, "outside" | "fixAll">, string> = { prepare: "Prep actions", loop: "Mind loop", recalc: "Recalculate" };
+
+/** What to do about the step that stopped Do everything, and where. Fix all issues depends on how it
+ *  ended: the errors it left are in the recalculation's list; when its comparison with the original did
+ *  not run, the numbers are checked under Deliver; when it did not start, was lost or stopped with an
+ *  error, nothing under Advanced fixes that -- it just runs again. */
+function stoppedWhere(id: StepId, r: ActionState): string {
+  const again = "press Do everything again.";
+  if (id === "outside") return `See the Outside files card above, then ${again}`;
+  if (id === "fixAll") {
+    if (r.unchecked) return `Check the numbers under Advanced › Deliver, then ${again}`;
+    if (r.tone === "error") return "Press Do everything again.";
+    return `Fix that under Advanced › Recalculate, then ${again}`;
+  }
+  return `Fix that under Advanced › ${FIX_UNDER[id]}, then ${again}`;
+}
+
 /** The main screen: one workbook, the buttons that do the work on their own, one download. */
 @Component({
   selector: "mr-home",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox],
+  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner],
   templateUrl: "./home.page.html",
   styleUrl: "./home.page.scss",
 })
@@ -846,7 +869,7 @@ export class HomePage implements OnDestroy {
         // what each error value shown means, once ("#REF! means the formula points at a cell that no longer exists")
         const meanings = meaningsText(this.codes.legend(shown.map((l) => l.error)));
         const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText, meanings].filter(Boolean).join(" · ");
-        this.fixAll.set({ running: false, fraction: null, line, detail, tone: clean ? "ok" : "warn" });
+        this.fixAll.set({ running: false, fraction: null, line, detail, tone: clean ? "ok" : "warn", unchecked: acceptable && !compared });
         return clean || accepted;
       }
     } finally {
@@ -974,7 +997,7 @@ export class HomePage implements OnDestroy {
     const ready = p.loops.filter((l) => l.status === "ready");
     const parts = ready.map((l) => `${l.name} (${l.first} to ${l.last})`);
     const open = p.loops.filter((l) => l.status !== "ready").length;
-    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (see Advanced)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
+    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (Advanced › Mind loop)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
   }
 
   /** The plan says the first row of the table is a header row: the loop then starts at 2. */
@@ -1030,7 +1053,10 @@ export class HomePage implements OnDestroy {
       const newErrors = out.new_errors ?? out.formula_errors.length;
       const ok = out.status === "PASS" || newErrors === 0;
       const line = out.status === "PASS" ? "Recalculated, no formula errors" : `Recalculated, ${out.formula_errors.length} formula errors`;
-      const detail = [out.message, out.new_errors != null ? `${out.new_errors} new since the original` : "", out.preexisting_errors != null ? `${out.preexisting_errors} already in the original` : "", out.addin_gap_errors.length ? `${out.addin_gap_errors.length} add-in gap` : "", "The list is under Advanced › Recalculate."].filter(Boolean).join(" · ");
+      // the list is named only when there is one: after a clean run its "Show me" would lead to the
+      // Recalculate button, for another recalculation with nothing to list
+      const list = out.formula_errors.length ? "The list is under Advanced › Recalculate." : "";
+      const detail = [out.message, out.new_errors != null ? `${out.new_errors} new since the original` : "", out.preexisting_errors != null ? `${out.preexisting_errors} already in the original` : "", out.addin_gap_errors.length ? `${out.addin_gap_errors.length} add-in gap` : "", list].filter(Boolean).join(" · ");
       this.recalc.set({ running: false, fraction: null, line, detail, tone: ok ? "ok" : "warn" });
       return ok;
     } catch (e) {
@@ -1102,8 +1128,7 @@ export class HomePage implements OnDestroy {
           return;
         }
         if (!ok) {
-          const where = step.id === "outside" ? "See the Outside files card above" : "Fix that under Advanced";
-          this.chainLine.set(`Stopped at "${step.label}": ${r.line.replace(/\.$/, "")}. ${where}, then press Do everything again.`);
+          this.chainLine.set(`Stopped at "${step.label}": ${r.line.replace(/\.$/, "")}. ${stoppedWhere(step.id, r)}`);
           return;
         }
       }

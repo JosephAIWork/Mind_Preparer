@@ -5,9 +5,10 @@
     <h3 class="panel__h">By hand ({{ byHand().length }})</h3>
     <ul class="plain">
       @for (row of byHandRows(); track $index) {
+        <!-- no link to its own Prep action: it has nothing left to change (that is why it is here) -->
         <li>
           <strong><mr-code [code]="row.b.rule_id" [name]="row.b.rule_name"></mr-code></strong>
-          <div>{{ row.b.message }}</div>
+          <div>{{ row.b.message }}<mr-show-me [text]="row.b.message" [rule]="row.b.rule_id" except="prep-action"></mr-show-me></div>
           @if (row.meanings.length) {
             <ul class="meanings">
               @for (m of row.meanings; track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
@@ -19,7 +20,7 @@
   }
 
   @if (store.pivots().length) {
-    <div class="card">
+    <div class="card" data-show-me="prep-pivots">
       <div class="card__head">
         <span class="card__title">Pivot tables ({{ store.pivots().length }}, each one blocks Mind)</span>
       </div>
@@ -34,7 +35,7 @@
     </div>
   }
 
-  <h3 class="panel__h">Blocking ({{ blocking().length }})</h3>
+  <h3 class="panel__h" data-show-me="prep-list">Blocking ({{ blocking().length }})</h3>
   <ng-container *ngTemplateOutlet="actions; context: { list: blocking() }"></ng-container>
 
   <h3 class="panel__h">Optional ({{ optional().length }})</h3>
@@ -45,7 +46,7 @@
   }
 
   <div class="bar">
-    <button cdsButton="primary" size="md" (click)="apply()" [disabled]="running() || !selectedOps().length">Apply {{ selectedOps().length }} changes</button>
+    <button cdsButton="primary" size="md" data-show-me="prep-apply" (click)="apply()" [disabled]="running() || !selectedOps().length">Apply {{ selectedOps().length }} changes</button>
     <button cdsButton="secondary" size="md" (click)="addToList()" [disabled]="running() || !selectedOps().length" title="Collect changes from Prep and the assistant, then write them all at once">Add to the list</button>
     @if (running()) {
       <div class="bar__progress">
@@ -55,7 +56,7 @@
       <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
         <strong>{{ line() }}</strong>
         @if (detail()) {
-          <span>{{ detail() }}</span>
+          <span>{{ detail() }}<mr-show-me [text]="detail()"></mr-show-me></span>
         }
       </div>
     }
@@ -67,7 +68,7 @@
     <p class="hint">Nothing to change.</p>
   }
   @for (a of list; track a.id) {
-    <div class="card" [class.card--off]="!a.count">
+    <div class="card" [class.card--off]="!a.count" [attr.data-show-me]="showMeWords(a)">
       <label class="card__head">
         <input type="checkbox" [checked]="isOn(a.id)" (change)="toggle(a.id)" [disabled]="!a.count || running()" />
         <span class="card__title">{{ a.title }}</span>
