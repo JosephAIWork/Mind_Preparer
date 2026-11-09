@@ -29,7 +29,9 @@ words, at most 8 words. It was written from each rule's description **and** its 
     (`MindReadyUI/src/app/core/code-name.ts`, `<mr-code>`). A chip in the workbook map shows the
     code and has the name as its tooltip.
   - The Excel report has a column "In plain words" next to "Rule ID".
-  - The assistant sees each finding with its name and is asked to name codes the same way.
+  - The assistant sees each finding with its name and is asked to name codes the same way. Its
+    context names each rule once (at its first mention), and the names come on top of the
+    context's size limit: they never push out the end of it (the last findings, the Prep actions).
 - An id that is not a rule ("UI" for the screens' own changes, "RECALC") shows alone.
 
 ## 2. Excel's error values (#REF!, #N/A ...)
@@ -59,6 +61,8 @@ The meaning is given **once**, never after every occurrence:
 - under a finding's message that quotes error values (Findings table, the "By hand" list in Prep,
   the Excel report's Message column);
 - once above the Recalculate panel's error list (and as each error cell's tooltip);
+- once under the Model map's cell window (and in each error cell's tooltip, under its formula; a
+  '#Title' cell, which the window marks too, has no meaning);
 - once under the numbers-check samples (Deliver);
 - once after the cells "Fix all issues" left for a person (main screen).
 
@@ -95,6 +99,15 @@ Excel's own words in brackets:
 - Where it is used: the import macro's error (it replaces `_vba_error_text`), the reason Excel
   refused a change (Prep, Fix all issues), the plain sentence of the feedback box, and the error
   text of a failed scan, Apply or background job.
+- And where a message reaches the screens inside a normal answer, which the server's error handler
+  never sees (`plain_error`, where the message is made): a recalculation that could not run (its
+  prefix "Excel COM recalculation failed" stays: the server reads it), a numbers check that could not
+  compare, an .xlsb conversion Excel refused, and the report's warnings (Deliver).
+- An error no step expected gets "Excel stopped with an error: " in front only when its sentence does
+  not already say what Excel did -- never "Excel stopped with an error: Excel stopped with an error ...".
+- The screens show the reason of a refused change whole (a plain sentence and Excel's words, often
+  160 characters): up to 200 characters, cut after a whole word; changes refused for the same reason
+  share it ("S!B5, S!B6: ...").
 - The message to the Tel Aviv team (`app/feedback.py`) keeps its codes as they are: the decoder
   reads them.
 

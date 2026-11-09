@@ -33,6 +33,7 @@ import openpyxl
 
 from .excel_com import FILE_FORMAT_CODES, close_quietly, com_available, excel_session, open_for_write, open_workbook, save_in_place, verify_opens_in_excel
 from .inventory import loop_definitions, make_immutable_copy, sha256_of
+from .plain_codes import plain_error
 
 
 def _changelog_path(output_path: Path) -> Path:
@@ -84,8 +85,10 @@ def convert_output_format(source_path: Path, work_dir: Path, target_suffix: str)
         }
         append_change_log(output_path, entry)
         return {"status": "APPLIED", "method": "excel_com", "output_path": output_path, "change_log_entry": entry}
-    except Exception as exc:  # pragma: no cover -- requires a real Excel install to exercise
-        return {"status": "ERROR", "message": f"Excel COM Save-As failed: {exc}"}
+    except Exception as exc:
+        # Excel's error in plain words, never pywin32's tuple: a failed .xlsb conversion is the scan's
+        # error, which the screens show as it is
+        return {"status": "ERROR", "message": f"Excel COM Save-As failed: {plain_error(exc)}"}
 
 
 def apply_formula_edits(copy_path: Path, edits: list[dict[str, Any]], prefer_excel: bool = True) -> dict[str, Any]:

@@ -68,7 +68,7 @@ from app import stand_in_inputs  # noqa: E402  (through the module: tests replac
 from app.loop_builder import build_loop_plan  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Finding, Status, aggregate_status  # noqa: E402
-from app.plain_codes import cite_all, glossary, is_com_error, plain_com_error, plain_com_errors_in, rule_name  # noqa: E402
+from app.plain_codes import cite_all, glossary, is_com_error, plain_com_error, plain_com_errors_in, plain_error, rule_name  # noqa: E402
 from app.validators import run_rule  # noqa: E402
 from app.readiness import OUTSIDE_RULE, STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
 from app.formula_utils import col_to_num, formula_memo  # noqa: E402
@@ -491,7 +491,7 @@ def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer
         if res is None:
             res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
     except Exception as exc:
-        _apply_finish(s, error=f"apply failed: {_said(exc)}")
+        _apply_finish(s, error=f"apply failed: {plain_error(exc)}")
         raise
     if res["status"] == "NOT_APPLICABLE":
         _apply_finish(s, error=res.get("message", "nothing to apply"))
@@ -669,8 +669,8 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
             _scan_finish(s, error=str(exc.detail))
             raise
         except Exception as exc:
-            _scan_finish(s, error=f"analysis failed: {_said(exc)}")
-            raise HTTPException(status_code=500, detail=f"analysis failed: {_said(exc)}") from exc
+            _scan_finish(s, error=f"analysis failed: {plain_error(exc)}")
+            raise HTTPException(status_code=500, detail=f"analysis failed: {plain_error(exc)}") from exc
         _scan_finish(s)
         s.pending = False
         current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
@@ -1057,15 +1057,15 @@ async def _crash(request: Request, exc: Exception):
     return JSONResponse(body, status_code=500)
 
 
-def _said(exc: BaseException) -> str:
-    """An error's own words: an Excel / VBA error as a plain sentence with Excel's words in brackets
-    (app/plain_codes.py), anything else as it is."""
-    return plain_com_error(exc) if is_com_error(exc) else plain_com_errors_in(str(exc))
-
-
 def _exc_text(exc: BaseException) -> str:
-    """An error no step expected, for the screen: Excel's errors said plainly, others with their type."""
-    return f"Excel stopped with an error: {plain_com_error(exc)}" if is_com_error(exc) else plain_com_errors_in(f"{type(exc).__name__}: {exc}")
+    """An error no step expected, for the screen: Excel's errors said plainly, others with their type.
+    A sentence that already says what Excel did ("Excel stopped with an error and did not say why",
+    "Excel closed ...") stands alone: "Excel stopped with an error: " goes only in front of one that
+    does not name Excel ("the macro looked for a sheet ...", Excel's own words)."""
+    if not is_com_error(exc):
+        return plain_error(exc, with_type=True)
+    said = plain_com_error(exc)
+    return said if said.startswith("Excel ") else f"Excel stopped with an error: {said}"
 
 
 # --- API ----------------------------------------------------------------------------------

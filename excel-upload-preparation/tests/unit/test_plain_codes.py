@@ -1,5 +1,8 @@
 """Plain English next to every code (app/plain_codes.py, docs/PLAIN_CODES.md): the rules' plain
 names, Excel's error values, and Excel / VBA / COM errors said in a plain sentence."""
+from contextlib import contextmanager
+from pathlib import Path
+
 from app.plain_codes import (
     ERROR_VALUES,
     cite,
@@ -12,6 +15,7 @@ from app.plain_codes import (
     named,
     plain_com_error,
     plain_com_errors_in,
+    plain_error,
     rule_name,
 )
 from app.rules_engine import RulesEngine
@@ -20,6 +24,22 @@ from app.validators import run_rule
 # pywin32's own text for the errors Excel and VBA raise (str(com_error)); the source is None or a name
 MEMBER_NOT_FOUND = "(-2147352567, 'Exception occurred.', (0, None, 'Member not found.', None, 0, -2146788248), None)"
 SUBSCRIPT = "(-2147352567, 'Exception occurred.', (0, 'Microsoft Visual Basic', 'Subscript out of range', None, 0, -2146828279), None)"
+
+
+class ComError(Exception):
+    """pywin32's com_error, as Excel raises it: str() is the raw tuple."""
+
+    def __init__(self, hresult, message, excepinfo):
+        super().__init__(hresult, message, excepinfo, None)
+        self.hresult, self.strerror, self.excepinfo, self.argerror = hresult, message, excepinfo, None
+
+
+def excel_gone() -> ComError:
+    """Excel closed under the app (its process died, or the user closed it)."""
+    return ComError(-2147023174, "The RPC server is unavailable.", None)
+
+
+EXCEL_GONE_SAID = 'Excel closed or stopped answering while the app was using it (Excel said: "The RPC server is unavailable.")'
 
 
 # --- rule ids ----------------------------------------------------------------------------------
@@ -116,11 +136,6 @@ def test_a_message_cut_short_is_read_as_far_as_it_goes():
 
 
 def test_a_com_error_object_and_a_longer_text_holding_one():
-    class ComError(Exception):  # pywin32's com_error, as Excel raises it
-        def __init__(self, hresult, message, excepinfo):
-            super().__init__(hresult, message, excepinfo, None)
-            self.hresult, self.strerror, self.excepinfo, self.argerror = hresult, message, excepinfo, None
-
     err = ComError(-2147352567, "Exception occurred.", (0, "Microsoft Visual Basic", "Subscript out of range", None, 0, -2146828279))
     assert is_com_error(err) and not is_com_error(ValueError("x"))
     assert plain_com_error(err) == plain_com_error(SUBSCRIPT)
@@ -130,6 +145,17 @@ def test_a_com_error_object_and_a_longer_text_holding_one():
     )
     assert plain_com_errors_in("no COM error here") == "no COM error here"
     assert plain_com_errors_in("KeyError: (3, 'Sheet1')") == "KeyError: (3, 'Sheet1')"  # a tuple that is no COM error
+
+
+def test_an_error_the_app_caught_in_words_for_a_screen():
+    assert plain_error(excel_gone()) == EXCEL_GONE_SAID
+    # another error that quotes Excel's: the tuple said plainly, the rest kept
+    assert plain_error(RuntimeError(f"Excel could not open m.xlsx: {MEMBER_NOT_FOUND}")) == (
+        'Excel could not open m.xlsx: Excel does not have the command the app asked for (Excel said: "Member not found.")'
+    )
+    # an error no step expected keeps its type when asked: its text alone may say nothing
+    assert plain_error(KeyError("Sheet1")) == "'Sheet1'" and plain_error(KeyError("Sheet1"), with_type=True) == "KeyError: 'Sheet1'"
+    assert plain_error(excel_gone(), with_type=True) == EXCEL_GONE_SAID  # never "com_error: ..."
 
 
 def test_excels_refusals_of_a_write_are_said_plainly():
@@ -144,3 +170,85 @@ def test_excels_refusals_of_a_write_are_said_plainly():
     assert _com_message(Refused()).startswith("Excel refused the action (a protected sheet")
     assert _com_text(Refused()).startswith("Excel refused the action (a protected sheet")
     assert _com_message(ValueError("S!A2: inside the merged range A2:C2")) == "S!A2: inside the merged range A2:C2"
+
+
+# --- Excel's errors in the messages of a normal answer -----------------------------------------
+# A recalculation that could not run, a numbers check that could not compare, a conversion Excel
+# refused: their messages come back inside a normal answer (the server's error handler, which says a
+# failed request's errors plainly, never sees them) and the screens show them as they are.
+def _excel_fails(error):
+    """An excel_session() whose Excel fails as it starts: `error` leaves the `with`."""
+
+    @contextmanager
+    def session(*args, **kwargs):
+        raise error
+        yield  # pragma: no cover -- a generator, for contextmanager
+
+    return session
+
+
+def test_a_recalculation_excel_could_not_finish_says_why_plainly(tmp_path, monkeypatch):
+    from app import recalc
+
+    monkeypatch.setenv("MINDREADY_PERF_LOG", "0")
+    monkeypatch.setattr(recalc, "com_available", lambda: True)
+    monkeypatch.setattr(recalc, "excel_session", _excel_fails(excel_gone()))
+    copy = tmp_path / "model.xlsx"
+    copy.write_bytes(b"a disposable copy")
+    res = recalc.recalculate(copy)
+    assert res["status"] == "ERROR" and res["ran"] is False
+    # the prefix stays: server._recalc_out tells from it that the recalculation did not run
+    assert res["message"] == f"Excel COM recalculation failed: {EXCEL_GONE_SAID}"
+
+
+def test_numbers_that_could_not_be_compared_say_why_plainly(tmp_path, monkeypatch):
+    from app import numbers_check
+
+    monkeypatch.setattr(numbers_check, "com_available", lambda: True)
+    monkeypatch.setattr(numbers_check, "excel_session", _excel_fails(excel_gone()))
+    res = numbers_check.compare_workbooks(tmp_path / "original.xlsx", tmp_path / "prepared.xlsx", numbers_check.Moves())
+    assert res["ran"] is False and res["verdict"] == f"The numbers could not be compared: {EXCEL_GONE_SAID}"
+    # an error that is no Excel error keeps its type: its text alone says nothing
+    monkeypatch.setattr(numbers_check, "excel_session", _excel_fails(KeyError("Sheet1")))
+    res = numbers_check.compare_workbooks(tmp_path / "original.xlsx", tmp_path / "prepared.xlsx", numbers_check.Moves())
+    assert res["verdict"] == "The numbers could not be compared: KeyError: 'Sheet1'"
+
+
+def test_a_conversion_excel_refused_says_why_plainly(tmp_path, monkeypatch):
+    """An .xlsb is converted before its scan: a failure is the scan's error, shown as it is."""
+    from app import change_apply
+
+    monkeypatch.setattr(change_apply, "com_available", lambda: True)
+    monkeypatch.setattr(change_apply, "excel_session", _excel_fails(ComError(-2147352567, "Exception occurred.", (0, None, "Member not found.", None, 0, -2146788248))))
+    source = tmp_path / "model.xlsb"
+    source.write_bytes(b"a binary workbook")
+    res = change_apply.convert_output_format(source, tmp_path / "convert", "xlsx")
+    assert res == {"status": "ERROR", "message": 'Excel COM Save-As failed: Excel does not have the command the app asked for (Excel said: "Member not found.")'}
+
+
+def test_an_error_no_step_expected_never_says_excel_stopped_twice():
+    """Fix all issues, the bring-in and an uncaught route error say what stopped with server._exc_text."""
+    from app.web import server
+
+    assert server._exc_text(ComError(-2147352567, "Exception occurred.", None)) == "Excel stopped with an error and did not say why"
+    assert server._exc_text(excel_gone()) == EXCEL_GONE_SAID  # it says what Excel did: it stands alone
+    # a sentence that does not name Excel, or Excel's own words, get it in front
+    assert server._exc_text(ComError(-2147352567, "Exception occurred.", (0, "Microsoft Visual Basic", "Subscript out of range", None, 0, -2146828279))) == (
+        'Excel stopped with an error: the macro looked for a sheet, workbook or list item that is not there (Excel said: "Subscript out of range")'
+    )
+    assert server._exc_text(ComError(-2147352567, "Exception occurred.", (0, "Microsoft Excel", "Cannot change part of an array.", None, 0, -2146827284))) == (
+        "Excel stopped with an error: Cannot change part of an array."
+    )
+    assert server._exc_text(KeyError("Sheet1")) == "KeyError: 'Sheet1'"
+
+
+def test_the_guide_quotes_the_red_box_as_the_app_words_it():
+    """The guide that goes to the Mind team (tools/package/guide/guide.html) quotes the box's sentence
+    for changes Excel did not accept: it must read as the app writes it, code and plain name."""
+    from app.web import server
+
+    said = server._plain_problem(None, "Fix the formulas", [{"rule_id": "FRM-012"}, {"rule_id": "FRM-012"}])
+    quoted = said[: said.index(" The ones left out")]
+    assert quoted == "Fix the formulas: Excel did not accept 2 of the changes, for FRM-012 (a formula asks Excel about its own file). The other changes were made."
+    guide = (Path(__file__).resolve().parents[2] / "tools" / "package" / "guide" / "guide.html").read_text(encoding="utf-8")
+    assert f"&ldquo;{quoted}&rdquo;" in guide

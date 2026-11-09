@@ -296,6 +296,20 @@ def plain_com_errors_in(text: Any) -> str:
     return "".join(out)
 
 
+def plain_error(error: BaseException, with_type: bool = False) -> str:
+    """An error the app caught, in words for a screen: an Excel / VBA error (pywin32's com_error) as a
+    plain sentence with Excel's words in brackets; any other error as its text, with every pywin32 error
+    tuple it quotes said plainly. `with_type` puts the type of a non-Excel error in front ("KeyError:
+    'Sheet1'"): for an error no step expected, whose text alone can say nothing.
+
+    The messages that reach a screen inside a normal answer (a recalculation that could not run, the
+    numbers check, the report's warnings) need this where they are made: the server's error handler,
+    which says the errors of a failed request plainly, never sees them."""
+    if is_com_error(error):
+        return plain_com_error(error)
+    return plain_com_errors_in(f"{type(error).__name__}: {error}" if with_type else str(error))
+
+
 def glossary() -> dict[str, Any]:
     """What GET /api/plain-codes sends the screens: every rule's plain name and Excel's error values."""
     return {"rules": dict(rule_names()), "errors": dict(ERROR_VALUES)}

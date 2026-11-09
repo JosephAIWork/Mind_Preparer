@@ -35,7 +35,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .excel_com import bgr, close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
-from .plain_codes import cite, error_meanings, rule_name
+from .plain_codes import cite, error_meanings, plain_com_errors_in, plain_error, rule_name
 
 REPORT_SHEET_NAME = "Mind_Readiness_Report"
 SUMMARY_SHEET_NAME = f"{REPORT_SHEET_NAME}_Summary"
@@ -438,7 +438,9 @@ def build_report_workbook(
             _append_report_excel(copy_path, validation_report, output_path, rules_by_id, source_name)
             method = "excel_com"
         except Exception as exc:  # Excel not installed / COM failure -> fall back, but say so
-            warnings.append(f"Excel COM report writing failed ({str(exc)[:160]}); fell back to openpyxl.")
+            # Excel's error in plain words, never pywin32's tuple: Deliver shows the warnings as they are
+            # (after a colon: the plain sentence has brackets of its own)
+            warnings.append(f"Excel COM report writing failed: {plain_error(exc)[:300]}; fell back to openpyxl.")
     if method == "openpyxl":
         _append_report_openpyxl(copy_path, validation_report, output_path, rules_by_id, source_name)
         warnings.append(
@@ -451,5 +453,7 @@ def build_report_workbook(
         info = verify_opens_in_excel(output_path)
         verified = info["opens"]
         if verified is False:
-            warnings.append(f"Verification failed: Excel could not open the output ({info['error']}).")
+            # the check keeps Excel's error as text (cut at 300 characters): said plainly as far as it goes
+            said = plain_com_errors_in(info.get("error")).strip().rstrip(".")
+            warnings.append("Verification failed: Excel could not open the output" + (f" -- {said}." if said else "."))
     return ReportBuildResult(path=output_path, method=method, verified_opens_in_excel=verified, warnings=warnings)

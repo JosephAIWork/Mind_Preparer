@@ -49,6 +49,21 @@ export function meaningsText(legend: ErrorMeaning[]): string {
   return legend.map((m) => `${m.value} means ${m.meaning}`).join("; ");
 }
 
+/** The values of the cells a table marks as errors, as text, for `errorLegend` -- which keeps Excel's
+ *  error values only: the server marks every value that starts with '#', a '#Title' cell too. */
+export function errorCellValues(cells: Iterable<{ value: unknown; error?: boolean | null }>): string[] {
+  const out: string[] = [];
+  for (const c of cells) if (c.error && c.value !== null && c.value !== undefined) out.push(String(c.value));
+  return out;
+}
+
+/** A cell's tooltip: its formula, and for an error value what it means, on a line of its own
+ *  ("=A2*2", then "#REF! means the formula points at a cell that no longer exists"). */
+export function cellTip(formula: string | null | undefined, value: unknown, errors: Record<string, string>): string {
+  const meaning = value === null || value === undefined ? "" : meaningsText(errorLegend([String(value)], errors));
+  return [formula ?? "", meaning].filter(Boolean).join("\n");
+}
+
 /** The glossary as signals: the app shell loads it once at start (`load`); every screen asks it. */
 @Injectable({ providedIn: "root" })
 export class PlainCodes {
@@ -100,5 +115,16 @@ export class PlainCodes {
    *  every occurrence. */
   meaningsIn(text: string | null | undefined): ErrorMeaning[] {
     return this.legend(this.valuesIn(text));
+  }
+
+  /** The meanings of the error values among the cells a table marks as errors, each once: shown under
+   *  the table (the Model map's cell window), never on every cell. */
+  cellsLegend(cells: Iterable<{ value: unknown; error?: boolean | null }>): ErrorMeaning[] {
+    return this.legend(errorCellValues(cells));
+  }
+
+  /** A cell's tooltip: its formula, and for an error value what it means. */
+  cellTip(formula: string | null | undefined, value: unknown): string {
+    return cellTip(formula, value, this.glossary().errors);
   }
 }

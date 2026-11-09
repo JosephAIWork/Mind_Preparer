@@ -31,6 +31,7 @@ from typing import Any, Callable, Iterable
 from .autofix import NUMERIC_TOL, VOLATILE_FUNCS, _same, _show, a1, parse_r1c1
 from .excel_com import close_quietly, com_available, excel_session, open_workbook
 from .formula_utils import col_to_num
+from .plain_codes import plain_error
 from .recalc import XL_ERROR_CODES
 
 MAX_REGRESSIONS = 300_000  # good -> error cells handed to the fixer (the count is always complete)
@@ -185,7 +186,10 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
             before = one(original, "the original")
             after = one(prepared, "the current version")
     except Exception as exc:
-        return {"ran": False, "clean": None, "verdict": f"The numbers could not be compared: {type(exc).__name__}: {str(exc)[:200]}", "counts": {}, "regressions": []}
+        # Excel's error in plain words, never pywin32's tuple: the screens show the verdict as it is.
+        # Any other error keeps its type in front: its text alone may say nothing.
+        said = plain_error(exc, with_type=True)
+        return {"ran": False, "clean": None, "verdict": f"The numbers could not be compared: {said[:300]}", "counts": {}, "regressions": []}
 
     counts = {"compared": 0, "same": 0, "good_to_error": 0, "good_to_other": 0, "error_to_good": 0, "error_to_error": 0, "missing": 0, "missing_good": 0, "volatile_skipped": 0}
     samples: dict[str, list[dict[str, Any]]] = {"good_to_error": [], "good_to_other": [], "error_to_good": [], "missing": []}

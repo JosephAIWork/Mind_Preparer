@@ -65,6 +65,41 @@ def test_openpyxl_fallback_appends_sheets_and_says_so(tmp_path, plain_grid_xlsx)
     assert wb.active.sheet_state == "visible"
 
 
+def test_the_report_warnings_say_excels_errors_in_plain_words(tmp_path, plain_grid_xlsx, monkeypatch):
+    """Deliver shows the warnings as they are: Excel's error in them is a plain sentence, never
+    pywin32's raw tuple -- also when the check that the file opens kept it cut short."""
+    from contextlib import contextmanager
+
+    from app import excel_report
+
+    class ComError(Exception):  # pywin32's com_error: str() is the raw tuple
+        def __init__(self, hresult, message, excepinfo):
+            super().__init__(hresult, message, excepinfo, None)
+            self.hresult, self.strerror, self.excepinfo = hresult, message, excepinfo
+
+    @contextmanager
+    def excel_closes():
+        raise ComError(-2147023174, "The RPC server is unavailable.", None)
+        yield  # pragma: no cover -- a generator, for contextmanager
+
+    member_not_found = "(-2147352567, 'Exception occurred.', (0, None, 'Member not found.', None, 0, -2146788248), None)"
+    result, copy_path, engine = _run(tmp_path, plain_grid_xlsx)
+    monkeypatch.setattr(excel_report, "com_available", lambda: True)
+    monkeypatch.setattr(excel_report, "excel_session", excel_closes)
+    monkeypatch.setattr(excel_report, "verify_opens_in_excel", lambda path: {"opens": False, "error": member_not_found[:-12]})
+    built = build_report_workbook(copy_path, result["validation_report"], tmp_path / "report.xlsx", rules_by_id=engine.rules)
+    assert built.method == "openpyxl" and built.verified_opens_in_excel is False
+    assert built.warnings[0] == (
+        'Excel COM report writing failed: Excel closed or stopped answering while the app was using it '
+        '(Excel said: "The RPC server is unavailable."); fell back to openpyxl.'
+    )
+    assert built.warnings[-1] == (
+        'Verification failed: Excel could not open the output -- Excel does not have the command the app asked for '
+        '(Excel said: "Member not found.").'
+    )
+    assert not any("-21473" in w for w in built.warnings)
+
+
 @needs_excel
 def test_excel_written_report_opens_in_excel(tmp_path, loops_broken_xlsx):
     """The 1.3.0 guarantee: the downloadable workbook copy is written by Excel
