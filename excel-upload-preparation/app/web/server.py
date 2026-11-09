@@ -2484,28 +2484,33 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
         short = made[-1]["label"].split(" — ")[0]
         return f"{short} holds the outside data, but the rest did not finish: {text}"
 
+    # the end is said only once the workbook is free again: a client that sees "done" or "error"
+    # and starts the next step at once must not find the lock still held (a few ms otherwise);
+    # meanwhile "running" keeps every other job away (_busy_with)
+    end: dict[str, Any] = {}
     try:
-        st["result"] = _bring_in(s, base, note, check_numbers, stage, say, stand_ins)
-        st.update(state="done", stage="done", title="Done", message=st["result"]["summary"])
+        result = _bring_in(s, base, note, check_numbers, stage, say, stand_ins)
+        end = {"result": result, "state": "done", "stage": "done", "title": "Done", "message": result["summary"]}
     except _MindInputsRefused as exc:  # says which version holds the outside data itself
-        st.update(state="error", error=str(exc))
+        end = {"state": "error", "error": str(exc)}
     except _BringInStopped as exc:
-        st.update(state="error", error=after_versions(str(exc)))
+        end = {"state": "error", "error": after_versions(str(exc))}
     except HTTPException as exc:  # a scan refused or failed
-        st.update(state="error", error=after_versions(str(exc.detail))[:400])
+        end = {"state": "error", "error": after_versions(str(exc.detail))[:400]}
         if exc.status_code >= 500:
-            st.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+            end.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
     except Exception as exc:  # the thread must never die silently
-        st.update(state="error", error=after_versions(_exc_text(exc))[:400])
-        st.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+        end = {"state": "error", "error": after_versions(_exc_text(exc))[:400]}
+        with contextlib.suppress(Exception):
+            end.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
     finally:
-        st.update(finished=time.time(), updated=time.time())
+        s.apply_lock.release()
+        st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
         if st.get("state") == "error":
             # a job that stopped half-way leaves its line not brought in: INP-010 says why (its last
             # scan ran while the job was still going)
             with contextlib.suppress(Exception):
                 _patch_outside_finding(s, s.result)
-        s.apply_lock.release()
 
 
 @app.post("/api/sessions/{session_id}/outside-inputs/run", status_code=202)
