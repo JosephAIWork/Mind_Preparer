@@ -86,6 +86,9 @@ class Finding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rule_id: str
+    # The rule's plain name (rules/plain_names.yaml), shown next to the code: "an empty cell is
+    # compared with a number" beside FRM-009 (app/plain_codes.py).
+    rule_name: str | None = None
     status: Status
     severity: str | None = None
     confidence: str

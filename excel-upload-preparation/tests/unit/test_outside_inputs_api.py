@@ -383,7 +383,10 @@ def test_a_macro_that_stops_early_changes_nothing(client, macros, excel_steps, m
     error = "(-2147352567, 'Exception occurred.', (0, 'Microsoft Visual Basic', 'Subscript out of range', None, 0, -2146828279), None)"
     report = {"saved": "x", "stopped_early": False, "files": files, "dialogs": [], "error": error, "ok": False}
     assert not server._import_ok(report)
-    assert server._import_stopped(report) == "The workbook's import macro opened b.xlsm but wrote nothing from it: Subscript out of range. Nothing was changed: check the input files, then try again."
+    assert server._import_stopped(report) == (
+        "The workbook's import macro opened b.xlsm but wrote nothing from it: the macro looked for a sheet, workbook or list item that is not there "
+        '(Excel said: "Subscript out of range"). Nothing was changed: check the input files, then try again.'
+    )
 
 
 def test_bring_in_needs_a_matched_file_and_excel(client, macros, monkeypatch, tmp_path):
@@ -500,7 +503,8 @@ def test_the_next_step_brings_the_outside_files_in_before_prep():
     plan = [{"id": "create_grid_titles", "rule_ids": ["STR-004"], "count": 3, "level": "blocking", "skipped": []}]
     report = {"findings": [f("STR-004", "ERROR"), f("INP-010", "ERROR", [1, 2, 3, 4, 5, 6]), f("READY-001", "NOT_SUPPORTED")]}
     r = compute_readiness(report, plan, None, "v")
-    assert r["next_step"] == {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": "6 files the workbook's macro opens", "rule_id": "INP-010"}
+    assert r["next_step"] == {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": "6 files the workbook's macro opens",
+                              "rule_id": "INP-010", "rule_name": "macros bring in data from other files"}
     assert {b["rule_id"]: b["fix"] for b in r["blocking"]} == {"STR-004": "prep", "INP-010": "outside_inputs"}
 
 

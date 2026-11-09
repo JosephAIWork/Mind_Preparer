@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from ..formula_utils import STORAGE_PREFIX_RE, called_functions, mask_strings
+from ..plain_codes import cite
 from ._common import finding, fmt_sites
 from .excel_functions import EXCEL_FUNCTIONS
 
@@ -171,7 +172,7 @@ def unsupported_functions(rule, analysis: dict[str, Any], config: dict[str, Any]
     if deprecated_mm:
         msg += f" Deprecated MM_ function(s) in use: {deprecated_mm}."
     if not_excel:
-        msg += f" Unknown non-Excel name(s) reviewed by FORMULA-002: {not_excel}."
+        msg += f" Unknown non-Excel name(s) reviewed by {cite('FORMULA-002')}: {not_excel}."
     return finding("WARNING" if deprecated_mm else "PASS", msg, observed)
 
 
@@ -230,7 +231,7 @@ def frm_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     if array_sites:
         return finding(
             "PASS",
-            f"No '@' / spill references; {len(array_sites)} fixed-size array formula(s) present (supported; sizes checked by RSK-002).",
+            f"No '@' / spill references; {len(array_sites)} fixed-size array formula(s) present: supported, their sizes are checked by {cite('RSK-002')}.",
             observed,
         )
     return finding("PASS", "No implicit-intersection operators, spill references or array formulas.", observed)
@@ -296,7 +297,7 @@ def vba_presence(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict
         "WARNING" if has_vba else "PASS",
         "Workbook contains a VBA project. This does not block upload -- Mind ignores VBA it "
         "can't run -- but confirm nothing in the workbook depends on the macro actually "
-        "executing, since it won't in Mind (UDF calls are checked by FORMULA-002)."
+        f"executing, since it won't in Mind. UDF calls are checked by {cite('FORMULA-002')}."
         if has_vba
         else "No VBA project detected.",
         {"has_vba": has_vba, "vba_project_bytes": analysis["features"].get("vba_project_bytes", 0)},

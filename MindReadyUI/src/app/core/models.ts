@@ -5,7 +5,8 @@ export type Mode = "plan" | "prep_loops" | "fix_formulas" | "structure_fix";
 
 export interface Finding {
   rule_id: string;
-  rule_name?: string;
+  /** the rule's plain name ("an empty cell is compared with a number"), shown next to its code */
+  rule_name?: string | null;
   category?: string;
   status: Status;
   severity?: string;
@@ -50,6 +51,8 @@ export interface PrepAction {
   id: string;
   title: string;
   rule_ids: string[];
+  /** each rule's plain name, in the order of `rule_ids` */
+  rule_names?: (string | null)[];
   default_on: boolean;
   level: "blocking" | "optional";
   level_note?: string;
@@ -75,6 +78,7 @@ export interface Version {
 
 export interface ReadinessBlocking {
   rule_id: string;
+  rule_name?: string | null;
   status: Status;
   message: string;
   location?: Record<string, unknown>;
@@ -93,7 +97,14 @@ export interface Readiness {
   optional_count: number;
   prep?: { blocking_ops: number; optional_ops: number };
   recalc?: { ran: boolean; clean: boolean; version_id?: string; formula_errors?: number; new_errors?: number; preexisting_errors?: number; addin_gap_errors?: number; message?: string } | null;
-  next_step?: { screen: string; label: string; detail?: string; rule_id?: string } | null;
+  next_step?: { screen: string; label: string; detail?: string; rule_id?: string; rule_name?: string | null } | null;
+}
+
+/** GET /api/plain-codes: the plain words for every code the screens show -- each rule's name
+ *  (rules/plain_names.yaml) and what each of Excel's error values means (app/plain_codes.py). */
+export interface PlainCodesGlossary {
+  rules: Record<string, string>;
+  errors: Record<string, string>;
 }
 
 export interface PrepProgress {
@@ -411,6 +422,7 @@ export interface RecalcCell {
 export interface FixTarget {
   kind?: "finding" | "recalc" | "recalc-group";
   rule_id: string;
+  rule_name?: string | null;
   sheet?: string;
   cell?: string;
   error?: string;
@@ -697,6 +709,7 @@ export interface GridNamesResult {
 // ---- final chunk ------------------------------------------------------------------------------
 export interface DeltaEntry {
   rule_id: string;
+  rule_name?: string | null;
   from: Status;
   to: Status;
   note?: string;

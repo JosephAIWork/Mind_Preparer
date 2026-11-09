@@ -58,6 +58,7 @@ from .change_apply import append_change_log
 from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place, verify_opens_in_excel
 from .formula_utils import collapse_na_reference_calls, num_to_col
 from .inventory import make_immutable_copy, sha256_of
+from .plain_codes import is_com_error, plain_com_error
 from .recalc import XL_ERROR_CODES
 
 Progress = Callable[..., None]
@@ -2338,12 +2339,14 @@ def _plain(v: Any) -> Any:
 
 
 def _com_text(exc: BaseException) -> str:
+    """Why Excel refused a write, in words: Excel's own message (the common ones as a plain sentence,
+    Excel's words in brackets: app/plain_codes.py), never the raw pywin32 tuple."""
     info = getattr(exc, "excepinfo", None)
     if info and len(info) > 2 and info[2]:
-        return str(info[2])[:200]
+        return plain_com_error(exc)[:200]
     if info and len(info) > 5 and info[5] == -2146827284:
         return "Excel does not accept this formula"
-    return str(exc)[:200]
+    return (plain_com_error(exc) if is_com_error(exc) else str(exc))[:200]
 
 
 def summary_sentence(res: dict[str, Any]) -> str:

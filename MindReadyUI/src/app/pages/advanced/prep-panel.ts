@@ -4,14 +4,16 @@ import { ButtonModule, ProgressBarModule, TagModule } from "carbon-components-an
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
+import { CodeName } from "../../core/code-name";
 import { Operation, PivotMode, PrepAction, appliedCount, failedCount, failedText } from "../../core/models";
+import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
 /** The Prep actions one by one: tick what to apply, see the changes, apply through Excel. */
 @Component({
   selector: "mr-prep-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule, TagModule],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, TagModule, CodeName],
   templateUrl: "./prep-panel.html",
   styleUrl: "./panels.scss",
 })
@@ -19,6 +21,7 @@ export class PrepPanel implements OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
   readonly stack = inject(ChangeStack);
+  private codes = inject(PlainCodes);
 
   readonly selected = signal<Set<string>>(new Set());
   readonly open = signal<Set<string>>(new Set());
@@ -35,6 +38,8 @@ export class PrepPanel implements OnDestroy {
   readonly optional = computed(() => this.store.plan().filter((a) => a.level !== "blocking" && (a.count > 0 || this.showEmpty())));
   readonly emptyCount = computed(() => this.store.plan().filter((a) => !a.count).length);
   readonly byHand = computed(() => (this.store.readiness()?.blocking ?? []).filter((b) => b.fix !== "prep" && b.fix !== "outside_inputs"));
+  /** each one with what the error values its message quotes mean, once each */
+  readonly byHandRows = computed(() => this.byHand().map((b) => ({ b, meanings: this.codes.meaningsIn(b.message) })));
   readonly selection = computed(() => {
     // Defaults follow the plan (default_on) until the user changes them; a new plan resets.
     const plan = this.store.plan();

@@ -2,7 +2,11 @@
   <mr-key-box></mr-key-box>
   @if (target(); as t) {
     <div class="chat__target">
-      <span>Asking about <strong>{{ targetText(t) }}</strong></span>
+      @if (t.kind === "recalc" || t.kind === "recalc-group") {
+        <span>Asking about <strong>{{ targetText(t) }}</strong></span>
+      } @else {
+        <span>Asking about <strong><mr-code [code]="t.rule_id" [name]="t.rule_name"></mr-code>{{ whereText(t) }}</strong></span>
+      }
       @if (t.formula) { <span class="mono">{{ t.formula }}</span> }
       <button class="link" (click)="clearTarget()">Ask about the whole workbook instead</button>
     </div>

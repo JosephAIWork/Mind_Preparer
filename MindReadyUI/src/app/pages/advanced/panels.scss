@@ -77,6 +77,19 @@
   }
 }
 
+// What the error values shown here mean: once each, under the message or the list that shows them
+.meanings {
+  list-style: none;
+  margin: $spacing-02 0 0;
+  padding: 0;
+  @include type.type-style("helper-text-01");
+  color: theme.$text-secondary;
+
+  li {
+    margin: 0;
+  }
+}
+
 .link {
   background: none;
   border: 0;

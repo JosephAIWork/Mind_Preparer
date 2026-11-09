@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 from ..grids import all_grids
+from ..plain_codes import cite
 from ._common import as_bool, finding, flagged_grids, fmt_grids, grid_location, grid_rows, header_index, header_names, is_blank
 
 ILLEGAL_FILENAME_CHARS = set('\\/:*?"<>|')
@@ -148,7 +149,7 @@ def inp_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
         "PASS",
         f"{len(inputs)} /Input grid(s): enable format checking per grid in Mind's Input Manager at import "
         "time (it validates imported CSVs against each grid's Excel format). Do not declare an "
-        "'EnableCheckFormatInputManager' /ProjectSettings setting -- Mind's converter rejects it (see PRJ-006).",
+        f"'EnableCheckFormatInputManager' /ProjectSettings setting -- Mind's converter rejects it: see {cite('PRJ-006')}.",
         {"input_grids": len(inputs)}, evidence="RECOMMENDATION")
 
 

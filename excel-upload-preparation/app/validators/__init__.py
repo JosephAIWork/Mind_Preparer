@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..plain_codes import rule_name
 from ..rules_engine import RulesEngine
 
 
@@ -24,6 +25,8 @@ def run_rule(rule: dict[str, Any], analysis: dict[str, Any], config: dict[str, A
 
     base = {
         "rule_id": rule["id"],
+        # the code in plain words, wherever the finding travels (rules/plain_names.yaml)
+        "rule_name": rule_name(rule["id"]),
         "confidence": rule["confidence"],
         "source": rule.get("source", {}),
         "correction_available": bool(rule.get("correction", {}).get("automatic") is True),

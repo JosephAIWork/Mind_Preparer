@@ -5,8 +5,9 @@ import pytest
 
 from app.config import load_config
 from app.excel_com import com_available, verify_opens_in_excel
-from app.excel_report import HEADERS, REPORT_SHEET_NAME, SUMMARY_SHEET_NAME, build_report_workbook, build_standalone_report
+from app.excel_report import HEADERS, REPORT_SHEET_NAME, SUMMARY_SHEET_NAME, build_report_workbook, build_standalone_report, findings_rows
 from app.modes import plan_mode
+from app.plain_codes import rule_name
 from app.rules_engine import RulesEngine
 
 needs_excel = pytest.mark.skipif(not com_available(), reason="requires pywin32 + an installed Excel")
@@ -28,6 +29,26 @@ def test_standalone_report_is_a_valid_workbook_with_all_findings(tmp_path, loops
     assert [c.value for c in ws[1]] == HEADERS
     assert ws.max_row == result["validation_report"]["summary"]["finding_count"] + 1
     assert wb["Summary"]["B4"].value == result["validation_report"]["status"]
+    # the plain name next to each code, and the status still coloured in its own column
+    plain = HEADERS.index("In plain words")
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    assert plain == 1 and all(row[plain] and row[plain] == rule_name(row[0]) for row in rows)
+    status = HEADERS.index("Status")
+    assert ws.cell(row=2, column=status + 1).fill.fgColor.rgb.endswith(("C6EFCE", "FFEB9C", "FFC7CE", "FFD966", "D9D9D9"))
+
+
+def test_report_rows_say_the_code_in_plain_words_and_each_error_value_once():
+    report = {"findings": [{"rule_id": "REF-001", "status": "ERROR", "location": {"sheet": "S", "cell": "A1"},
+                            "message": "3 cell(s) contain broken references: S!A1 =#REF!+1, S!A2 =SUM(#REF!), S!A3 =#N/A"}]}
+    (row,) = findings_rows(report, {})
+    assert row[:2] == ["REF-001", "a broken reference to a cell or name"]
+    assert row[HEADERS.index("Message")] == (
+        "3 cell(s) contain broken references: S!A1 =#REF!+1, S!A2 =SUM(#REF!), S!A3 =#N/A\n"
+        "(#REF! means the formula points at a cell that no longer exists; #N/A means the value is not available (often: a lookup found nothing).)"
+    )
+    # the hint that cites other rules says them with their names
+    hint = findings_rows({"findings": [{"rule_id": "FRM-001", "status": "PASS", "message": "inventory"}]}, {})[0][HEADERS.index("Recommended Fix")]
+    assert "FRM-002 (a function Mind may not support) and FORMULA-002 (a formula calls a custom macro function)" in hint
 
 
 def test_openpyxl_fallback_appends_sheets_and_says_so(tmp_path, plain_grid_xlsx):

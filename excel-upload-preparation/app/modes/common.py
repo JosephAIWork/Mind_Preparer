@@ -11,6 +11,7 @@ from typing import Any, Callable
 from ..formula_utils import formula_memo
 from ..inventory import build_analysis
 from ..models import Mode, ProcessingResult, Status
+from ..plain_codes import cite
 from ..report import build_validation_report
 from ..rules_engine import RulesEngine
 from ..validators import run_rule
@@ -65,7 +66,8 @@ def _run_mode(
     findings = []
     for i, rule in enumerate(rules):
         if progress is not None:
-            progress("rules", f"Checking rule {i + 1}/{len(rules)}: {rule['id']}", i / max(1, len(rules)), rule_id=rule["id"])
+            # the scan screen shows this line: the code with its plain name
+            progress("rules", f"Checking rule {i + 1}/{len(rules)}: {cite(rule['id'])}", i / max(1, len(rules)), rule_id=rule["id"])
         findings.append(run_rule(rule, analysis, config))
     if progress is not None:
         progress("report", "Building the report", None)

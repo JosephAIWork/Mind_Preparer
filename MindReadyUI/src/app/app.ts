@@ -4,6 +4,7 @@ import { UIShellModule } from "carbon-components-angular";
 import { ApiService } from "./core/api.service";
 import { FeedbackDialog } from "./core/feedback-dialog";
 import { FeedbackService } from "./core/feedback.service";
+import { PlainCodes } from "./core/plain-codes";
 import { SessionStore } from "./core/session.store";
 
 /** The shell: Mind's dark Carbon header, the two places (main screen, Advanced), the version, and
@@ -21,10 +22,13 @@ export class App implements OnInit {
   private router = inject(Router);
   readonly store = inject(SessionStore);
   readonly feedback = inject(FeedbackService);
+  private codes = inject(PlainCodes);
   readonly version = signal("");
   readonly rules = signal<number | null>(null);
 
   ngOnInit(): void {
+    void this.codes.load(); // the plain words for every code the screens show
+
     this.api
       .health()
       .then((h) => {

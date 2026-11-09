@@ -17,10 +17,16 @@ one verdict with three states -- it never judges a workbook on its own:
 
 Everything else (WARNING findings, ERRORs from non-required rules) is
 "optional": Mind reads the file as it is; the change improves it.
+
+Every entry that names a rule carries its plain name (`rule_name`), and every
+sentence that cites a rule says it with that name: "FRM-009 (an empty cell is
+compared with a number)" (app/plain_codes.py).
 """
 from __future__ import annotations
 
 from typing import Any
+
+from .plain_codes import cite, cite_all, rule_name
 
 BLOCKING_STATUSES = ("ERROR", "REQUIRES_USER_INPUT")
 RECALC_RULE = "READY-001"
@@ -100,6 +106,7 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
             route, action_id = _fix_route(f["rule_id"], plan)
             blocking.append({
                 "rule_id": f["rule_id"],
+                "rule_name": rule_name(f["rule_id"]),
                 "status": f["status"],
                 "message": f.get("message", ""),
                 "location": f.get("location") or {},
@@ -108,7 +115,7 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
                 "sites": _site_count(f),
             })
         elif lvl == "optional":
-            optional.append({"rule_id": f["rule_id"], "status": f["status"]})
+            optional.append({"rule_id": f["rule_id"], "rule_name": rule_name(f["rule_id"]), "status": f["status"]})
     rc = recalc_state(recalc, version_id)
     if blocking:
         state = "blocked"
@@ -157,14 +164,16 @@ def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -
         outside = next((b for b in blocking if b["rule_id"] == OUTSIDE_RULE), None)
         if outside is not None:
             n = outside.get("sites")
-            return {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": f"{n} file{'' if n == 1 else 's'} the workbook's macro opens" if n else None, "rule_id": OUTSIDE_RULE}
+            return {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": f"{n} file{'' if n == 1 else 's'} the workbook's macro opens" if n else None,
+                    "rule_id": OUTSIDE_RULE, "rule_name": rule_name(OUTSIDE_RULE)}
         # Only a Prep action that targets a *blocking finding* counts here -- a
         # blocking-level action with work left for an optional finding does not.
         via_prep = [b for b in blocking if b["fix"] == "prep"]
         if via_prep:
-            return {"screen": "prep", "label": "Apply the blocking repairs in Prep", "detail": ", ".join(b["rule_id"] for b in via_prep)}
+            return {"screen": "prep", "label": "Apply the blocking repairs in Prep", "detail": cite_all(b["rule_id"] for b in via_prep)}
         first = next((b for b in blocking if b["fix"] != "prep"), blocking[0])
-        return {"screen": "findings", "label": f"Fix {first['rule_id']} with the assistant", "detail": "no automatic repair for what is left", "rule_id": first["rule_id"]}
+        return {"screen": "findings", "label": f"Fix {cite(first['rule_id'])} with the assistant", "detail": "no automatic repair for what is left",
+                "rule_id": first["rule_id"], "rule_name": rule_name(first["rule_id"])}
     if state == "unverified":
         if rc["ran"]:
             return {"screen": "recalculate", "label": "Review the new formula errors", "detail": f"{rc['new_errors']} cell(s) not in error in the original"}
@@ -248,6 +257,7 @@ def _rule_move(rule_id: str, before: dict[str, dict[str, Any]], after: dict[str,
     a = after.get(rule_id) if after is not None else None
     return {
         "rule_id": rule_id,
+        "rule_name": rule_name(rule_id),
         "from": b.get("status") if b else None,
         # a rule the new analysis no longer reports has nothing left to say: it passes
         "to": None if after is None else (a.get("status") if a else "PASS"),
@@ -291,7 +301,7 @@ def _action_summary(a: dict[str, Any]) -> tuple[str, str]:
             continue
         sites = f" ({r['sites_from']:,} -> {r['sites_to']:,} cells)" if r["sites_from"] is not None and r["sites_to"] is not None and r["sites_from"] != r["sites_to"] else ""
         worse = " (worse than before)" if STATUS_RANK.get(r["to"], 0) > STATUS_RANK.get(r["from"] or "PASS", 0) else ""
-        moves.append(f"{r['rule_id']} {r['from'] or 'not reported'} -> {r['to']}{sites}{worse}" if r["from"] != r["to"] else f"{r['rule_id']} still {r['to']}{sites}")
+        moves.append(f"{cite(r['rule_id'])} {r['from'] or 'not reported'} -> {r['to']}{sites}{worse}" if r["from"] != r["to"] else f"{cite(r['rule_id'])} still {r['to']}{sites}")
     left = []
     if a["planned_after"]:
         left.append(f"{_plural(a['planned_after'], 'more repair')} planned by the new analysis")
@@ -353,7 +363,7 @@ def apply_outcome(
         now = plan_after.get(aid) if known and reanalyzed else None
         entry = {
             "id": aid if known else f"{aid}:{rid}",
-            "title": known["title"] if known else f"{MANUAL_SOURCES.get(aid, 'Manual fix')}{' for ' + rid if rid in before else ''}",
+            "title": known["title"] if known else f"{MANUAL_SOURCES.get(aid, 'Manual fix')}{' for ' + cite(rid) if rid in before else ''}",
             "level": known["level"] if known else ("blocking" if any(r["blocking_before"] for r in rules) else "optional"),
             "sent": len(g["sent"]),
             "applied": len(g["applied"]),
@@ -371,12 +381,13 @@ def apply_outcome(
 
     applied_ids = {aid for (aid, rid) in groups if not rid}
     appeared = [
-        {"id": a["id"], "title": a["title"], "level": a["level"], "rule_ids": a["rule_ids"], "planned_before": int(plan_before.get(a["id"], {}).get("count", 0)), "planned_after": int(a["count"])}
+        {"id": a["id"], "title": a["title"], "level": a["level"], "rule_ids": a["rule_ids"], "rule_names": [rule_name(r) for r in a["rule_ids"]],
+         "planned_before": int(plan_before.get(a["id"], {}).get("count", 0)), "planned_after": int(a["count"])}
         for a in (after_plan or [])
         if a["id"] not in applied_ids and int(a["count"]) > int(plan_before.get(a["id"], {}).get("count", 0))
     ]
     regressed = [
-        {"rule_id": rid, "from": before[rid]["status"], "to": f["status"]}
+        {"rule_id": rid, "rule_name": rule_name(rid), "from": before[rid]["status"], "to": f["status"]}
         for rid, f in (after or {}).items()
         if rid in before and STATUS_RANK.get(f["status"], 0) > STATUS_RANK.get(before[rid]["status"], 0)
     ]
@@ -386,7 +397,7 @@ def apply_outcome(
     for rid, f in (after or {}).items():
         if level_of(f) == "blocking":
             route, action_id = _fix_route(rid, after_plan or [])
-            remaining.append({"rule_id": rid, "fix": route, "action_id": action_id, "sites": _site_count(f), "touched": rid in touched, "new": rid not in blocking_before})
+            remaining.append({"rule_id": rid, "rule_name": rule_name(rid), "fix": route, "action_id": action_id, "sites": _site_count(f), "touched": rid in touched, "new": rid not in blocking_before})
     resolved = [rid for rid in blocking_before if reanalyzed and rid not in {r["rule_id"] for r in remaining}]
 
     n_applied, n_failed = len(result.get("applied", [])), len(result.get("failed", []))
@@ -398,15 +409,17 @@ def apply_outcome(
     else:
         headline += f". Blocking problems: {len(blocking_before)} before, {len(remaining)} now"
         if resolved:
-            headline += f" -- resolved: {_some(resolved)}"
-        appeared_blocking = [r["rule_id"] for r in remaining if r["new"]]
+            headline += f" -- resolved: {_some([cite(r) for r in resolved])}"
+        appeared_blocking = [cite(r["rule_id"]) for r in remaining if r["new"]]
         if appeared_blocking:
             headline += f" -- new in this version: {_some(appeared_blocking)}"
         if remaining:
-            by_hand = [r["rule_id"] for r in remaining if r["fix"] not in ("prep", "outside_inputs")]
-            via_prep = [r["rule_id"] for r in remaining if r["fix"] == "prep"]
-            outside = [r["rule_id"] for r in remaining if r["fix"] == "outside_inputs"]
-            parts = ([f"{_some(via_prep)} (Prep has a repair: apply it)"] if via_prep else []) + ([f"{_some(outside)} (Bring in the outside files)"] if outside else []) + ([f"{_some(by_hand)} (no automatic repair: by hand or with the assistant)"] if by_hand else [])
+            by_hand = [cite(r["rule_id"]) for r in remaining if r["fix"] not in ("prep", "outside_inputs")]
+            via_prep = [cite(r["rule_id"]) for r in remaining if r["fix"] == "prep"]
+            outside = [cite(r["rule_id"]) for r in remaining if r["fix"] == "outside_inputs"]
+            # what to do first, then the rules it is for: each rule already carries its name in brackets
+            parts = (([f"Prep has a repair (apply it): {_some(via_prep)}"] if via_prep else []) + ([f"bring in the outside files: {_some(outside)}"] if outside else [])
+                     + ([f"no automatic repair (by hand or with the assistant): {_some(by_hand)}"] if by_hand else []))
             headline += f" -- left: {'; '.join(parts)}"
         headline += "."
     return {

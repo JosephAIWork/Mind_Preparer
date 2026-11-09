@@ -8,6 +8,7 @@ import {
   appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
   pickedFilesProblem, withOutsideStep,
 } from "../core/models";
+import { PlainCodes, meaningsText } from "../core/plain-codes";
 import { SessionStore } from "../core/session.store";
 import { KeyBox } from "./advanced/key-box";
 
@@ -97,6 +98,7 @@ const STEPS: { id: StepId; label: string; check: string }[] = [
 export class HomePage implements OnDestroy {
   private api = inject(ApiService);
   private router = inject(Router);
+  private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
 
   readonly phase = signal<Phase>("idle");
@@ -839,8 +841,11 @@ export class HomePage implements OnDestroy {
         const accepted = acceptable && compared;
         const kept = after ?? left.length;
         const line = r?.status === "clean" ? "Every formula error is fixed" : accepted ? `Fixed what it could; ${kept} error${kept === 1 ? "" : "s"} the workbook already had stay, moving on` : acceptable ? "The errors left could not be checked against the original (the comparison did not run)" : r?.status === "unchanged" ? (clean ? "No formula error to fix" : "Nothing could be changed") : `Fixed what it could (${r?.status ?? "partial"})`;
-        const leftText = left.length ? `${left.length} left for a person: ` + left.slice(0, 3).map((l) => `${l.sheet}!${l.cell} ${l.error}`).join(", ") + (left.length > 3 ? ", …" : "") + " (Advanced › Recalculate)" : "";
-        const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText].filter(Boolean).join(" · ");
+        const shown = left.slice(0, 3);
+        const leftText = left.length ? `${left.length} left for a person: ` + shown.map((l) => `${l.sheet}!${l.cell} ${l.error}`).join(", ") + (left.length > 3 ? ", …" : "") + " (Advanced › Recalculate)" : "";
+        // what each error value shown means, once ("#REF! means the formula points at a cell that no longer exists")
+        const meanings = meaningsText(this.codes.legend(shown.map((l) => l.error)));
+        const detail = [before != null && after != null ? `${before} → ${after} error cells` : "", r?.cells_fixed != null ? `${r.cells_fixed} cells rewritten` : "", full.version ? full.version.label : "", leftText, meanings].filter(Boolean).join(" · ");
         this.fixAll.set({ running: false, fraction: null, line, detail, tone: clean ? "ok" : "warn" });
         return clean || accepted;
       }

@@ -4,7 +4,9 @@ import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
+import { CodeName } from "../../core/code-name";
 import { ChatMessage, FixTarget, Proposal, Version, appliedCount, failedCount, failedText } from "../../core/models";
+import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 import { KeyBox } from "./key-box";
 
@@ -12,7 +14,7 @@ import { KeyBox } from "./key-box";
 @Component({
   selector: "mr-assistant-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName],
   templateUrl: "./assistant-panel.html",
   styleUrl: "./panels.scss",
 })
@@ -20,6 +22,7 @@ export class AssistantPanel implements OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
   readonly stack = inject(ChangeStack);
+  private codes = inject(PlainCodes);
 
   readonly draft = signal("");
   readonly streaming = signal(false);
@@ -46,10 +49,20 @@ export class AssistantPanel implements OnDestroy {
     this.stop?.();
   }
 
+  /** A recalculation error in words: "#REF! at Calc!B7 and 3 cells alike: the formula points at a cell
+   *  that no longer exists" (its "RECALC" is no rule: not shown). */
   targetText(t: FixTarget): string {
     const where = [t.sheet, t.cell].filter(Boolean).join("!");
     const n = t.cells?.length ? ` and ${t.cells.length} cells alike` : "";
-    return `${t.rule_id}${where ? " at " + where : ""}${t.error ? " " + t.error : ""}${n}`;
+    const meaning = this.codes.meaning(t.error);
+    return `${t.error || "the error"}${where ? " at " + where : ""}${n}${meaning ? ": " + meaning : ""}`;
+  }
+
+  /** What follows a finding's code and name: where, the error, the cells alike. */
+  whereText(t: FixTarget): string {
+    const where = [t.sheet, t.cell].filter(Boolean).join("!");
+    const n = t.cells?.length ? ` and ${t.cells.length} cells alike` : "";
+    return `${where ? ", at " + where : ""}${t.error ? " " + t.error : ""}${n}`;
   }
 
   clearTarget(): void {

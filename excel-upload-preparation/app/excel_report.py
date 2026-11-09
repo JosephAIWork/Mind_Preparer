@@ -35,12 +35,14 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .excel_com import bgr, close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
+from .plain_codes import cite, error_meanings, rule_name
 
 REPORT_SHEET_NAME = "Mind_Readiness_Report"
 SUMMARY_SHEET_NAME = f"{REPORT_SHEET_NAME}_Summary"
 
 HEADERS = [
     "Rule ID",
+    "In plain words",  # the rule's plain name, next to its code (rules/plain_names.yaml)
     "Category",
     "Severity",
     "Status",
@@ -67,7 +69,7 @@ HEADER_RGB = "305496"
 FIX_HINTS: dict[str, str] = {
     "FRM-004": "Not a blocker -- Mind ignores VBA it can't run. Confirm nothing needed depends on the macro actually executing; if something does, reimplement that logic as native formulas/MM_ functions.",
     "FRM-002": "An MM_ function missing from the MM_ registry must be corrected. A native Excel function the Mind documentation does not list is neither documented as supported nor as refused: convert the model in Mind to know, and replace the function only if Mind refuses it.",
-    "FRM-001": "Inventory only -- review the function mix; the per-function verdicts are in FRM-002 / FORMULA-002.",
+    "FRM-001": f"Inventory only -- review the function mix; the per-function verdicts are in {cite('FRM-002')} and {cite('FORMULA-002')}.",
     "FRM-005": "Break each circular reference by hand: a value that feeds the next round is what MM_ITERATIONS with /iterationinput and /iterationoutput is for; otherwise reference the previous period or a fixed starting value. Turn Excel's iterative calculation off afterwards.",
     "FRM-006": "Replace each 'First:Last'!cell reference by the explicit list of the sheets it spans (the finding proposes the formula), by hand or with the assistant.",
     "FRM-008": "Apply the Prep action 'Test for empty text before the arithmetic': =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), so Excel and Mind both return the fallback when the cell holds \"\".",
@@ -169,7 +171,10 @@ CATEGORY_FIX_HINTS: dict[str, str] = {
 # Rule IDs app/change_apply.py actually has an automatic handler for.
 AUTO_FIXABLE_RULE_IDS = {"FILE-002", "LOOP-002"}
 
-COLUMN_WIDTHS = [12, 14, 12, 20, 22, 60, 60, 14]
+COLUMN_WIDTHS = [12, 34, 14, 12, 20, 22, 60, 60, 14]
+# 1-based column numbers, the same for openpyxl and for Excel
+STATUS_COLUMN = HEADERS.index("Status") + 1
+WRAPPED_COLUMNS = tuple(HEADERS.index(h) + 1 for h in ("In plain words", "Message", "Recommended Fix"))
 
 
 @dataclass
@@ -185,6 +190,12 @@ class ReportBuildResult:
 
 def _fix_hint(rule_id: str, category: str, message: str) -> str:
     return FIX_HINTS.get(rule_id) or CATEGORY_FIX_HINTS.get(category) or message
+
+
+def _message_text(message: str) -> str:
+    """The finding's message, with what each error value it quotes means -- once, on a line of its own."""
+    meanings = error_meanings(message)
+    return f"{message}\n({meanings}.)" if meanings else message
 
 
 def _location_text(location: dict[str, Any]) -> str:
@@ -208,11 +219,12 @@ def findings_rows(validation_report: dict[str, Any], rules_by_id: dict[str, dict
         rows.append(
             [
                 rule_id,
+                finding.get("rule_name") or rule_name(rule_id) or "",
                 category,
                 finding.get("severity", ""),
                 finding["status"],
                 _location_text(finding.get("location") or {}),
-                finding["message"],
+                _message_text(finding["message"]),
                 _fix_hint(rule_id, category, finding["message"]),
                 "Yes" if rule_id in AUTO_FIXABLE_RULE_IDS else "No",
             ]
@@ -256,10 +268,10 @@ def _write_findings_sheet_openpyxl(ws: Worksheet, rows: list[list[Any]]) -> None
     for r, values in enumerate(rows, start=2):
         for col_idx, value in enumerate(values, start=1):
             cell = ws.cell(row=r, column=col_idx, value=value)
-            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in (6, 7))
-        fill = STATUS_FILL.get(values[3])
+            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in WRAPPED_COLUMNS)
+        fill = STATUS_FILL.get(values[STATUS_COLUMN - 1])
         if fill:
-            ws.cell(row=r, column=4).fill = fill
+            ws.cell(row=r, column=STATUS_COLUMN).fill = fill
     for col_idx, width in enumerate(COLUMN_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
@@ -344,13 +356,13 @@ def _append_report_excel(copy_path: Path, validation_report: dict[str, Any], out
             header.Interior.Color = bgr(HEADER_RGB)
             header.WrapText = True
             for i, row in enumerate(rows, start=2):
-                color = STATUS_RGB.get(row[3])
+                color = STATUS_RGB.get(row[STATUS_COLUMN - 1])
                 if color:
-                    ws.Cells(i, 4).Interior.Color = bgr(color)
+                    ws.Cells(i, STATUS_COLUMN).Interior.Color = bgr(color)
             for col_idx, width in enumerate(COLUMN_WIDTHS, start=1):
                 ws.Columns(col_idx).ColumnWidth = width
-            ws.Columns(6).WrapText = True
-            ws.Columns(7).WrapText = True
+            for col_idx in WRAPPED_COLUMNS:
+                ws.Columns(col_idx).WrapText = True
             try:
                 ws.Range(ws.Cells(1, 1), ws.Cells(n_rows, n_cols)).VerticalAlignment = XL_TOP
                 ws.Range(ws.Cells(1, 1), ws.Cells(n_rows, n_cols)).AutoFilter(1)
