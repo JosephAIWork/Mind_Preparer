@@ -285,6 +285,10 @@ export interface LoopPlanLoop {
   suggested_count_cell?: string | null;
   /** the choices this loop was built with */
   chosen?: LoopChoice;
+  /** a loop of another macro: listed, not written (one macro at a time) */
+  other_macro?: boolean;
+  /** the macro a person runs for this loop */
+  run?: string | null;
 }
 
 /** One loop's own choices; first / last are a number or a cell holding one (Sheet!A1). */
@@ -337,6 +341,10 @@ export interface LoopPlan {
   how_it_runs?: string;
   /** the formula repairs Prep still had for this version: written with the loop (written = false: only named) */
   repairs?: { id: string; title: string; count: number; written: boolean }[];
+  /** the macro whose loops this plan builds */
+  macro?: string | null;
+  /** every macro with loops, when there are two or more: Excel runs each on its own, the plan builds one at a time */
+  macros?: { name: string; loops: string[]; chosen: boolean }[];
 }
 
 export interface LoopChoices {
@@ -349,6 +357,8 @@ export interface LoopChoices {
   fixed_ranges?: boolean;
   /** each loop's own choices, by driver cell */
   loops?: Record<string, LoopChoice>;
+  /** the macro whose loops are built (default: the first macro with a loop) */
+  macro?: string;
 }
 
 // ---- Mind instances (app/instance_builder.py) ------------------------------------------------
@@ -509,6 +519,10 @@ export interface InstanceChoices {
   keys?: "present" | "all";
   /** the loops the copies are made from, comma separated (names); empty = by the key column */
   loops?: string;
+  /** each loop's own choices, as set on the Mind loop panel (by driver cell) */
+  loop_choices?: Record<string, LoopChoice>;
+  /** the macro whose loop the copies by the key column use (the Mind loop panel's choice) */
+  macro?: string;
 }
 
 /** POST .../mind-instances-plan/apply: the Apply outcome, the plan (without operations), the zip's URL and the two file names. */

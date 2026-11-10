@@ -13,6 +13,10 @@ import { SessionStore } from "../../core/session.store";
   imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule],
   templateUrl: "./loop-panel.html",
   styleUrl: "./panels.scss",
+  // the macro dropdown, styled like the panel's text inputs (as the instances panel's key dropdown)
+  styles: [
+    `.field select { font: inherit; font-size: 0.875rem; color: var(--cds-text-primary, #161616); background: var(--cds-field-01, #f4f4f4); border: 0; border-bottom: 1px solid var(--cds-border-strong-01, #8d8d8d); padding: 0.5rem 0.75rem; min-width: 14rem; }`,
+  ],
 })
 export class LoopPanel implements OnInit, OnDestroy {
   private api = inject(ApiService);
@@ -20,6 +24,8 @@ export class LoopPanel implements OnInit, OnDestroy {
 
   /** each loop's own choices, by driver cell */
   readonly picks = signal<Record<string, LoopChoice>>({});
+  /** the macro whose loops are built; empty = the plan's own (the first macro with a loop) */
+  readonly macro = signal("");
   readonly clearOld = signal(false);
   readonly fixedRanges = signal(false);
   readonly plan = signal<LoopPlan | null>(null);
@@ -51,7 +57,13 @@ export class LoopPanel implements OnInit, OnDestroy {
       const kept = Object.fromEntries(Object.entries(c).map(([k, v]) => [k, (v ?? "").trim()]).filter(([, v]) => v)) as LoopChoice;
       if (Object.keys(kept).length) loops[driver] = kept;
     }
-    return { clear_old: this.clearOld() || undefined, fixed_ranges: this.fixedRanges() || undefined, loops: Object.keys(loops).length ? loops : undefined };
+    return { clear_old: this.clearOld() || undefined, fixed_ranges: this.fixedRanges() || undefined, loops: Object.keys(loops).length ? loops : undefined, macro: this.macro() || undefined };
+  }
+
+  /** Another macro's loops: Excel runs each macro on its own, so the plan builds one macro at a time. */
+  pickMacro(event: Event): void {
+    this.macro.set((event.target as HTMLSelectElement).value);
+    void this.preview();
   }
 
   /** what was typed for one loop's choice */
@@ -89,8 +101,11 @@ export class LoopPanel implements OnInit, OnDestroy {
     this.tone.set("idle");
     this.line.set("");
     try {
-      const { plan } = await this.api.mindLoopPlan(id, this.choices());
+      const choices = this.choices();
+      const { plan } = await this.api.mindLoopPlan(id, choices);
       this.plan.set(plan);
+      // the instances panel builds its copies from loops with the same choices
+      this.store.loopChoices?.set(choices.loops || choices.macro ? { loops: choices.loops, macro: choices.macro } : null);
     } catch (e) {
       this.plan.set(null);
       this.tone.set("error");

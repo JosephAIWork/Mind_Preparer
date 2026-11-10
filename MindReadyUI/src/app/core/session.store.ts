@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from "@angular/core";
 
 export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
-import { ChatMessage, Delta, FixTarget, OutsideInputs, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+import { ChatMessage, Delta, FixTarget, LoopChoice, OutsideInputs, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
 /** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
@@ -28,6 +28,9 @@ export class SessionStore {
    *  (null: the macros open none). Set by the scan of the upload; the match and `brought_in` follow
    *  Add files and Bring in the outside files. */
   readonly outsideInputs = signal<OutsideInputs | null>(null);
+  /** The Mind loop panel's last previewed choices (each loop's own, and the macro): the instances panel
+   *  builds its copies from loops with them, so both panels show the same loops. */
+  readonly loopChoices = signal<{ loops?: Record<string, LoopChoice>; macro?: string } | null>(null);
   /** STR-009's pivots: [{sheet, name, ref, blocking}] (empty when the workbook has none) */
   readonly pivots = computed(() => {
     const f = this.findings().find((x) => x.rule_id === "STR-009");

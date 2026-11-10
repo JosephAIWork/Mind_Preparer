@@ -594,7 +594,7 @@ def _scenario_book(tmp_path: Path, *, stale: bool = False, driver_loop: bool = F
 KEYS9 = [f"CohortRng{y}_Scenario{s}" for y in (2022, 2023, 2024) for s in (0, 1, 2)]
 
 
-def test_copies_from_two_loops_a_split_grid_of_their_values_and_the_other_loop_stays_a_loop(tmp_path, monkeypatch):
+def test_copies_from_two_loops_a_split_grid_of_their_values_and_the_other_macros_loop_is_left_out(tmp_path, monkeypatch):
     path = _scenario_book(tmp_path)
     plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch)
     # without loops asked for: the table way finds no table, and says which loops copies can come from
@@ -623,10 +623,10 @@ def test_copies_from_two_loops_a_split_grid_of_their_values_and_the_other_loop_s
     fx = {(o["sheet"], o.get("cell")): o for o in plan["operations"] if o["op"] == "set_formula"}
     assert (fx[("Ctrl", "C7")]["before"], fx[("Ctrl", "C7")]["after"]) == (1, "=INDEX(Ctrl!$D$18:$D$26,1)")
     assert [o["op"] for o in plan["operations"] if o["sheet"] == "Ctrl" and o.get("cell") == "C7"] == ["set_formula", "remove_validation"]
-    # the other macro's loop stays a loop inside every copy, written as the Mind loop plan has it
-    roll = fx[("Roll", "C2")]
-    assert roll["action_id"] == "mind_loop" and roll["after"].startswith('=MM_LOOP("RollYear"') and roll["loop"] == "RollYear"
-    assert [k["name"] for k in plan["kept_loops"]] == ["RollYear"] and plan["kept_loops"][0]["written"] is True
+    # the other macro's loop is not written into the copies (review 2026-11-10): Excel runs RollRun on its own,
+    # with the cohort and scenario fixed; inside every copy Mind would run it and add its passes up
+    assert ("Roll", "C2") not in fx and not any(o["sheet"] == "Roll" for o in plan["operations"])
+    assert plan["kept_loops"] == [] and any("The loops of the macro RollRun (RollYear) are not part of these copies" in n for n in plan["notes"])
     assert all(o["action_id"] == ACTION_ID for o in plan["operations"] if o.get("loop") is None)
     # the main workbook: the keys and every copy's results block (the output sheet's formula block), no sum over the copies
     m = plan["main"]
@@ -635,7 +635,7 @@ def test_copies_from_two_loops_a_split_grid_of_their_values_and_the_other_loop_s
     assert [(g["title"], g["rows"], g["cols"]) for g in m["grids"]] == [("#CohortRng and Scenario instances /InstanceKeys", 9, 1), ("#Results by CohortRng and Scenario", 27, 4)]
     assert plan["results"] == {"block": "Result!B3:C5", "rows": 3, "cols": 2, "chosen_by": "outputs"} and plan["counts"]["result_cells"] == 54
     assert any("add every copy up" in n for n in plan["notes"]) and any("Ctrl!C7 had a dropdown" in n for n in plan["notes"])
-    assert "9 copies" in plan["how_it_runs"] and "RollYear stays a loop inside every copy" in plan["how_it_runs"] and "AllRuns is not needed" in plan["how_it_runs"]
+    assert "9 copies" in plan["how_it_runs"] and "stay" not in plan["how_it_runs"] and "AllRuns is not needed" in plan["how_it_runs"]
     json.dumps(plan)
     assert "status: ready" in describe(plan)
 
@@ -655,7 +655,7 @@ def test_copies_from_loops_can_be_written_without_excel(tmp_path, monkeypatch):
     assert g["flag_names"] == ["instancesplit"] and g["title_cell"] == "B16" and g["header_values"] == ["Instance key", "CohortRng", "Scenario"] and (g["first_row"], g["last_row"]) == (17, 26)
     assert [ws.cell(r, 2).value for r in (18, 26)] == ["CohortRng2022_Scenario0", "CohortRng2024_Scenario2"] and [ws.cell(26, c).value for c in (3, 4)] == [2024, 2]
     assert ws["C5"].value == "=INDEX(Ctrl!$C$18:$C$26,1)" and ws["C7"].value == "=INDEX(Ctrl!$D$18:$D$26,1)" and not ws.data_validations.dataValidation
-    assert wb["Roll"]["C2"].value.startswith('=MM_LOOP("RollYear"')
+    assert wb["Roll"]["C2"].value == 2024  # the other macro's loop driver is left as it is
     wb.close()
 
 
@@ -667,7 +667,7 @@ def test_copies_from_loops_choices_and_what_cannot_be_built(tmp_path, monkeypatc
     by = {(o["sheet"], o.get("cell")): o for o in plan["operations"] if o["op"] == "set_formula"}
     assert by[("Ctrl", "C7")]["after"] == "=INDEX(Ctrl!$C$18:$C$20,1)" and plan["split_grid"]["title_cell"] == "Ctrl!B16"
     assert ("Ctrl", "C5") not in by  # CohortRng stays a loop: its formula is already the plan's, nothing to write
-    assert {k["name"]: k["already"] for k in plan["kept_loops"]} == {"CohortRng": True, "RollYear": False}
+    assert {k["name"]: k["already"] for k in plan["kept_loops"]} == {"CohortRng": True}  # RollYear is RollRun's: left out
     assert plan["results"] == {"block": "Result!B5:C5", "rows": 1, "cols": 2, "chosen_by": "user"} and plan["main"]["model_file"] == "Tool.xlsx"
     assert any("Roll!E2" in n and "MM_ function" in n for n in plan["notes"])
     # a loop that is not there, a results range that is not one, too many copies

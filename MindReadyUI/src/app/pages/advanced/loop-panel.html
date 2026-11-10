@@ -15,18 +15,30 @@
     @if (!p.found) {
       <p class="hint">No run loop in this workbook: nothing to build.</p>
     } @else {
+      @if ((p.macros?.length ?? 0) > 1) {
+        <div class="row macro-choice">
+          <label class="field">Macro
+            <select (change)="pickMacro($event)">
+              @for (m of p.macros; track m.name) {
+                <option [value]="m.name" [selected]="m.name === p.macro">{{ m.name }} ({{ m.loops.join(", ") }})</option>
+              }
+            </select>
+          </label>
+          <span class="hint">Excel runs each macro on its own. The plan builds the loops of one macro at a time.</span>
+        </div>
+      }
       @for (l of p.loops; track l.name + $index) {
         <div class="card">
           <div class="card__head">
             <span class="card__title">{{ l.name }} <span [class]="chipClass(l.status)">{{ statusText(l.status) }}</span></span>
-            <span class="card__count">{{ l.cells.length }} cells · values {{ l.first }} to {{ l.last }}</span>
+            @if (!l.other_macro) { <span class="card__count">{{ l.cells.length }} cells · values {{ l.first }} to {{ l.last }}</span> }
           </div>
           <div class="card__meta">
             @if (l.driver) { <span class="mono">driver {{ l.driver }}</span> }
             @if (l.source) { <span class="mono">from {{ l.source }}</span> }
             @if (l.macro) { <span>macro {{ l.macro }}</span> }
           </div>
-          @if (l.driver) {
+          @if (l.driver && !l.other_macro) {
             <div class="row loop-choices" [attr.data-show-me]="$first ? 'loop-choices' : null">
               <label class="field">Name <input type="text" [value]="pick(l, 'name')" (input)="setPick(l, 'name', value($event))" (keyup.enter)="preview()" [placeholder]="l.name" /></label>
               <label class="field">First <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.first)" /></label>

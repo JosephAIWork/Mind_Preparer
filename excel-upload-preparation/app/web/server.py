@@ -67,7 +67,7 @@ from app import model_map as model_map_module  # noqa: E402  (read_vba through t
 from app import outside_inputs  # noqa: E402  (through the module: tests replace run_import / apply_mind_inputs)
 from app import stand_in_inputs  # noqa: E402  (through the module: tests replace make_stand_ins / assistant_ask)
 from app.loop_builder import _add_repairs, build_loop_plan  # noqa: E402
-from app.instance_builder import build_instance_plan, write_main_workbook, zip_for_mind  # noqa: E402
+from app.instance_builder import build_instance_plan, loop_options_of, pick_loop_plan, write_main_workbook, zip_for_mind  # noqa: E402
 from app.instance_finder import EMPTY_ASSISTANT, find_instances, make_finder_advisor, merge_assistant  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
 from app.models import Finding, Status, aggregate_status  # noqa: E402
@@ -2928,8 +2928,8 @@ def _truthy(v: Any) -> bool:
 
 def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
     """The Mind loop plan for the current version with the caller's choices:
-    name / names, first, last, count_cell, clear_old, loops; repairs (default on): the formula
-    repairs Prep still has for this version are written with the loop."""
+    name / names, first, last, count_cell, clear_old, loops, macro (whose loops: one macro at a time);
+    repairs (default on): the formula repairs Prep still has for this version are written with the loop."""
     mp = _model_map_of(s)
     names = payload.get("names") if isinstance(payload.get("names"), dict) else None
     loops = payload.get("loops")
@@ -2943,19 +2943,20 @@ def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         plan = build_loop_plan(s.result["workbook_analysis"], mp, names=names, name=payload.get("name") or None, first=payload.get("first"), last=payload.get("last"),
                                count_cell=payload.get("count_cell") or None, dynamic=not _truthy(payload.get("fixed_ranges")), clear_old=bool(payload.get("clear_old")), loops=loops,
-                               prep_plan=s.plan, repairs=payload.get("repairs") is None or _truthy(payload.get("repairs")))
+                               prep_plan=s.plan, repairs=payload.get("repairs") is None or _truthy(payload.get("repairs")), macro=str(payload.get("macro") or "").strip() or None)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"loop plan failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
     return json.loads(json.dumps(plan, default=str))
 
 
 @app.get("/api/sessions/{session_id}/mind-loop-plan")
-def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False, fixed_ranges: bool = False, loops: str = "", repairs: bool = True) -> dict[str, Any]:
+def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False, fixed_ranges: bool = False, loops: str = "", repairs: bool = True,
+                   macro: str = "") -> dict[str, Any]:
     """The macro's run loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
     the block the macro writes per pass -- as a plan (nothing written): the loops, the outputs,
     the cleared areas, the operations, and what cannot be built and why."""
     s = _session(session_id)
-    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old, "fixed_ranges": fixed_ranges, "loops": loops, "repairs": repairs})
+    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old, "fixed_ranges": fixed_ranges, "loops": loops, "repairs": repairs, "macro": macro})
     public = {k: v for k, v in plan.items() if k != "operations"}
     public["operations"] = [_public_op(o) for o in plan["operations"][:200]]
     public["operation_count"] = len(plan["operations"])
@@ -3005,13 +3006,14 @@ def _loop_names(raw: Any) -> list[str]:
     return [x.strip() for x in raw if x.strip()]
 
 
-def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, results: Any = None, loop_choices: Any = None) -> dict[str, Any]:
+def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, results: Any = None, loop_choices: Any = None, macro: Any = None) -> dict[str, Any]:
     """The Mind instances plan for the current version with the caller's choices: the key column
     (a header text or a column letter; empty = the plan's own choice) and which keys the main
     workbook lists ("present" = only keys that have rows, "all" = every key of the macro's list).
     `loops` (loop names or driver cells) makes one copy per combination of those loops' values
     instead, `results` names the block the main workbook shows for every copy, and `loop_choices`
-    holds each loop's own choices as the Mind loop panel sends them (by driver cell).
+    holds each loop's own choices as the Mind loop panel sends them (by driver cell); `macro` is the
+    macro whose loop the copies by the table use (the loops asked for name their own macro).
     The plan with no key, keys=present and no loops is kept per version: the panel's preview and the
     instance finder both ask for exactly that one. Any other is built fresh every time.
 
@@ -3032,14 +3034,21 @@ def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, result
     if loop_choices is not None and not isinstance(loop_choices, dict):
         raise HTTPException(status_code=422, detail="loop_choices: an object by driver cell")
     mp = _model_map_of(s)
-    default = key == "" and keys == "present" and not names and not results and not loop_choices
+    macro = str(macro or "").strip() or None
+    default = key == "" and keys == "present" and not names and not results and not loop_choices and not macro
     if default and s.instance_plan_default is not None and s.instance_plan_default_version_id == s.current_version_id:
         return s.instance_plan_default
     analysis = s.result["workbook_analysis"]
     try:
-        loop_plan = build_loop_plan(analysis, mp, loops=loop_choices or None)
+        loop_plan = build_loop_plan(analysis, mp, loops=loop_choices or None, macro=macro)
+        # one loop plan per macro (Excel runs each on its own): the loops asked for pick theirs
+        loop_plans = [loop_plan] + [build_loop_plan(analysis, mp, loops=loop_choices or None, macro=m["name"]) for m in loop_plan.get("macros") or [] if not m.get("chosen")]
+        if names:
+            loop_plan = pick_loop_plan(loop_plans, names)
         plan = build_instance_plan(analysis, mp, loop_plan=loop_plan, key=key or None, keys=keys, model_name=f"{_instances_stem(s)}_instances",
                                    loops=names or None, results=results or None)
+        if len(loop_plans) > 1:
+            plan["loop_options"] = loop_options_of(loop_plans)
         if plan.get("status") == "ready" and plan.get("operations"):
             plan.setdefault("counts", {})
             _add_repairs(plan, plan["operations"], s.plan, True, what="the instances")
@@ -3054,7 +3063,7 @@ def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, result
 
 
 @app.get("/api/sessions/{session_id}/mind-instances-plan")
-def mind_instances_plan(session_id: str, key: str = "", keys: str = "present", loops: str = "", results: str = "", loop_choices: str = "") -> dict[str, Any]:
+def mind_instances_plan(session_id: str, key: str = "", keys: str = "present", loops: str = "", results: str = "", loop_choices: str = "", macro: str = "") -> dict[str, Any]:
     """The macro's run loop as Mind instances -- one copy of the model per value of a key column of
     the model-point table, a loop inside each copy over its own rows, and a second small main
     workbook with the keys and the results -- as a plan (nothing written): the loop, the table, the
@@ -3062,7 +3071,7 @@ def mind_instances_plan(session_id: str, key: str = "", keys: str = "present", l
     `loops` (comma separated loop names or driver cells): one copy per combination of their values
     instead; `results`: the block the main workbook shows for every copy."""
     s = _session(session_id)
-    plan = _instance_plan_of(s, key, keys, loops, results, loop_choices)
+    plan = _instance_plan_of(s, key, keys, loops, results, loop_choices, macro)
     public = {k: v for k, v in plan.items() if k != "operations"}
     operations = list(plan.get("operations") or [])
     public["operations"] = [_public_op(o) for o in operations[:200]]
@@ -3078,7 +3087,7 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
     a failure of the main-workbook step is reported in `warnings`, not raised: the version stays."""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
-    plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"), payload.get("loops"), payload.get("results"), payload.get("loop_choices"))
+    plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"), payload.get("loops"), payload.get("results"), payload.get("loop_choices"), payload.get("macro"))
     ops = list(plan.get("operations") or [])
     if not ops:
         raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))

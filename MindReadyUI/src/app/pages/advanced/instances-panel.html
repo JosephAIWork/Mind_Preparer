@@ -5,6 +5,9 @@
     @else { One copy of the model per {{ keyWord() }}, a loop inside each copy over its rows. Mind gets two files. }
   </p>
 
+  @if (usesLoopChoices()) {
+    <p class="hint loop-choices-used">Uses the choices you made for each loop on the Mind loop panel.</p>
+  }
   @if (loopOptions().length) {
     <div class="row copies-from">
       <span class="hint">Copies from loops:</span>

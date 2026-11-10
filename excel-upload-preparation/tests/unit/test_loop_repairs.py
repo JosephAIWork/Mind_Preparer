@@ -57,7 +57,8 @@ def test_the_loop_is_written_with_the_formula_repairs_prep_still_has(tokyo):
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
     # the four loops, as before
     assert ops[("Ctrl_01", "C22")]["after"] == '=MM_LOOP("CohortRng",Ctrl_01!C18,2021,Ctrl_01!C24,Ctrl_01!C18)'
-    assert ops[("RollForward", "B4")]["after"] == '=MM_LOOP("GroupName",MM_COLUMN(Ctrl_02!C20))'
+    assert next(o["after"] for o in plan["operations"] if (o["sheet"], o["cell"], o["op"]) == ("Ctrl_01", "C27", "set_formula")) == '=MM_LOOP("Scenario",Ctrl_01!C29:C32)'
+    assert ("RollForward", "B4") not in ops  # the other macro's loop: one macro at a time
     # CELL("filename") is written as what the user's Excel showed: Mind gave NaN for it
     assert ops[("BBA_01", "B3")]["after"] == '="BBA_01"' and ops[("BBA_01", "B3")]["action_id"] == "freeze_environment_formulas"
     # arithmetic on a range OFFSET returns: written as the range (Mind computed another number)

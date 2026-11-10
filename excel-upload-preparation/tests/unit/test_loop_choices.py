@@ -128,9 +128,21 @@ def test_the_four_loops_are_built_from_the_workbook_alone(built):
     drivers = [d["cell"] for d in mp["loop"]["drivers"]]
     # the macro writes the workbook's GroupName / CohortYear, not the sheet's copies that follow them
     assert drivers == ["Ctrl_01!C22", "Ctrl_01!C27", "RollForward!B4", "RollForward!B6"]
+    # one macro at a time (review 2026-11-10): Excel runs each macro on its own, with the other's drivers
+    # fixed; in one model Mind would run all four loops inside each other (6 x 4 x 6 x 6 passes)
     plan = build_loop_plan(analysis, mp)
     lp = _loops(plan)
-    assert all(x["status"] == "ready" for x in lp.values()), {k: v.get("why") for k, v in lp.items()}
+    assert plan["macro"] == "AllScenarioRun"
+    assert plan["macros"] == [{"name": "AllScenarioRun", "loops": ["CohortRng", "Scenario"], "chosen": True}, {"name": "EndemicCalculationRun", "loops": ["GroupName", "CohortYear"], "chosen": False}]
+    assert (lp["CohortRng"]["status"], lp["Scenario"]["status"]) == ("ready", "ready"), {k: v.get("why") for k, v in lp.items()}
+    for n in ("GroupName", "CohortYear"):
+        assert lp[n]["status"] == "not_built" and lp[n]["other_macro"] is True and "choose EndemicCalculationRun" in lp[n]["why"]
+    assert not any(o["sheet"] == "RollForward" for o in plan["operations"])
+    assert any("EndemicCalculationRun has loops too" in n for n in plan["notes"]) and "AllScenarioRun is not needed" in plan["how_it_runs"]
+    endemic = build_loop_plan(analysis, mp, macro="EndemicCalculationRun")
+    assert endemic["macro"] == "EndemicCalculationRun" and not any(o["sheet"] == "Ctrl_01" for o in endemic["operations"])
+    assert [le["status"] for le in endemic["loops"]] == ["not_built", "not_built", "ready", "ready"]
+    lp = {**lp, **{k: v for k, v in _loops(endemic).items() if v["status"] == "ready"}}
     assert lp["CohortRng"]["cells"][0]["formula"] == '=MM_LOOP("CohortRng",Ctrl_01!C18,2021,Ctrl_01!C24,Ctrl_01!C18)'
     # the counter 0 .. numScenario - 1: the values its own dropdown lists, a fixed range (no header row above it)
     sc = lp["Scenario"]
@@ -142,19 +154,21 @@ def test_the_four_loops_are_built_from_the_workbook_alone(built):
     # E12 = C10 = CalcYear, C12 = Ctrl_01!C24: the loop reads the cells that hold the numbers, no count cell needed
     cy = lp["CohortYear"]
     assert (cy["first"], cy["last"]) == (2021, 2026) and cy["cells"][0]["formula"] == '=MM_LOOP("CohortYear",Ctrl_01!C18,2021,Ctrl_01!C24,Ctrl_01!C18)'
-    ops = {(o["sheet"], o["cell"], o["op"]) for o in plan["operations"]}
+    ops = {(o["sheet"], o["cell"], o["op"]) for o in plan["operations"] + endemic["operations"]}
     assert ("Ctrl_01", "C27", "remove_validation") in ops  # Mind drops a formula in a cell with a dropdown
     assert not any(sh == "Maturity" for sh, _, _ in ops)
 
 
 def test_each_loop_takes_its_own_choices(built):
     analysis, mp = built
-    plan = build_loop_plan(analysis, mp, loops={
+    picks = {
         "Ctrl_01!C27": {"last": "2", "name": "Scen"},  # a number: the dropdown is no longer read
         "'RollForward'!$B$4": {"last": "3"},  # quotes and $ do not matter
         "RollForward!B6": {"first": "2023"},
-    })
-    lp = _loops(plan)
+    }
+    plan = build_loop_plan(analysis, mp, loops=picks)
+    endemic = build_loop_plan(analysis, mp, loops=picks, macro="endemiccalculationrun")  # any case
+    lp = {**_loops(plan), **{k: v for k, v in _loops(endemic).items() if not v.get("other_macro")}}
     assert lp["CohortRng"]["first"] == 2021  # untouched
     sc = lp["Scen"]
     assert sc["status"] == "needs_decision" and "count cell" in sc["why"] and sc["suggested_count_cell"]  # 0 .. 2 typed: counted in a cell
@@ -182,9 +196,9 @@ def test_a_count_cell_is_never_a_filled_cell_a_driver_or_shared(built):
     assert filled["status"] == "needs_decision" and "is not empty" in filled["why"] and "=C27*2" in filled["why"]
     driver = _loops(build_loop_plan(analysis, mp, loops={"Ctrl_01!C27": {"last": "3", "count_cell": "Ctrl_01!C22"}}))["Scenario"]
     assert driver["status"] == "needs_decision" and "driver cell" in driver["why"]
-    shared = build_loop_plan(analysis, mp, loops={"Ctrl_01!C27": {"last": "3", "count_cell": "Ctrl_01!H27"}, "RollForward!B6": {"last": "2030", "first": "-1", "count_cell": "Ctrl_01!H27"}})
-    assert _loops(shared)["Scenario"]["status"] == "ready"
-    assert _loops(shared)["CohortYear"]["status"] == "needs_decision" and "already holds the count of the loop Scenario" in _loops(shared)["CohortYear"]["why"]
+    shared = build_loop_plan(analysis, mp, loops={"Ctrl_01!C22": {"last": "2030", "count_cell": "Ctrl_01!H27"}, "Ctrl_01!C27": {"last": "3", "count_cell": "Ctrl_01!H27"}})
+    assert _loops(shared)["CohortRng"]["status"] == "ready"
+    assert _loops(shared)["Scenario"]["status"] == "needs_decision" and "already holds the count of the loop CohortRng" in _loops(shared)["Scenario"]["why"]
 
 
 def test_a_bound_can_be_a_cell_and_a_wrong_one_is_said(built):

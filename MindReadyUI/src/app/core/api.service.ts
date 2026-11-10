@@ -142,7 +142,14 @@ export class ApiService {
   /** The Mind instances plan: one copy of the model per value of the key column; `key` a header or a column letter, `keys` present|all. */
   mindInstancesPlan(id: string, o: InstanceChoices = {}): Promise<{ version_id: string; plan: InstancePlan }> {
     let params = new HttpParams();
-    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") params = params.set(k, String(v));
+    for (const [k, v] of Object.entries(o)) {
+      if (v === undefined || v === "") continue;
+      if (k === "loop_choices") {
+        if (Object.keys(v as object).length) params = params.set(k, JSON.stringify(v)); // each loop's choices, as JSON
+        continue;
+      }
+      params = params.set(k, String(v));
+    }
     return firstValueFrom(this.http.get<{ version_id: string; plan: InstancePlan }>(`${this.s(id)}/mind-instances-plan`, { params }));
   }
 

@@ -731,11 +731,14 @@ def test_mind_loop_plan_route_takes_each_loops_choices(client, tmp_path, monkeyp
     monkeypatch.setattr(model_map, "read_vba", lambda _p: [("M1_Main", TWO_RUNS)])
     sid = _upload(client, _book(tmp_path))["sessionId"]
     plan = client.get(f"/api/sessions/{sid}/mind-loop-plan").json()["plan"]
-    assert [lp["status"] for lp in plan["loops"]] == ["ready"] * 4
+    assert [lp["status"] for lp in plan["loops"]] == ["ready", "ready", "not_built", "not_built"] and plan["macro"] == "AllScenarioRun"
+    assert [m["name"] for m in plan["macros"]] == ["AllScenarioRun", "EndemicCalculationRun"]
+    endemic = client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"macro": "EndemicCalculationRun"}).json()["plan"]
+    assert [lp["status"] for lp in endemic["loops"]] == ["not_built", "not_built", "ready", "ready"] and endemic["macro"] == "EndemicCalculationRun"
     picks = {"Ctrl_01!C27": {"last": "3", "count_cell": "Ctrl_01!H27"}, "RollForward!B4": {"name": "Group"}}
     chosen = client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"loops": _json.dumps(picks)}).json()["plan"]
     by_name = {lp["name"]: lp for lp in chosen["loops"]}
-    assert by_name["Scenario"]["cells"][0]["formula"] == '=MM_LOOP("Scenario",Ctrl_01!H27)-1' and "Group" in by_name
+    assert by_name["Scenario"]["cells"][0]["formula"] == '=MM_LOOP("Scenario",Ctrl_01!H27)-1' and by_name["Group"]["other_macro"] is True
     assert client.get(f"/api/sessions/{sid}/mind-loop-plan", params={"loops": "{not json"}).status_code == 422
     assert client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={"loops": ["a list"]}).status_code == 422
     res = client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={"loops": picks})
@@ -745,6 +748,13 @@ def test_mind_loop_plan_route_takes_each_loops_choices(client, tmp_path, monkeyp
     written = openpyxl.load_workbook(server.SESSIONS[sid].current_path)
     assert STORAGE_PREFIX_RE.sub("", written["Ctrl_01"]["C27"].value) == '=MM_LOOP("Scenario",Ctrl_01!H27)-1'
     assert written["Ctrl_01"]["H27"].value == 4 and written["Ctrl_01"]["G27"].value == "Scenario count"
+    assert written["RollForward"]["B4"].value == "Variable"  # the other macro's loop is not written with this one
+    written.close()
+    res = client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={"loops": picks, "macro": "EndemicCalculationRun"})
+    assert res.status_code == 200, res.text
+    # built on the version that has AllScenarioRun's loops: written, but said (Mind would nest the two)
+    assert any("Ctrl_01!C22 already holds a loop of the macro AllScenarioRun" in n for n in res.json()["plan"]["notes"])
+    written = openpyxl.load_workbook(server.SESSIONS[sid].current_path)
     assert STORAGE_PREFIX_RE.sub("", written["RollForward"]["B4"].value) == '=MM_LOOP("Group",MM_COLUMN(Ctrl_02!C20))'
     assert written["Maturity"]["B4"].value == "=RollForward!B4"  # the sheet's copy keeps following
     written.close()

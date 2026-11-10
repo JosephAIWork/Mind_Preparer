@@ -786,11 +786,70 @@ def _driver_key(cell: str) -> str:
     return f"{sheet or ''}!{ref.replace('$', '').upper()}"
 
 
+def _runs(model_map: dict[str, Any]) -> dict[str, str]:
+    """Each procedure (lower case) -> the macro a person runs that reaches it (an entry point, through
+    the calls). Loops of one such macro run inside each other; loops of two run on their own."""
+    macros = model_map.get("macros") or {}
+    procs = macros.get("procedures") or [] if isinstance(macros, dict) else []
+    calls = {str(p.get("name") or "").lower(): [str(c).lower() for c in p.get("calls") or []] for p in procs if isinstance(p, dict)}
+    entry = (macros.get("entry_points") if isinstance(macros, dict) else None) or (model_map.get("loop") or {}).get("entry_points") or []
+    out: dict[str, str] = {}
+    for e in entry:
+        stack, seen = [str(e).lower()], set()
+        while stack:
+            p = stack.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            out.setdefault(p, str(e))
+            stack.extend(calls.get(p, []))
+    return out
+
+
+def run_of(runs: dict[str, str], macro: Any) -> str | None:
+    """The macro a person runs for a loop that sits in `macro` (itself when no entry point reaches it)."""
+    if not macro:
+        return None
+    return runs.get(str(macro).lower()) or str(macro)
+
+
+def _same_value(a: Any, b: Any) -> bool:
+    """A cell already holding what the plan writes there (4 and 4.0 and '4' are the same)."""
+    if a is None or b is None:
+        return False
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def _formula_reads(analysis: dict[str, Any], cache: dict[str, Any], sheet: str, col: int, row: int) -> str | None:
+    """A formula cell that reads Sheet!<col><row> (alone or inside a range), or None. The references are
+    read once per plan, only when a cell the plan wants to fill must stay unread."""
+    from .formula_utils import cell_refs_in_formula
+
+    if "refs" not in cache:
+        refs: list[tuple[str, int, int, int, int, str]] = []
+        for f in analysis["workbooks"][0].get("formulas") or []:
+            for r in cell_refs_in_formula(str(f.get("formula") or "")):
+                refs.append((r.get("sheet") or f["sheet"], r.get("c1") or 1, r.get("r1") or 1, r.get("c2") or 16_384, r.get("r2") or 1_048_576, f"{f['sheet']}!{f['cell']}"))
+        cache["refs"] = refs
+    for s, c1, r1, c2, r2, who in cache["refs"]:
+        if s == sheet and c1 <= col <= c2 and r1 <= row <= r2:
+            return who
+    return None
+
+
 def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, names: dict[str, str] | None = None, name: str | None = None,
                     first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, dynamic: bool = True, max_result_cells: int = MAX_RESULT_CELLS,
-                    loops: dict[str, dict[str, Any]] | None = None, prep_plan: list[dict[str, Any]] | None = None, repairs: bool = True) -> dict[str, Any]:
+                    loops: dict[str, dict[str, Any]] | None = None, prep_plan: list[dict[str, Any]] | None = None, repairs: bool = True,
+                    macro: str | None = None) -> dict[str, Any]:
     """The Mind loop for the map's run loop: what goes where, with the operations that write it.
 
+    One macro's loops at a time: `macro` names it (a macro a person runs, or a procedure it calls;
+    default: the macro of the first loop). Loops of two macros are not nested in Excel -- each macro
+    runs with the other's drivers fixed -- but in one model Mind would run them inside each other, so
+    the other macros' loops are listed, not written (`macros` lists every macro with its loops).
     `names` maps a driver cell to the loop name wanted; `name` is the shorthand for the first
     loop; `first` / `last` override the bounds read from the workbook; `count_cell` is where a
     counted loop's size may be written when the workbook has no cell for it; `clear_old` also
@@ -810,24 +869,58 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         plan["notes"].append("No run loop in the macros: nothing to build." + (" The item cell(s) say which sheet copy is which item." if lp.get("item_cells") else ""))
         return plan
     drivers = lp.get("drivers") or []
+    # --- one macro's loops at a time ---------------------------------------------------------------
+    runs = _runs(model_map)
+    run_list = [run_of(runs, d.get("macro")) for d in drivers]
+    order: list[str | None] = []
+    for r in run_list:
+        if r not in order:
+            order.append(r)
+    the_run = order[0] if order else None
+    if macro not in (None, ""):
+        want = str(macro).strip().lower()
+        hit = next((r for r in order if r and r.lower() == want), None) or next((r for r in order if r and r == run_of(runs, macro)), None)
+        if hit is None:
+            plan["notes"].append(f"No loop runs in the macro {macro!r}: the plan shows the loops of {the_run}." if the_run else f"No loop runs in the macro {macro!r}.")
+        else:
+            the_run = hit
+    plan["macro"] = the_run
+    first_idx = next((i for i, r in enumerate(run_list) if r == the_run), 0)
     names = dict(names or {})
     if name and drivers:
-        names.setdefault(drivers[0]["cell"], name)
+        names.setdefault(drivers[first_idx]["cell"], name)
     chosen = {_driver_key(k): v for k, v in (loops or {}).items() if isinstance(v, dict)}
     driver_keys = {_driver_key(x["cell"]) for x in drivers}
     ops: list[dict[str, Any]] = []
-    built: dict[str, dict[str, Any]] = {}  # loop var -> loop entry
+    built: dict[tuple[str | None, str], dict[str, Any]] = {}  # (macro, loop var) -> loop entry: two macros may both say `i`
     placeholders: dict[str, int] = {}  # bound variables the macro's statements use -> their value
     count_cells: dict[str, str] = {}  # count cell -> the loop whose count it holds
+    label_cells: dict[str, str] = {}  # label cell written beside a count -> its loop
+    refs_cache: dict[str, Any] = {}
     for idx, d in enumerate(drivers):
         ch = chosen.get(_driver_key(d["cell"])) or {}
-        ch_first = ch.get("first") if ch.get("first") not in (None, "") else (first if idx == 0 else None)
-        ch_last = ch.get("last") if ch.get("last") not in (None, "") else (last if idx == 0 else None)
-        ch_count = str(ch.get("count_cell") or "").strip() or count_cell
+        ch_first = ch.get("first") if ch.get("first") not in (None, "") else (first if idx == first_idx else None)
+        ch_last = ch.get("last") if ch.get("last") not in (None, "") else (last if idx == first_idx else None)
+        ch_count = str(ch.get("count_cell") or "").strip() or (count_cell if run_list[idx] == the_run else None)
+        loop_name = loop_name_from(str(ch.get("name") or "").strip() or names.get(d["cell"]) or d.get("name") or (_split(d["set_from"])[0] if d.get("set_from") else None) or d["loop_var"])
+        if run_list[idx] != the_run:
+            # a loop of another macro: Excel runs that macro on its own, with this macro's drivers fixed
+            other: dict[str, Any] = {"name": loop_name, "driver": d["cell"], "driver_name": d.get("name"), "label": d.get("label"), "macro": d.get("macro"), "run": run_list[idx],
+                                     "loop_var": d["loop_var"], "source": d.get("set_from"), "first": None, "last": None, "count": None, "cells": [], "notes": [], "status": "not_built",
+                                     "kind": None, "how": d.get("how"), "other_macro": True,
+                                     "why": f"a loop of the macro {run_list[idx]}, which Excel runs on its own with the drivers of {the_run} fixed. In one model Mind would run both macros' loops "
+                                            f"inside each other and add their results up. Build one macro at a time: choose {run_list[idx]}."}
+            r = parse_ref(_split(d["cell"])[1].replace("$", "")) if _split(d["cell"])[0] else None
+            held = _held(analysis, _split(d["cell"])[0], r["c1"], r["r1"]) if r else None
+            if isinstance(held, str) and re.search(r"MM_LOOP", held, re.I):
+                other["notes"].append(f"{d['cell']} already holds a loop ({held[:60]}) written earlier.")
+                plan["notes"].append(f"{d['cell']} already holds a loop of the macro {run_list[idx]}: in Mind it would run inside the loops of {the_run}, and the values would differ "
+                                     f"from Excel. Build {the_run}'s loops on a version without it.")
+            plan["loops"].append(other)
+            continue
         first_n, first_src = _bound_value(analysis, d.get("from") or {}, ch_first)
         last_n, last_src = _bound_value(analysis, d.get("to") or {}, ch_last)
-        loop_name = loop_name_from(str(ch.get("name") or "").strip() or names.get(d["cell"]) or d.get("name") or (_split(d["set_from"])[0] if d.get("set_from") else None) or d["loop_var"])
-        entry: dict[str, Any] = {"name": loop_name, "driver": d["cell"], "driver_name": d.get("name"), "label": d.get("label"), "macro": d.get("macro"), "loop_var": d["loop_var"],
+        entry: dict[str, Any] = {"name": loop_name, "driver": d["cell"], "driver_name": d.get("name"), "label": d.get("label"), "macro": d.get("macro"), "run": run_list[idx], "loop_var": d["loop_var"],
                                  "source": d.get("set_from"), "first": first_n, "last": last_n, "first_from": first_src, "last_from": last_src, "count": None, "cells": [], "notes": [], "status": "ready", "kind": None, "how": d.get("how")}
         entry["chosen"] = {k: ch[k] for k in ("name", "first", "last", "count_cell") if ch.get(k) not in (None, "")}
         item = _named_item(analysis, nm, d) if not d.get("set_from") else None
@@ -855,7 +948,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             plan["loops"].append(entry)
             continue
         set_from0 = str(d.get("set_from") or "")
-        if first_src.get("kind") != "chosen" and set_from0 and f"<{d['loop_var']}>" in set_from0 and _text_header_at(analysis, d, first_n, last_n):
+        if first_src.get("kind") != "chosen" and not first_src.get("chosen") and set_from0 and f"<{d['loop_var']}>" in set_from0 and _text_header_at(analysis, d, first_n, last_n):
             # the macro starts on the table's header row (it runs it too); Mind would make the header instance 1
             entry["notes"].append(f"the macro starts at {first_n}, the table's header: the loop starts at {first_n + 1} (choose first = {first_n} to keep the header pass)")
             entry["header_skipped"] = first_n
@@ -884,28 +977,44 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             # one count cell per loop, never a driver: two loops writing one cell would both be wrong
             mine = [_driver_key(f"{o['sheet']}!{o['cell']}") for o in res.get("extra_ops") or [] if o.get("op") == "set_value"]
             why = None
+            planned = {_driver_key(f"{o['sheet']}!{o['cell']}") for o in ops}
             for c in mine:
                 if c in driver_keys:
                     why = f"the count cell {c} is a loop's driver cell: pick a free cell"
                 elif c in count_cells:
                     why = f"the count cell {c} already holds the count of the loop {count_cells[c]}: pick another free cell"
+                elif c in label_cells:
+                    why = f"the count cell {c} is where the label of the count of the loop {label_cells[c]} goes: pick another free cell"
+                elif c in planned:
+                    why = f"the count cell {c} is a cell this plan writes already: pick another free cell"
                 if why:
                     break
-            held = next((o for o in res.get("extra_ops") or [] if o.get("op") == "set_value" and o.get("before") not in (None, "")), None)
+            # a count cell already holding the count this plan writes (an earlier build with the same choices) is fine
+            held = next((o for o in res.get("extra_ops") or [] if o.get("op") == "set_value" and o.get("before") not in (None, "") and not _same_value(o.get("before"), o.get("after"))), None)
             if why is None and held is not None:
                 why = f"the count cell {held['sheet']}!{held['cell']} is not empty (it holds {str(held['before'])[:60]!r}): pick an empty cell" + (f", e.g. {_free_cell(analysis, d['cell'])}" if _free_cell(analysis, d["cell"]) else "")
             if why:
                 res = {"status": "needs_decision", "kind": res.get("kind"), "cells": [], "notes": [], "why": why, "suggested_count_cell": _free_cell(analysis, d["cell"])}
             else:
                 count_cells.update({c: loop_name for c in mine})
-                # a lone number has no label: Mind may leave it out; the cell to its left says what it is
+                # a lone number has no label: Mind may leave it out; the cell to its left says what it is --
+                # only when that cell is free: empty, not another loop's count or label, not a cell this plan
+                # writes, and read by no formula (a text there could change what Excel computes)
                 for o in list(res.get("extra_ops") or []):
                     if o.get("op") != "set_value":
                         continue
                     r = parse_ref(o["cell"])
-                    if r and r["c1"] > 1 and _held(analysis, o["sheet"], r["c1"] - 1, r["r1"]) in (None, ""):
-                        res["extra_ops"].append({"op": "set_value", "sheet": o["sheet"], "cell": f"{num_to_col(r['c1'] - 1)}{r['r1']}", "before": None, "after": f"{loop_name} count",
-                                                 "note": f"the label of the count of the loop {loop_name}, so Mind reads the count as a titled cell"})
+                    if not (r and r["c1"] > 1 and _held(analysis, o["sheet"], r["c1"] - 1, r["r1"]) in (None, "")):
+                        continue
+                    lab = f"{num_to_col(r['c1'] - 1)}{r['r1']}"
+                    lab_key = _driver_key(f"{o['sheet']}!{lab}")
+                    if lab_key in count_cells or lab_key in label_cells or lab_key in driver_keys or lab_key in planned:
+                        continue
+                    if _formula_reads(analysis, refs_cache, o["sheet"], r["c1"] - 1, r["r1"]):
+                        continue
+                    label_cells[lab_key] = loop_name
+                    res["extra_ops"].append({"op": "set_value", "sheet": o["sheet"], "cell": lab, "before": None, "after": f"{loop_name} count",
+                                             "note": f"the label of the count of the loop {loop_name}, so Mind reads the count as a titled cell"})
         elif res.get("status") == "needs_decision" and "count cell" in str(res.get("why") or ""):
             res["suggested_count_cell"] = _free_cell(analysis, d["cell"])
             if res["suggested_count_cell"]:
@@ -938,24 +1047,51 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 ops.append({"action_id": ACTION_ID, "rule_id": RULE_ID, **o, "loop": loop_name})
                 plan["counts"]["extra"] += 1
             plan["counts"]["loop_cells"] += len(res["cells"])
-            built[d["loop_var"]] = entry
+            built[(d.get("macro"), d["loop_var"])] = entry
         plan["loops"].append(entry)
+    named_runs = [r for r in order if r]
+    if len(named_runs) > 1:
+        plan["macros"] = [{"name": r, "loops": [le["name"] for le in plan["loops"] if le.get("run") == r], "chosen": r == the_run} for r in named_runs]
+        others = [r for r in named_runs if r != the_run]
+        plan["notes"].append(f"The macro{'s' if len(others) > 1 else ''} {', '.join(others)} {'have' if len(others) > 1 else 'has'} loops too. Excel runs each macro on its own, "
+                             f"so the plan builds the loops of one macro at a time ({the_run} now): choose another macro to build its loops instead.")
+
+    def var_key(o_macro: Any, v: str) -> tuple[str | None, str] | None:
+        """The built loop a placeholder <v> of an output written by `o_macro` stands for: the loop of that
+        procedure with that variable, else the only built loop with that variable (none when the output
+        belongs to another macro)."""
+        if o_macro:
+            hit = next((k for k in built if k[1] == v and k[0] and str(k[0]).lower() == str(o_macro).lower()), None)
+            if hit:
+                return hit
+            if run_of(runs, o_macro) != the_run and the_run is not None:
+                return None
+        same = [k for k in built if k[1] == v]
+        return same[0] if len(same) == 1 else None
 
     # --- the outputs: one block per loop value -> MM_RESULT row by row ------------------------------
     n_built = len(built)
     for o in (model_map.get("outputs") or {}).get("cells") or []:
         target = str(o.get("cell") or "")
         vars_in = _PH_RE.findall(target)
-        loop_vars = sorted({v for v in vars_in if v in built})
+        o_macro = o.get("written_by")
+        o_run = run_of(runs, o_macro)
+        keys_in = {v: var_key(o_macro, v) for v in vars_in}
+        loop_vars = sorted({v for v, k in keys_in.items() if k is not None})
         entry_o: dict[str, Any] = {"target": target, "from": o.get("from"), "written_by": o.get("written_by"), "when": o.get("when"), "status": "ready", "cells": 0, "items": 0, "example": None, "loop": None}
         when = str(o.get("when") or "")
+        if o_run and the_run and o_run != the_run:
+            entry_o.update(status="not_built", why=f"written by the macro {o_run}, whose loops this plan does not build (one macro at a time)")
+            (plan["clears"] if "cleared" in when else plan["outputs"]).append(entry_o)
+            continue
         if "cleared" in when:
             # the area the macro empties before a run: what an earlier run left there goes
             sub = target
             for v, val in placeholders.items():
                 sub = sub.replace(f"<{v}>", str(val))
-            for lv, le in built.items():
-                sub = sub.replace(f"<{lv}>", str(le["first"]))
+            for v, k in keys_in.items():
+                if k is not None:
+                    sub = sub.replace(f"<{v}>", str(built[k]["first"]))
             sheet, ref = _split(sub)
             r = parse_ref(f"'{sheet}'!{ref}") if sheet and "<" not in sub else None
             if not r:
@@ -984,7 +1120,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             plan["outputs"].append(entry_o)
             continue
         lv = loop_vars[0]
-        le = built[lv]
+        le = built[keys_in[lv]]
         from_sheet, from_ref = _split(str(o["from"]))
         src_cells = _cells_of(from_sheet, from_ref) if from_sheet else []
         if not src_cells:
@@ -1106,23 +1242,69 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
     return plan
 
 
+def _undo_inserts(y: int, points: list[int]) -> int | None:
+    """The position before the inserts of what sits at `y` after them (each insert at p moves p and
+    everything past it by one, p in the workbook's own numbering); None for a row / column the inserts made."""
+    for x in range(max(1, y - len(points)), y + 1):
+        if x + sum(1 for p in points if p <= x) == y:
+            return x
+    return None
+
+
+def _original_cells(op: dict[str, Any], ops: list[dict[str, Any]], limit: int = 50_000) -> list[tuple[str, str]]:
+    """The cells `op` writes, as (sheet, A1) in the workbook's addresses before the plan's inserts. An
+    operation flagged `after_inserts` is written at its address after them: columns are inserted after
+    the rows (app.prep._ordered), so the column inserts are undone first. Cells the inserts make are left out."""
+    from .prep import insert_moves
+
+    sheet = op.get("sheet")
+    cell = str(op.get("cell") or "").replace("$", "").upper()
+    if op.get("op") in ("insert_row", "insert_column") or not sheet or not cell:
+        return []
+    r = parse_ref(cell)
+    if not r or r["whole_column"] or r["whole_row"]:
+        return [(sheet, cell)]
+    cells = [(c, rw) for rw in range(r["r1"], r["r2"] + 1) for c in range(r["c1"], r["c2"] + 1)] if r["cells"] <= limit else [(r["c1"], r["r1"])]
+    if not op.get("after_inserts"):
+        return [(sheet, f"{num_to_col(c)}{rw}") for c, rw in cells] if len(cells) > 1 else [(sheet, cell)]
+    if op.get("insert_at") is not None:
+        return []  # written into a row an insert makes
+    col_points = [col_to_num(str(o["column"])) for o in ops if o.get("op") == "insert_column" and o.get("sheet") == sheet]
+    rows = [o for o in ops if o.get("op") == "insert_row" and o.get("sheet") == sheet]
+    out: list[tuple[str, str]] = []
+    for c, rw in cells:
+        c0 = _undo_inserts(c, col_points) if col_points else c
+        if c0 is None:
+            continue
+        r0 = _undo_inserts(rw, [int(o["row"]) for o in rows if insert_moves(o, c0)]) if rows else rw
+        if r0 is None:
+            continue
+        out.append((sheet, f"{num_to_col(c0)}{r0}"))
+    return out
+
+
 def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: list[dict[str, Any]] | None, write: bool, what: str = "the loop") -> None:
     """The formula repairs Prep still has for this version, written with the loop (or only named when
     `write` is False). A cell the loop writes keeps the loop's formula. `what` names the step in the
-    note ("the loop", "the instances")."""
-    taken = {(o["sheet"], str(o.get("cell") or "").upper()) for o in ops}
+    note ("the loop", "the instances"). The repairs run before the plan's row / column inserts, on the
+    workbook's own addresses; a cell the plan writes after the inserts is compared at the address it
+    had before them."""
+    taken: set[tuple[str, str]] = set()
+    for o in ops:
+        taken.update(_original_cells(o, ops))
     plan["repairs"] = []
     for a in prep_plan or []:
         if a.get("id") not in FORMULA_REPAIRS or not a.get("default_on") or not a.get("operations"):
             continue
-        mine = [o for o in a["operations"] if (o.get("sheet"), str(o.get("cell") or "").upper()) not in taken]
+        mine = [o for o in a["operations"] if not set(_original_cells({**o, "after_inserts": False}, [])) & taken]
         if not mine:
             continue
         plan["repairs"].append({"id": a["id"], "title": a.get("title") or a["id"], "count": len(mine), "written": write})
         if write:
             ops.extend(mine)
             plan["counts"]["repairs"] = plan["counts"].get("repairs", 0) + len(mine)
-            taken.update((o.get("sheet"), str(o.get("cell") or "").upper()) for o in mine)
+            for o in mine:
+                taken.update(_original_cells({**o, "after_inserts": False}, []))
     if not plan["repairs"]:
         return
     listed = "; ".join(f"{r['title']} ({r['count']})" for r in plan["repairs"])

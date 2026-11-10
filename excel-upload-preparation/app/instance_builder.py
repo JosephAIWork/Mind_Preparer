@@ -491,10 +491,16 @@ def build_instance_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, 
     Every plan lists `loop_options`: the loops copies can be made from, and why the others cannot."""
     from .loop_builder import build_loop_plan
 
-    if loop_plan is None:
-        loop_plan = build_loop_plan(analysis, model_map)
-    options = loop_options(loop_plan)
     wanted = [str(x).strip() for x in (loops or []) if str(x or "").strip()]
+    if loop_plan is None:
+        # one loop plan per macro (Excel runs each on its own): the loops asked for pick theirs
+        loop_plan = build_loop_plan(analysis, model_map)
+        plans = [loop_plan] + [build_loop_plan(analysis, model_map, macro=m["name"]) for m in loop_plan.get("macros") or [] if not m.get("chosen")]
+        if wanted:
+            loop_plan = pick_loop_plan(plans, wanted)
+        options = loop_options_of(plans) if len(plans) > 1 else loop_options(loop_plan)
+    else:
+        options = loop_options(loop_plan)
     if wanted:
         plan = _build_loops_plan(analysis, model_map, loop_plan, wanted, results=results, model_name=model_name)
     else:
@@ -942,6 +948,35 @@ def loop_options(loop_plan: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _matches(le: dict[str, Any], w: str) -> bool:
+    from .loop_builder import _driver_key
+
+    return str(le.get("name") or "").lower() == w.lower() or _driver_key(str(le.get("driver") or "")) == _driver_key(w)
+
+
+def pick_loop_plan(loop_plans: list[dict[str, Any]], wanted: list[str]) -> dict[str, Any]:
+    """Of the Mind loop plans of a model's macros (one each: Excel runs each macro on its own), the one
+    whose own loops hold every loop asked for; else the first (the plan then says the loops are of
+    different macros)."""
+    for lp in loop_plans:
+        own = [le for le in lp.get("loops") or [] if not le.get("other_macro")]
+        if wanted and all(any(_matches(le, w) for le in own) for w in wanted):
+            return lp
+    return loop_plans[0]
+
+
+def loop_options_of(loop_plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """loop_options over the loop plans of every macro: each loop as its own macro's plan has it, in the
+    order of the first plan's loops."""
+    first = loop_plans[0].get("loops") or []
+    own: dict[str, dict[str, Any]] = {}
+    for lp in loop_plans:
+        for o, le in zip(loop_options(lp), lp.get("loops") or []):
+            if not le.get("other_macro"):
+                own.setdefault(str(le.get("driver")), o)
+    return [own.get(str(le.get("driver"))) or o for le, o in zip(first, loop_options(loop_plans[0]))]
+
+
 def _loop_values(analysis: dict[str, Any], le: dict[str, Any]) -> list[Any] | None:
     """The values the loop's driver takes, in the macro's order: a counter's first..last, a list's items."""
     if le.get("kind") == "counter" and isinstance(le.get("first"), int) and isinstance(le.get("last"), int):
@@ -977,6 +1012,17 @@ def _key_part(name: str, value: Any, k: int) -> str:
         value = int(value)
     s = "" if value is None else str(value)
     return f"{name}{s if _PART_RE.fullmatch(s) else k}"
+
+
+def _key_parts(name: str, values: list[Any]) -> list[str]:
+    """One loop's parts of the copies' keys, one per value, all different: by value when that gives
+    different parts, else by position for every value of the loop ('Scenario1', 'Scenario2', ...) --
+    a value written by its position could meet a value equal to that position, and a list may repeat a
+    value."""
+    parts = [_key_part(name, v, k) for k, v in enumerate(values, 1)]
+    if len(set(parts)) == len(parts):
+        return parts
+    return [f"{name}{k}" for k in range(1, len(values) + 1)]
 
 
 def _same_formula(a: Any, b: Any) -> bool:
@@ -1082,6 +1128,12 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
             return plan
         if le not in chosen:
             chosen.append(le)
+    runs = sorted({str(le.get("run") or le.get("macro") or "") for le in chosen if le.get("run") or le.get("macro")})
+    if len(runs) > 1:
+        plan["status"] = "needs_decision"
+        notes.append(f"The loops {', '.join(str(le['name']) for le in chosen)} belong to different macros ({', '.join(runs)}). Excel runs each macro on its own, "
+                     "so copies are made from the loops of one macro at a time.")
+        return plan
     opts = {o["name"]: o for o in loop_options(loop_plan)}
     values: list[list[Any]] = []
     for le in chosen:
@@ -1100,9 +1152,14 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
         notes.append(f"{' x '.join(str(len(v)) for v in values)} = {n} copies, above the limit of {MAX_COPIES}: keep one of these loops a loop.")
         return plan
     names = [str(le["name"]) for le in chosen]
-    combos = list(product(*[list(enumerate(v, 1)) for v in values]))
-    keys = ["_".join(_key_part(names[i], v, k) for i, (k, v) in enumerate(combo)) for combo in combos]
-    rows_values = [[v for _k, v in combo] for combo in combos]
+    parts = [_key_parts(names[i], vals) for i, vals in enumerate(values)]
+    combos = list(product(*[list(zip(parts[i], vals)) for i, vals in enumerate(values)]))
+    keys = ["_".join(p for p, _v in combo) for combo in combos]
+    rows_values = [[v for _p, v in combo] for combo in combos]
+    if len(set(keys)) != len(keys):  # cannot happen (each loop's parts are unique): a guard, Mind needs one row per copy
+        plan["status"] = "needs_decision"
+        notes.append("Two copies would get the same key: the copies cannot be told apart.")
+        return plan
 
     # --- where the split grid goes: below the used range of the first loop's sheet ---------------------
     p_sheet, p_ref = _split(str(chosen[0]["driver"]))
@@ -1153,8 +1210,12 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
     # --- the macro's other loops stay loops inside every copy ---------------------------------------------
     chosen_names = set(names)
     kept_ops = 0
+    other_macros: dict[str, list[str]] = {}
     for le in entries:
         if le["name"] in chosen_names:
+            continue
+        if le.get("other_macro"):
+            other_macros.setdefault(str(le.get("run") or le.get("macro")), []).append(str(le["name"]))
             continue
         if le.get("status") != "ready":
             notes.append(f"The loop {le['name']} is not written ({le.get('why') or 'it needs a decision on the Mind loop panel'}): in Mind its driver keeps one value.")
@@ -1164,6 +1225,15 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
         ops.extend(todo)
         kept_ops += len(todo)
         plan["kept_loops"].append({"name": le["name"], "driver": le.get("driver"), "count": le.get("count"), "written": bool(todo), "already": bool(mine) and not todo})
+    for m, lnames in other_macros.items():
+        notes.append(f"The loops of the macro {m} ({', '.join(lnames)}) are not part of these copies: Excel runs that macro on its own, with these drivers fixed.")
+    # the areas the macro clears before a run, as the Mind loop plan clears them (asked for, or read by a block)
+    cleared = [o for o in loop_plan.get("operations") or [] if o.get("action_id") == LOOP_ACTION_ID and o.get("op") == "clear_cell" and not o.get("loop")]
+    if cleared:
+        ops.extend(cleared)
+        plan["counts"]["cleared"] = len(cleared)
+        plan["clears"] = [c for c in loop_plan.get("clears") or [] if c.get("included")]
+        notes.append(f"{len(cleared)} cell(s) the macro clears before a run are emptied, as the Mind loop plan does: what an earlier run left there would stay in every copy.")
     # anything else that still names a chosen loop (an MM_RESULT of an earlier loop build) loses its loop
     drivers = {(_split(str(le["driver"]))[0], _split(str(le["driver"]))[1].replace("$", "").upper()) for le in chosen}
     pat = re.compile(r'MM_(?:LOOP|RESULT)\w*\s*\([^"]*"(' + "|".join(re.escape(x) for x in names) + r')"', re.I)

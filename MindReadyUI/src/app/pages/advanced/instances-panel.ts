@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular/core";
+import { Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from "@angular/core";
 import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
@@ -61,6 +61,22 @@ export class InstancesPanel implements OnInit, OnDestroy {
   /** beside the key dropdown: the finder's column is not one of its text candidates; the plan uses it anyway */
   readonly keyHint = signal("");
   private stop: (() => void) | null = null;
+  /** the Mind loop panel's choices (each loop's own, and the macro), sent with every plan */
+  readonly loopChoices = computed(() => this.store.loopChoices?.() ?? null);
+  readonly usesLoopChoices = computed(() => Object.keys(this.loopChoices()?.loops ?? {}).length > 0);
+
+  constructor() {
+    // the loop panel previewed other choices: the plan here follows them
+    let first = true;
+    effect(() => {
+      this.loopChoices();
+      if (first) {
+        first = false;
+        return;
+      }
+      untracked(() => void this.preview());
+    });
+  }
 
   readonly candidates = computed(() => this.plan()?.key?.candidates ?? []);
   readonly chosenColumn = computed(() => this.key() || this.plan()?.key?.column || "");
@@ -95,8 +111,10 @@ export class InstancesPanel implements OnInit, OnDestroy {
 
   private choices(): InstanceChoices {
     const loops = this.loops();
-    if (loops.length) return { loops: loops.join(",") };
-    return { key: this.key() || undefined, keys: this.allKeys() ? "all" : undefined };
+    const lc = this.loopChoices();
+    const loopChoices = lc?.loops && Object.keys(lc.loops).length ? { loop_choices: lc.loops } : {};
+    if (loops.length) return { loops: loops.join(","), ...loopChoices };
+    return { key: this.key() || undefined, keys: this.allKeys() ? "all" : undefined, ...loopChoices, ...(lc?.macro ? { macro: lc.macro } : {}) };
   }
 
   /** Tick or untick a loop the copies are made from, then preview; the ticked loops keep the plan's (the macro's) order. */
@@ -145,6 +163,9 @@ export class InstancesPanel implements OnInit, OnDestroy {
     this.tone.set("idle");
     this.line.set("");
     this.written.set(false);
+    // a new plan: the zip of an earlier write belongs to other choices
+    this.downloadUrl.set(null);
+    this.files.set([]);
     try {
       const { plan } = await this.api.mindInstancesPlan(id, this.choices());
       this.plan.set(plan);
