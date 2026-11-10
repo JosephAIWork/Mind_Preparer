@@ -177,6 +177,15 @@ into a number, a date or a boolean).
   (2,356.99 / 3,488.60 / 5,845.58 for the three non-zero fees). Conversion 78 s, run 3 s.
 - **Cost.** One copy per key, each with the whole model. The copy count and the run time of the full
   portfolio are Mind's cost, which the builder does not estimate.
+- **Two harmless kinds of cell in the upload test** (every model checked since 9 November 2026): check
+  cells that are 0 in Excel and a rounding residue below 0.00001 in Mind, and cells holding the text
+  TRUE or FALSE, which the test reads as 1 or 0 on Excel's side. The values agree; nothing to fix. Every
+  ready plan says so in its notes (MIND_VS_EXCEL.md, "Mind's upload test after a loop or instances
+  build").
+- **Prep's blocking items that are not formulas** (a lone text cell to title, a pivot table, a trapped
+  grid title) are not written with the instances -- only Prep's formula repairs are. A plan made while
+  Prep still has such items says "Prep still has N blocking items that are not formulas, e.g. ... Run
+  Fix all issues before uploading." (`prep_blockers` on the plan). Run Fix all issues first.
 
 ## Copies from loops (a scenario x a cohort)
 

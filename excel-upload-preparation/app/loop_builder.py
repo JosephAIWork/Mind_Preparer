@@ -43,6 +43,12 @@ FORMULA_REPAIRS = (
     "fix_broken_refs", "fix_broken_refs_whole", "expand_3d_references", "freeze_external_links", "direct_references", "freeze_spill_refs",
     "guard_blank_arithmetic", "freeze_environment_formulas", "offset_ranges", "line_breaks_as_char", "keep_error_cells", "empty_cells_as_zero",
 )
+# What Mind's upload test lists after a loop or instances build, and is not an error (seen on every
+# model checked in Mind since 2026-11-09; docs/MIND_VS_EXCEL.md). One note on every ready plan, so
+# nobody chases these cells.
+UPLOAD_TEST_NOTE = ("After the upload, Mind's test may list two kinds of cell that are not errors: check cells that are 0 in Excel "
+                    "and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE or FALSE (the test reads Excel's side "
+                    "as 1 or 0). The values agree; there is nothing to fix.")
 
 _PH_RE = re.compile(r"<([A-Za-z_]\w*)>")
 _VAR_ASSIGN_RE = re.compile(r"^\s*(?:Dim\s+[^:]+:\s*)?([A-Za-z_]\w*)\s*=")
@@ -1237,6 +1243,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             text += f" {_PH_RE.sub('k', o['target'])} reads {o['from']} for loop value k through MM_RESULT ({o['items']} blocks)."
         text += " One run computes every value; the macro " + ", ".join(sorted({le["macro"] for le in ready if le.get("macro")})) + " is not needed in Mind."
         plan["how_it_runs"] = text
+        plan["notes"].append(UPLOAD_TEST_NOTE)
     if any(le["status"] == "needs_decision" for le in plan["loops"]):
         plan["notes"].append("A loop needs a decision before it can be written: see its line.")
     return plan
@@ -1305,13 +1312,49 @@ def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: lis
             plan["counts"]["repairs"] = plan["counts"].get("repairs", 0) + len(mine)
             for o in mine:
                 taken.update(_original_cells({**o, "after_inserts": False}, []))
-    if not plan["repairs"]:
+    if plan["repairs"]:
+        listed = "; ".join(f"{r['title']} ({r['count']})" for r in plan["repairs"])
+        if write:
+            plan["notes"].append(f"Written with {what}, so Mind computes what Excel does: {listed}. Prep had not applied these formula repairs to this version yet.")
+        else:
+            plan["notes"].append(f"Not written with {what}: {listed}. Until Prep applies them, Mind computes other values than Excel for these formulas.")
+    _note_prep_blockers(plan, prep_plan)
+
+
+def prep_blockers(prep_plan: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Prep's blocking actions that are not formula repairs and still have something to do on this
+    version (a lone text cell to title, a pivot table, a trapped grid title ...): neither the loop nor
+    the instances write them, and Mind's converter refuses the workbook or computes wrong without them."""
+    from .plain_codes import rule_name
+
+    out: list[dict[str, Any]] = []
+    for a in prep_plan or []:
+        if a.get("level") != "blocking" or a.get("id") in FORMULA_REPAIRS or not a.get("operations"):
+            continue
+        rules = [str(r) for r in a.get("rule_ids") or []]
+        given = list(a.get("rule_names") or [])
+        said: list[str] = []
+        for i, r in enumerate(rules):  # plain words first, the code after: "a formula reads a lone text cell (STR-008)"
+            name = (given[i] if i < len(given) else None) or rule_name(r)
+            said.append(f"{name} ({r})" if name else r)
+        out.append({"id": a["id"], "title": a.get("title") or a["id"], "count": len(a["operations"]), "rule_ids": rules, "said": said or [str(a.get("title") or a["id"])]})
+    return out
+
+
+def _note_prep_blockers(plan: dict[str, Any], prep_plan: list[dict[str, Any]] | None) -> None:
+    """One plain line when Prep still has blocking items the plan does not write."""
+    blockers = prep_blockers(prep_plan)
+    plan["prep_blockers"] = [{k: b[k] for k in ("id", "title", "count", "rule_ids")} for b in blockers]
+    if not blockers:
         return
-    listed = "; ".join(f"{r['title']} ({r['count']})" for r in plan["repairs"])
-    if write:
-        plan["notes"].append(f"Written with {what}, so Mind computes what Excel does: {listed}. Prep had not applied these formula repairs to this version yet.")
-    else:
-        plan["notes"].append(f"Not written with {what}: {listed}. Until Prep applies them, Mind computes other values than Excel for these formulas.")
+    n = sum(b["count"] for b in blockers)
+    examples: list[str] = []
+    for b in blockers:
+        for s in b["said"]:
+            if s not in examples:
+                examples.append(s)
+    shown = ", ".join(examples[:3]) + (", ..." if len(examples) > 3 else "")
+    plan["notes"].append(f"Prep still has {n} blocking item{'' if n == 1 else 's'} that {'is not a formula' if n == 1 else 'are not formulas'}, e.g. {shown}. Run Fix all issues before uploading.")
 
 
 def describe(plan: dict[str, Any]) -> str:

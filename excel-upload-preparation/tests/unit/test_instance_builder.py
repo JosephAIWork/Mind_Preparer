@@ -24,6 +24,7 @@ from app.excel_com import com_available, excel_text
 from app.formula_utils import STORAGE_PREFIX_RE
 from app.grids import detect_grids
 from app.instance_builder import ACTION_ID, RULE_ID, build_instance_plan, describe, write_main_workbook, zip_for_mind
+from app.loop_builder import UPLOAD_TEST_NOTE
 from app.inventory import build_analysis
 from app.model_map import build_model_map
 from app.prep import apply_operations
@@ -180,7 +181,7 @@ def test_the_plan_for_a_model_that_runs_one_row_at_a_time(tmp_path, monkeypatch)
     assert "plain links" in m["grids"][2]["what"] and "sum over the 3 copies" in m["grids"][2]["what"]
     assert m["block"]["ref"] == "B20:C21" and m["block"]["headers"] == ["Fee A", "Fee B"] and m["block"]["row_labels"] == ["Row 1", "Row 2"]
     assert "one copy of model_instances.xlsx per Group (3 copies" in plan["how_it_runs"] and "RunRows is not needed" in plan["how_it_runs"] and "adds them up" in plan["how_it_runs"]
-    assert plan["notes"] == []
+    assert plan["notes"] == [UPLOAD_TEST_NOTE]  # the one line every ready plan carries (Mind's harmless upload-test cells)
     json.dumps(plan)
     text = describe(plan)
     assert "key column C ('Group', 3 values, chosen by macro)" in text and "operations: 18" in text
@@ -714,3 +715,12 @@ def test_the_main_workbook_of_copies_from_loops_has_one_row_per_copy_and_block_r
     assert f == f"=MM_INSTANCE([1]Result!$C$4,$B{first + 4})"
     assert not any(c.value == "#All copies" for row in summ.iter_rows() for c in row)
     wb.close()
+
+
+def test_a_ready_instances_plan_says_which_upload_test_cells_are_harmless(tmp_path, monkeypatch):
+    plan = _plan_for(_book(tmp_path), tmp_path, MACRO.format(k=2), monkeypatch)
+    assert plan["status"] == "ready" and plan["notes"].count(UPLOAD_TEST_NOTE) == 1  # by a table
+    plan = _plan_for(_book(tmp_path), tmp_path, MACRO_WITHOUT_COUNT_CELL, monkeypatch)
+    assert plan["status"] == "needs_decision" and UPLOAD_TEST_NOTE not in plan["notes"]  # nothing to upload yet
+    plan = _plan_for(_scenario_book(tmp_path), tmp_path, SCENARIO_MACRO, monkeypatch, loops=["CohortRng", "Ctrl!$C$7"])
+    assert plan["status"] == "ready" and plan["notes"].count(UPLOAD_TEST_NOTE) == 1  # copies from loops

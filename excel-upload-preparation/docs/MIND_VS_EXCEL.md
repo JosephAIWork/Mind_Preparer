@@ -495,6 +495,23 @@ numbers (2, 0, 3, 1, also 1200-3) as the range it designates (`1-$H$4:$H$6`) whe
 
 **Same in Mind (do not "fix"):** `1-OFFSET($H$2,5,0)` (one cell), `SUMPRODUCT(...)/OFFSET($H$2,5,0)`.
 
+## Mind's upload test after a loop or instances build: two harmless kinds of cell (2026-11-10)
+
+Every model checked in Mind since 9 November 2026 -- with a loop, with instances, through Do everything
+-- has had the same two kinds of cell left in Mind's upload test once the real differences were gone.
+They are not errors, and nobody should chase them:
+
+- **Rounding dust on check cells.** A check cell that is 0 in Excel (the difference of two equal
+  totals, often near a billion) is a residue below 0.00001 in Mind (seen: below 0.000004 and below
+  0.00002). Mind adds the same numbers in another order; the totals it compares agree.
+- **The text TRUE / FALSE.** A cell holding the text "TRUE" or "FALSE" (a label typed in, or a formula
+  giving `"TRUE"` as text) is listed because the test reads Excel's side as 1 or 0. The cell holds the
+  same text on both sides.
+
+The loop plan and the instances plan carry one line saying so (`loop_builder.UPLOAD_TEST_NOTE`), so a
+first-time user reading the test's list knows which cells to leave alone. A difference of any other
+kind -- a NaN, another number, an empty cell -- is real: see the cases above.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

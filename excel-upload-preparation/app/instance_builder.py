@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from .formula_utils import cell_refs_in_formula, col_to_num, find_calls, num_to_col, parse_ref
-from .loop_builder import MAX_CLEARS, _cells_of, _dropdown_at, _held, _qs, _sheet_max, _split, loop_name_from
+from .loop_builder import MAX_CLEARS, UPLOAD_TEST_NOTE, _cells_of, _dropdown_at, _held, _qs, _sheet_max, _split, loop_name_from
 
 ACTION_ID = "mind_instances"
 RULE_ID = "INST-001"
@@ -890,6 +890,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     plan["operation_count"] = len(ops)
     plan["counts"].update({"key_values": len(key_values), "inserted_rows": n_rows, "inserted_columns": 1 if insert_col else 0, "operations": len(ops)})
     plan["status"] = "ready"
+    notes.append(UPLOAD_TEST_NOTE)
 
     # --- the main workbook -------------------------------------------------------------------------------
     main["keys"] = [_json_value(v) for v in key_values]
@@ -1273,6 +1274,7 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
     plan["operation_count"] = len(ops)
     plan["counts"].update({"key_values": len(keys), "inserted_columns": 0, "operations": len(ops), "kept_loop_operations": kept_ops})
     plan["status"] = "ready"
+    notes.append(UPLOAD_TEST_NOTE)
     text = (f"In Mind: one copy of {main['model_file']} per combination of {word} ({len(keys)} copies, listed in {main['file']}). Each copy reads its own "
             f"{word} from the grid {grid_name} ({_qs(p_sheet)}!{L}{title_row}), which keeps only the copy's row.")
     kept = [k["name"] for k in plan["kept_loops"]]

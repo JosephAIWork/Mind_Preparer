@@ -179,6 +179,16 @@ writes keeps the loop. The plan lists them (`repairs`, a note, a line on the loo
 `repairs: false` on the API leaves them out and the note says Mind will compute other values. In Do
 everything the Prep step runs first, so nothing is left for the loop to add.
 
+**What the loop does not write, and says (10 November 2026).** Prep's blocking items that are not
+formulas -- a lone text cell to title (STR-008), a pivot table (STR-009), a grid title trapped inside a
+grid (STR-001), an array formula past its grid (RSK-002) -- are structural: the loop and the instances
+leave them to Prep. A plan written while Prep still has such items carries one line, "Prep still has N
+blocking items that are not formulas, e.g. a formula reads a lone text cell (STR-008). Run Fix all
+issues before uploading." (`prep_blockers` on the plan: id, title, count, rule ids;
+`loop_builder.prep_blockers`). Every ready plan also carries one line on the two kinds of cell Mind's
+upload test lists after a build and that are not errors (rounding residues on check cells, the text
+TRUE / FALSE): see MIND_VS_EXCEL.md, "Mind's upload test after a loop or instances build".
+
 Proven in real Mind (2026-11-09), Mind's test after the upload:
 - the loop written on the unrepaired version through the app (6 CELL freezes and 84 OFFSET ranges
   written with it; zzz_mindready_tokyo_loops_probe_7): 14,737 differences before, 75 after, none a value:
@@ -186,6 +196,22 @@ Proven in real Mind (2026-11-09), Mind's test after the upload:
   totals near a billion), and 8 cells holding the text "TRUE" that the test reads as 1 on Excel's side;
 - the Do-everything version plus the four loops through the app (84 OFFSET ranges written with it;
   zzz_mindready_tokyo_loops_2): 63 differences, the same two kinds (55 residues below 0.000004, 8 "TRUE").
+
+## The macro's text in its own code page (10 November 2026)
+
+The VBE stores module text in the ANSI code page of the PC that saved the workbook (cp932 on a
+Japanese PC, cp1255 on a Hebrew one), and Excel 365 records 0 ("the system's") as the project's code
+page. olevba answers 0 with UTF-8 and replacement characters, so the Japanese comments and string
+literals of the Tokyo tool -- `Find("年月")`, `MsgBox "完了しました"` -- arrived as mojibake, and the
+stand-in assistant and the message-box matching could not read them. `model_map.read_vba` now decodes
+the module bytes itself (`decode_vba_source`): the stored code page when there is one; else UTF-8,
+cp932 when a quarter of what it gives is kana, cp949 when it is mostly Hangul, the PC's own code
+page, cp936 / cp950 when they give ideographs, cp1252 -- each only when it decodes every byte, cp1252
+with replacement characters as the last resort. The loops are found as before (the fixture
+`tests/unit/fixtures/vba_japanese_cp932.xlsm`: a row-per-record model whose module is cp932 with code
+page 0, as a workbook from a Japanese PC has). The limit: a Western file on a Hebrew PC with no code
+page recorded reads its accented letters as Hebrew ones (no single-byte code page can be told from
+another); Chinese is read right from the stored or the PC's own code page.
 
 ## A driver cell must not have a dropdown (1.11.3)
 

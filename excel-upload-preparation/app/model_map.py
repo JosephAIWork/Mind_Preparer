@@ -56,8 +56,119 @@ _SAVEAS_RE = re.compile(r"SaveAs\s+Filename\s*:=\s*(?P<expr>[^,]+)", re.IGNORECA
 _ASSIGN_RE = re.compile(r"^(?P<lhs>[^=<>]+?)\s*=\s*(?P<rhs>.+)$")
 
 
+# --- the macro's text in its own code page --------------------------------------------------------
+# The VBE stores module text in the ANSI code page of the PC that saved it (cp932 on a Japanese PC,
+# cp1255 on a Hebrew one), and the project's `dir` stream records which (PROJECTCODEPAGE). Excel 365
+# writes 0 there ("the system's"), which olevba answers with UTF-8 and replacement characters, so a
+# Japanese comment or a search word -- Find("年月") -- arrived as mojibake and the stand-in assistant
+# and the message-box matching could not read it. The bytes are decoded here instead: the stored
+# code page when there is one, else the first of a short list that decodes without error and gives
+# the script it is for (kana for Japanese, Hangul for Korean), then the system's own, then cp1252.
+_KANA_RE = re.compile(r"[぀-ヿ]")
+_HANGUL_RE = re.compile(r"[가-힣]")
+_CJK_RE = re.compile(r"[一-鿿]")
+_FALLBACK_CODE_PAGE = "cp1252"
+
+
+def _system_code_page() -> int | None:
+    """Windows' ANSI code page (GetACP), None elsewhere."""
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetACP())  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def _codec_of(codepage: int | None) -> str | None:
+    """The Python codec of a stored VBA code page; None for 0 (not recorded) or an unknown one."""
+    if not codepage:
+        return None
+    try:
+        from oletools.common.codepages import codepage2codec
+
+        codec = codepage2codec(int(codepage))
+        if codec == "utf8" and int(codepage) != 65001:
+            return None  # olevba's answer for a code page it does not know
+    except Exception:
+        codec = f"cp{codepage}"
+    try:
+        import codecs
+
+        codecs.lookup(codec)
+    except LookupError:
+        return None
+    return codec
+
+
+def decode_vba_source(raw: bytes, codepage: int | None = None, system_codepage: int | None = None) -> tuple[str, str]:
+    """The module text of `raw` and the codec it was read with. `codepage` is the project's stored
+    code page (0 / None: not recorded); `system_codepage` the PC's own (default: Windows' GetACP).
+    Order: the stored code page; UTF-8; cp932 when it gives kana; cp949 when it gives Hangul; the
+    system's; cp936 / cp950 when they give ideographs; cp1252 -- each only when it decodes every byte.
+    cp1252 with replacement characters is the last resort."""
+    if not any(b > 127 for b in raw):
+        return raw.decode("ascii"), "ascii"
+    if system_codepage is None:
+        system_codepage = _system_code_page()
+    # a multi-byte code page is taken only when the script it is for makes up enough of what it gives:
+    # Japanese text is a quarter kana or more, Korean mostly Hangul, Chinese mostly ideographs
+    # (Chinese bytes read as cp949 give some Hangul; Hebrew bytes read as cp932 give ideographs, no kana)
+    checks = {"cp932": (_KANA_RE, 0.25), "cp949": (_HANGUL_RE, 0.5), "cp936": (_CJK_RE, 0.5), "cp950": (_CJK_RE, 0.5)}
+    order: list[str] = []
+    for codec in (_codec_of(codepage), "utf-8", "cp932", "cp949", _codec_of(system_codepage), "cp936", "cp950", _FALLBACK_CODE_PAGE):
+        if codec and codec not in order:
+            order.append(codec)
+    for codec in order:
+        try:
+            text = raw.decode(codec)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        check = checks.get(codec)
+        if check is not None:
+            marker, share = check
+            foreign = sum(1 for ch in text if ord(ch) > 127)
+            if not foreign or len(marker.findall(text)) < share * foreign:
+                continue
+        return text, codec
+    return raw.decode(_FALLBACK_CODE_PAGE, errors="replace"), _FALLBACK_CODE_PAGE
+
+
+def _vba_modules_raw(vp: Any) -> list[tuple[str, bytes, int]] | None:
+    """(module name, source bytes, the project's stored code page) for every module of an olevba
+    parser, read from the streams themselves; None when olevba's internals are not as expected
+    (the caller then takes olevba's own text)."""
+    from oletools.olevba import VBA_Project
+
+    parsers: list[Any] = []
+
+    def walk(p: Any) -> None:
+        subs = getattr(p, "ole_subfiles", None) or []
+        if subs:
+            for s in subs:
+                walk(s)
+        elif getattr(p, "ole_file", None) is not None:
+            parsers.append(p)
+
+    walk(vp)
+    out: list[tuple[str, bytes, int]] = []
+    for p in parsers:
+        for vba_root, project_path, dir_path in p.find_vba_projects() or []:
+            project = VBA_Project(p.ole_file, vba_root, project_path, dir_path, True)
+            project.parse_project_stream()
+            for _ in project.parse_modules():
+                pass
+            for m in project.modules:
+                raw = getattr(m, "code_raw", None)
+                if raw:
+                    out.append((str(m.name), bytes(raw), int(getattr(project, "codepage", 0) or 0)))
+    return out
+
+
 def read_vba(path: str | Path) -> list[tuple[str, str]]:
-    """(module name, code) for every VBA module in the file; [] without macros or olevba."""
+    """(module name, code) for every VBA module in the file; [] without macros or olevba. The text
+    is read in the project's own code page (decode_vba_source), so comments and string literals in
+    Japanese, Korean, Hebrew or accented letters arrive as they were written."""
     try:
         from oletools.olevba import VBA_Parser
     except Exception:
@@ -66,10 +177,17 @@ def read_vba(path: str | Path) -> list[tuple[str, str]]:
         vp = VBA_Parser(str(path))
         out: list[tuple[str, str]] = []
         if vp.detect_vba_macros():
-            for _fn, _stream, vba_filename, code in vp.extract_macros():
-                code = "\n".join(ln for ln in (code or "").splitlines() if not ln.startswith("Attribute "))
+            modules: list[tuple[str, str]] = []
+            try:
+                modules = [(name, decode_vba_source(raw, codepage)[0]) for name, raw, codepage in _vba_modules_raw(vp) or []]
+            except Exception:
+                modules = []
+            if not modules:
+                modules = [(Path(vba_filename).stem, code or "") for _fn, _stream, vba_filename, code in vp.extract_macros()]
+            for name, code in modules:
+                code = "\n".join(ln for ln in code.splitlines() if not ln.startswith("Attribute "))
                 if code.strip():
-                    out.append((Path(vba_filename).stem, code))
+                    out.append((name, code))
         vp.close()
         return out
     except Exception:

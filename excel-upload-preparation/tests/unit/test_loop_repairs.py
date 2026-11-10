@@ -107,3 +107,47 @@ def test_the_repairs_are_the_formula_actions_of_prep():
     assert "offset_ranges" in FORMULA_REPAIRS and "freeze_environment_formulas" in FORMULA_REPAIRS
     # structural changes (rows, titles) are Prep's, never the loop's
     assert not {"separate_merged_grids", "create_grid_titles", "title_lone_text_cells", "pivot_tables"} & set(FORMULA_REPAIRS)
+
+
+# --- what the loop does not write: Prep's blocking items that are not formulas ---------------------------
+def _blocking(id_: str, rule: str, n: int, name: str | None = None, level: str = "blocking") -> dict:
+    a = {"id": id_, "title": id_.replace("_", " "), "rule_ids": [rule], "default_on": True, "level": level,
+         "operations": [{"op": "set_value", "action_id": id_, "sheet": "BBA_01", "cell": f"A{i + 20}", "before": None, "after": "#x"} for i in range(n)]}
+    if name:
+        a["rule_names"] = [name]
+    return a
+
+
+def test_prep_blocking_items_that_are_not_formulas_are_named_not_written(tokyo):
+    analysis, mp = tokyo
+    fake = _prep(analysis) + [
+        _blocking("title_lone_text_cells", "STR-008", 2, "a formula reads a lone text cell"),
+        _blocking("pivot_tables", "STR-009", 1),  # no plain name given: looked up
+        _blocking("create_grid_titles", "STR-004", 5, level="optional"),  # optional: Mind reads the file without it
+    ]
+    plan = build_loop_plan(analysis, mp, prep_plan=fake)
+    assert [(b["id"], b["count"], b["rule_ids"]) for b in plan["prep_blockers"]] == [("title_lone_text_cells", 2, ["STR-008"]), ("pivot_tables", 1, ["STR-009"])]
+    note = next(n for n in plan["notes"] if n.startswith("Prep still has"))
+    assert note == ("Prep still has 3 blocking items that are not formulas, e.g. a formula reads a lone text cell (STR-008), "
+                    "the workbook has pivot tables (STR-009). Run Fix all issues before uploading.")
+    # named, never written: structural changes are Prep's
+    assert not any(o["sheet"] == "BBA_01" and o["cell"].startswith("A2") for o in plan["operations"])
+    assert [r["id"] for r in plan["repairs"]] == ["freeze_environment_formulas", "offset_ranges"]  # the formula repairs as before
+
+
+def test_one_blocking_item_and_none(tokyo):
+    analysis, mp = tokyo
+    plan = build_loop_plan(analysis, mp, prep_plan=_prep(analysis) + [_blocking("title_lone_text_cells", "STR-008", 1)])
+    assert any(n == "Prep still has 1 blocking item that is not a formula, e.g. a formula reads a lone text cell (STR-008). Run Fix all issues before uploading." for n in plan["notes"])
+    plan = build_loop_plan(analysis, mp, prep_plan=_prep(analysis))
+    assert plan["prep_blockers"] == [] and not any(n.startswith("Prep still has") for n in plan["notes"])
+
+
+def test_a_ready_loop_plan_says_which_upload_test_cells_are_harmless(tokyo):
+    from app.loop_builder import UPLOAD_TEST_NOTE
+
+    analysis, mp = tokyo
+    plan = build_loop_plan(analysis, mp)
+    assert plan["loops"][0]["status"] == "ready" and plan["notes"].count(UPLOAD_TEST_NOTE) == 1
+    assert "0.00001" in UPLOAD_TEST_NOTE and "TRUE or FALSE" in UPLOAD_TEST_NOTE and "nothing to fix" in UPLOAD_TEST_NOTE
+    assert UPLOAD_TEST_NOTE not in build_loop_plan(analysis, {"loop": {"found": False}})["notes"]  # nothing to upload

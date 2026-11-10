@@ -51,6 +51,28 @@
   refused, with the app's advice; set A (Joseph's raw CSVs) all six files SUCCESS (incl.
   `IN_VFA_01.txt`), Mind = Excel 120/120; set B (BBA_04 x 1.1) all SUCCESS, Mind = Excel 120/120, and
   16 numbers changed against set A, all in the BBA_04 row.
+- **The macro's text in its own code page** (`model_map.read_vba`, `decode_vba_source`;
+  `docs/MIND_LOOP.md`). The VBE stores module text in the ANSI code page of the PC that saved the
+  workbook, and Excel 365 records 0 as the project's code page; olevba answered 0 with UTF-8 and
+  replacement characters, so the Japanese comments and string literals of the IFRS 17 tool
+  (`Find("年月")`, `MsgBox "完了しました"`; 363 replacement characters in M1_Main) arrived as mojibake and
+  the stand-in assistant and the message-box matching could not read them. The module bytes are now
+  decoded with the stored code page, else UTF-8, cp932 (when it gives kana), cp949 (Hangul), the PC's
+  own code page, cp936 / cp950 (ideographs), cp1252 -- each only when it decodes every byte. The
+  anonymized IFRS 17 tool reads clean (0 replacement characters, 290 Japanese characters in M1_Main);
+  the loops are found as before. Fixture `tests/unit/fixtures/vba_japanese_cp932.xlsm` (a small
+  row-per-record model, its module cp932 with code page 0 as a Japanese PC writes it; made once through
+  Excel, the module stream's source replaced at the same length) and `tests/unit/test_model_map_vba_text.py`.
+- **The loop and instances plans name Prep's blocking items that are not formulas.** Both steps
+  write Prep's formula repairs with the loop, but said nothing about a lone text cell to title
+  (STR-008), a pivot table (STR-009) or a trapped grid title (STR-001), which Mind's converter refuses
+  or computes wrong without. One line now: "Prep still has N blocking items that are not formulas, e.g.
+  a formula reads a lone text cell (STR-008). Run Fix all issues before uploading." (`prep_blockers`
+  on the plan; `loop_builder.prep_blockers`).
+- **The two harmless kinds of cell in Mind's upload test are said once** on every ready loop or
+  instances plan (`loop_builder.UPLOAD_TEST_NOTE`; `docs/MIND_VS_EXCEL.md`): check cells that are 0 in
+  Excel and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE / FALSE, which the
+  test reads as 1 / 0 on Excel's side. The values agree; nobody has to chase them.
 
 ## Unreleased (10 November 2026): Mind instances and where instances could help
 
