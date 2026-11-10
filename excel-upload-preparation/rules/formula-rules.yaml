@@ -136,7 +136,7 @@ rules:
   version: 1.0.0
   status: active
   category: formula
-  description: 'INDIRECT -- Mind does not follow it: used as a value it stops the run ("Unable to cast AM.Models.AMReference to System.IConvertible"); used as a range (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)) it is not computed and an IFERROR around it shows its fallback (Tokyo IFRS 17 tool, 2026-11-08).'
+  description: 'INDIRECT -- Mind does not follow it: used as a value it stops the run ("Unable to cast AM.Models.AMReference to System.IConvertible"); used as a range (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)) it is not computed and an IFERROR around it shows its fallback (Tokyo IFRS 17 tool, 2026-11-08). The fix writes the plain reference the text builds; a target on a sheet that is not in the workbook becomes NA() (an error in Excel already). A sheet left out of the scan at the user''s request still exists: a target on it becomes the plain reference exactly as without the skip (its cells and grids are not checked and not guessed), and a text that needs one of its cells is left for a person (2026-11-10: the 480 Result_CF lookups of the Tokyo IFRS 17 tool had become NA() with the calculation sheets skipped).'
   confidence: HIGH
   priority: REQUIRED
   source:

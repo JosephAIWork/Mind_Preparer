@@ -444,10 +444,16 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
     """FRM-006: 'First:Last'!ref references spanning several sheets, and
     references to sheets Mind does not import. `limit` caps the sites kept
     in the finding (None: every site, for a caller that applies the proposals)."""
+    from ..inventory import ignored_sheet_names, sheet_order
+
     wb0 = analysis["workbooks"][0]
-    order = [s["name"] for s in wb0.get("sheets", [])] + [s["name"] for s in wb0.get("ignored_sheets", [])]
+    # tab order, the sheets the scan skipped at their own index: a span 'First:Last' runs over
+    # them like any other sheet (a skipped sheet exists; its cells were just never read)
+    order = sheet_order(wb0)
     known = set(order)
-    # sheets Mind creates no spreadsheet for: nothing on them makes a grid
+    unscanned = set(ignored_sheet_names(analysis))
+    # sheets Mind creates no spreadsheet for: nothing on them makes a grid. A skipped sheet's grids
+    # are unknown and not guessed: it is kept in the proposal, as without the skip
     gridless = {s["name"] for s in wb0.get("sheets", []) if not s.get("grids")}
     sites = []
     gridless_sites = []
@@ -478,7 +484,7 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
             else:
                 sheets = []
             kept = [x for x in sheets if x not in gridless]
-            spans.append({"reference": formula[start:end], "first": first, "last": last, "sheets": sheets, "omitted_empty": [x for x in sheets if x in gridless]})
+            spans.append({"reference": formula[start:end], "first": first, "last": last, "sheets": sheets, "omitted_empty": [x for x in sheets if x in gridless], "unscanned": [x for x in sheets if x in unscanned]})
             if sheets and kept:
                 # the reference token is followed by the cell/range it applies to: repeat it per sheet
                 m = re.match(r"(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7})", suggested[end:])
@@ -820,11 +826,18 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
     worked out from the workbook's constants. Used as a value Mind stops the run; used as a range
     (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)) Mind does not resolve it either and the formula
     falls to its IFERROR -- confirmed in Mind on the Tokyo IFRS 17 tool, 2026-11-08: 480 cells showed
-    "-" where Excel shows the results; the same lookup on BBA_04!$A:$B gave Excel's values."""
-    from ..inventory import cell_value, values_cell
+    "-" where Excel shows the results; the same lookup on BBA_04!$A:$B gave Excel's values.
+
+    A sheet the scan skipped at the user's request still exists: a target on it is written as the
+    plain reference, exactly as without the skip (its cells and grids were never read, so nothing
+    about them is assumed, and the site lists it under `unscanned_sheets`). A text that needs a cell
+    of a skipped sheet cannot be worked out and is left for a person -- never NA(). Only a sheet
+    that truly is not in the workbook makes NA()."""
+    from ..inventory import cell_value, ignored_sheet_names, values_cell
 
     wb0 = analysis["workbooks"][0]
     sheets = {s["name"]: s for s in wb0.get("sheets", [])}
+    unscanned = set(ignored_sheet_names(analysis))
     names = {}
     for d in wb0.get("defined_names", []):
         if d.get("name") and d.get("value") and "#REF!" not in str(d["value"]):
@@ -832,6 +845,8 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
     canonical = {str(d["name"]).upper(): str(d["name"]) for d in wb0.get("defined_names", []) if d.get("name")}
 
     def lookup(sheet: str, row: int, col: int):
+        if sheet in unscanned:
+            raise Unresolvable(f"{sheet} was left out of the scan at your request, so its cells were not read")
         v = cell_value(analysis, sheet, row, col)
         if v is None and sheet in sheets:
             return BLANK  # an empty cell: "" (a sheet chooser left blank, the Tokyo IFRS 17 tool's ロールフォワード!T19)
@@ -852,6 +867,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
         suggested = formula
         missing = False
         unresolved = None
+        unscanned_targets: list[str] = []
         for call in reversed(calls):
             try:
                 text = _text(_Expr(call["argument"], lookup, f["sheet"], origin["r1"], origin["c1"], names).eval())
@@ -865,7 +881,13 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             if len(refs) == 1 and REF_RE.fullmatch(text.strip()):
                 r = refs[0]
                 sheet = r.get("sheet") or f["sheet"]
-                exists = sheet in sheets and bool(sheets[sheet].get("grids"))
+                if sheet in unscanned:
+                    # the sheet exists; whether it has a grid was not looked at and is not guessed
+                    exists = True
+                    if sheet not in unscanned_targets:
+                        unscanned_targets.append(sheet)
+                else:
+                    exists = sheet in sheets and bool(sheets[sheet].get("grids"))
                 target = (f"{_quote_sheet(sheet)}!" if r.get("sheet") else "") + text.strip().rsplit("!", 1)[-1]
             elif text.upper() in canonical:
                 target = canonical[text.upper()]
@@ -886,13 +908,14 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             proposal, issue = suggested, f"target(s) not in the workbook (or without a grid, so Mind does not import them): {', '.join(gone[:4])} -- that call is an error in Excel already and becomes NA() in its place"
         else:
             proposal, issue = suggested, None
-        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": resolved, "suggested_formula": proposal, "issue": issue})
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": resolved, "suggested_formula": proposal, "issue": issue, "unscanned_sheets": sorted(unscanned_targets)})
     cap = slice(None) if limit is None else slice(0, limit)
     observed = {
         "sites": sites[cap], "sites_count": len(sites),
         "with_proposal": sum(1 for s in sites if s["suggested_formula"] and not s["issue"]),
         "with_missing_targets": sum(1 for s in sites if s["suggested_formula"] and s["issue"]),
         "without_proposal": sum(1 for s in sites if s["suggested_formula"] is None),
+        "reading_skipped_sheets": sum(1 for s in sites if s["unscanned_sheets"]),
     }
     if sites:
         first = next((s for s in sites if s["suggested_formula"] and not s["issue"]), sites[0])

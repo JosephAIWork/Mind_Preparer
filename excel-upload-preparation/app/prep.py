@@ -54,7 +54,7 @@ from .formula_utils import (
     undefined_names,
 )
 from .grids import all_grids, grid_containing, looks_like_title, parse_flags
-from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
+from .inventory import cell_value, make_immutable_copy, sha256_of, sheet_order, values_cell
 from .perf import record as perf_record, stage as perf_stage
 from .plain_codes import cite, is_com_error, plain_com_error, rule_name
 from .theme_colors import explicit_theme_colors_in_package
@@ -304,11 +304,8 @@ _INDIRECT_RE = re.compile(r"(?<![\w.])INDIRECT\s*\(", re.IGNORECASE)
 
 
 def _sheet_order(wb: dict[str, Any]) -> list[str]:
-    """Sheet names in tab order, the sheets left out of the scan included."""
-    names = [s["name"] for s in wb.get("sheets", [])]
-    for ig in sorted(wb.get("ignored_sheets", []), key=lambda s: s.get("index", 0)):
-        names.insert(min(int(ig.get("index", len(names))), len(names)), ig["name"])
-    return names
+    """Sheet names in tab order, the sheets left out of the scan included (inventory.sheet_order)."""
+    return sheet_order(wb)
 
 
 def _three_d_sheets(formula: str, order: list[str]) -> list[tuple[str, list[str]]]:
@@ -1374,7 +1371,10 @@ def plan_expand_3d_references(analysis, report) -> tuple[list[dict], list[str]]:
             skipped.append(f"{where}: {', '.join(held[:3])} hold(s) a value at the referenced cell(s) but Mind imports no such sheet (nothing on it makes a grid): listing the sheets would change the result -- by hand")
             continue
         omitted = sorted({x for r in site["references"] if r.get("sheets") for x in r.get("omitted_empty", [])})
+        unscanned = sorted({x for r in site["references"] for x in r.get("unscanned", [])})
         note = "each sheet between the two tabs listed explicitly (Mind reads 'First:Last' as one sheet name)" + (f"; {', '.join(omitted[:4])} left out: no grid, nothing at those cells" if omitted else "")
+        if unscanned:
+            note += f"; {', '.join(unscanned[:4])} left out of the scan at your request: listed as without the skip, its cells and grids were not checked"
         f = by_cell.get((site["sheet"], site["cell"]))
         if f:
             ops.append(_op("set_array_formula", "expand_3d_references", "FRM-006", site["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after=site["suggested_formula"], note=note))
@@ -1410,7 +1410,9 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
     "Line 1"), the call becomes that direct reference -- the value Excel computes today. A target
     that does not exist becomes NA() where it stands (that call was an error already). Text
     that depends on a computed value is left for a person: the direct reference would freeze
-    one state of the model."""
+    one state of the model. A sheet the scan skipped at the user's request exists: a target on
+    it becomes the plain reference exactly as without the skip (its cells and grids were not
+    checked, and the note says so); a text that needs one of its cells is left for a person."""
     from .validators.references import indirect_as_value
 
     ops, skipped = [], []
@@ -1428,6 +1430,8 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
         note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed); a text built from a changed input would no longer be followed"
         if site.get("issue"):
             note += "; " + site["issue"]
+        if site.get("unscanned_sheets"):
+            note += f"; {', '.join(site['unscanned_sheets'][:4])} left out of the scan at your request: the sheet exists, so the reference is written as without the skip; its cells and grids were not checked"
         f = arrays.get((site["sheet"], site["cell"]))
         if f:
             ops.append(_op("set_array_formula", "direct_references", "FRM-007", site["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=site["formula"], after=site["suggested_formula"], note=note))

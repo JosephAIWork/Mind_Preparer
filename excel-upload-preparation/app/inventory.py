@@ -171,6 +171,17 @@ def ignored_sheet_names(analysis: dict[str, Any], workbook_index: int = 0) -> li
         return []
 
 
+def sheet_order(workbook: dict[str, Any]) -> list[str]:
+    """Every sheet of the workbook in tab order, the sheets the scan skipped at their own tab
+    index. A skipped sheet still exists for a reference (a 3-D range 'First:Last'!, an INDIRECT
+    that names it, a defined name into it): only its cells were never read, so nothing about them
+    (their values, their grids) may be assumed."""
+    names = [s["name"] for s in workbook.get("sheets", [])]
+    for ig in sorted(workbook.get("ignored_sheets", []), key=lambda s: int(s.get("index", 0))):
+        names.insert(min(int(ig.get("index", len(names))), len(names)), ig["name"])
+    return names
+
+
 def sha256_of(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:

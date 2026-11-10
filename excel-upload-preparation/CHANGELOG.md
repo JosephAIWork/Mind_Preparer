@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased (iteration 1.14.0)
+
+- **A sheet left out of the scan still exists for the formulas that point at it.** Joseph ticked the
+  six calculation sheets of the Tokyo IFRS 17 tool as "do not check"; the 480 INDIRECT lookups on
+  Result_CF that build addresses on them (`INDIRECT($A3&"!A:B")`) were then written as
+  `INDEX($A$1,NA())` instead of `BBA_01!A:B`, as if the sheets were not in the workbook. The FRM-007
+  fix looked the target sheet up among the scanned sheets only. Now a skipped sheet counts as existing
+  wherever a target sheet is looked up (its name and tab index are known); what was never read about it
+  (its cells, its grids) is not guessed: an INDIRECT whose target is on a skipped sheet becomes the
+  plain reference exactly as without the skip and the note says the sheet was left out of the scan; an
+  INDIRECT whose text needs a cell of a skipped sheet is left for a person, with that reason; a sheet
+  that truly does not exist still becomes NA(). A 3-D range (`'First:Last'!`) runs over a skipped sheet
+  at its own tab position (it used to be put at the end of the tab order). The Mind-value rules
+  (FRM-008, 009, 010, 013) no longer read a skipped sheet's cells as empty: the formulas that read one
+  are left as they are and the finding says how many and why. Proven on the anonymized IFRS 17 tool:
+  with the six sheets skipped, Result_CF's formulas after Fix the formulas are identical to the
+  no-skip run's (523 formulas, 0 differences; 480 before the fix), and the rest of the plan differs only
+  in the actions on the skipped sheets' own cells (`%LOCALAPPDATA%\MindReady\iteration_1_14_0\indirect_skips`).
+  Synthetic proofs in `tests/unit/test_skipped_sheet_references.py`. (`app/inventory.py` `sheet_order`;
+  `app/validators/references.py` FRM-006 and FRM-007; `app/validators/mind_values.py` `_Book`;
+  `app/prep.py` planner notes; `rules/formula-rules.yaml` FRM-007.)
+
 ## 1.13.0 (10 November 2026): Mind loop and Mind instances, with plainer screens
 
 One version for the work of 9 and 10 November: the Mind loop and Mind instances builders as Joseph will

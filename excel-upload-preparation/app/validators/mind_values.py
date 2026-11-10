@@ -122,8 +122,13 @@ class _Book:
 
         wb0 = analysis["workbooks"][0]
         self.f = open_cached(analysis)
-        self.v = _values_workbook(wb0["copy_path"], ignored_sheet_names(analysis))  # the same view REP-001 loads
-        self.sheets = set(self.f.sheetnames) & set(self.v.sheetnames)
+        self.skipped = set(ignored_sheet_names(analysis))  # left out of the scan at the user's request
+        self.v = _values_workbook(wb0["copy_path"], self.skipped)  # the same view REP-001 loads
+        # The sheets whose cells are known. A skipped sheet is in both loads but holds no cell
+        # there: reading it would say "empty" of cells that were never looked at, and a rule
+        # would then guard or rewrite a formula on a guess. It is not read: a formula that
+        # needs its cells is left as it is.
+        self.sheets = (set(self.f.sheetnames) & set(self.v.sheetnames)) - self.skipped
         self._fc: dict[str, dict] = {}
         self._vc: dict[str, dict] = {}
         self._land: dict[tuple[str, int, int], tuple[str, int, int] | None] = {}
@@ -576,7 +581,12 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             formulas.append((f, int(m.group(2)), col_to_num(m.group(1))))
             if several_cells(f):
                 array_cells.add((f["sheet"], int(m.group(2)), col_to_num(m.group(1))))
-    out: dict[str, Any] = {"checked": True, "formulas": len(formulas), "blank_arithmetic": [], "origins": [], "direct": [], "readers": 0, "blank_errors": []}
+    out: dict[str, Any] = {"checked": True, "formulas": len(formulas), "blank_arithmetic": [], "origins": [], "direct": [], "readers": 0, "blank_errors": [], "skipped_sheets": sorted(book.skipped), "skipped_sheet_readers": 0}
+    if book.skipped:
+        # the formulas that read a sheet left out of the scan: its cells are unknown, so these are
+        # checked no further here (the findings say so)
+        marks = [f"{name}!" for name in book.skipped] + [f"{name.replace(chr(39), chr(39) * 2)}'!" for name in book.skipped]
+        out["skipped_sheet_readers"] = sum(1 for f, _r, _c in formulas if any(mk in f["formula"] for mk in marks))
     if not any(book.stored(f["sheet"], row, col) is not None for f, row, col in formulas):
         out["checked"] = False
         return out
@@ -840,6 +850,25 @@ def _not_checked(exc: Exception | None) -> dict:
     return finding("NOT_SUPPORTED", "The workbook holds no stored values (it was never calculated and saved by Excel), so it cannot be told which cells are empty text or land on an empty cell: not checked. Open it in Excel, save it and upload it again.", {"sites": []})
 
 
+def _skipped_note(res: dict) -> str:
+    """What the findings say about the formulas that read a sheet left out of the scan."""
+    n = int(res.get("skipped_sheet_readers") or 0)
+    if not n:
+        return ""
+    names = list(res.get("skipped_sheets") or [])
+    return (f" {n} formula(s) read a sheet left out of the scan at your request ({', '.join(names[:4])}{', ...' if len(names) > 4 else ''}): "
+            "its cells were not read, so those formulas are checked no further and left as they are.")
+
+
+def _noting_skipped(out: dict, res: dict) -> dict:
+    note = _skipped_note(res)
+    if note:
+        out["message"] = out["message"] + note
+        if isinstance(out.get("observed"), dict):
+            out["observed"]["skipped_sheets_note"] = note.strip()
+    return out
+
+
 def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
     """FRM-008: arithmetic on a cell that holds "" inside IFERROR -- a fallback in Excel, a number in Mind."""
     try:
@@ -851,8 +880,8 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
     sites = [s for s in res["blank_arithmetic"] if s["arithmetic"]]
     observed, first, now, with_fix = _blank_text_observed(sites, limit)
     if not sites:
-        return finding("PASS", 'No IFERROR (or IF on ISNUMBER / ISERROR) hides arithmetic on a cell that holds "" (empty text).', observed)
-    return finding(
+        return _noting_skipped(finding("PASS", 'No IFERROR (or IF on ISNUMBER / ISERROR) hides arithmetic on a cell that holds "" (empty text).', observed), res)
+    return _noting_skipped(finding(
         "ERROR",
         f'{now} formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR, or inside an IF that tests ISNUMBER / ISERROR on it. Excel stops on the "" (#VALUE!) and returns the fallback; '
         'Mind counts "" as 0, computes a number and never reaches the fallback, so these cells get another value in Mind (confirmed in a real Mind conversion: '
@@ -864,7 +893,7 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 BLANK_TEXT_ACTION = "Test for empty text before the arithmetic or lookup"
@@ -893,8 +922,8 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
     sites = [s for s in res["blank_arithmetic"] if s["lookup_key"]]
     observed, first, now, with_fix = _blank_text_observed(sites, limit)
     if not sites:
-        return finding("PASS", 'No IFERROR hides an exact lookup (VLOOKUP, HLOOKUP, MATCH) whose key is a cell that holds "" over a column or row with an empty cell.', observed)
-    return finding(
+        return _noting_skipped(finding("PASS", 'No IFERROR hides an exact lookup (VLOOKUP, HLOOKUP, MATCH) whose key is a cell that holds "" over a column or row with an empty cell.', observed), res)
+    return _noting_skipped(finding(
         "ERROR",
         f'{now} formula(s) look up (VLOOKUP, HLOOKUP or MATCH, exact match) a key that holds "" (empty text) in a column or row that has an empty cell, inside IFERROR. '
         'Excel finds nothing and returns the IFERROR fallback; Mind matches the empty cell -- the header cell of a table Prep gave a title -- and returns that row '
@@ -905,7 +934,7 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
@@ -924,7 +953,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
         "comparisons": res["readers"], "with_proposal": with_fix, "without_proposal": len(sites) - with_fix,
     }
     if not sites:
-        return finding("PASS", "No formula compares a number with a cell that is empty (directly, or through a reference or lookup that lands on an empty cell).", observed)
+        return _noting_skipped(finding("PASS", "No formula compares a number with a cell that is empty (directly, or through a reference or lookup that lands on an empty cell).", observed), res)
     parts = []
     if origins:
         o = origins[0]
@@ -941,7 +970,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
             + (f" -> proposed {_short(d['suggested_formula'], 100)}" if d["suggested_formula"] else "")
         )
     first = origins[0] if origins else direct[0]
-    return finding(
+    return _noting_skipped(finding(
         "ERROR",
         "A number is compared with a cell that is empty. Excel reads the empty cell as 0; Mind does not (0 = empty is false there, 1 <= empty is true), so the comparison goes the "
         "other way in Mind (confirmed in a real Mind conversion: IF(<a number> <= <an empty cell>, 0, 1) returned 0 on 157 live rows where Excel returns 1, and the reserves came out wrong). "
@@ -951,7 +980,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
         + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 # --- FRM-011: a line break inside a string literal -------------------------------------------
@@ -1128,9 +1157,9 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
     with_fix = sum(1 for x in sites if x["suggested_formula"])
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": with_fix, "without_proposal": len(sites) - with_fix}
     if not sites:
-        return finding("PASS", 'No error cell comes from arithmetic on a cell that holds "" (empty text).', observed)
+        return _noting_skipped(finding("PASS", 'No error cell comes from arithmetic on a cell that holds "" (empty text).', observed), res)
     first = sites[0]
-    return finding(
+    return _noting_skipped(finding(
         "ERROR",
         f'{len(sites)} cell(s) show an error in Excel because their formula does arithmetic on a cell that holds "" (empty text), with no IFERROR to catch it -- errors kept on purpose. '
         'Mind counts "" as 0 and computes a number there, and everything that read the error (IFERROR fallbacks, text labels) changes with it '
@@ -1141,7 +1170,7 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f"; {len(sites) - with_fix} left as they are." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 # --- FRM-014: arithmetic on a range that OFFSET returns -----------------------------------------
