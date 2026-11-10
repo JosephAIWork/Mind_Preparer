@@ -558,7 +558,22 @@ def add_template(page: Page, timeout_s: int = 150) -> bool:
 INPUT_UPLOAD_SUFFIXES = (".csv", ".txt")
 _INPUTS_BUTTON = re.compile(r"^\s*Inputs\s*$")
 _INPUTS_DROP = "Upload inputs or Drag"  # the window's drop zone: present while the window is open
-_UNMATCHED = "Match unmatched"  # Mind's popup for a file no grid name matches
+# Mind's window for a file no grid name matches. Until autumn 2026 "Match unmatched inputs" (Cancel /
+# Confirm); since November 2026 "Some of your imported files have not been automatically matched.
+# Please select a corresponding grid for each file ..." with a "Do not match" list, Close and
+# "Match selection" (a Bootstrap modal-container, not a Carbon modal). Either one is closed with its
+# own Close / Cancel button: the app never picks a grid for a file.
+_UNMATCHED_MARKERS = ("Match unmatched", "not been automatically matched")
+_UNMATCHED = _UNMATCHED_MARKERS[0]
+# a grid of a copied workbook (Mind instances) is listed once, collapsed: "Rates (3 instances)"; its
+# caret (fa-caret-up) opens one row per copy (K1, K2 ... with their own Status and File)
+_COLLAPSED_ROW = "i.fa-caret-up"
+_INSTANCES_RE = re.compile(r"^(?P<grid>.+?)\s*\((?P<n>\d+)\s+instances?\)$", re.I)
+
+
+def _unmatched_marker(text: str) -> str | None:
+    """The marker of Mind's unmatched-files window that is on the page, else None."""
+    return next((m for m in _UNMATCHED_MARKERS if _has(text, m)), None)
 # Mind's progress box while it takes the files (Upload, Links, Resize: "Uploading files ...", "Resizing
 # Grid 6 on 6 (...)"). Meanwhile the rows still show the LAST upload's status and file -- the same
 # names when the files replace earlier ones -- so no row is read before the box has come and gone.
@@ -663,13 +678,26 @@ def _settled(status: str | None) -> bool:
     return s not in INPUT_PENDING_STATUSES and not s.endswith(("...", "…"))
 
 
+def _grid_row(model: Any, sheet: Any, grid: str, status: str, file: str | None, key: str | None = None,
+              copies: int | None = None) -> dict[str, Any]:
+    row: dict[str, Any] = {"model": model, "sheet": sheet, "grid": grid, "status": status,
+                           "file": None if (file or "").casefold() in ("", "-", "no file") else file}
+    if copies:  # a grid of a copied workbook: `copies` on every row of it, `key` on a copy's own row
+        row["copies"] = copies
+        row["key"] = key
+    return row
+
+
 def parse_input_rows(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
     """The Inputs window's table (cell texts per row, header first) -> one dict per grid row:
-    {model, sheet, grid, status, file}. The header names the columns (Element, Status, File); a
-    row with neither a status nor a file is a model or sheet heading (the first one the model)."""
+    {model, sheet, grid, status, file, key, copies}. The header names the columns (Element, Status,
+    File); a row with neither a status nor a file is a model or sheet heading (the first one the
+    model). A grid of a copied workbook is listed as "Rates (3 instances)" (`copies` 3) with one row
+    per copy under it, once expanded: those rows carry the copy's `key` (K1, K2 ...) and `grid` Rates."""
     out: list[dict[str, Any]] = []
     cols: tuple[int, int, int] | None = None
     model = sheet = None
+    group: tuple[str, int] | None = None  # the "(N instances)" grid whose copies follow
     for raw in rows or []:
         cells = [" ".join(str(c or "").split()) for c in (raw or [])]
         low = [c.casefold() for c in cells]
@@ -681,6 +709,12 @@ def parse_input_rows(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
         name, status, file = (cells[i] if i < len(cells) else "" for i in (e, s, f))
         if status.casefold() == "status" and file.casefold() == "file":
             continue  # the header again (a sticky copy)
+        inst = _INSTANCES_RE.match(name) if name else None
+        if inst:
+            group = (inst.group("grid").strip(), int(inst.group("n")))
+            if status or file:  # one file for the whole grid (every copy): the group row has its own status
+                out.append(_grid_row(model, sheet, group[0], status, file, copies=group[1]))
+            continue
         if not (status or file):
             heading = next((c for c in cells if c), "")
             if heading:
@@ -688,10 +722,13 @@ def parse_input_rows(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
                     model = heading
                 else:
                     sheet = heading
+            group = None
             continue
         if name:
-            out.append({"model": model, "sheet": sheet, "grid": name, "status": status,
-                        "file": None if file.casefold() in ("", "-", "no file") else file})
+            if group:
+                out.append(_grid_row(model, sheet, group[0], status, file, key=name, copies=group[1]))
+            else:
+                out.append(_grid_row(model, sheet, name, status, file))
     return out
 
 
@@ -714,25 +751,68 @@ def parse_inputs_text(text: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     model = sheet = None
+    group: tuple[str, int] | None = None  # the "(N instances)" grid whose copies follow
     i = 0
     while i < len(tokens):
+        inst = _INSTANCES_RE.match(tokens[i])
         if i + 1 < len(tokens) and is_status(tokens[i + 1]):
             file, j = None, i + 2
-            if j < len(tokens) and (tokens[j].casefold() == "no file" or _INPUT_FILE_NAME.search(tokens[j])):
+            if j < len(tokens) and (tokens[j].casefold() == "no file" or _INPUT_FILE_NAME.search(tokens[j])
+                                    or tokens[j].casefold() == "split import"):
                 file = None if tokens[j].casefold() == "no file" else tokens[j]
                 j += 1
-            out.append({"model": model, "sheet": sheet, "grid": tokens[i], "status": tokens[i + 1], "file": file})
+            if inst:
+                group = (inst.group("grid").strip(), int(inst.group("n")))
+                out.append(_grid_row(model, sheet, group[0], tokens[i + 1], file, copies=group[1]))
+            elif group:
+                out.append(_grid_row(model, sheet, group[0], tokens[i + 1], file, key=tokens[i], copies=group[1]))
+            else:
+                out.append(_grid_row(model, sheet, tokens[i], tokens[i + 1], file))
             i = j
             continue
-        if model is None:
+        if inst:
+            group = (inst.group("grid").strip(), int(inst.group("n")))
+        elif model is None:
             model = tokens[i]
         else:
             sheet = tokens[i]
+            group = None
         i += 1
     return out
 
 
-def _read_input_rows(page: Page, text: str | None = None) -> list[dict[str, Any]]:
+def _expand_input_rows(page: Page, most: int = 40) -> int:
+    """Open every collapsed row of the Inputs window (a grid of a copied workbook, "Rates (3
+    instances)", starts collapsed and hides its copies' Status and File): one click on each caret,
+    until none is left. Returns how many were opened; never fails."""
+    opened = 0
+    for _ in range(most):
+        try:
+            carets = page.locator(_COLLAPSED_ROW)
+            n = carets.count()
+        except Exception:
+            return opened
+        hit = False
+        for j in range(n):
+            try:
+                c = carets.nth(j)
+                if not c.is_visible():
+                    continue
+                c.click(timeout=3000)
+                hit = True
+                opened += 1
+                _wait(page, 700)
+                break  # the list has changed: look again
+            except Exception:
+                continue
+        if not hit:
+            return opened
+    return opened
+
+
+def _read_input_rows(page: Page, text: str | None = None, expand: bool = True) -> list[dict[str, Any]]:
+    if expand and _expand_input_rows(page):
+        text = None  # the page text has changed: read it again
     try:
         rows = parse_input_rows(page.evaluate(_INPUT_ROWS_JS))
     except Exception:
@@ -743,7 +823,7 @@ def _read_input_rows(page: Page, text: str | None = None) -> list[dict[str, Any]
 def _row_for(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
     """The grid row that took the file `name`: by the name in its File column (with or without
     the extension), else the grid of the same name (Mind matches a file to the grid it is named
-    after) unless that grid shows another file."""
+    after) unless that grid shows another file. `<key>-<grid>.csv` goes to that copy's row."""
     full, stem = _norm(name), _norm(Path(name).stem)
     for r in rows:
         f = re.split(r"[\\/]", str(r.get("file") or ""))[-1]
@@ -751,9 +831,41 @@ def _row_for(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
             return r
     for r in rows:
         f = re.split(r"[\\/]", str(r.get("file") or ""))[-1]
-        if _norm(r.get("grid")) == stem and not _INPUT_FILE_NAME.search(f):
+        if _INPUT_FILE_NAME.search(f):
+            continue
+        names = [_norm(r.get("grid"))]
+        if r.get("key"):
+            names.append(f"{_norm(r['key'])}-{_norm(r.get('grid'))}")
+        if stem in names:
             return r
     return None
+
+
+def unmatched_advice(name: str, rows: list[dict[str, Any]]) -> str:
+    """Plain words for a file Mind could not match to a grid, from the rows the window shows.
+    A grid with copies takes `<key>-<grid>.csv` for one copy; a plain `<grid>.csv` is not matched
+    unless Mind's "Split between instances" switch is on."""
+    suffix = Path(name).suffix or ".csv"
+    stem = _norm(Path(name).stem)
+    grids: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        g = grids.setdefault(str(r.get("grid") or ""), {"copies": r.get("copies"), "keys": []})
+        if r.get("key") and r["key"] not in g["keys"]:
+            g["keys"].append(r["key"])
+    copied = next((g for g, info in grids.items() if info["copies"] and _norm(g) == stem), None)
+    if copied:
+        info = grids[copied]
+        keys = info["keys"]
+        example = f"{keys[0]}-{copied}{suffix}" if keys else f"<key>-{copied}{suffix}"
+        return (f"Mind could not tell which copy of {copied} {name} belongs to: the grid has {info['copies']} copies"
+                + (f" ({', '.join(keys[:6])}{', ...' if len(keys) > 6 else ''})" if keys else "") + ". "
+                f"Name the file <key>-{copied}{suffix} ({example}) to change one copy, or turn on "
+                "'Split between instances' in Mind's Inputs window to give every copy its own rows.")
+    names = [g for g in grids if g]
+    any_copies = any(info["copies"] for info in grids.values())
+    example = ", ".join(f"{g}{suffix}" for g in names[:4]) + (", ..." if len(names) > 4 else "")
+    return (f"Mind could not tell which grid {name} belongs to. Name it <grid>{suffix}" + (f" ({example})" if example else "")
+            + (f" or <key>-<grid>{suffix} for one copy." if any_copies else "."))
 
 
 def _inputs_settled(rows: list[dict[str, Any]], expect: list[str]) -> bool:
@@ -805,31 +917,44 @@ def _inputs_excerpt(text: str, popup: str = "") -> str:
             keep.append(" ".join(ln.split()))
     s = " | ".join(keep)
     if popup:
+        # Mind's unmatched-files window without its standing explanation: the files it names matter
+        popup = re.sub(r"Please select a corresponding grid.*?dropdown lists\.", "", popup, flags=re.S | re.I)
         s = " ".join(popup.split())[:300] + " || " + s
     return s[:600]
 
 
-def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | None = None) -> dict[str, Any]:
+def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | None = None,
+                  project_url: str | None = None) -> dict[str, Any]:
     """Upload the Mind input files of `folder` (.csv / .txt) through the project's Inputs window
     (the Input Manager), once the model has been added. Culture and CSV Separator are never
     changed; when they would not read the files as written (a decimal point; Default separator)
-    nothing is uploaded. Mind matches each file to the /Input grid of the same name; a file it
-    cannot match opens "Match unmatched inputs": the file is reported and the popup cancelled --
+    nothing is uploaded. Mind matches each file to the /Input grid of the same name (a copied
+    workbook's grid is listed once, collapsed, as "Rates (3 instances)": its rows are opened first,
+    and `<key>-<grid>.csv` goes to one copy); a file it cannot match opens Mind's unmatched-files
+    window: the file is reported, in plain words, and the window closed with its own button --
     never a guessed match. The window is closed at the end (nothing to save).
 
+    `project_url`: the project's link. When given and a file went into a grid with copies, the
+    project is opened again before returning: seen in real Mind on 10 November 2026, the run right
+    after such an import still used the copies as loaded before it (every copy with every row,
+    K2 915 shown as 120); after a reload the run was right. `reloaded` says when that happened.
+
     -> {"ok": every file is on its grid with SUCCESS, "statuses": {grid: status} for every grid
-    listed, "unmatched": [files no grid took], "failed": {grid: status} for a file Mind did not
-    accept, "waiting": [files still not taken at the time limit], "rows": [{model, sheet, grid,
-    status, file}], "files": [names uploaded], "reason": one plain sentence when not ok, "text": the
-    window's rows (first 600 characters), "timed_out", "closed", "seconds", "culture", "separator",
-    "errors": Mind's own words for each refused file (its LOG: "CSV Logs"), "advice": what to do when Mind
-    refused a file because its columns are not its grid's (a raw input file given in a grid's place), else None}."""
+    listed (a copy's row as "<grid> [<key>]"), "unmatched": [files no grid took], "failed": {grid:
+    status} for a file Mind did not accept, "waiting": [files still not taken at the time limit],
+    "rows": [{model, sheet, grid, status, file, (copies, key)}], "files": [names uploaded], "reason":
+    plain words when not ok, "text": the window's rows (first 600 characters), "timed_out", "closed",
+    "seconds", "culture", "separator", "errors": Mind's own words for each refused file (its LOG: "CSV
+    Logs"), "advice": what to do when Mind refused a file because its columns are not its grid's (a raw
+    input file given in a grid's place) or could not tell which grid or copy a file is for, else None,
+    "reloaded": the project was opened again after an import into a grid with copies}."""
     t0 = time.time()
     folder = Path(folder)
     files = input_files(folder)
     res: dict[str, Any] = {"ok": False, "statuses": {}, "unmatched": [], "failed": {}, "waiting": [], "rows": [],
                            "files": [f.name for f in files], "reason": None, "text": "", "timed_out": False,
-                           "closed": True, "seconds": None, "culture": None, "separator": None, "errors": [], "advice": None}
+                           "closed": True, "seconds": None, "culture": None, "separator": None, "errors": [], "advice": None,
+                           "reloaded": False}
     if not files:
         res.update(reason=f"no .csv or .txt file in {folder}", seconds=0.0)
         return res
@@ -845,6 +970,12 @@ def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | 
             shutil.copy2(f, upload_dir / f.name)
     try:
         _upload_inputs(page, upload_dir, res, t0 + timeout_s, timeout_s, shots)
+        if project_url and any(r.get("copies") and r.get("file") and _row_for(res["rows"], n) is r
+                               for r in res["rows"] for n in res["files"]):
+            # a file went into a grid with copies: the page's copies are the ones loaded before the
+            # import until the project is opened again (the run would compute with the old ones)
+            open_project(page, project_url)
+            res["reloaded"] = True
     finally:
         res["seconds"] = round(time.time() - t0, 1)
         if stage is not None:  # only now: the browser reads the files while it uploads them
@@ -914,18 +1045,19 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
         text = body_text(page)
         importing = _has(text, _IMPORTING)
         importing_seen = importing_seen or importing
-        if _has(text, _UNMATCHED):
+        marker = _unmatched_marker(text)
+        if marker:
             popups += 1
             # the files the popup names (its own text only: the page's text also lists matched files)
-            now = _inputs_box(page, _UNMATCHED).get("text") or ""
-            at = re.search(re.escape(_UNMATCHED), text, re.I)
+            now = _inputs_box(page, marker).get("text") or ""
+            at = re.search(re.escape(marker), text, re.I)
             popup = popup or now or (text[at.start():at.start() + 300] if at else "")
             expect = [n for n in expect if not re.search(rf"(?<![\w.-]){re.escape(_norm(n))}(?![\w.-])", _norm(now))]
             if shots:
                 screenshot(page, shots / "inputs_unmatched.png")
-            closed = _close_box(page, _UNMATCHED)  # Cancel: the app never guesses a match
+            closed = _close_box(page, marker)  # Close / Cancel: the app never guesses a match
             if not closed and popups >= 3:
-                stuck = "Mind's 'Match unmatched inputs' window would not close"
+                stuck = "Mind's window for the files it could not match would not close"
                 break
         elif importing or (not importing_seen and time.time() - handed < _IMPORT_START_S):
             pass  # Mind is still taking the files: the rows are the last upload's
@@ -941,9 +1073,13 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
             break
     if shots:
         screenshot(page, shots / "inputs_after.png")
-    # 4. what Mind shows, file by file
+    if rows and _has(body_text(page), _INPUTS_DROP):
+        text = body_text(page)  # the rows as read (collapsed rows opened since the last look)
+    # 4. what Mind shows, file by file (a copy's row as "<grid> [<key>]")
     for r in rows:
-        key = r["grid"] if r["grid"] not in res["statuses"] else f"{r.get('sheet') or '?'} > {r['grid']}"
+        key = f"{r['grid']} [{r['key']}]" if r.get("key") else r["grid"]
+        if key in res["statuses"]:
+            key = f"{r.get('sheet') or '?'} > {key}"
         res["statuses"][key] = r["status"] or "-"
     res["rows"] = rows
     unfinished = res["timed_out"] or stuck is not None
@@ -961,7 +1097,8 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
     res["text"] = _inputs_excerpt(text, popup)
     parts = [stuck] if stuck else []
     if res["unmatched"]:
-        parts.append("Mind found no /Input grid named like " + ", ".join(res["unmatched"]))
+        parts.append("Mind found no /Input grid named like " + ", ".join(res["unmatched"]) + ". "
+                     + " ".join(unmatched_advice(n, rows) for n in res["unmatched"][:3]))
     if res["failed"]:
         parts.append("Mind did not accept " + ", ".join(f"{g} ({s})" for g, s in res["failed"].items()))
     if res["timed_out"]:
@@ -978,11 +1115,14 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
     res["advice"] = explain_mind_input_error("\n".join([text, *res["errors"]]))
     if res["advice"] and res["reason"]:
         res["reason"] += ". " + res["advice"]
+    elif res["unmatched"] and not res["advice"]:
+        res["advice"] = " ".join(unmatched_advice(n, rows) for n in res["unmatched"][:3])
     res["ok"] = res["reason"] is None and all(
         (r := _row_for(rows, n)) is not None and r["status"].strip().upper() == "SUCCESS" for n in names)
     # 5. close the window: nothing to save, the next run uses the imported values
-    if _has(body_text(page), _UNMATCHED):
-        _close_box(page, _UNMATCHED)
+    marker = _unmatched_marker(body_text(page))
+    if marker:
+        _close_box(page, marker)
     res["closed"] = _close_box(page, _INPUTS_DROP)
 
 
@@ -991,10 +1131,10 @@ def close_open_windows(page: Page, tries: int = 4) -> bool:
     then takes the click meant for Run). Clicks the VISIBLE "Close modal" button -- a hidden modal
     of the page has one too -- else presses Escape. True once no full-screen window is left."""
     for _ in range(tries):
-        if not page.locator(".cds--modal.is-visible, cds-modal.full-screen-cds-modal .cds--modal-header").count():
+        if not page.locator(".cds--modal.is-visible, cds-modal.full-screen-cds-modal .cds--modal-header, modal-container.modal.in").count():
             return True
         clicked = False
-        closers = page.get_by_role("button", name=re.compile(r"Close modal", re.I))
+        closers = page.get_by_role("button", name=re.compile(r"Close modal|^\s*Close\s*$", re.I))
         for j in range(closers.count()):
             try:
                 if closers.nth(j).is_visible():
@@ -1012,18 +1152,59 @@ def close_open_windows(page: Page, tries: int = 4) -> bool:
     return not page.locator(".cds--modal.is-visible").count()
 
 
+# What Mind's project page says about a run (mapped on the live site, 10 November 2026). While a run
+# goes: "Run in Progress"; the "Last run in N seconds." line of the run before is taken down. When it
+# ends: "Last run in N seconds." with this run's time, "Consistent with the audit trail." and, for a few
+# seconds, the notes "Calculations completed" / "Run completed in N seconds". The audit line of the run
+# before STAYS on the page the whole time, so it is no sign that this run has finished.
+_RUN_PROGRESS = re.compile(r"Run in Progress", re.I)
+_LAST_RUN_RE = re.compile(r"Last run in ([\d.]+) seconds", re.I)
+_RUN_NOTE_RE = re.compile(r"Run completed in ([\d.]+) seconds", re.I)
+_RUN_FAILED_RE = re.compile(r"\bfailed\b|\berror\b", re.I)
+
+
+def run_marker(text: str) -> tuple[str | None, int]:
+    """What the page shows of the last run: the "Last run in N seconds" line and how many "Run
+    completed" notes are up. A new run changes it (the line goes while the run is in progress and
+    comes back with its own time; a note is added), so a second run in the same browser session is
+    never taken for the one before it."""
+    m = _LAST_RUN_RE.search(text or "")
+    return (m.group(0) if m else None, len(_RUN_NOTE_RE.findall(text or "")))
+
+
+def _new_failure(text: str, before: str) -> bool:
+    """A line with 'failed' / 'error' that was not on the page before the Run click (the log
+    buttons 'Display Error Logs' do not count)."""
+    old = {ln.strip() for ln in (before or "").splitlines()}
+    return any(_RUN_FAILED_RE.search(ln) and "Display" not in ln and ln.strip() not in old for ln in (text or "").splitlines())
+
+
 def run_model(page: Page, timeout_s: int = 300, shots: Path | None = None) -> dict[str, Any]:
-    """Click Run and wait. {'completed', 'audit_consistent', 'seconds', 'text'}."""
+    """Click Run and wait for THIS run's result. Before the click the page's run marker is noted
+    (`run_marker`); the wait ends only once a new run was seen -- "Run in Progress", or the marker
+    changed -- and the page shows a finished run (its "Last run in N seconds" line) or a new failure.
+    A second run in the same browser session therefore waits for its own numbers: the "Consistent
+    with the audit trail" line of the run before is never taken as this run's.
+
+    -> {'completed', 'audit_consistent' (of this run), 'seconds' (this run's), 'started' (a new run
+    was seen), 'timed_out', 'reason' (one sentence when not completed), 'text'}."""
+    text = body_text(page)
+    marker = _unmatched_marker(text)
+    if marker:  # Mind's unmatched-inputs window left open covers the Run button
+        _close_box(page, marker)
     close_open_windows(page)
     btn = page.get_by_role("button", name=re.compile(r"^\s*Run\s*$"))
     if not btn.count():
-        return {"completed": False, "audit_consistent": False, "seconds": None, "text": "no Run button"}
+        return {"completed": False, "audit_consistent": False, "seconds": None, "started": False, "timed_out": False,
+                "reason": "the project shows no Run button", "text": "no Run button"}
+    before_text = body_text(page)
+    before = run_marker(before_text)
     try:
         btn.first.click(timeout=8000)
     except Exception:
         close_open_windows(page)
         btn.first.click(timeout=8000)
-    _wait(page, 2000)
+    _wait(page, 1000)
     kill_tour(page)
     if page.locator(".cds--modal.is-visible").count():
         for pat in (r"^\s*Run\s*$", r"Start", r"Confirm", r"^\s*OK\s*$", r"Launch"):
@@ -1035,23 +1216,43 @@ def run_model(page: Page, timeout_s: int = 300, shots: Path | None = None) -> di
             except Exception:
                 pass
     end = time.time() + timeout_s
+    started = finished = failed = False
+    polls = 0
     text = ""
     while time.time() < end:
         text = body_text(page)
-        if re.search(r"calculations completed|run completed|consistent with the audit", text, re.I):
-            break
-        if re.search(r"\bfailed\b|\berror\b", text, re.I) and "Display" not in text:
-            break
-        _wait(page, 4000)
+        if _RUN_PROGRESS.search(text):
+            started = True
+        else:
+            now = run_marker(text)
+            fresh = started or now != before
+            if fresh and now[0]:  # this run's own "Last run in N seconds" line is up
+                finished = True
+                break
+            if fresh and _new_failure(text, before_text):
+                failed = True
+                break
+        _wait(page, 1000 if polls < 10 else 4000)  # quick polls first: a small model runs in under a second
+        polls += 1
+    timed_out = not (finished or failed) and time.time() >= end
     _wait(page, 1500)
     if shots:
         screenshot(page, shots / "run.png")
     text = body_text(page)
-    m = re.search(r"completed in ([\d.]+) seconds", text, re.I)
+    m = _LAST_RUN_RE.search(text) or _RUN_NOTE_RE.search(text)
+    reason = None
+    if failed:
+        reason = "Mind reported a failure for this run"
+    elif not finished:
+        reason = (f"Mind had not finished the run after {timeout_s} s" if started else
+                  f"Mind showed no new run after the Run click in {timeout_s} s (the page still shows the run before)")
     return {
-        "completed": bool(re.search(r"calculations completed|run completed", text, re.I)),
-        "audit_consistent": bool(re.search(r"consistent with the audit trail", text, re.I)),
-        "seconds": float(m.group(1)) if m else None,
+        "completed": finished,
+        "audit_consistent": finished and bool(re.search(r"consistent with the audit trail", text, re.I)),
+        "seconds": float(m.group(1)) if (finished and m) else None,
+        "started": started or finished or failed,
+        "timed_out": timed_out,
+        "reason": reason,
         "text": text[:600],
     }
 

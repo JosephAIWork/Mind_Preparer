@@ -46,18 +46,24 @@ def clock(monkeypatch):
 
 
 class FakeLocator:
-    def __init__(self, page: "FakeInputsPage", key: tuple) -> None:
-        self.page, self.key = page, key
+    def __init__(self, page: "FakeInputsPage", key: tuple, index: int = 0) -> None:
+        self.page, self.key, self.index = page, key, index
 
     @property
     def first(self) -> "FakeLocator":
         return self
 
+    def nth(self, j: int) -> "FakeLocator":
+        return FakeLocator(self.page, self.key, j)
+
+    def is_visible(self) -> bool:
+        return True
+
     def count(self) -> int:
         return self.page._count(self.key)
 
     def click(self, timeout: int | None = None) -> None:
-        self.page._click(self.key)
+        self.page._click(self.key, self.index)
 
 
 class FakeKeyboard:
@@ -78,14 +84,21 @@ class FakeInputsPage:
     def __init__(self, clock: Clock, grids: list[tuple[str, str]], final: dict[str, str] | None = None, delay_s: float = 4.0,
                  inputs_button: bool = True, dom: bool = True, popup: bool = True, model: str = "tokyo_model",
                  culture: str | None = "English - United Kingdom", separator: str | None = "Default",
-                 before: dict[str, tuple[str, str]] | None = None, box: bool = True) -> None:
+                 before: dict[str, tuple[str, str]] | None = None, box: bool = True,
+                 copies: dict[str, list[str]] | None = None, popup_style: str = "old") -> None:
         self.clock, self.grids, self.final, self.delay_s = clock, grids, final or {}, delay_s
         self.before, self.box = before or {}, box
         self.inputs_button, self.dom, self.popup_enabled, self.model = inputs_button, dom, popup, model
         self.culture, self.separator = culture, separator
+        # a grid of a copied workbook: {grid: [keys]}; listed once as "<grid> (N instances)", collapsed, its
+        # copies' rows (key, status, file) only once its caret is clicked; "<key>-<grid>.csv" goes to one copy,
+        # a plain "<grid>.csv" is not matched (as in real Mind, 10 November 2026)
+        self.copies = copies or {}
+        self.expanded: set[str] = set()
+        self.popup_style = popup_style  # "old": "Match unmatched inputs"; "new": "Some of your imported files have not been automatically matched"
         self.window = False
         self.popup_files: list[str] = []
-        self.uploaded: dict[str, str] = {}
+        self.uploaded: dict[str, str] = {}  # grid or "grid|key" -> file
         self.uploaded_at: float | None = None
         self.handed: list[tuple[str, Path, list[str]]] = []
         self.calls: list[tuple] = []
@@ -105,6 +118,11 @@ class FakeInputsPage:
     def screenshot(self, path=None, full_page=False) -> None:
         self.calls.append(("screenshot", Path(path).name))
 
+    def goto(self, url: str, wait_until: str | None = None) -> None:
+        self.calls.append(("goto", url))
+        self.window = False
+        self.popup_files = []
+
     def set_input_files(self, selector: str, files) -> None:
         folder = Path(files)
         assert folder.is_dir(), "the Inputs window's box takes a folder"
@@ -113,8 +131,12 @@ class FakeInputsPage:
         self.calls.append(("set_input_files", selector))
         self.uploaded_at = self.clock.now
         for f in names:
-            if any(g == Path(f).stem for _s, g in self.grids):
-                self.uploaded[Path(f).stem] = f
+            stem = Path(f).stem
+            key, _, rest = stem.partition("-")
+            if rest and rest in self.copies and key in self.copies[rest]:
+                self.uploaded[f"{rest}|{key}"] = f  # one copy's file
+            elif stem not in self.copies and any(g == stem for _s, g in self.grids):
+                self.uploaded[stem] = f
             elif self.popup_enabled:
                 self.popup_files.append(f)
 
@@ -139,14 +161,21 @@ class FakeInputsPage:
         return None  # the guided-tour mask removal
 
     # --- the fake Mind
+    def _collapsed(self) -> list[str]:
+        return [g for _s, g in self.grids if g in self.copies and g not in self.expanded] if self.window else []
+
     def _count(self, key: tuple) -> int:
         if key == ("role", "button", mc._INPUTS_BUTTON.pattern):
             return int(self.inputs_button)
         if key == ("css", "[data-mr-close='1']"):
             return int(self.marked is not None)
+        if key == ("css", mc._COLLAPSED_ROW):
+            return len(self._collapsed())
+        if key == ("role", "button", r"^\s*Run\s*$"):
+            return int(any(c[0] == "goto" for c in self.calls))  # the project opened again shows its Run button
         return 0
 
-    def _click(self, key: tuple) -> None:
+    def _click(self, key: tuple, index: int = 0) -> None:
         if key == ("role", "button", mc._INPUTS_BUTTON.pattern):
             self.calls.append(("click", "Inputs"))
             self.window = True
@@ -157,6 +186,10 @@ class FakeInputsPage:
             elif self.marked == "window":
                 self.window = False
             self.marked = None
+        elif key == ("css", mc._COLLAPSED_ROW):
+            g = self._collapsed()[index]
+            self.calls.append(("expand", g))
+            self.expanded.add(g)
 
     def _press(self, key: str) -> None:
         self.calls.append(("press", key))
@@ -175,27 +208,47 @@ class FakeInputsPage:
             return self.before.get(grid, ("-", None))
         return self.final.get(grid, "SUCCESS"), f
 
-    def _dom_rows(self) -> list[list[str]]:
-        rows, sheet = [HEADER.split("\t"), [self.model]], None
+    def _lines(self) -> list[tuple[str, str | None, str | None]]:
+        """(name, status, file) per row; a sheet heading as (name, None, None); a collapsed copied grid as
+        ("<grid> (N instances)", None, None), its copies' rows under it once expanded."""
+        out: list[tuple[str, str | None, str | None]] = []
+        sheet = None
         for s, g in self.grids:
             if s != sheet:
-                rows.append([s])
+                out.append((s, None, None))
                 sheet = s
+            if g in self.copies:
+                out.append((f"{g} ({len(self.copies[g])} instances)", None, None))
+                if g in self.expanded:
+                    for k in self.copies[g]:
+                        status, f = self._row(f"{g}|{k}")
+                        out.append((k, status, f))
+                continue
             status, f = self._row(g)
-            rows.append([g, "", status, f or "No file", "", "", ""])
+            out.append((g, status, f))
+        return out
+
+    def _dom_rows(self) -> list[list[str]]:
+        rows = [HEADER.split("\t"), [self.model]]
+        for name, status, f in self._lines():
+            rows.append([name, ""] if status is None else [name, "", status, f or "No file", "", "", ""])
         return rows
 
     def _window_text(self) -> str:
-        out, sheet = ["Inputs", "Search", HEADER, " " + self.model], None
-        for s, g in self.grids:
-            if s != sheet:
-                out.append(" " + s)
-                sheet = s
-            status, f = self._row(g)
-            out += [f"{g}\t\t", status] + ([f"\t{f}\t", "\t", "\t"] if f else ["\t", "No file", "\t", "\t", "\t"])
+        out = ["Inputs", "Search", HEADER, " " + self.model]
+        for name, status, f in self._lines():
+            if status is None:
+                out.append((" " + name) if not mc._INSTANCES_RE.match(name) else name + "\t")
+            else:
+                out += [f"{name}\t\t", status] + ([f"\t{f}\t", "\t", "\t"] if f else ["\t", "No file", "\t", "\t", "\t"])
         return "\n".join(out) + "\n" + TAIL
 
     def _popup_text(self) -> str:
+        if self.popup_style == "new":
+            return ("Some of your imported files have not been automatically matched. Please select a corresponding grid for each "
+                    "file. Note that read-only grids (or instances) and grids (or instances)\nalready matched with other files will "
+                    "not be available in the dropdown lists.\n" + "\n".join(f"{f}\nDo not match" for f in self.popup_files)
+                    + "\nClose\nMatch selection")
         return "Match unmatched inputs\n" + "\n".join(f"{f}\tSelect a grid" for f in self.popup_files) + "\nCancel\nConfirm"
 
     def _body(self) -> str:
@@ -408,6 +461,120 @@ def test_mind_s_own_reason_for_a_refused_file_is_read_from_its_log(tmp_path, clo
     assert res["reason"] == "Mind did not accept IN_BBA_01 (ERROR). " + res["advice"] and res["closed"] and not page.window
 
 
+# --- a copied workbook (Mind instances): collapsed rows, "<key>-<grid>.csv", Mind's new unmatched window ----
+# the Inputs window of zzz_mindready_inst_probe_1 as recorded on 10 November 2026 (grids Factors and Rates of
+# a model with 3 copies K1-K3): collapsed, then with the carets clicked
+COPIES_COLLAPSED = [HEADER.split("\t"), ["InstModel"], ["Inp"], ["Factors (3 instances)", "", "SUCCESS", "Factors.csv", "", "", ""],
+                    ["Rates (3 instances)", ""]]
+COPIES_EXPANDED = COPIES_COLLAPSED[:4] + [["K1", "", "SUCCESS", "split import", "", "", ""], ["K2", "", "SUCCESS", "split import", "", "", ""],
+                                          ["K3", "", "SUCCESS", "split import", "", "", ""], ["Rates (3 instances)", ""],
+                                          ["K1", "", "-", "No file", "", "", ""], ["K2", "", "SUCCESS", "K2-Rates.csv", "", "", ""],
+                                          ["K3", "", "-", "No file", "", "", ""]]
+COPIES_TEXT = ("Inputs\nRun\nInstMain\nInstModel\nExports\nInputs\nSearch\n" + HEADER + "\n InstModel\n Inp\nFactors (3 instances)\t\t\nSUCCESS\n"
+               "\tFactors.csv\t\t\t\n\nK1\t\t\nSUCCESS\n\tsplit import\t\n\t\n\t\nK2\t\t\nSUCCESS\n\tsplit import\t\n\t\n\t\nK3\t\t\nSUCCESS\n"
+               "\tsplit import\t\n\t\n\t\nRates (3 instances)\t\nK1\t\t\n-\n\t\nNo file\n\t\n\t\n\t\nK2\t\t\nSUCCESS\n\tK2-Rates.csv\t\n\t\n\t\n\n"
+               "K3\t\t\n-\n\t\nNo file\n\t\n\t\n\t\n" + TAIL)
+
+
+def test_the_rows_of_a_copied_grid_read_back_with_their_keys_once_expanded():
+    # collapsed: the whole-grid row of Factors is read; Rates hides its copies (nothing to wait on yet)
+    assert mc.parse_input_rows(COPIES_COLLAPSED) == [
+        {"model": "InstModel", "sheet": "Inp", "grid": "Factors", "status": "SUCCESS", "file": "Factors.csv", "copies": 3, "key": None}]
+    rows = mc.parse_input_rows(COPIES_EXPANDED)
+    assert [(r["grid"], r.get("key"), r["status"], r["file"]) for r in rows] == [
+        ("Factors", None, "SUCCESS", "Factors.csv"), ("Factors", "K1", "SUCCESS", "split import"), ("Factors", "K2", "SUCCESS", "split import"),
+        ("Factors", "K3", "SUCCESS", "split import"), ("Rates", "K1", "-", None), ("Rates", "K2", "SUCCESS", "K2-Rates.csv"), ("Rates", "K3", "-", None)]
+    assert all(r["copies"] == 3 and r["sheet"] == "Inp" and r["model"] == "InstModel" for r in rows)
+    # the same rows from the page text
+    assert mc.parse_inputs_text(COPIES_TEXT) == rows
+    # a copy's file is found by its name, or by "<key>-<grid>" when the copy shows no file yet
+    assert mc._row_for(rows, "K2-Rates.csv")["key"] == "K2"
+    assert mc._row_for(rows, "K3-Rates.csv") == {"model": "InstModel", "sheet": "Inp", "grid": "Rates", "status": "-", "file": None, "copies": 3, "key": "K3"}
+    assert mc._row_for(rows, "Rates.csv")["key"] == "K1"  # the grid's first copy: Mind has not taken it (and will not)
+    assert mc._inputs_settled(rows, ["K2-Rates.csv"]) and not mc._inputs_settled(rows, ["K3-Rates.csv"])
+    excerpt = mc._inputs_excerpt(COPIES_TEXT)
+    assert "Rates (3 instances) | K1 | - | No file | K2 | SUCCESS | K2-Rates.csv" in excerpt
+
+
+def test_plain_words_for_a_file_mind_could_not_match():
+    rows = mc.parse_input_rows(COPIES_EXPANDED)
+    assert mc.unmatched_advice("Rates.csv", rows) == (
+        "Mind could not tell which copy of Rates Rates.csv belongs to: the grid has 3 copies (K1, K2, K3). Name the file "
+        "<key>-Rates.csv (K1-Rates.csv) to change one copy, or turn on 'Split between instances' in Mind's Inputs window to give "
+        "every copy its own rows.")
+    assert mc.unmatched_advice("Stray.txt", rows) == (
+        "Mind could not tell which grid Stray.txt belongs to. Name it <grid>.txt (Factors.txt, Rates.txt) or <key>-<grid>.txt for one copy.")
+    plain = [{"grid": "IN_BBA_01", "status": "-", "file": None}, {"grid": "IN_BBA_02", "status": "-", "file": None}]
+    assert mc.unmatched_advice("BBA_03 next quarter.csv", plain) == (
+        "Mind could not tell which grid BBA_03 next quarter.csv belongs to. Name it <grid>.csv (IN_BBA_01.csv, IN_BBA_02.csv).")
+    assert mc.unmatched_advice("x.csv", []) == "Mind could not tell which grid x.csv belongs to. Name it <grid>.csv."
+
+
+COPIED = [("Inp", "Factors"), ("Inp", "Rates")]
+KEYS = {"Factors": ["K1", "K2", "K3"], "Rates": ["K1", "K2", "K3"]}
+
+
+def test_a_copy_s_file_is_read_on_its_own_row_once_the_collapsed_rows_are_opened(tmp_path, clock):
+    """Real Mind, 10 November 2026: a copied grid is listed once as "Rates (3 instances)", collapsed; the upload worked but
+    the rows could not be read and the function waited its full 300 s. Now the carets are clicked first."""
+    folder = _folder(tmp_path, ["K2-Rates.csv"])
+    page = FakeInputsPage(clock, COPIED, copies=KEYS, model="InstModel")
+    res = mc.upload_inputs(page, folder, timeout_s=300)
+    assert res["ok"], res
+    assert res["statuses"] == {"Factors [K1]": "-", "Factors [K2]": "-", "Factors [K3]": "-", "Rates [K1]": "-", "Rates [K2]": "SUCCESS", "Rates [K3]": "-"}
+    assert [c for c in page.calls if c[0] == "expand"] == [("expand", "Factors"), ("expand", "Rates")]
+    assert res["seconds"] < 60 and not res["timed_out"] and res["closed"]
+    row = mc._row_for(res["rows"], "K2-Rates.csv")
+    assert row["grid"] == "Rates" and row["key"] == "K2" and row["copies"] == 3
+    assert "Rates (3 instances) | K1 | - | No file | K2 | SUCCESS | K2-Rates.csv" in res["text"]
+
+
+def test_a_plain_file_for_a_copied_grid_opens_mind_s_new_window_which_is_closed_and_explained(tmp_path, clock):
+    """Real Mind, 10 November 2026: "Some of your imported files have not been automatically matched ..." with Close and
+    "Match selection". Looked for as "Match unmatched" it stayed open, covered the Run button and the next run timed out."""
+    folder = _folder(tmp_path, ["Rates.csv", "K2-Rates.csv"])
+    page = FakeInputsPage(clock, COPIED, copies=KEYS, model="InstModel", popup_style="new")
+    res = mc.upload_inputs(page, folder, shots=tmp_path / "shots")
+    assert not res["ok"] and res["unmatched"] == ["Rates.csv"] and res["waiting"] == [] and not res["timed_out"]
+    assert res["statuses"]["Rates [K2]"] == "SUCCESS"  # the copy's file still went in
+    assert res["reason"] == ("Mind found no /Input grid named like Rates.csv. Mind could not tell which copy of Rates Rates.csv belongs to: "
+                             "the grid has 3 copies (K1, K2, K3). Name the file <key>-Rates.csv (K1-Rates.csv) to change one copy, or turn on "
+                             "'Split between instances' in Mind's Inputs window to give every copy its own rows.")
+    assert res["advice"] == res["reason"].split(". ", 1)[1]
+    assert "not been automatically matched" in res["text"] and "Match selection" in res["text"]
+    closes = [c for c in page.calls if c[0] in ("close", "press")]
+    assert closes == [("close", "popup"), ("close", "window")]  # the window's own Close, never "Match selection"
+    assert ("screenshot", "inputs_unmatched.png") in page.calls and not page.window and not page.popup_files
+    assert res["closed"]
+
+
+def test_the_project_is_opened_again_after_a_file_went_into_a_grid_with_copies(tmp_path, clock):
+    """Real Mind, 10 November 2026 (zzz_mindready_runtwice_1/2/3): the run right after a copy's first file used the copies
+    as loaded before the import (every copy with every row: K2 915 shown as 120); after a reload the run was right."""
+    page = FakeInputsPage(clock, COPIED, copies=KEYS, model="InstModel")
+    res = mc.upload_inputs(page, _folder(tmp_path, ["K2-Rates.csv"]), project_url="https://mind/init/71/abc")
+    assert res["ok"] and res["reloaded"]
+    steps = [c for c in page.calls if c[0] in ("close", "goto")]
+    assert steps == [("close", "window"), ("goto", "https://mind/init/71/abc")]  # the window closed first, then the project again
+    # no link given, or no grid with copies: nothing to open again
+    page = FakeInputsPage(clock, COPIED, copies=KEYS, model="InstModel")
+    res = mc.upload_inputs(page, _folder(tmp_path, ["K2-Rates.csv"], name="again"))
+    assert res["ok"] and not res["reloaded"] and not any(c[0] == "goto" for c in page.calls)
+    page = FakeInputsPage(clock, GRIDS[:2])
+    res = mc.upload_inputs(page, _folder(tmp_path, FILES[:2], name="plain"), project_url="https://mind/init/71/abc")
+    assert res["ok"] and not res["reloaded"] and not any(c[0] == "goto" for c in page.calls)
+    # a file Mind did not match into a copied grid does not count
+    page = FakeInputsPage(clock, COPIED, copies=KEYS, model="InstModel", popup_style="new")
+    res = mc.upload_inputs(page, _folder(tmp_path, ["Rates.csv"], name="unmatched"), project_url="https://mind/init/71/abc")
+    assert not res["ok"] and not res["reloaded"] and not any(c[0] == "goto" for c in page.calls)
+
+
+def test_the_old_unmatched_popup_is_still_known():
+    assert mc._unmatched_marker("Inputs\nMatch unmatched inputs\nx.csv\nCancel") == "Match unmatched"
+    assert mc._unmatched_marker("Some of your imported files have not been automatically matched. Please select") == "not been automatically matched"
+    assert mc._unmatched_marker("Inputs\nElement\tStatus") is None
+
+
 def test_no_inputs_button_means_the_model_has_no_input_grid(tmp_path, clock):
     page = FakeInputsPage(clock, GRIDS, inputs_button=False)
     res = mc.upload_inputs(page, _folder(tmp_path, FILES))
@@ -479,6 +646,117 @@ def test_add_template_also_takes_the_plural_button():
 
     assert mc.add_template(Page(), timeout_s=1) and clicked == ["Add templates to Milliman Mind"]
     assert mc._ADD_TEMPLATE.search("Add template to Milliman Mind")
+
+
+# --- run_model: a second run in the same browser session waits for ITS result ----------------------------
+class FakeRunPage:
+    """Mind's project page as recorded on 10 November 2026: before the click "Last run in 0.223 seconds." and
+    "Consistent with the audit trail." from the run before; for `run_s` after the click "Run in Progress" (the
+    Last-run line taken down, the audit line STILL up); then "Last run in <new> seconds." and, for 8 s, the notes
+    "Calculations completed" / "Run completed in <new> seconds"."""
+
+    def __init__(self, clock: Clock, run_s: float = 3.0, last: str | None = "0.223", new: str = "0.694", starts: bool = True,
+                 fail: bool = False, unmatched_window: bool = False) -> None:
+        self.clock, self.run_s, self.last, self.new, self.starts, self.fail = clock, run_s, last, new, starts, fail
+        self.unmatched_window = unmatched_window
+        self.clicked_at: float | None = None
+        self.calls: list[tuple] = []
+        self.keyboard = FakeKeyboard(self)
+
+    def wait_for_timeout(self, ms: int) -> None:
+        self.clock.now += ms / 1000
+
+    def get_by_role(self, role: str, name=None) -> FakeLocator:
+        return FakeLocator(self, ("role", role, getattr(name, "pattern", name)))
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(self, ("css", selector))
+
+    def screenshot(self, path=None, full_page=False) -> None:
+        self.calls.append(("screenshot", Path(path).name))
+
+    def evaluate(self, js: str, arg=None):
+        if "document.body.innerText" in js:
+            return self._body()
+        return None
+
+    def _count(self, key: tuple) -> int:
+        return 1 if key == ("role", "button", r"^\s*Run\s*$") else 0
+
+    def _click(self, key: tuple, index: int = 0) -> None:
+        if key == ("role", "button", r"^\s*Run\s*$"):
+            if self.unmatched_window:
+                raise TimeoutError("modal-container intercepts pointer events")
+            self.calls.append(("click", "Run"))
+            if self.starts:
+                self.clicked_at = self.clock.now
+
+    def _press(self, key: str) -> None:
+        self.calls.append(("press", key))
+        if key == "Escape":
+            self.unmatched_window = False
+
+    def _body(self) -> str:
+        top = "Inputs\nRun\n"
+        if self.unmatched_window:
+            top += "Some of your imported files have not been automatically matched. Please select a corresponding grid for each file.\nRates.csv\nDo not match\nClose\nMatch selection\n"
+        tail = "\nSave after run\nOff\nInstMain\nInstModel\nExports\nProjects > zzz_mindready_test"
+        if self.clicked_at is None:
+            return top + (f"Last run in {self.last} seconds.\nConsistent with the audit trail." if self.last else "") + tail
+        t = self.clock.now - self.clicked_at
+        if t < self.run_s:
+            return top + "Consistent with the audit trail.\nSave after run\nOff\nRun in Progress\nInstMain"
+        if self.fail:
+            return top + "Consistent with the audit trail." + tail + "\nRun failed\nError: division by zero in Calc!B4"
+        notes = f"\nCalculations completed\nRun completed in {self.new} seconds" if t < self.run_s + 8 else ""
+        return top + f"Last run in {self.new} seconds.\nConsistent with the audit trail." + tail + notes
+
+
+def test_a_second_run_waits_for_its_own_result_not_the_audit_line_of_the_run_before(tmp_path, clock):
+    page = FakeRunPage(clock, run_s=12.0)
+    t0 = clock.now
+    res = mc.run_model(page, timeout_s=300, shots=tmp_path / "shots")
+    assert res["completed"] and res["audit_consistent"] and res["started"] and not res["timed_out"] and res["reason"] is None
+    assert res["seconds"] == 0.694  # this run's time, not 0.223
+    assert clock.now - t0 >= 12  # waited for the run, although the audit line was up the whole time
+    assert ("screenshot", "run.png") in page.calls and "Last run in 0.694 seconds" in res["text"]
+
+
+def test_a_run_that_never_starts_is_not_taken_for_the_run_before(clock):
+    page = FakeRunPage(clock, starts=False)
+    res = mc.run_model(page, timeout_s=40)
+    assert not res["completed"] and not res["audit_consistent"] and not res["started"] and res["timed_out"]
+    assert res["seconds"] is None and res["reason"].startswith("Mind showed no new run after the Run click in 40 s")
+    assert ("click", "Run") in page.calls
+
+
+def test_a_quick_run_with_the_same_time_as_the_run_before_is_seen_by_its_notes(clock):
+    page = FakeRunPage(clock, run_s=0.2, last="0.223", new="0.223")
+    res = mc.run_model(page, timeout_s=60)
+    assert res["completed"] and res["seconds"] == 0.223 and res["started"]
+
+
+def test_the_first_run_of_a_fresh_project_and_a_failed_run(clock):
+    res = mc.run_model(FakeRunPage(clock, run_s=2.0, last=None), timeout_s=60)
+    assert res["completed"] and res["audit_consistent"] and res["seconds"] == 0.694
+    res = mc.run_model(FakeRunPage(clock, run_s=2.0, fail=True), timeout_s=60)
+    assert not res["completed"] and not res["audit_consistent"] and res["started"] and not res["timed_out"]
+    assert res["reason"] == "Mind reported a failure for this run" and "division by zero" in res["text"]
+
+
+def test_run_model_closes_mind_s_unmatched_inputs_window_first(clock):
+    """The window left open covers the Run button (probe 1, round 3: the click timed out)."""
+    page = FakeRunPage(clock, run_s=1.0, unmatched_window=True)
+    res = mc.run_model(page, timeout_s=60)
+    assert res["completed"] and page.calls[0] == ("press", "Escape") and ("click", "Run") in page.calls
+
+
+def test_the_run_marker_changes_with_a_new_run():
+    before = mc.run_marker("Run\nLast run in 0.223 seconds.\nConsistent with the audit trail.")
+    assert before == ("Last run in 0.223 seconds", 0)
+    assert mc.run_marker("Run\nConsistent with the audit trail.\nRun in Progress") == (None, 0)
+    assert mc.run_marker("Last run in 0.694 seconds.\nConsistent with the audit trail.\nCalculations completed\nRun completed in 0.694 seconds") == ("Last run in 0.694 seconds", 1)
+    assert mc.run_marker("") == (None, 0)
 
 
 # --- the loop: after the model is added, before the run, in every iteration --------------------------

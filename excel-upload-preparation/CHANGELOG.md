@@ -73,6 +73,40 @@
   instances plan (`loop_builder.UPLOAD_TEST_NOTE`; `docs/MIND_VS_EXCEL.md`): check cells that are 0 in
   Excel and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE / FALSE, which the
   test reads as 1 / 0 on Excel's side. The values agree; nobody has to chase them.
+- **Fix: a second run in the same browser session returned at once.** `mind_client.run_model` took
+  the "Consistent with the audit trail" line of the run before -- Mind keeps it on the page the whole
+  time, also while the next run is in progress -- as this run's end. Now it notes the page's run
+  marker before the click (`run_marker`: the "Last run in N seconds" line, taken down during a run and
+  put back with the new time, and the number of "Run completed" notes) and waits until a new run was
+  seen ("Run in Progress" or a changed marker) and that run's own line is up. The result says
+  `completed`, `audit_consistent` and `seconds` of this run, `started`, and `reason` when the page only
+  ever showed the run before. Mind's unmatched-inputs window, when left open, is closed first (it
+  covered the Run button). Fake-page tests on a fake clock (`test_mind_inputs_upload.py`).
+- **Fix: Mind's Inputs window for a copied workbook (Mind instances).** `upload_inputs` could not read
+  the rows: a copied grid is listed once, collapsed, as "Rates (3 instances)", so it waited its full
+  300 s and said "still waiting". Now the collapsed rows are opened first (their carets), each copy's
+  row is read with its key (`statuses` "Rates [K2]", `rows[].key` / `copies`), and `<key>-<grid>.csv`
+  is found on its copy's row. Mind's new window for a file it could not match ("Some of your imported
+  files have not been automatically matched ... Match selection"; the old one said "Match unmatched
+  inputs") is recognised, closed with its own Close button (never "Match selection") and explained in
+  plain words: "Mind could not tell which copy of Rates Rates.csv belongs to: the grid has 3 copies
+  (K1, K2, K3). Name the file <key>-Rates.csv (K1-Rates.csv) to change one copy, or turn on 'Split
+  between instances' ..." / "Mind could not tell which grid X.csv belongs to. Name it <grid>.csv or
+  <key>-<grid>.csv for one copy." (`unmatched_advice`, also in `advice`).
+- **The project is opened again after a copy's file** (`upload_inputs(..., project_url=)`, `reloaded`):
+  the run right after a copy's first input file still used the copies as loaded before the import
+  (every copy with every row: K2 should have been 915 and showed 120); after a reload the run was
+  right. `app/mind_loop.py` does not pass the link yet (not this step's file): one argument,
+  `project_url=init`, on its `mc.upload_inputs(...)` call.
+- **Proven in real Mind on 10 November 2026** with a 3-copy invented model (probe 1's InstModel +
+  InstMain, grid `Rates /Input`), `docs/RUN_IN_MIND.md`, evidence in
+  `%LOCALAPPDATA%\MindReady\iteration_1_13_0\mind_client\`: `zzz_mindready_runtwice_1` -- run 1
+  (0.22 s), `K2-Rates.csv` read on K2's row in 12 s (300 s and "still waiting" before), run 2 waited
+  for its own result (marker `(None, 0)` -> `('Last run in 0.68 seconds', 1)`), a plain `Rates.csv`
+  opened the new window, which was closed and explained, and run 3 went through (the click timed out
+  on that window the night before). `zzz_mindready_runtwice_2`: opening the collapsed rows changes no
+  number; `zzz_mindready_runtwice_3`: reload before the run after `K2-Rates.csv` -> K1 242 / K2 915 /
+  K3 160, only K2 changed (Mind = the hand-worked values).
 
 ## Unreleased (10 November 2026): Mind instances and where instances could help
 
