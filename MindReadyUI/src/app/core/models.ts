@@ -450,10 +450,42 @@ export interface InstancePlanMain {
   grids: InstancePlanMainGrid[];
 }
 
+/** A loop of the Mind loop plan, and whether copies can be made from its values (a counter, or a list). */
+export interface InstanceLoopOption {
+  name: string;
+  driver?: string;
+  kind?: string | null;
+  count?: number | null;
+  first?: number | null;
+  last?: number | null;
+  macro?: string | null;
+  usable: boolean;
+  why?: string | null;
+}
+
+/** A loop the copies are made from: its driver now reads the copy's value from the split grid. */
+export interface InstanceCopiesFrom {
+  name: string;
+  driver?: string;
+  kind?: string;
+  values?: unknown[];
+  count?: number;
+  formula?: string;
+}
+
 /** GET .../mind-instances-plan: the macro's run loop as Mind instances, one copy of the model per key value. */
 export interface InstancePlan {
   found: boolean;
   status: InstanceStatus;
+  /** "table": one copy per key of the model-point table; "loops": one copy per combination of the chosen loops' values */
+  mode?: "table" | "loops";
+  /** every loop of the Mind loop plan, usable or not for copies */
+  loop_options?: InstanceLoopOption[];
+  copies_from?: InstanceCopiesFrom[];
+  /** the macro's other loops: they stay MM_LOOPs inside every copy */
+  kept_loops?: { name: string; driver?: string; count?: number; written?: boolean; already?: boolean }[];
+  /** the block the main workbook shows for every copy */
+  results?: { block: string; rows: number; cols: number; chosen_by: string } | null;
   notes?: string[];
   loop?: InstancePlanLoop | null;
   table?: InstancePlanTable | null;
@@ -475,6 +507,8 @@ export interface InstanceChoices {
   key?: string;
   /** "present" = only the key values that have rows (default); "all" = every value of the list the macro reads */
   keys?: "present" | "all";
+  /** the loops the copies are made from, comma separated (names); empty = by the key column */
+  loops?: string;
 }
 
 /** POST .../mind-instances-plan/apply: the Apply outcome, the plan (without operations), the zip's URL and the two file names. */

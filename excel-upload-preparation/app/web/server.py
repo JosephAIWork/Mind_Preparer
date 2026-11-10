@@ -2986,12 +2986,34 @@ def _instances_stem(s: Session) -> str:
     return stem or "model"
 
 
-def _instance_plan_of(s: Session, key: Any, keys: Any) -> dict[str, Any]:
+def _loop_names(raw: Any) -> list[str]:
+    """The loops copies are made from: a list of loop names or driver cells, or the same as text
+    (comma separated, or a JSON list)."""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="loops: not JSON") from exc
+        else:
+            raw = [x for x in text.split(",")]
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise HTTPException(status_code=422, detail="loops: a list of loop names or driver cells")
+    return [x.strip() for x in raw if x.strip()]
+
+
+def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, results: Any = None, loop_choices: Any = None) -> dict[str, Any]:
     """The Mind instances plan for the current version with the caller's choices: the key column
     (a header text or a column letter; empty = the plan's own choice) and which keys the main
     workbook lists ("present" = only keys that have rows, "all" = every key of the macro's list).
-    The plan with no key and keys=present is kept per version: the panel's preview and the instance
-    finder both ask for exactly that one. A key or keys=all is built fresh every time.
+    `loops` (loop names or driver cells) makes one copy per combination of those loops' values
+    instead, `results` names the block the main workbook shows for every copy, and `loop_choices`
+    holds each loop's own choices as the Mind loop panel sends them (by driver cell).
+    The plan with no key, keys=present and no loops is kept per version: the panel's preview and the
+    instance finder both ask for exactly that one. Any other is built fresh every time.
 
     As with the Mind loop, the formula repairs Prep still has for this version (CELL / INFO frozen,
     OFFSET ranges written out, ...) are written with a ready plan: a version that goes to Mind before
@@ -3000,14 +3022,24 @@ def _instance_plan_of(s: Session, key: Any, keys: Any) -> dict[str, Any]:
     if keys not in ("present", "all"):
         raise HTTPException(status_code=422, detail="keys must be 'present' or 'all'")
     key = str(key).strip() if key is not None else ""
+    names = _loop_names(loops)
+    results = str(results).strip() if results not in (None, "") else ""
+    if isinstance(loop_choices, str):
+        try:
+            loop_choices = json.loads(loop_choices) if loop_choices.strip() else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="loop_choices: not JSON") from exc
+    if loop_choices is not None and not isinstance(loop_choices, dict):
+        raise HTTPException(status_code=422, detail="loop_choices: an object by driver cell")
     mp = _model_map_of(s)
-    default = key == "" and keys == "present"
+    default = key == "" and keys == "present" and not names and not results and not loop_choices
     if default and s.instance_plan_default is not None and s.instance_plan_default_version_id == s.current_version_id:
         return s.instance_plan_default
     analysis = s.result["workbook_analysis"]
     try:
-        loop_plan = build_loop_plan(analysis, mp)
-        plan = build_instance_plan(analysis, mp, loop_plan=loop_plan, key=key or None, keys=keys, model_name=f"{_instances_stem(s)}_instances")
+        loop_plan = build_loop_plan(analysis, mp, loops=loop_choices or None)
+        plan = build_instance_plan(analysis, mp, loop_plan=loop_plan, key=key or None, keys=keys, model_name=f"{_instances_stem(s)}_instances",
+                                   loops=names or None, results=results or None)
         if plan.get("status") == "ready" and plan.get("operations"):
             plan.setdefault("counts", {})
             _add_repairs(plan, plan["operations"], s.plan, True, what="the instances")
@@ -3022,13 +3054,15 @@ def _instance_plan_of(s: Session, key: Any, keys: Any) -> dict[str, Any]:
 
 
 @app.get("/api/sessions/{session_id}/mind-instances-plan")
-def mind_instances_plan(session_id: str, key: str = "", keys: str = "present") -> dict[str, Any]:
+def mind_instances_plan(session_id: str, key: str = "", keys: str = "present", loops: str = "", results: str = "", loop_choices: str = "") -> dict[str, Any]:
     """The macro's run loop as Mind instances -- one copy of the model per value of a key column of
     the model-point table, a loop inside each copy over its own rows, and a second small main
     workbook with the keys and the results -- as a plan (nothing written): the loop, the table, the
-    key and its candidates, the output block, the operations, and what cannot be built and why."""
+    key and its candidates, the output block, the operations, and what cannot be built and why.
+    `loops` (comma separated loop names or driver cells): one copy per combination of their values
+    instead; `results`: the block the main workbook shows for every copy."""
     s = _session(session_id)
-    plan = _instance_plan_of(s, key, keys)
+    plan = _instance_plan_of(s, key, keys, loops, results, loop_choices)
     public = {k: v for k, v in plan.items() if k != "operations"}
     operations = list(plan.get("operations") or [])
     public["operations"] = [_public_op(o) for o in operations[:200]]
@@ -3044,7 +3078,7 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
     a failure of the main-workbook step is reported in `warnings`, not raised: the version stays."""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
-    plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"))
+    plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"), payload.get("loops"), payload.get("results"), payload.get("loop_choices"))
     ops = list(plan.get("operations") or [])
     if not ops:
         raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))

@@ -32,7 +32,12 @@ column per row of the output block, MM_INSTANCE by key) and "#All copies" (the w
 links to the model, with a Total row: in Mind a plain reference to a copied workbook is the sum over
 the copies -- checked in a real Mind project on 29 October 2026, the prototype's main workbook).
 
-    python -m app.instance_builder <workbook.xlsm> [--json] [--key K] [--keys all] [--name N]
+Copies from loops (build_instance_plan(..., loops=[...])): for a macro that runs the whole model once
+per scenario and cohort, one copy per combination of the chosen loops' values; each copy reads its
+values from a small split grid, the macro's other loops stay MM_LOOPs inside every copy (checked in
+Mind on 10 November 2026: 24 copies of an IFRS 17 tool, each equal to Excel with its drivers set).
+
+    python -m app.instance_builder <workbook.xlsm> [--json] [--key K] [--keys all] [--name N] [--loops A,B] [--results Sheet!A1:B9]
 """
 from __future__ import annotations
 
@@ -468,14 +473,43 @@ class _Shift:
 
 # --- the plan --------------------------------------------------------------------------------------
 def build_instance_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, loop_plan: dict[str, Any] | None = None, key: Any = None, keys: str = "present",
-                        model_name: str | None = None) -> dict[str, Any]:
+                        model_name: str | None = None, loops: list[str] | None = None, results: str | None = None) -> dict[str, Any]:
     """The Mind instances for the macro's run loop: what goes where, with the operations that write it.
 
-    `key`: the key column -- a header text or a column letter of the model-point table (default:
-    the macro's own lookup column, else a header that names a group, else the text column with the
-    fewest distinct values). `keys`: "present" = the key values that have rows; "all" = every value
-    of the list the macro runs through, when it can be found. `model_name`: the model's file stem as
-    it will be uploaded (default <workbook>_instances)."""
+    Two ways to make the copies:
+    - by a key column of the model-point table (the default): one copy per key, a loop inside each
+      copy over the copy's own rows. `key`: the key column -- a header text or a column letter of the
+      table (default: the macro's own lookup column, else a header that names a group, else the text
+      column with the fewest distinct values). `keys`: "present" = the key values that have rows;
+      "all" = every value of the list the macro runs through, when it can be found.
+    - by loops (`loops`: loop names or driver cells of the Mind loop plan): one copy per combination
+      of the values of those loops -- a scenario x a cohort for instance. Each copy reads its own
+      values from a small split grid; the macro's other loops stay MM_LOOPs inside every copy.
+      `results`: the block the main workbook shows for every copy (default: the formula block of the
+      model's output sheet).
+    `model_name`: the model's file stem as it will be uploaded (default <workbook>_instances).
+    Every plan lists `loop_options`: the loops copies can be made from, and why the others cannot."""
+    from .loop_builder import build_loop_plan
+
+    if loop_plan is None:
+        loop_plan = build_loop_plan(analysis, model_map)
+    options = loop_options(loop_plan)
+    wanted = [str(x).strip() for x in (loops or []) if str(x or "").strip()]
+    if wanted:
+        plan = _build_loops_plan(analysis, model_map, loop_plan, wanted, results=results, model_name=model_name)
+    else:
+        plan = _build_table_plan(analysis, model_map, loop_plan=loop_plan, key=key, keys=keys, model_name=model_name)
+        plan["mode"] = "table"
+        usable = [o["name"] for o in options if o["usable"]]
+        if plan["status"] != "ready" and usable:
+            plan["notes"].append(f"Or make one copy per value of a loop ({', '.join(usable)}): choose the loops under \"Copies from loops\".")
+    plan["loop_options"] = options
+    return plan
+
+
+def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, loop_plan: dict[str, Any] | None = None, key: Any = None, keys: str = "present",
+                      model_name: str | None = None) -> dict[str, Any]:
+    """The copies by a key column of the model-point table (see build_instance_plan)."""
     from .grids import all_grids, grid_containing
     from .loop_builder import build_loop_plan
     from .model_map import _Names
@@ -883,6 +917,306 @@ def build_instance_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, 
     return plan
 
 
+# --- copies from loops: one copy per combination of the values of one or more loops ------------------
+LOOP_COPY_KINDS = ("counter", "list")  # a driver that takes the loop value itself, or the items of a list
+MAX_COPIES = 1000
+PARAMS_NAME = "Instance values"
+_PART_RE = re.compile(r"[A-Za-z0-9.\-]{1,24}")
+
+
+def loop_options(loop_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """The loops of the Mind loop plan, each with whether copies can be made from it: a ready loop whose
+    one driver cell takes the loop value itself (a counter) or the items of a list."""
+    out: list[dict[str, Any]] = []
+    for le in loop_plan.get("loops") or []:
+        usable = le.get("status") == "ready" and le.get("kind") in LOOP_COPY_KINDS and len(le.get("cells") or []) == 1
+        why = None
+        if le.get("status") != "ready":
+            why = le.get("why") or "the loop needs a decision first (Mind loop panel)"
+        elif not usable and str(le.get("kind") or "").endswith("_of_table"):
+            why = "the driver reads a row or a column of a table: copies are made from a loop that counts, or runs through a list"
+        elif not usable:
+            why = "the driver takes a value worked out from the loop's counter: copies are made from a loop whose driver takes the value itself, or the items of a list"
+        out.append({"name": le.get("name"), "driver": le.get("driver"), "kind": le.get("kind"), "count": le.get("count"), "first": le.get("first"), "last": le.get("last"),
+                    "macro": le.get("macro"), "usable": usable, "why": why})
+    return out
+
+
+def _loop_values(analysis: dict[str, Any], le: dict[str, Any]) -> list[Any] | None:
+    """The values the loop's driver takes, in the macro's order: a counter's first..last, a list's items."""
+    if le.get("kind") == "counter" and isinstance(le.get("first"), int) and isinstance(le.get("last"), int):
+        return list(range(le["first"], le["last"] + 1))
+    if le.get("kind") == "list" and le.get("cells"):
+        from .inventory import values_cell
+
+        rng = str(le["cells"][0].get("range_fixed") or le["cells"][0].get("range") or "")
+        sheet, ref = _split(rng)
+        r = parse_ref(ref) if sheet else None
+        if not r or r["whole_column"] or r["whole_row"] or r["cells"] > MAX_COPIES:
+            return None
+        out: list[Any] = []
+        for col, row in _cells_of(sheet, ref):
+            v = _held(analysis, sheet, col, row)
+            if isinstance(v, str) and v.startswith("="):
+                try:
+                    v = values_cell(analysis, sheet, row, col)
+                except Exception:
+                    v = None
+            if not _empty(v):
+                out.append(_json_value(v))
+        return out or None
+    return None
+
+
+def _key_part(name: str, value: Any, k: int) -> str:
+    """One loop's part of a copy's key: the loop's name and its value ('Scenario0', 'CohortRng2021'), or
+    the value's position when the value is long or holds other characters ('GroupName3')."""
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    s = "" if value is None else str(value)
+    return f"{name}{s if _PART_RE.fullmatch(s) else k}"
+
+
+def _same_formula(a: Any, b: Any) -> bool:
+    from .formula_utils import STORAGE_PREFIX_RE
+
+    if not (isinstance(a, str) and isinstance(b, str)):
+        return a == b
+    return STORAGE_PREFIX_RE.sub("", a).replace(" ", "").upper() == STORAGE_PREFIX_RE.sub("", b).replace(" ", "").upper()
+
+
+def _results_block(analysis: dict[str, Any], model_map: dict[str, Any], results: str | None, notes: list[str]) -> dict[str, Any] | None:
+    """The block the main workbook shows for every copy: the range asked for, else the biggest run of
+    consecutive formula rows on the model's output sheet (the sheet with the most formulas among the
+    sheets the model map names as outputs). Its headers are the text row above it."""
+    wb0 = analysis["workbooks"][0]
+    sheetnames = {s["name"] for s in wb0.get("sheets") or []}
+    chosen_by = "user"
+    if results:
+        sheet, ref = _split(str(results))
+        r = parse_ref(ref) if sheet else None
+        if not r or r["whole_column"] or r["whole_row"] or sheet not in sheetnames:
+            notes.append(f"The results range {results!r} is not a range of a sheet of the model (Sheet!A1:D10): the main workbook shows no results.")
+            return None
+        c1, r1, c2, r2 = r["c1"], r["r1"], r["c2"], r["r2"]
+    else:
+        chosen_by = "outputs"
+        sheet = None
+        best: tuple[int, int, int, int, int] | None = None  # (cells, first row, last row, first col, last col)
+        for s in sorted((model_map.get("outputs") or {}).get("sheets") or [], key=lambda x: -(x.get("formulas") or 0)):
+            rows: dict[int, set[int]] = {}
+            for f in wb0.get("formulas") or []:
+                if f["sheet"] != s.get("sheet"):
+                    continue
+                p = parse_ref(str(f["cell"]))
+                if p:
+                    rows.setdefault(p["r1"], set()).add(p["c1"])
+            run: list[int] = []
+            for row in sorted(rows) + [None]:
+                if row is not None and run and row == run[-1] + 1:
+                    run.append(row)
+                    continue
+                if run:
+                    cells = sum(len(rows[x]) for x in run)
+                    cols = set().union(*(rows[x] for x in run))
+                    if best is None or cells > best[0]:
+                        best = (cells, run[0], run[-1], min(cols), max(cols))
+                run = [row] if row is not None else []
+            if best:
+                sheet = s["sheet"]
+                break
+        if not best or not sheet:
+            notes.append("The model map names no output sheet with formulas: the main workbook shows no results (name a results range).")
+            return None
+        _cells_n, r1, r2, c1, c2 = best
+    head = [_held(analysis, sheet, c, r1 - 1) for c in range(c1, c2 + 1)] if r1 > 1 else []
+    has_head = any(isinstance(v, str) and v.strip() and not v.startswith("=") for v in head)
+    headers: list[str] = []
+    for i in range(c2 - c1 + 1):
+        v = head[i] if has_head else None
+        h = _plain(v, f"Column {num_to_col(c1 + i)}") if isinstance(v, str) and not v.startswith("=") else f"Column {num_to_col(c1 + i)}"
+        n, base = 2, h
+        while h in headers or h in ("Key", "Row"):
+            h, n = f"{base} ({n})", n + 1
+        headers.append(h)
+    return {"sheet": sheet, "ref": f"{num_to_col(c1)}{r1}:{num_to_col(c2)}{r2}", "c1": c1, "r1": r1, "c2": c2, "r2": r2, "rows": r2 - r1 + 1, "cols": c2 - c1 + 1,
+            "headers": headers, "row_labels": [f"Row {r}" for r in range(r1, r2 + 1)], "header_row": has_head, "chosen_by": chosen_by}
+
+
+def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_plan: dict[str, Any], wanted: list[str], *, results: str | None = None,
+                      model_name: str | None = None) -> dict[str, Any]:
+    """One copy per combination of the values of the loops asked for (see build_instance_plan).
+
+    In the model: a split grid "#Instance values /InstanceSplit" below the used range of the first
+    loop's sheet -- the key and the loops' values, one row per copy (in each copy Mind keeps the copy's
+    row); each of those loops' driver cell reads its value from it with =INDEX(<column>,1); the
+    macro's other ready loops are written as MM_LOOPs (as the Mind loop plan has them), so they run
+    inside every copy; a cell shows the copy's key (MM_INSTANCEKEY). The main workbook lists the keys
+    and shows the results block of every copy, one row per copy and row of the block (MM_INSTANCE)."""
+    from itertools import product
+
+    from .grids import all_grids, grids_with_flag
+    from .loop_builder import ACTION_ID as LOOP_ACTION_ID, _driver_key
+
+    wb0 = analysis["workbooks"][0]
+    stem = _safe_stem(wb0.get("file_name") or Path(str(wb0.get("copy_path") or "model")).stem)
+    model_stem = _safe_stem(model_name) if model_name else f"{stem}_instances"
+    ext = str(wb0.get("file_type") or Path(str(wb0.get("copy_path") or "")).suffix.lstrip(".") or "xlsx").lower()
+    main: dict[str, Any] = {"file": f"{stem}_Main.xlsx", "model_file": f"{model_stem}.{ext}", "keys": [], "grids": [], "layout": "by_key_rows"}
+    plan: dict[str, Any] = {"found": bool(loop_plan.get("found")), "mode": "loops", "status": "not_built", "notes": [], "loop": None, "table": None, "key": None, "split_grid": None,
+                            "copies_from": [], "kept_loops": [], "results": None, "outputs": [], "clears": [], "operations": [], "operation_count": 0,
+                            "counts": {"key_values": 0, "result_cells": 0, "cleared": 0, "inserted_rows": 0}, "main": main, "how_it_runs": None}
+    notes = plan["notes"]
+    if not loop_plan.get("found"):
+        notes.append("No run loop in the macros: nothing to build.")
+        return plan
+    entries = list(loop_plan.get("loops") or [])
+    chosen: list[dict[str, Any]] = []
+    for w in wanted:
+        le = next((e for e in entries if str(e.get("name") or "").lower() == w.lower() or _driver_key(str(e.get("driver") or "")) == _driver_key(w)), None)
+        if le is None:
+            plan["status"] = "needs_decision"
+            notes.append(f"No loop is called {w!r} (the loops: {', '.join(str(e.get('name')) for e in entries) or 'none'}).")
+            return plan
+        if le not in chosen:
+            chosen.append(le)
+    opts = {o["name"]: o for o in loop_options(loop_plan)}
+    values: list[list[Any]] = []
+    for le in chosen:
+        o = opts.get(le.get("name")) or {}
+        vals = _loop_values(analysis, le) if o.get("usable") else None
+        if not vals:
+            plan["status"] = "needs_decision"
+            notes.append(f"Copies cannot be made from the loop {le.get('name')}: {o.get('why') or 'its values could not be read'}.")
+            return plan
+        values.append(vals)
+    n = 1
+    for vals in values:
+        n *= len(vals)
+    if n > MAX_COPIES:
+        plan["status"] = "needs_decision"
+        notes.append(f"{' x '.join(str(len(v)) for v in values)} = {n} copies, above the limit of {MAX_COPIES}: keep one of these loops a loop.")
+        return plan
+    names = [str(le["name"]) for le in chosen]
+    combos = list(product(*[list(enumerate(v, 1)) for v in values]))
+    keys = ["_".join(_key_part(names[i], v, k) for i, (k, v) in enumerate(combo)) for combo in combos]
+    rows_values = [[v for _k, v in combo] for combo in combos]
+
+    # --- where the split grid goes: below the used range of the first loop's sheet ---------------------
+    p_sheet, p_ref = _split(str(chosen[0]["driver"]))
+    first_drv = parse_ref(p_ref) if p_sheet else None
+    if not first_drv:
+        plan["status"] = "needs_decision"
+        notes.append(f"The driver cell of the loop {names[0]} ({chosen[0].get('driver')}) is not one cell.")
+        return plan
+    left = max(1, min(parse_ref(_split(str(le["driver"]))[1])["c1"] for le in chosen if _split(str(le["driver"]))[0] == p_sheet) - 1)
+    right = left + len(chosen)
+    _max_col, max_row = _sheet_max(analysis, p_sheet)
+    top = max_row + 3  # two empty rows below the used range
+    while top < max_row + 400 and not all(_row_empty(analysis, p_sheet, r, max(1, left - 1), right + 1) for r in range(top - 1, top + 5 + len(keys))):
+        top += 1
+    if top + 4 + len(keys) > 1_048_576:
+        plan["status"] = "needs_decision"
+        notes.append(f"{_qs(p_sheet)} has no free rows below its used range for the grid of the copies' values.")
+        return plan
+    taken = {str(g.get("name") or "").lower() for g in all_grids(analysis)}
+    grid_name = PARAMS_NAME if PARAMS_NAME.lower() not in taken else f"{PARAMS_NAME} {stem}"
+    title = f"#{grid_name} {SPLIT_FLAG}"
+    title_row, header_row, first_row, last_row = top + 2, top + 3, top + 4, top + 3 + len(keys)
+    L, R = num_to_col(left), num_to_col(right)
+    ops: list[dict[str, Any]] = []
+    ops.append(_op("set_value", p_sheet, cell=f"{L}{top}", before=None, after="This copy's key", note="label of the key cell"))
+    ops.append(_op("set_formula", p_sheet, cell=f"{num_to_col(left + 1)}{top}", before=None, after=f'=MM_INSTANCEKEY("{keys[0]}")', note="the copy's key (in Excel: the first key)"))
+    ops.append(_op("set_value", p_sheet, cell=f"{L}{title_row}", before=None, after=title,
+                   note="the split grid's title: in each copy Mind keeps the one row whose first column holds the copy's key"))
+    block = [[KEY_HEADER, *names]] + [[k, *vals] for k, vals in zip(keys, rows_values)]
+    ops.append(_op("set_range_values", p_sheet, ref=f"{L}{header_row}:{R}{last_row}", cell=f"{L}{header_row}:{R}{last_row}", values=block, before=None,
+                   after=f"{len(keys)} copies: the key and the value of {', '.join(names)}", note="one row per copy: its key, then the value each loop's driver takes in it"))
+
+    # --- each chosen loop's driver reads its value from the copy's row ------------------------------------
+    for i, le in enumerate(chosen):
+        d_sheet, d_ref = _split(str(le["driver"]))
+        d = parse_ref(d_ref)
+        col = num_to_col(left + 1 + i)
+        formula = f"=INDEX({_qs(p_sheet)}!${col}${first_row}:${col}${last_row},1)"
+        before = _held(analysis, d_sheet, d["c1"], d["r1"])
+        ops.append(_op("set_formula", d_sheet, cell=f"{num_to_col(d['c1'])}{d['r1']}", before=before, after=formula,
+                       note=f"{le['name']} of this copy: the one row Mind keeps in the copy (in Excel: the first copy's value, {rows_values[0][i]})"))
+        dropdown = _dropdown_at(analysis, d_sheet, d_ref.replace("$", ""))
+        if dropdown:
+            ops.append(_op("remove_validation", d_sheet, cell=d_ref.replace("$", ""), before=dropdown, after=None, note="Mind treats a cell with a dropdown as an input and drops its formula"))
+            notes.append(f"{le['driver']} had {dropdown}: it is removed, because Mind drops the formula of a cell with a dropdown.")
+        plan["copies_from"].append({"name": le["name"], "driver": le["driver"], "kind": le.get("kind"), "values": values[i], "count": len(values[i]), "formula": formula, "macro": le.get("macro")})
+
+    # --- the macro's other loops stay loops inside every copy ---------------------------------------------
+    chosen_names = set(names)
+    kept_ops = 0
+    for le in entries:
+        if le["name"] in chosen_names:
+            continue
+        if le.get("status") != "ready":
+            notes.append(f"The loop {le['name']} is not written ({le.get('why') or 'it needs a decision on the Mind loop panel'}): in Mind its driver keeps one value.")
+            continue
+        mine = [o for o in loop_plan.get("operations") or [] if o.get("action_id") == LOOP_ACTION_ID and o.get("loop") == le["name"]]
+        todo = [o for o in mine if not (o["op"] == "set_formula" and _same_formula(o.get("before"), o.get("after")))]
+        ops.extend(todo)
+        kept_ops += len(todo)
+        plan["kept_loops"].append({"name": le["name"], "driver": le.get("driver"), "count": le.get("count"), "written": bool(todo), "already": bool(mine) and not todo})
+    # anything else that still names a chosen loop (an MM_RESULT of an earlier loop build) loses its loop
+    drivers = {(_split(str(le["driver"]))[0], _split(str(le["driver"]))[1].replace("$", "").upper()) for le in chosen}
+    pat = re.compile(r'MM_(?:LOOP|RESULT)\w*\s*\([^"]*"(' + "|".join(re.escape(x) for x in names) + r')"', re.I)
+    stale = [f"{_qs(f['sheet'])}!{f['cell']}" for f in wb0.get("formulas") or [] if pat.search(str(f.get("formula") or "")) and (f["sheet"], str(f["cell"]).upper()) not in drivers]
+    if stale:
+        notes.append(f"{len(stale)} cell(s) still name the loop {' / '.join(names)} in an MM_ function ({', '.join(stale[:6])}{', …' if len(stale) > 6 else ''}): "
+                     "that loop is a copy now, so read those values in the main workbook instead.")
+    inputs = [g for g in grids_with_flag(analysis, "input")]
+    if inputs:
+        g0 = _plain(str(inputs[0].get("title") or inputs[0].get("name") or "").split("/")[0], "Input")
+        notes.append(f"{len(inputs)} input grid(s) (/Input) stay in the copied model: every copy starts with the values they hold now. In Mind a file named "
+                     f"'<key>-<grid>.csv' (for example '{keys[0]}-{g0}.csv') changes one copy only; a file without a key in its name is not matched.")
+    if any(le.get("macro") for le in chosen):
+        notes.append("Every copy computes. If the macro skips some passes, or writes out only some of them, read only the copies it would keep.")
+
+    # --- the main workbook: the keys, and the results block of every copy ---------------------------------
+    word = " and ".join(names)
+    res = _results_block(analysis, model_map, results, notes)
+    main.update(keys=keys, key_header=word, model_stem=model_stem, block=res)
+    main["grids"] = [{"title": f"#{word} instances /InstanceKeys", "sheet": "Instances", "rows": len(keys), "cols": 1,
+                      "what": f"the keys: Mind makes one copy of {main['model_file']} per row (the header is the model's file name)"}]
+    if res:
+        cells = len(keys) * res["rows"] * res["cols"]
+        if cells <= MAX_MAIN_CELLS:
+            main["grids"].append({"title": f"#Results by {word}", "sheet": "Summary", "rows": len(keys) * res["rows"], "cols": res["cols"] + 2,
+                                  "what": f"one row per copy and row of {_qs(res['sheet'])}!{res['ref']}: what the copy computes there (MM_INSTANCE by key)"})
+            plan["counts"]["result_cells"] = cells
+        else:
+            notes.append(f"The results of every copy would take {cells} formulas (limit {MAX_MAIN_CELLS}): name a smaller results range.")
+        plan["results"] = {"block": f"{_qs(res['sheet'])}!{res['ref']}", "rows": res["rows"], "cols": res["cols"], "chosen_by": res["chosen_by"]}
+        notes.append(f"A plain link to the copied model would add every copy up ({word} together), so the main workbook shows each copy's own values only.")
+
+    plan["key"] = {"column": L, "header": KEY_HEADER, "distinct": len(keys), "counts": {}, "candidates": [], "chosen_by": "loops", "missing": 0, "values": keys}
+    plan["split_grid"] = {"title_cell": f"{_qs(p_sheet)}!{L}{title_row}", "title": title, "header_cell": f"{_qs(p_sheet)}!{L}{header_row}", "inserted_rows": 0, "inserted_column": None,
+                          "key_range": f"{_qs(p_sheet)}!{L}{first_row}:{L}{last_row}", "reused_title": False, "key_cell": f"{_qs(p_sheet)}!{num_to_col(left + 1)}{top}"}
+    plan["operations"] = ops
+    plan["operation_count"] = len(ops)
+    plan["counts"].update({"key_values": len(keys), "inserted_columns": 0, "operations": len(ops), "kept_loop_operations": kept_ops})
+    plan["status"] = "ready"
+    text = (f"In Mind: one copy of {main['model_file']} per combination of {word} ({len(keys)} copies, listed in {main['file']}). Each copy reads its own "
+            f"{word} from the grid {grid_name} ({_qs(p_sheet)}!{L}{title_row}), which keeps only the copy's row.")
+    kept = [k["name"] for k in plan["kept_loops"]]
+    if kept:
+        text += f" {', '.join(kept)} {'stays a loop' if len(kept) == 1 else 'stay loops'} inside every copy."
+    if res and len(main["grids"]) > 1:
+        text += f" {main['file']} shows {_qs(res['sheet'])}!{res['ref']} of every copy (MM_INSTANCE)."
+    macros = sorted({le["macro"] for le in chosen if le.get("macro")})
+    if macros:
+        text += f" The macro {', '.join(macros)} is not needed in Mind."
+    plan["how_it_runs"] = text
+    return plan
+
+
 # --- the main workbook -------------------------------------------------------------------------------
 def write_main_workbook(plan: dict[str, Any], model_path: str | Path, main_path: str | Path) -> dict[str, Any]:
     """Write the main workbook next to the model, through Excel: the keys grid, the results by key,
@@ -936,7 +1270,29 @@ def write_main_workbook(plan: dict[str, Any], model_path: str | Path, main_path:
             summ = wb.Worksheets.Add(After=inst)
             summ.Name = "Summary"
             row = 2
-            if block:
+            if block and main.get("layout") == "by_key_rows":
+                # copies made from loops: one row per copy and row of the block, each cell what that copy
+                # computes there (MM_INSTANCE by key); no sum over the copies (it would add scenarios up)
+                b = block
+                summ.Range(f"B{row}").Value2 = (f"What each copy computes in {b['sheet']}!{b['ref']}, one row per copy and row of that block. "
+                                                "In Excel every row shows the one copy Excel has (the first key).")
+                row += 2
+                if f"#Results by {word}" in titles:
+                    summ.Range(f"B{row}").Value2 = f"#Results by {word}"
+                    last = num_to_col(3 + b["cols"])
+                    summ.Range(f"B{row + 1}:{last}{row + 1}").Value2 = (("Key", "Row") + tuple(excel_text(str(h)) for h in b["headers"]),)
+                    first = row + 2
+                    n_rows = len(keys) * b["rows"]
+                    summ.Range(f"B{first}:C{first + n_rows - 1}").Value2 = tuple((excel_text(k), excel_text(str(lab))) for k in keys for lab in b["row_labels"])
+                    rows = []
+                    for i in range(n_rows):
+                        m = i % b["rows"]
+                        r = first + i
+                        rows.append(tuple(f"=MM_INSTANCE({_xref(model_path.name, b['sheet'], f'${num_to_col(b['c1'] + c)}${b['r1'] + m}')},$B{r})" for c in range(b["cols"])))
+                    summ.Range(f"D{first}:{last}{first + n_rows - 1}").Formula = tuple(rows)
+                    formulas += n_rows * b["cols"]
+                    grids += 1
+            elif block:
                 b = block
                 summ.Range(f"B{row}").Value2 = f"Each copy's results ({b['sheet']}!{b['ref']} of that copy) by {word}, then all copies added up. In Excel every grid shows the one copy Excel has."
                 row += 2
@@ -1016,6 +1372,10 @@ def describe(plan: dict[str, Any]) -> str:
         lines.append(f"key column {k['column']} ({k.get('header')!r}, {k['distinct']} values, chosen by {k['chosen_by']}): " + ", ".join(f"{v}: {n}" for v, n in list(k["counts"].items())[:12]) + (" …" if len(k["counts"]) > 12 else ""))
     elif k:
         lines.append("key: " + (", ".join(f"{c['column']} {c['header']!r} ({c['distinct']})" for c in k.get("candidates") or []) or "no candidate"))
+    for c in plan.get("copies_from") or []:
+        lines.append(f"copies from loop {c['name']} ({c.get('count')} values)  driver {c.get('driver')}  {c.get('formula')}")
+    if plan.get("kept_loops"):
+        lines.append("loops kept inside every copy: " + ", ".join(k["name"] for k in plan["kept_loops"]))
     sg = plan.get("split_grid")
     if sg:
         lines.append(f"split grid: title {sg['title']!r} in {sg['title_cell']}, header {sg['header_cell']}, keys in {sg['key_range']}  (rows inserted: {sg['inserted_rows']}, column inserted: {sg['inserted_column']})")
@@ -1047,11 +1407,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--key", default=None, help="the key column: a header text or a column letter of the model-point table")
     ap.add_argument("--keys", choices=("present", "all"), default="present", help="present = keys that have rows; all = every key of the list the macro runs through")
     ap.add_argument("--name", default=None, help="the model's file stem as it will be uploaded (default <workbook>_instances)")
+    ap.add_argument("--loops", default=None, help="copies from these loops (comma separated names or driver cells) instead of a key column")
+    ap.add_argument("--results", default=None, help="with --loops: the block the main workbook shows for every copy (Sheet!A1:B9)")
     ap.add_argument("--work", default=None)
     a = ap.parse_args(argv)
     work = Path(a.work) if a.work else Path(tempfile.mkdtemp(prefix="mind_instances_"))
     analysis = build_analysis(Path(a.workbook), work, Path(a.workbook).stem)
-    plan = build_instance_plan(analysis, build_model_map(analysis), key=a.key, keys=a.keys, model_name=a.name)
+    loops = [x.strip() for x in a.loops.split(",") if x.strip()] if a.loops else None
+    plan = build_instance_plan(analysis, build_model_map(analysis), key=a.key, keys=a.keys, model_name=a.name, loops=loops, results=a.results)
     out = sys.__stdout__
     try:
         out.reconfigure(encoding="utf-8", errors="replace")

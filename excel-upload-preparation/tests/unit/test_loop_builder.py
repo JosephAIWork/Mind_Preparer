@@ -189,7 +189,10 @@ def test_a_counted_loop_without_a_count_cell_asks_for_one(tmp_path, monkeypatch)
     assert lp["status"] == "ready" and lp["kind"] == "derived"
     assert lp["cells"][0]["formula"] == "='Assumption Setting'!D8+MM_LOOP(\"active_year\",'Model Inputs'!D173)-1"
     extra = [o for o in plan["operations"] if o["op"] == "set_value"]
-    assert extra == [{"action_id": "mind_loop", "rule_id": "LOOP-001", "op": "set_value", "sheet": "Model Inputs", "cell": "D173", "before": None, "after": 5, "note": "the count of the loop active_year (chosen cell)"}]
+    assert extra == [{"action_id": "mind_loop", "rule_id": "LOOP-001", "op": "set_value", "sheet": "Model Inputs", "cell": "D173", "before": None, "after": 5, "note": "the count of the loop active_year (chosen cell)",
+                      "loop": "active_year"}]
+    # every operation of a loop says which loop it belongs to (the instances builder keeps or drops a loop's operations by it)
+    assert {o.get("loop") for o in plan["operations"] if o["action_id"] == "mind_loop"} == {"active_year"}
 
 
 def test_nested_list_loops_and_a_block_placed_by_one_of_them(tmp_path, monkeypatch):

@@ -845,8 +845,8 @@ def test_mind_instances_apply_writes_the_version_then_the_main_workbook_and_the_
     monkeypatch.setattr(server, "_tracked_apply", _fake_apply(tmp_path))
     seen: dict = {}
 
-    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None):
-        seen.update(key=key, keys=keys, model_name=model_name, loop_plan=loop_plan is not None)
+    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None, loops=None, results=None):
+        seen.update(key=key, keys=keys, model_name=model_name, loop_plan=loop_plan is not None, loops=loops, results=results)
         op = {"op": "set_value", "action_id": "mind_instances", "rule_id": "INST-001", "sheet": "Data", "cell": "Z9", "before": None, "after": 1}
         return {"found": True, "status": "ready", "notes": [], "operations": [op],
                 "main": {"file": f"{model_name}_Main.xlsx", "model_file": f"{model_name}.xlsx", "keys": ["a", "b"], "grids": []}}
@@ -868,7 +868,7 @@ def test_mind_instances_apply_writes_the_version_then_the_main_workbook_and_the_
     res = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"key": "Product", "keys": "all", "reanalyze": False})
     assert res.status_code == 200, res.text
     out = res.json()
-    assert seen == {"key": "Product", "keys": "all", "model_name": "plain_grid_instances", "loop_plan": True}
+    assert seen == {"key": "Product", "keys": "all", "model_name": "plain_grid_instances", "loop_plan": True, "loops": None, "results": None}
     assert out["version"]["id"] == "ver-002" and out["version"]["source"] == "instances" and out["version"]["label"].startswith("v2 — Mind instances:")
     assert out["files"] == ["plain_grid_instances.xlsx", "plain_grid_instances_Main.xlsx"] and out["download"] == f"/api/sessions/{sid}/mind-instances/download"
     assert "operations" not in out["plan"] and out["warnings"] == [] and out["main_workbook"] == {"grids": 3, "formulas": 7}
@@ -904,7 +904,7 @@ def test_mind_instances_apply_makes_no_zip_when_a_change_was_refused(client, pla
         return {"status": "PARTIAL", "output_path": str(out), "applied": list(ops), "failed": list(failed_ops), "verified_opens_in_excel": True,
                 "change_log_entry": {"output_sha256": "0" * 64}}
 
-    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None):
+    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None, loops=None, results=None):
         op = {"op": "set_value", "action_id": "mind_instances", "rule_id": "INST-001", "sheet": "Data", "cell": "Z9", "before": None, "after": 1}
         return {"found": True, "status": "ready", "notes": [], "operations": [op],
                 "main": {"file": f"{model_name}_Main.xlsx", "model_file": f"{model_name}.xlsx", "keys": ["a", "b"], "grids": []}}
@@ -932,6 +932,38 @@ def test_mind_instances_apply_makes_no_zip_when_a_change_was_refused(client, pla
     out = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"reanalyze": False}).json()
     assert out["version"]["id"] == "ver-003" and out["download"] == f"/api/sessions/{sid}/mind-instances/download" and len(calls) == 1 and out["warnings"] == []
     assert client.get(out["download"]).status_code == 200
+
+
+def test_mind_instances_plan_passes_the_loops_the_copies_are_made_from(client, plain_grid_xlsx, monkeypatch):
+    """GET / POST .../mind-instances-plan take `loops` (comma separated, or a JSON list, or a list in the
+    body), `results` and `loop_choices` (each loop's own choices, as the Mind loop panel sends them) to
+    the builder; a plan with any of them is built fresh, never the cached default; bad input is a 422."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    seen: list = []
+    choices: list = []
+    real_loop_plan = server.build_loop_plan
+
+    def spy_loop_plan(analysis, mp, **kw):
+        choices.append(kw.get("loops"))
+        return real_loop_plan(analysis, mp, **kw)
+
+    def fake_plan(analysis, model_map, *, loop_plan=None, key=None, keys="present", model_name=None, loops=None, results=None):
+        seen.append((loops, results))
+        return {"found": True, "status": "needs_decision", "notes": [], "operations": [], "main": {}}
+
+    monkeypatch.setattr(server, "build_loop_plan", spy_loop_plan)
+    monkeypatch.setattr(server, "build_instance_plan", fake_plan)
+    client.get(f"/api/sessions/{sid}/mind-instances-plan", params={"loops": "CohortRng, Scenario", "results": "Result!B3:C5"})
+    client.get(f"/api/sessions/{sid}/mind-instances-plan", params={"loops": '["Ctrl!C5"]', "loop_choices": '{"Ctrl!C7": {"last": 2}}'})
+    client.get(f"/api/sessions/{sid}/mind-instances-plan")
+    client.get(f"/api/sessions/{sid}/mind-instances-plan")
+    assert seen == [(["CohortRng", "Scenario"], "Result!B3:C5"), (["Ctrl!C5"], None), (None, None)]  # the default plan is built once, then kept
+    assert choices == [None, {"Ctrl!C7": {"last": 2}}, None]
+    assert client.get(f"/api/sessions/{sid}/mind-instances-plan", params={"loops": "[1, 2"}).status_code == 422
+    assert client.get(f"/api/sessions/{sid}/mind-instances-plan", params={"loop_choices": "[1]"}).status_code == 422
+    res = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"loops": ["Scenario"], "reanalyze": False})
+    assert res.status_code == 422 and seen[-1] == (["Scenario"], None)  # nothing to write: the fake plan has no operations
+    assert client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={"loops": [1]}).status_code == 422
 
 
 def test_the_step_map_names_the_mind_instances_routes():

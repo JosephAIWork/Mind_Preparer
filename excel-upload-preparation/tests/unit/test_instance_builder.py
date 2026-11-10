@@ -518,3 +518,199 @@ def test_the_main_workbook_keeps_text_keys_as_text(tmp_path, monkeypatch):
     assert [summ.cell(results.row + 2 + i, 2).value for i in range(4)] == ["001", "1", "010", "10"]
     assert next(c for row in summ.iter_rows() for c in row if c.value == "#All copies") is not None
     wb.close()
+
+
+
+# --- copies from loops: one copy per combination of the values of two loops -------------------------
+SCENARIO_MACRO = """
+Sub AllRuns()
+Dim scenarioGrid As Range
+Set scenarioGrid = ThisWorkbook.Names("ScenarioGrid").RefersToRange
+Dim numScenario As Long
+numScenario = scenarioGrid(1, 2).End(xlDown).Row - scenarioGrid(1, 2).Row + 1
+Dim startY As Long: startY = Range("StartCohort").Value
+Dim endY As Long: endY = Range("CalcYear").Value
+For cohortYear = startY To endY
+    Range("CohortRng").Value = cohortYear
+    For i = 0 To numScenario - 1
+        Range("Scenario").Value = i
+        Calculate
+    Next i
+Next cohortYear
+End Sub
+
+Sub RollRun()
+Dim startY As Long: startY = Range("StartCohort").Value
+Dim endY As Long: endY = Range("CalcYear").Value
+For y = startY To endY
+    Range("RollYear").Value = y
+    Calculate
+Next y
+End Sub
+"""
+
+
+def _scenario_book(tmp_path: Path, *, stale: bool = False, driver_loop: bool = False) -> Path:
+    """A model run per cohort and scenario (the cohort a counter, the scenario a dropdown list) with a
+    second macro that runs a roll-forward year: the shape of an IFRS 17 tool, invented here. "Result"
+    holds the block the main workbook reads. `stale`: a cell still sums the Scenario loop (an earlier
+    loop build). `driver_loop`: the cohort cell already holds the Mind loop."""
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = openpyxl.Workbook()
+    ctrl = wb.active
+    ctrl.title = "Ctrl"
+    ctrl["B2"], ctrl["C2"] = "Calc year", 2024
+    ctrl["B3"], ctrl["C3"] = "First cohort", 2022
+    ctrl["B5"], ctrl["C5"] = "Cohort", '=MM_LOOP("CohortRng",Ctrl!C2,2022,Ctrl!C3,Ctrl!C2)' if driver_loop else 2024
+    ctrl["B7"], ctrl["C7"] = "Scenario", 1
+    ctrl["B9"] = "Scenarios"
+    for i in range(3):
+        ctrl.cell(9 + i, 3, i)
+        ctrl.cell(9 + i, 4, ["Base", "Up", "Down"][i])
+    dv = DataValidation(type="list", formula1="$C$9:$C$11")
+    ctrl.add_data_validation(dv)
+    dv.add("C7")
+    res = wb.create_sheet("Result")
+    res["A2"], res["B2"], res["C2"] = "Item", "Value", "Double"
+    for r, (label, f) in enumerate([("Cohort", "=Ctrl!C5"), ("Scenario", "=Ctrl!C7"), ("Both", "=Ctrl!C5*10+Ctrl!C7")], start=3):
+        res.cell(r, 1, label)
+        res.cell(r, 2, f)
+        res.cell(r, 3, f"=B{r}*2")
+    roll = wb.create_sheet("Roll")
+    roll["B2"], roll["C2"] = "Roll year", 2024
+    roll["C3"] = "=C2+1"
+    if stale:
+        roll["E2"] = '=MM_RESULT(Result!B3,"Scenario",1)'
+    for n, ref in (("CalcYear", "Ctrl!$C$2"), ("StartCohort", "Ctrl!$C$3"), ("CohortRng", "Ctrl!$C$5"), ("Scenario", "Ctrl!$C$7"), ("ScenarioGrid", "Ctrl!$B$9"),
+                   ("RollYear", "Roll!$C$2")):
+        wb.defined_names[n] = DefinedName(n, attr_text=ref)
+    p = tmp_path / "ifrs.xlsx"
+    wb.save(p)
+    wb.close()
+    return p
+
+
+KEYS9 = [f"CohortRng{y}_Scenario{s}" for y in (2022, 2023, 2024) for s in (0, 1, 2)]
+
+
+def test_copies_from_two_loops_a_split_grid_of_their_values_and_the_other_loop_stays_a_loop(tmp_path, monkeypatch):
+    path = _scenario_book(tmp_path)
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch)
+    # without loops asked for: the table way finds no table, and says which loops copies can come from
+    assert plan["mode"] == "table" and plan["status"] != "ready"
+    opts = {o["name"]: o for o in plan["loop_options"]}
+    assert set(opts) == {"CohortRng", "Scenario", "RollYear"} and all(o["usable"] for o in opts.values())
+    assert (opts["CohortRng"]["kind"], opts["CohortRng"]["count"], opts["Scenario"]["kind"], opts["Scenario"]["count"]) == ("counter", 3, "list", 3)
+    assert any("Copies from loops" in n and "CohortRng" in n for n in plan["notes"])
+
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["CohortRng", "Ctrl!$C$7"])
+    assert plan["status"] == "ready" and plan["mode"] == "loops" and plan["found"] is True
+    assert [(c["name"], c["driver"], c["values"]) for c in plan["copies_from"]] == [("CohortRng", "Ctrl!C5", [2022, 2023, 2024]), ("Scenario", "Ctrl!C7", [0, 1, 2])]
+    # the keys: every combination, the first loop outside (as the macro nests them)
+    assert plan["key"]["values"] == KEYS9 and plan["main"]["keys"] == KEYS9 and plan["counts"]["key_values"] == 9
+    # the split grid: below the used range of the first loop's sheet, the key first, then each loop's value
+    sg = plan["split_grid"]
+    assert (sg["title"], sg["title_cell"], sg["header_cell"], sg["key_range"], sg["key_cell"]) == ("#Instance values /InstanceSplit", "Ctrl!B16", "Ctrl!B17", "Ctrl!B18:B26", "Ctrl!C14")
+    by = _by_cell(plan)
+    assert (by[("Ctrl", "B14")]["after"], by[("Ctrl", "C14")]["after"]) == ("This copy's key", '=MM_INSTANCEKEY("CohortRng2022_Scenario0")')
+    assert by[("Ctrl", "B16")]["after"] == "#Instance values /InstanceSplit"
+    grid = by[("Ctrl", "B17:D26")]
+    assert grid["op"] == "set_range_values" and grid["values"][0] == ["Instance key", "CohortRng", "Scenario"]
+    assert grid["values"][1:] == [[k, y, s] for k, (y, s) in zip(KEYS9, [(y, s) for y in (2022, 2023, 2024) for s in (0, 1, 2)])]
+    # each chosen driver reads the copy's one row; the scenario's dropdown goes (Mind would drop the formula)
+    assert (by[("Ctrl", "C5")]["before"], by[("Ctrl", "C5")]["after"]) == (2024, "=INDEX(Ctrl!$C$18:$C$26,1)")
+    fx = {(o["sheet"], o.get("cell")): o for o in plan["operations"] if o["op"] == "set_formula"}
+    assert (fx[("Ctrl", "C7")]["before"], fx[("Ctrl", "C7")]["after"]) == (1, "=INDEX(Ctrl!$D$18:$D$26,1)")
+    assert [o["op"] for o in plan["operations"] if o["sheet"] == "Ctrl" and o.get("cell") == "C7"] == ["set_formula", "remove_validation"]
+    # the other macro's loop stays a loop inside every copy, written as the Mind loop plan has it
+    roll = fx[("Roll", "C2")]
+    assert roll["action_id"] == "mind_loop" and roll["after"].startswith('=MM_LOOP("RollYear"') and roll["loop"] == "RollYear"
+    assert [k["name"] for k in plan["kept_loops"]] == ["RollYear"] and plan["kept_loops"][0]["written"] is True
+    assert all(o["action_id"] == ACTION_ID for o in plan["operations"] if o.get("loop") is None)
+    # the main workbook: the keys and every copy's results block (the output sheet's formula block), no sum over the copies
+    m = plan["main"]
+    assert (m["layout"], m["key_header"], m["model_file"]) == ("by_key_rows", "CohortRng and Scenario", "ifrs_instances.xlsx")
+    assert m["block"]["ref"] == "B3:C5" and m["block"]["sheet"] == "Result" and m["block"]["headers"] == ["Value", "Double"] and m["block"]["row_labels"] == ["Row 3", "Row 4", "Row 5"]
+    assert [(g["title"], g["rows"], g["cols"]) for g in m["grids"]] == [("#CohortRng and Scenario instances /InstanceKeys", 9, 1), ("#Results by CohortRng and Scenario", 27, 4)]
+    assert plan["results"] == {"block": "Result!B3:C5", "rows": 3, "cols": 2, "chosen_by": "outputs"} and plan["counts"]["result_cells"] == 54
+    assert any("add every copy up" in n for n in plan["notes"]) and any("Ctrl!C7 had a dropdown" in n for n in plan["notes"])
+    assert "9 copies" in plan["how_it_runs"] and "RollYear stays a loop inside every copy" in plan["how_it_runs"] and "AllRuns is not needed" in plan["how_it_runs"]
+    json.dumps(plan)
+    assert "status: ready" in describe(plan)
+
+
+def test_copies_from_loops_can_be_written_without_excel(tmp_path, monkeypatch):
+    """Nothing is inserted, so openpyxl can write the plan: Ctrl then shows the split grid, flagged, its first
+    column the key; the drivers read its first row (the first copy, as Excel shows it)."""
+    path = _scenario_book(tmp_path)
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["CohortRng", "Scenario"])
+    out = apply_operations(path, tmp_path / "apply", plan["operations"], prefer_excel=False)
+    assert out["status"] == "APPLIED", out
+    wb = openpyxl.load_workbook(out["output_path"])
+    ws = wb["Ctrl"]
+    occupied = {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if c.value is not None}
+    grids, _standalone = detect_grids("Ctrl", occupied)
+    g = next(x for x in grids if x["name"] == "Instance values")
+    assert g["flag_names"] == ["instancesplit"] and g["title_cell"] == "B16" and g["header_values"] == ["Instance key", "CohortRng", "Scenario"] and (g["first_row"], g["last_row"]) == (17, 26)
+    assert [ws.cell(r, 2).value for r in (18, 26)] == ["CohortRng2022_Scenario0", "CohortRng2024_Scenario2"] and [ws.cell(26, c).value for c in (3, 4)] == [2024, 2]
+    assert ws["C5"].value == "=INDEX(Ctrl!$C$18:$C$26,1)" and ws["C7"].value == "=INDEX(Ctrl!$D$18:$D$26,1)" and not ws.data_validations.dataValidation
+    assert wb["Roll"]["C2"].value.startswith('=MM_LOOP("RollYear"')
+    wb.close()
+
+
+def test_copies_from_loops_choices_and_what_cannot_be_built(tmp_path, monkeypatch):
+    path = _scenario_book(tmp_path, stale=True, driver_loop=True)
+    # a results range can be named; the cohort cell's own Mind loop stays; a cell that still sums a chosen loop is named
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["Scenario"], results="Result!B5:C5", model_name="Tool")
+    assert plan["status"] == "ready" and plan["key"]["values"] == ["Scenario0", "Scenario1", "Scenario2"]
+    by = {(o["sheet"], o.get("cell")): o for o in plan["operations"] if o["op"] == "set_formula"}
+    assert by[("Ctrl", "C7")]["after"] == "=INDEX(Ctrl!$C$18:$C$20,1)" and plan["split_grid"]["title_cell"] == "Ctrl!B16"
+    assert ("Ctrl", "C5") not in by  # CohortRng stays a loop: its formula is already the plan's, nothing to write
+    assert {k["name"]: k["already"] for k in plan["kept_loops"]} == {"CohortRng": True, "RollYear": False}
+    assert plan["results"] == {"block": "Result!B5:C5", "rows": 1, "cols": 2, "chosen_by": "user"} and plan["main"]["model_file"] == "Tool.xlsx"
+    assert any("Roll!E2" in n and "MM_ function" in n for n in plan["notes"])
+    # a loop that is not there, a results range that is not one, too many copies
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["Nope"])
+    assert plan["status"] == "needs_decision" and "No loop is called 'Nope'" in plan["notes"][0] and plan["operations"] == []
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["Scenario"], results="Nowhere!A1:B2")
+    assert plan["status"] == "ready" and plan["main"]["block"] is None and len(plan["main"]["grids"]) == 1 and any("not a range" in n for n in plan["notes"])
+    import app.instance_builder as ib
+
+    monkeypatch.setattr(ib, "MAX_COPIES", 5)
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["CohortRng", "Scenario"])
+    assert plan["status"] == "needs_decision" and "3 x 3 = 9 copies, above the limit of 5" in plan["notes"][0]
+
+
+def test_key_parts_name_the_loop_and_its_value():
+    from app.instance_builder import _key_part
+
+    assert _key_part("Scenario", 0, 1) == "Scenario0" and _key_part("CohortRng", 2021.0, 1) == "CohortRng2021" and _key_part("Group", "VFA-1", 2) == "GroupVFA-1"
+    assert _key_part("Group", "変額", 3) == "Group3" and _key_part("Group", "a b", 4) == "Group4" and _key_part("Flag", True, 1) == "Flag1"
+
+
+@needs_excel
+def test_the_main_workbook_of_copies_from_loops_has_one_row_per_copy_and_block_row(tmp_path, monkeypatch):
+    path = _scenario_book(tmp_path)
+    plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["CohortRng", "Scenario"])
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    model_path = out_dir / plan["main"]["model_file"]
+    shutil.copyfile(path, model_path)
+    main_path = out_dir / plan["main"]["file"]
+    done = write_main_workbook(plan, model_path, main_path)
+    assert done["grids"] == 2 and done["formulas"] == 9 * 3 * 2
+    wb = openpyxl.load_workbook(main_path)
+    inst = wb["Instances"]
+    assert inst["B4"].value == "#CohortRng and Scenario instances /InstanceKeys" and inst["B5"].value == "ifrs_instances" and [inst.cell(r, 2).value for r in range(6, 15)] == KEYS9
+    summ = wb["Summary"]
+    title = next(c for row in summ.iter_rows() for c in row if c.value == "#Results by CohortRng and Scenario")
+    head = [summ.cell(title.row + 1, c).value for c in range(2, 6)]
+    assert head == ["Key", "Row", "Value", "Double"]
+    first = title.row + 2
+    assert [summ.cell(first + i, 2).value for i in (0, 2, 3, 26)] == [KEYS9[0], KEYS9[0], KEYS9[1], KEYS9[8]]
+    assert [summ.cell(first + i, 3).value for i in (0, 1, 2, 3)] == ["Row 3", "Row 4", "Row 5", "Row 3"]
+    f = STORAGE_PREFIX_RE.sub("", summ.cell(first + 4, 5).value)
+    assert f == f"=MM_INSTANCE([1]Result!$C$4,$B{first + 4})"
+    assert not any(c.value == "#All copies" for row in summ.iter_rows() for c in row)
+    wb.close()

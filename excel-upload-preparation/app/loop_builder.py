@@ -927,15 +927,15 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 note = f"loop {loop_name}: the driver takes its value from {c['range']}"
                 if isinstance(before, str) and before.startswith("="):
                     note += " (held a formula; the macro overwrote it with values on every pass)"
-                ops.append({"op": "set_formula", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": c["ref"], "before": before, "after": c["formula"], "note": note})
+                ops.append({"op": "set_formula", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": c["ref"], "before": before, "after": c["formula"], "note": note, "loop": loop_name})
                 dropdown = _dropdown_at(analysis, c["sheet"], c["ref"])
                 if dropdown:
                     ops.append({"op": "remove_validation", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": c["sheet"], "cell": c["ref"], "before": dropdown, "after": None,
-                                "note": f"loop {loop_name}: Mind treats a cell with a dropdown as an input and drops its formula, so the loop would be lost"})
+                                "note": f"loop {loop_name}: Mind treats a cell with a dropdown as an input and drops its formula, so the loop would be lost", "loop": loop_name})
                     entry["notes"].append(f"{_qs(c['sheet'])}!{c['ref']} had {dropdown}: it is removed, because Mind drops the formula of a cell with a dropdown and the loop would be lost.")
                     plan["counts"]["extra"] += 1
             for o in res.get("extra_ops") or []:
-                ops.append({"action_id": ACTION_ID, "rule_id": RULE_ID, **o})
+                ops.append({"action_id": ACTION_ID, "rule_id": RULE_ID, **o, "loop": loop_name})
                 plan["counts"]["extra"] += 1
             plan["counts"]["loop_cells"] += len(res["cells"])
             built[d["loop_var"]] = entry
@@ -1019,7 +1019,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                 formula = f'=MM_RESULT({_qs(from_sheet)}!${num_to_col(sc)}${sr},"{le["name"]}",{k})'
                 before = _held(analysis, t_sheet, tc, tr)
                 ops.append({"op": "set_formula", "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": t_sheet, "cell": f"{num_to_col(tc)}{tr}", "before": before, "after": formula,
-                            "note": f"loop {le['name']} value {k} (= {value}): what {_qs(from_sheet)}!{num_to_col(sc)}{sr} holds for it"})
+                            "note": f"loop {le['name']} value {k} (= {value}): what {_qs(from_sheet)}!{num_to_col(sc)}{sr} holds for it", "loop": le["name"]})
                 if first_cell is None:
                     first_cell = f"{_qs(t_sheet)}!{num_to_col(tc)}{tr} {formula}"
                 written += 1
@@ -1034,7 +1034,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         plan["counts"]["result_cells"] += written
         header_ops, header_note = _complete_header(analysis, first_block_sheet, first_block, from_sheet, src_cells, le["name"])
         if header_ops:
-            ops.extend(header_ops)
+            ops.extend({**o, "loop": le["name"]} for o in header_ops)
             plan["counts"]["extra"] += len(header_ops)
             entry_o["header_cells"] = [f"{o['sheet']}!{o['cell']}" for o in header_ops]
         if header_note:

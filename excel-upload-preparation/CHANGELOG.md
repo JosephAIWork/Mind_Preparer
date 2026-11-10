@@ -5,6 +5,30 @@
 Built in October on a side branch as 1.13.0 and 1.14.0 and never released; brought onto this branch
 and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes, per-loop choices).
 
+- **Copies from loops** (`app/instance_builder.py`, the instances panel's "Copies from loops" boxes;
+  `GET` / `POST .../mind-instances-plan` take `loops`, `results` and `loop_choices`). For a model whose
+  macro runs the whole model once per scenario and cohort (or any counter or list loop), not one row
+  of a table at a time: one copy per combination of the chosen loops' values. In the model: a split
+  grid `#Instance values /InstanceSplit` two rows below the used range of the first loop's sheet (the
+  key, then each loop's value, one row per copy), each chosen driver `=INDEX(<its column>,1)` (the one
+  row Mind keeps in the copy; in Excel the first copy), the driver's dropdown removed, a cell with
+  `MM_INSTANCEKEY`; the macro's other loops are written as `MM_LOOP`s, as the Mind loop plan has them,
+  so they run inside every copy. The main workbook lists the keys and shows one block of the model for
+  every copy -- the formula block of the output sheet by default, or the range asked for -- one row per
+  copy and block row, `MM_INSTANCE(<cell>, <key>)`; no sum over the copies (it would add scenarios up).
+  The notes say what Mind does with the model's `/Input` grids (a file named `<key>-<grid>.csv` changes
+  one copy), that every copy computes (also the passes the macro skips), and name any cell that still
+  uses a chosen loop in an `MM_` function. Every plan lists `loop_options` (each loop, and why copies
+  cannot be made from it); a plan by the table that cannot be built points to them. The Mind loop
+  plan's operations now say which loop they belong to (`loop`).
+- **In Mind, the anonymized IFRS 17 tool as 24 copies** (scenario 0-3 x cohort 2021-2026; the group and
+  roll-forward-year loops stay loops), built through the app's API from the prepped model:
+  `zzz_mindready_tokyo_instances_1` converted in 129 s, its upload test shows the same 63 cells as the
+  model without instances (rounding residues below 4e-6 and 8 "TRUE" text cells), the run took 3 min
+  06 s, consistent with the audit trail. The main workbook's export after the run against Excel with
+  each copy's cohort and scenario set in the driver cells: 24 x 6 x 87 = 12,528 cells, 0 differences.
+- **`scripts/mind_upload.py`**: the log reader clicks "Hide Logs" only. It took "Close", which closes the
+  upload window without adding the templates, so `--run` found no Run button.
 - **Written with the formula repairs Prep still has**, as the Mind loop is now: a version built before
   Prep goes to Mind with CELL / INFO frozen, OFFSET ranges written out and the rest of the "Fix the
   formulas" set, so Mind computes what Excel does. A cell the builder writes keeps the builder's

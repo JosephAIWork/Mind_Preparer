@@ -3,7 +3,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular
 import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
-import { FinderDimension, FinderFits, FinderResult, InstanceChoices, InstancePlan, InstancePlanOperation, InstancePlanSplitGrid, appliedCount, failedCount, failedText } from "../../core/models";
+import { FinderDimension, FinderFits, FinderResult, InstanceChoices, InstanceLoopOption, InstancePlan, InstancePlanOperation, InstancePlanSplitGrid, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** One word by count: plural(1, "cell") = "cell", plural(3, "cell") = "cells", plural(2, "axis", "axes") = "axes". */
@@ -31,6 +31,8 @@ export class InstancesPanel implements OnInit, OnDestroy {
   readonly key = signal("");
   /** keys=all: every value of the list the macro reads, even the ones without rows */
   readonly allKeys = signal(false);
+  /** the loops the copies are made from (names, in the plan's order); empty = by the key column */
+  readonly loops = signal<string[]>([]);
   readonly plan = signal<InstancePlan | null>(null);
   readonly loading = signal(false);
   readonly writing = signal(false);
@@ -69,6 +71,14 @@ export class InstancesPanel implements OnInit, OnDestroy {
   });
   readonly keyWord = computed(() => this.plan()?.key?.header || "key");
   readonly keyCounts = computed<[string, number][]>(() => Object.entries(this.plan()?.key?.counts ?? {}));
+  /** the loops copies can be made from (the plan lists them whatever the mode); kept while a preview runs */
+  readonly loopOptions = signal<InstanceLoopOption[]>([]);
+  /** the number of copies the ticked loops make (the product of their value counts) */
+  readonly loopCopies = computed(() => {
+    const chosen = this.loops();
+    if (!chosen.length) return 0;
+    return this.loopOptions().filter((o) => chosen.includes(o.name)).reduce((n, o) => n * (o.count ?? 1), 1);
+  });
   readonly canWrite = computed(() => {
     const p = this.plan();
     return !!p && p.found && p.status === "ready" && p.operation_count > 0 && !this.written();
@@ -84,7 +94,30 @@ export class InstancesPanel implements OnInit, OnDestroy {
   }
 
   private choices(): InstanceChoices {
+    const loops = this.loops();
+    if (loops.length) return { loops: loops.join(",") };
     return { key: this.key() || undefined, keys: this.allKeys() ? "all" : undefined };
+  }
+
+  /** Tick or untick a loop the copies are made from, then preview; the ticked loops keep the plan's (the macro's) order. */
+  toggleLoop(name: string): void {
+    const on = new Set(this.loops());
+    if (on.has(name)) on.delete(name);
+    else on.add(name);
+    this.loops.set(this.loopOptions().map((o) => o.name).filter((n) => on.has(n)));
+    void this.preview();
+  }
+
+  /** "CohortRng (6) × Scenario (4)": the loops the copies are made from, with their value counts. */
+  copiesTitle(p: InstancePlan): string {
+    return (p.copies_from ?? []).map((c) => `${c.name} (${c.count ?? c.values?.length ?? 0})`).join(" × ");
+  }
+
+  /** "6 values" / "4 values" beside a loop's tick box, or why copies cannot be made from it. */
+  loopText(o: InstanceLoopOption): string {
+    if (!o.usable) return o.why ?? "not usable";
+    const span = o.first != null && o.last != null && o.kind === "counter" ? `, ${o.first} to ${o.last}` : "";
+    return `${o.count ?? "?"} ${plural(o.count ?? 0, "value")}${span}`;
   }
 
   pickKey(event: Event): void {
@@ -96,6 +129,7 @@ export class InstancesPanel implements OnInit, OnDestroy {
     const inList = !column || this.candidates().some((c) => c.column === column);
     this.keyHint.set(inList ? "" : `Column ${column} is not one of the text columns in this list. The plan uses it anyway.`);
     this.key.set(column);
+    this.loops.set([]); // a key column means copies by the table, not by loops
     void this.preview();
   }
 
@@ -114,6 +148,7 @@ export class InstancesPanel implements OnInit, OnDestroy {
     try {
       const { plan } = await this.api.mindInstancesPlan(id, this.choices());
       this.plan.set(plan);
+      if (plan.loop_options) this.loopOptions.set(plan.loop_options);
     } catch (e) {
       this.plan.set(null);
       this.tone.set("error");

@@ -55,8 +55,10 @@ def read_deterministic_differences(page) -> list[str]:
     tab.first.click(timeout=8000)
     time.sleep(3)
     lines = [ln.strip() for ln in body_text(page).splitlines() if "Mind value" in ln]
+    # "Hide Logs" only: the window's "Close" comes first and closes it WITHOUT adding the templates,
+    # so --run then found no Run button (Tokyo instances, 10 November 2026)
     try:
-        page.get_by_role("button", name=re.compile(r"Hide Logs|Close", re.I)).first.click(timeout=4000)
+        page.get_by_role("button", name=re.compile(r"^\s*Hide Logs\s*$", re.I)).first.click(timeout=4000)
     except Exception:
         pass
     return lines

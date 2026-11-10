@@ -1,9 +1,25 @@
 <div class="panel">
   <h3 class="panel__h">Mind instances</h3>
-  <p class="hint">One copy of the model per {{ keyWord() }}, a loop inside each copy over its rows. Mind gets two files.</p>
+  <p class="hint">
+    @if (loops().length) { One copy of the model per combination of {{ loops().join(" and ") }}. Mind gets two files. }
+    @else { One copy of the model per {{ keyWord() }}, a loop inside each copy over its rows. Mind gets two files. }
+  </p>
+
+  @if (loopOptions().length) {
+    <div class="row copies-from">
+      <span class="hint">Copies from loops:</span>
+      @for (o of loopOptions(); track o.name) {
+        <label class="check" [title]="o.why || ''">
+          <input type="checkbox" [checked]="loops().includes(o.name)" (change)="toggleLoop(o.name)" [disabled]="!o.usable || loading() || writing()" />
+          {{ o.name }} <span class="hint">({{ loopText(o) }})</span>
+        </label>
+      }
+      @if (loopCopies()) { <span class="hint">= {{ loopCopies() }} copies</span> }
+    </div>
+  }
 
   <div class="row">
-    @if (candidates().length) {
+    @if (candidates().length && !loops().length) {
       <label class="field">Key column
         <select (change)="pickKey($event)" [disabled]="loading() || writing()">
           @for (c of candidates(); track c.column) {
@@ -16,7 +32,9 @@
       </label>
     }
     @if (keyHint()) { <span class="hint">{{ keyHint() }}</span> }
-    <label class="check"><input type="checkbox" [checked]="allKeys()" (change)="toggleAllKeys()" [disabled]="loading() || writing()" /> Every key of the list, even without rows</label>
+    @if (!loops().length) {
+      <label class="check"><input type="checkbox" [checked]="allKeys()" (change)="toggleAllKeys()" [disabled]="loading() || writing()" /> Every key of the list, even without rows</label>
+    }
     <button cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
   </div>
 
@@ -35,7 +53,28 @@
       </p>
       @for (n of p.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
 
-      @if (p.key; as k) {
+      @if (p.mode === "loops" && p.copies_from?.length) {
+        <div class="card copies-card">
+          <div class="card__head">
+            <span class="card__title">Copies from {{ copiesTitle(p) }}</span>
+            <span class="card__count">{{ p.key?.distinct ?? 0 }} copies</span>
+          </div>
+          <div class="card__meta">
+            @for (c of p.copies_from!; track c.name) { <span class="mono">{{ c.driver }} {{ c.formula }}</span> }
+          </div>
+          @if (p.split_grid; as g) {
+            <p class="card__caution">Each copy's values: the grid <span class="mono">{{ g.title }}</span> at <span class="mono">{{ g.title_cell }}</span>, one row per copy.</p>
+          }
+          @if (p.kept_loops?.length) {
+            <p class="card__caution">Stay loops inside every copy: @for (k of p.kept_loops!; track k.name) { <span class="mono">{{ k.name }}</span> }</p>
+          }
+          @if (p.results; as r) {
+            <p class="card__caution">Each copy's results in the main workbook: <span class="mono">{{ r.block }}</span> ({{ r.rows }} × {{ r.cols }})</p>
+          }
+        </div>
+      }
+
+      @if (p.mode !== "loops" && p.key; as k) {
         <div class="card">
           <div class="card__head">
             <span class="card__title">Key: {{ k.header || k.column || "none yet" }}</span>

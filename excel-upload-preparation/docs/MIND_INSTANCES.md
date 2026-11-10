@@ -178,6 +178,51 @@ into a number, a date or a boolean).
 - **Cost.** One copy per key, each with the whole model. The copy count and the run time of the full
   portfolio are Mind's cost, which the builder does not estimate.
 
+## Copies from loops (a scenario x a cohort)
+
+Some models do not run one row of a table at a time: the macro runs the whole model once per scenario
+and per cohort (`For cohort = start To end: For scenario = 0 To n - 1: ... Calculate`). Tick those
+loops under **Copies from loops** (API: `loops=CohortRng,Scenario`) and the builder makes one copy per
+combination of their values instead of one copy per key of a table.
+
+- **Which loops.** Any ready loop of the Mind loop plan whose one driver cell takes the loop value itself
+  (a counter, `2021 .. 2026`) or the items of a list (`0, 1, 2, 3`). A loop that reads a row or a
+  column of a table is not offered (the table way is the one for it). The order of the keys follows
+  the order of the loops in the plan -- the macro's nesting: `CohortRng2021_Scenario0`,
+  `CohortRng2021_Scenario1`, ... A value that is long or has other characters becomes its position
+  (`GroupName3`). At most 1,000 copies.
+- **In the model.** Two empty rows below the used range of the first loop's sheet: a cell `This copy's
+  key` with `MM_INSTANCEKEY`, an empty row, then the split grid `#Instance values /InstanceSplit` --
+  header `Instance key` and one column per loop, one row per copy. Each chosen driver gets
+  `=INDEX(<its column of the grid>,1)`: in each copy Mind keeps the copy's one row; in Excel it is the
+  first copy. A dropdown on a driver is removed (Mind drops the formula of a cell with a dropdown).
+- **The other loops** of the macro (in the Tokyo tool: the group and the roll-forward year of a second
+  macro) are written as `MM_LOOP`s exactly as the Mind loop plan has them; they run inside every copy.
+  A loop already written is left alone.
+- **The main workbook.** The keys grid, and `#Results by <loops>`: one row per copy and row of one
+  block of the model -- by default the biggest run of formula rows on the output sheet the model map
+  names (the sheet with the most formulas), or the range asked for (`results=Sheet!A3:CI8`) -- each cell
+  `MM_INSTANCE(<model cell>, <key>)`. No `#All copies`: a plain link would add every copy up, scenarios
+  included. Point the block at cells the inner loops do not change: `MM_INSTANCE` on a looped cell gives
+  the first pass only.
+- **Inputs.** The model's `/Input` grids stay in the copied model: every copy starts with the values
+  they hold. A file named `<key>-<grid>.csv` changes one copy only (probe, 10 November 2026); a file
+  without the key in its name is not matched.
+- **The macro's own conditions do not apply.** Every copy computes, also a pass the macro skips (an
+  `If` inside its loop) or does not write out. Read the copies the macro would keep.
+
+**Checked in Mind on 10 November 2026** with the anonymized IFRS 17 tool (`AllScenarioRun`: cohort
+2021-2026 x scenario 0-3; `EndemicCalculationRun`: group x roll-forward year), built through the app's
+API from the prepped model (94 changes: 7 for the instances, 3 for the two loops kept, 84 FRM-014
+repairs). Project `zzz_mindready_tokyo_instances_1`: converted in 129 s; Mind's upload test showed the
+same 63 cells, with the same values, as the model without instances (rounding residues below 4e-6 and
+8 cells holding the text "TRUE"); the run took 3 min 06 s, consistent with the audit trail. The main
+workbook's grid exported after the run (24 copies x 6 products x 87 columns) against Excel with each
+copy's cohort and scenario typed into the two driver cells and recalculated: 12,528 cells, 0
+differences (largest relative gap 4.8e-15). The copies differ from each other by up to 402 of their 522
+cells, so each copy really computes its own scenario and cohort. The tool's macro skips scenario 0
+except in the last cohort: in Mind those 5 copies compute too.
+
 ## What the builder does not do yet
 
 - Cells that only read the paste area are left as they are: the area is empty in a copy, so they show
@@ -186,8 +231,11 @@ into a number, a date or a boolean).
   Choose a count cell on the loop panel first, then build the instances.
 - The copy count and the run time of the full portfolio are Mind's cost; the builder states the keys
   and their row counts, nothing more.
-- One loop -- the first counter loop of the loop plan -- and one key column; nested loops and a second
-  key are not built. The instance formulas are written, not checked: no rule reads `MM_INSTANCE` yet.
+- By a table: one loop -- the first counter loop of the loop plan -- and one key column. By loops:
+  counter and list loops only, every combination of their values (no subset of combinations, no copy
+  per row of a table). The instance formulas are written, not checked: no rule reads `MM_INSTANCE` yet.
+- Copies from loops do not move the `/Input` grids to the main workbook and do not write a file per
+  copy: each quarter, a model whose inputs differ per copy needs one `<key>-<grid>.csv` per copy.
 - The Mind check covered the fixed model cut to the macro's 19 test policies (3 keys). The full
   portfolio (94,932 policies, 26 keys, a loop of 39,477 passes in the biggest copy) has not been through
   Mind: the copy count and the run time are Mind's cost.
