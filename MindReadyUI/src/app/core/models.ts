@@ -1164,7 +1164,7 @@ export interface ChainEstimate {
   basis: { file_mb: number; scan_s: number; scan_measured: boolean; stored_errors: number | null; blocking_ops: number };
 }
 
-/** POST /api/feedback: the email for "Send feedback to the Tel Aviv team" (codes only, nothing from the workbook). */
+/** POST /api/feedback: the email for "Send feedback" (codes only, nothing from the workbook). */
 export interface FeedbackMessage {
   ref: string;
   text: string;

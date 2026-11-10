@@ -145,3 +145,16 @@ def test_a_rule_that_needs_the_skipped_sheets_cells_leaves_the_formula_and_says_
         f = _finding(skip, rule_id)
         assert "read a sheet left out of the scan at your request (Big)" in f["message"] and "left as they are" in f["message"], rule_id
         assert "Big" in f["observed"]["skipped_sheets_note"]
+
+
+@needs_excel
+def test_two_skipped_sheets_do_not_break_the_mind_value_rules(tmp_path):
+    """The rules' cache key sorted the skipped sheets as dicts: with two or more, TypeError, and
+    FRM-008/009/010/013 came back NOT_SUPPORTED (so the Prep actions planned nothing) -- exactly
+    the case the skipped-sheet handling was built for, the big calculation sheets ticked together."""
+    analysis = build_analysis(_calculated(_model(tmp_path / "m.xlsx")), tmp_path / "w", "m", ignore_sheets=["Big", "Tail"])
+    assert [s["name"] for s in analysis["workbooks"][0]["ignored_sheets"]] == ["Big", "Tail"]
+    for rule_id in ("FRM-008", "FRM-009", "FRM-010", "FRM-013"):
+        f = _finding(analysis, rule_id)
+        assert f["status"] != "NOT_SUPPORTED" and "TypeError" not in (f["message"] or ""), (rule_id, f["message"])
+        assert "read a sheet left out of the scan at your request (Big, Tail)" in f["message"] and "left as they are" in f["message"], (rule_id, f["message"])

@@ -5,6 +5,7 @@ was running when the app stopped shows as stopped."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -37,6 +38,8 @@ def client(data_folder):
     yield TestClient(server.app)
     server.SESSIONS.clear()
     server.AUTOFIX.clear()
+    server.MIND_LOOPS.clear()
+    session_store.release_all()  # the locks of the sessions this test held
 
 
 def _upload(client, path: Path, defer: bool = False) -> dict:
@@ -47,9 +50,10 @@ def _upload(client, path: Path, defer: bool = False) -> dict:
 
 
 def _restart() -> None:
-    """What a restart of the app leaves: nothing in memory, everything on disk."""
+    """What a restart of the app leaves: nothing in memory, everything on disk (the locks went with the process)."""
     server.SESSIONS.clear()
     server.AUTOFIX.clear()
+    session_store.release_all()
 
 
 def test_a_checked_workbook_comes_back_after_a_restart(client, data_folder, flagged_model_broken_xlsx):
@@ -121,6 +125,14 @@ def test_remove_waits_for_a_running_step(client, plain_grid_xlsx):
     res = client.delete(f"/api/saved-workbooks/{sid}")
     assert res.status_code == 409 and "still being brought in" in res.json()["detail"]
     assert (server.SESSIONS[sid].work_dir / "state.json").is_file()
+    # Run in Mind is not in _busy_with (it checks that itself): Remove must still wait for it
+    server.SESSIONS[sid].outside_run = {}
+    server.MIND_LOOPS[sid] = {"state": "running", "events": [], "started": time.time()}
+    res = client.delete(f"/api/saved-workbooks/{sid}")
+    assert res.status_code == 409 and "Run in Mind is still running" in res.json()["detail"]
+    assert sid in server.SESSIONS and (server.SESSIONS[sid].work_dir / "state.json").is_file()
+    server.MIND_LOOPS[sid]["state"] = "done"
+    assert client.delete(f"/api/saved-workbooks/{sid}").status_code == 200
 
 
 def test_a_session_saved_while_a_job_ran_shows_it_stopped(client, plain_grid_xlsx):
@@ -231,3 +243,80 @@ def test_the_state_file_keeps_every_odd_shape(data_folder):
     # the locks are fresh ones, never saved
     assert not back.lock.locked() and not back.apply_lock.locked()
     assert session_store.load("nobody", server.Session) is None
+
+
+def test_the_check_result_has_a_file_of_its_own_written_only_when_it_changes(client, data_folder, flagged_model_broken_xlsx):
+    """The check result (the whole analysis) is tens of MB on a big model: it goes to result.json,
+    written only when a scan replaced it; state.json stays small, and the list reads that alone."""
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    s = server.SESSIONS[sid]
+    folder = s.work_dir
+    state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+    assert "result" not in state and state["result_file"] == "result.json"
+    result_file = folder / "result.json"
+    assert result_file.is_file() and (folder / "state.json").stat().st_size < result_file.stat().st_size
+    assert json.loads(result_file.read_text(encoding="utf-8"))["validation_report"]["findings"] == body["report"]["findings"]
+    stamp = (result_file.stat().st_mtime_ns, result_file.read_bytes())
+    # a step that keeps the result (last opened, a pivot setting, a grid name) rewrites the state file alone
+    s.last_opened = 5.0
+    server._save(s)
+    assert (result_file.stat().st_mtime_ns, result_file.read_bytes()) == stamp
+    assert json.loads((folder / "state.json").read_text(encoding="utf-8"))["last_opened"] == 5.0
+    # an Apply with a re-scan replaces the result: the file is written again
+    plan = {a["id"]: a for a in body["plan"]}
+    applied = client.post(f"/api/sessions/{sid}/apply", json={"operations": plan["flag_spelling"]["operations"], "reanalyze": True})
+    assert applied.status_code == 200, applied.text
+    assert result_file.read_bytes() != stamp[1]
+    assert json.loads(result_file.read_text(encoding="utf-8"))["validation_report"]["_version_id"] == "ver-002"
+    # the list says a result exists, and the reopen brings it back
+    before = client.get(f"/api/sessions/{sid}").json()
+    assert client.get("/api/saved-workbooks").json()["workbooks"][0]["has_result"] is True
+    _restart()
+    after = client.post(f"/api/saved-workbooks/{sid}/open").json()
+    assert after["report"]["findings"] == before["report"]["findings"] and after["version"]["id"] == "ver-002"
+    # a reopened result is not written again until a scan replaces it
+    stamp = result_file.stat().st_mtime_ns
+    server._save(server.SESSIONS[sid])
+    assert result_file.stat().st_mtime_ns == stamp
+    # a state file of the first shape (the result inside, no result.json) still opens
+    _restart()
+    state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+    state["result"] = json.loads(result_file.read_text(encoding="utf-8"))
+    state.pop("result_file")
+    result_file.unlink()
+    (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    assert client.get("/api/saved-workbooks").json()["workbooks"][0]["has_result"] is True
+    assert client.post(f"/api/saved-workbooks/{sid}/open").json()["report"]["findings"] == before["report"]["findings"]
+
+
+def test_a_workbook_open_in_another_copy_of_the_app_is_left_alone(client, data_folder, plain_grid_xlsx):
+    """Two copies of the app on the same data folder (two ports): the one that holds a workbook keeps
+    its lock file locked; the other lists it not, and refuses to open or remove it."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    folder = data_folder / "sessions" / sid
+    assert sid in session_store._HELD and (folder / "open.lock").is_file()
+    assert session_store.held_elsewhere(sid) is None  # ours
+    _restart()  # this copy let go of it ...
+    assert session_store.held_elsewhere(sid) is None  # ... and nobody holds it
+    # ... then another copy of the app (another process, port 8600) opens it: its lock on the file
+    fd = os.open(str(folder / "open.lock"), os.O_RDWR)
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, b'{"pid": 1, "port": "8600"}' + b" " * 170)
+        assert session_store._try_lock(fd)
+        assert session_store.held_elsewhere(sid) == "another copy of the app (port 8600)"
+        assert client.get("/api/saved-workbooks").json()["workbooks"] == []
+        res = client.post(f"/api/saved-workbooks/{sid}/open")
+        assert res.status_code == 409 and "open in another copy of the app (port 8600)" in res.json()["detail"], res.text
+        res = client.delete(f"/api/saved-workbooks/{sid}")
+        assert res.status_code == 409 and "another copy of the app" in res.json()["detail"]
+        assert sid not in server.SESSIONS and (folder / "state.json").is_file()
+    finally:
+        os.close(fd)  # that copy of the app closed
+    assert session_store.held_elsewhere(sid) is None
+    assert [w["id"] for w in client.get("/api/saved-workbooks").json()["workbooks"]] == [sid]
+    assert client.post(f"/api/saved-workbooks/{sid}/open").status_code == 200
+    assert sid in session_store._HELD  # ours again
+    assert client.delete(f"/api/saved-workbooks/{sid}").status_code == 200
+    assert not folder.exists()

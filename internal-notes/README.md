@@ -1,6 +1,6 @@
 # Internal notes
 
-Internal to Milliman Tel Aviv, like `use-case-notes/`. These files sit outside the app
+Internal to Milliman (not shipped), like `use-case-notes/`. These files sit outside the app
 (`excel-upload-preparation`) and are never part of a hand-over or of the repository given to the Mind
 team. They name client models, sheets and cells.
 

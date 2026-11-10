@@ -603,6 +603,13 @@ def _section_header_name(analysis: dict[str, Any], g: dict[str, Any]) -> tuple[s
     return None
 
 
+def _name_cell(source: str) -> str | None:
+    """The cell a name was taken from, when its source names one ("section heading above at B2",
+    "label to the left at B2", "the caption above at A1"); None for a header row, the assistant, ..."""
+    m = re.search(r" at ([A-Z]{1,3}\d+)$", source or "")
+    return m.group(1) if m else None
+
+
 def _context_name(analysis: dict[str, Any], g: dict[str, Any], labels: list[dict[str, Any]], consumed: set[tuple[str, str]]) -> tuple[str, str, dict[str, Any] | None]:
     """(name, source, consumed_label) for an untitled grid, from the cells around it:
     the section heading directly above it, a standalone label above it (a blank
@@ -698,6 +705,7 @@ def _title_site(
     g: dict[str, Any],
     titled_cells: set[tuple[str, str]],
     label: dict[str, Any] | None = None,
+    name_cell: str | None = None,
 ) -> dict[str, Any]:
     """Where the title of the untitled grid `g` goes, moving nothing: the cell directly above its
     top-left cell, the one cell Mind reads a title from. -> {"cell", "before", "note"} when it can be
@@ -708,7 +716,9 @@ def _title_site(
     A caption that is a formula is left alone (replacing it would change what it shows). An empty
     cell above is written when nothing reads it and nothing sits right above it that Mind would
     read on through the title into the grid (a lone text, or a grid whose first column is this one;
-    a label this plan moves into the title does not count). A grid that starts on row 1, or whose
+    a label this plan moves into the title does not count -- and a label is moved only when the
+    title's name was made from its own text: `label`, or the heading cell `name_cell`; any other
+    title beside a label is reported). A grid that starts on row 1, or whose
     cell above belongs to another grid (a section heading row, a table right above), is reported."""
     sheet = g["sheet"]
     r0, c0 = g["first_row"], g["first_col"]
@@ -752,9 +762,12 @@ def _title_site(
         left_grid = grid_containing(by_sheet.get(sheet, []), r0 - 1, c0 - 1)
         if not _blank(left_val) and (left_grid is None or left_grid["first_row"] == r0 - 1):
             left_reader = referenced_by(index, sheet, r0 - 1, c0 - 1)
-            if left_grid is None and not left_reader and _is_text(left_val):
+            # moved only when its own text IS the title (the name came from it): a user's or an
+            # assistant's name would not carry the label's words, and the label would just be lost
+            from_label = (label is not None and label["sheet"] == sheet and label["row"] == r0 - 1 and label["col"] == c0 - 1) or name_cell == left_cell
+            if left_grid is None and not left_reader and _is_text(left_val) and from_label:
                 return {"cell": above_cell, "before": None, "note": f"; the label beside it ({left_cell}) is moved into the title", "clear": {"cell": left_cell, "text": left_val}}
-            why = f"is read by {left_reader}" if left_reader else f"is part of the grid {left_grid['display_name']}, {left_grid['ref']}" if left_grid is not None else "is not a plain label"
+            why = f"is read by {left_reader}" if left_reader else f"is part of the grid {left_grid['display_name']}, {left_grid['ref']}" if left_grid is not None else "is a label of its own (the title is not made from it)" if _is_text(left_val) else "is not a plain label"
             return {"skip": f"a title in {above_cell} would touch {left_cell} ('{_short_text(left_val)}') beside it, which {why}, and Mind would read the two as one grid. Leave an empty cell between them by hand, then name it again"}
     return {"cell": above_cell, "before": None, "note": ""}
 
@@ -828,8 +841,8 @@ def plan_create_grid_titles(
             name, source, label = _context_name(analysis, g, labels, consumed)
         proposed = _clean_name((names or {}).get(f"{g['sheet']}!{g['ref']}", ""))
         if proposed and is_weak_name(name, g["sheet"]):
-            name, source = proposed, "the assistant, from the surrounding cells"
-        site = _title_site(analysis, index, by_sheet, g, titled_cells, label)
+            name, source, label = proposed, "the assistant, from the surrounding cells", None  # the label's text is not the title: it stays
+        site = _title_site(analysis, index, by_sheet, g, titled_cells, label, _name_cell(source))
         if site.get("skip"):
             skipped.append(f"{g['sheet']}!{g['ref']}: {site['skip']}")
             continue

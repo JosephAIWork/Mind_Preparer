@@ -1,6 +1,6 @@
 # Use-case codes
 
-Internal to Milliman Tel Aviv. This folder is outside the app (`excel-upload-preparation`) and is
+Internal to Milliman (not shipped). This folder is outside the app (`excel-upload-preparation`) and is
 never part of a release. The app itself names no client, model, sheet, cell or project: what was
 learned from a use case is written here, under its code.
 

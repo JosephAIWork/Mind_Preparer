@@ -28,6 +28,10 @@
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
     <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+    @if (store.restartNotice()) {
+      <!-- 1.14.0: the server let go of the workbook the page had (the app was restarted): it is in the list below -->
+      <p class="chain__text" data-show-me="restart-notice"><strong>{{ store.restartNotice() }}</strong><mr-show-me [text]="store.restartNotice()"></mr-show-me></p>
+    }
     <!-- the workbooks kept in the data folder (only when there is at least one); nothing opens by itself -->
     <mr-recent-workbooks (opened)="openSaved($event)"></mr-recent-workbooks>
     <mr-key-box [onlyWhenMissing]="true"></mr-key-box>
@@ -275,9 +279,9 @@
           <div class="outside__buttons">
             <button cdsButton="tertiary" size="md" data-show-me="outside-waiting-pick" (click)="waitPicker.click()" [disabled]="addingInputs()">{{ addingInputs() ? "Adding…" : "Pick the files" }}</button>
             <input #waitPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
-            <button cdsButton="primary" size="md" data-show-me="outside-waiting-go-on" (click)="goOn()" [disabled]="!canGoOn()" [title]="canGoOn() ? 'Brings the files in, then the other steps follow' : 'Pick every file first'">Go on</button>
+            <button cdsButton="primary" size="md" data-show-me="outside-waiting-go-on" (click)="goOn()" [disabled]="!canGoOn() || goingOn()" [title]="canGoOn() ? 'Brings the files in, then the other steps follow' : 'Pick every file first'">{{ goingOn() ? "Going on…" : "Go on" }}</button>
             @if (canMakeStandIns()) {
-              <button cdsButton="secondary" size="md" (click)="goOn(true)" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
+              <button cdsButton="secondary" size="md" (click)="goOn(true)" [disabled]="goingOn()" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
             }
             <button cdsButton="danger--tertiary" size="md" (click)="stopWaiting()">Stop</button>
           </div>

@@ -11,7 +11,7 @@ import { SessionStore } from "./core/session.store";
 import { ShowMeOverlay } from "./core/show-me-overlay";
 
 /** The shell: Mind's dark Carbon header, the two places (main screen, Advanced), the version, and
- *  "Send feedback to the Tel Aviv team" (in the header, and in a box when a step failed), and the
+ *  "Send feedback" (in the header, and in a box when a step failed), and the
  *  "Show me" pointer's overlay (once, above everything). A shared copy also says until when it works;
  *  once it stopped working, the notice replaces everything. */
 @Component({

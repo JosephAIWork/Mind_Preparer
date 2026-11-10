@@ -38,7 +38,7 @@ export class ApiService {
     return firstValueFrom(this.http.post<AssistantKey>(`${this.base}/assistant-key`, { key }));
   }
 
-  /** The message for the Tel Aviv team: the incident `ref` (null from the header), the user's note. */
+  /** The Send feedback message: the incident `ref` (null from the header), the user's note. */
   feedback(body: { ref: string | null; note: string; useAssistant: boolean; sessionId: string | null }): Promise<FeedbackMessage> {
     return firstValueFrom(this.http.post<FeedbackMessage>(`${this.base}/feedback`, body));
   }

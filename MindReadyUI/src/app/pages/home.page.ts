@@ -160,8 +160,10 @@ export class HomePage implements OnDestroy {
   readonly waitingLine = computed(() => outsideWaitingLine(this.waitingFiles(), !!this.store.outsideInputs()?.assistant));
   /** Go on: every file is there (and none is being added) */
   readonly canGoOn = computed(() => this.outsideWaiting() && this.waitingMissing().length === 0 && !this.addingInputs());
-  /** Make them with AI: only with an AI key saved (the server says so) */
-  readonly canMakeStandIns = computed(() => this.outsideWaiting() && !!this.store.outsideInputs()?.assistant && !this.addingInputs());
+  /** Make them with AI: only with an AI key saved (the server says so), and only while a file is missing */
+  readonly canMakeStandIns = computed(() => this.outsideWaiting() && this.waitingMissing().length > 0 && !!this.store.outsideInputs()?.assistant && !this.addingInputs());
+  /** Go on / Make them with AI pressed: its request is on its way (a second click would be refused by the server) */
+  readonly goingOn = signal(false);
   /** "Make them with AI" pressed after a reload (no chain in this page): the next Do everything takes the stand-in path */
   private chainStandIns = false;
   readonly pickAccept = PICK_ACCEPT;
@@ -197,6 +199,8 @@ export class HomePage implements OnDestroy {
   private readonly clock = signal(Date.now());
   private chainT0 = 0;
   private stepT0 = 0;
+  /** when the wait for the input files began: the wait is not the step's time (stepT0 moves past it when it ends) */
+  private waitT0 = 0;
   private stepSeconds: Partial<Record<StepId, number>> = {};
   private ticker: ReturnType<typeof setInterval> | null = null;
   /** Do everything starts by bringing in the outside files: the macros open some, the app knows which
@@ -226,6 +230,7 @@ export class HomePage implements OnDestroy {
     const e = this.fullEstimate();
     if (!this.chainRunning() || !this.chainT0) return "";
     const elapsed = `${minutes((now - this.chainT0) / 1000)} so far`;
+    if (this.outsideWaiting()) return `${elapsed} · paused: waiting for the input files`; // nothing runs: no countdown
     if (!e) return elapsed;
     const est = new Map(e.steps.map((s) => [s.id, s]));
     let planned = 0;
@@ -341,6 +346,9 @@ export class HomePage implements OnDestroy {
   });
 
   private timers: ReturnType<typeof setTimeout>[] = [];
+  /** 1.14.0: the scan that follows a Reopen (a saved workbook never checked): "Do everything right after
+   *  the upload" is for uploads, so that scan's end starts nothing */
+  private reopening = false;
   private fixAllFollowing = false;
   private outsideFollowing = false;
   private estimateSeq = 0;
@@ -419,6 +427,7 @@ export class HomePage implements OnDestroy {
       this.uploadError.set(problem);
       return;
     }
+    this.reopening = false;
     this.uploadError.set("");
     this.sending.set(files.length === 1 ? "Sending the file to the app…" : `Sending the ${files.length} files to the app…`);
     this.phase.set("uploading");
@@ -475,8 +484,10 @@ export class HomePage implements OnDestroy {
     this.chainLine.set("");
     void this.router.navigate([], { queryParams: { session: this.store.sessionId() }, replaceUrl: true });
     const loop = this.loadLoopPlan();
-    // the chain needs the loop plan first: it decides whether the loop step runs
-    if (this.autoRun()) void loop.then(() => this.runAll());
+    // the chain needs the loop plan first: it decides whether the loop step runs (never after a Reopen)
+    const auto = this.autoRun() && !this.reopening;
+    this.reopening = false;
+    if (auto) void loop.then(() => this.runAll());
   }
 
   setAutoRun(on: boolean): void {
@@ -529,6 +540,7 @@ export class HomePage implements OnDestroy {
     this.uploadError.set("");
     this.scan.set(null);
     this.pickedInputs.set(started.inputs ?? []);
+    this.reopening = true;
     if (isPending(started)) {
       if (started.size?.above_threshold && started.size.sheets?.length > 1) {
         this.pending.set(started);
@@ -700,7 +712,7 @@ export class HomePage implements OnDestroy {
           await this.sleep(1000);
           continue;
         }
-        if (this.outsideWaiting()) this.outsideWaiting.set(false); // the wait is over: the job runs, or ended
+        this.endWait(); // the wait is over: the job runs, or ended
         if (st.running) {
           seenRunning = true;
           this.showOutsideRunning(st, t0);
@@ -743,6 +755,7 @@ export class HomePage implements OnDestroy {
   /** The wait on the card and in the chain's step: the server's line ("Waiting for 2 input files: ..."),
    *  and the box under Do everything (outsideWaiting). The step counts as running: the chain is held here. */
   private showOutsideWaiting(st: OutsideRunStatus): void {
+    if (!this.waitT0) this.waitT0 = Date.now();
     this.outsideWaiting.set(true);
     this.outside.set({ running: true, fraction: null, line: st.message || st.stage || "Waiting for the input files", detail: "See the box under Do everything.", tone: "idle" });
   }
@@ -755,18 +768,33 @@ export class HomePage implements OnDestroy {
     const id = this.store.sessionId();
     if (!id || !this.outsideWaiting()) return;
     if (!makeStandIns && this.waitingMissing().length) return;
+    if (this.goingOn()) return; // a second click while the first request is on its way
     this.inputsError.set("");
     if (this.chainRunning()) {
+      this.goingOn.set(true);
       try {
         await this.api.continueOutsideInputs(id, makeStandIns);
+        this.endWait(); // the job runs: the box goes now, not at the next look
       } catch (e) {
         this.inputsError.set(errorText(e)); // still waiting: the server says what is missing
+      } finally {
+        this.goingOn.set(false);
       }
       return;
     }
-    this.outsideWaiting.set(false);
+    this.endWait();
     this.chainStandIns = makeStandIns;
     await this.runAll();
+  }
+
+  /** The wait for the input files is over (Go on, Make them with AI, Stop, or the server's job moved
+   *  on): the box goes, and the time waited is taken out of the running step's own time. */
+  private endWait(): void {
+    if (this.outsideWaiting()) this.outsideWaiting.set(false);
+    if (this.waitT0) {
+      if (this.chainRunning()) this.stepT0 += Date.now() - this.waitT0;
+      this.waitT0 = 0;
+    }
   }
 
   /** The box's Stop: the server's job ends (nothing was changed); the chain stops at this step. */
@@ -781,7 +809,7 @@ export class HomePage implements OnDestroy {
     }
     if (!this.chainRunning()) {
       // no chain holds here (after a reload): the card says it stopped, as the chain would
-      this.outsideWaiting.set(false);
+      this.endWait();
       this.showOutsideError("Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again.");
     }
   }
@@ -917,6 +945,10 @@ export class HomePage implements OnDestroy {
       if (s.state === "running") {
         this.showAutoFix(s);
         await this.followAutoFix(id);
+      } else if (s.state === "error" && s.error && /the app was closed/i.test(s.error)) {
+        // 1.14.0: a saved workbook reopened after a restart that cut Fix all issues: say so (what it had
+        // fixed before is in its version, when the run got that far)
+        this.fixAll.set({ running: false, fraction: null, line: "Stopped: the app was closed while it ran", detail: [s.error, s.version?.label ? `What it fixed before is in ${s.version.label}` : "Press Fix all issues to run it again"].join(" · "), tone: "error" });
       }
     } catch {
       /* no fixer, nothing to resume */
@@ -1220,6 +1252,7 @@ export class HomePage implements OnDestroy {
     this.steps.set(plan.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
     // the clock starts before the estimate is fetched: until then the timer would show the last run's time
     this.stepSeconds = {};
+    this.waitT0 = 0;
     this.chainT0 = this.stepT0 = Date.now();
     this.clock.set(Date.now());
     await this.loadEstimate(id);

@@ -31,6 +31,10 @@ export class SessionStore {
   /** The Mind loop panel's last previewed choices (each loop's own, and the macro): the instances panel
    *  builds its copies from loops with them, so both panels show the same loops. */
   readonly loopChoices = signal<{ loops?: Record<string, LoopChoice>; macro?: string } | null>(null);
+  /** 1.14.0: the server's sentence when the session it was asked about is one the restart closed ("This
+   *  workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the
+   *  main screen."): the page let go of the session and the main screen shows this above the list. */
+  readonly restartNotice = signal("");
   /** STR-009's pivots: [{sheet, name, ref, blocking}] (empty when the workbook has none) */
   readonly pivots = computed(() => {
     const f = this.findings().find((x) => x.rule_id === "STR-009");
@@ -53,6 +57,7 @@ export class SessionStore {
   });
 
   setSession(start: SessionStart): void {
+    this.restartNotice.set("");
     this.sessionId.set(start.sessionId);
     this.summary.set(start.summary);
     this.report.set(start.report);
@@ -90,6 +95,12 @@ export class SessionStore {
     const list = this.versions();
     if (!list.some((x) => x.id === v.id)) this.versions.set([...list, v]);
     this.currentVersion.set(v);
+  }
+
+  /** The server no longer holds the session (the app was restarted): let go of it, keep the sentence. */
+  closedByRestart(sentence: string): void {
+    this.reset();
+    this.restartNotice.set(sentence);
   }
 
   reset(): void {

@@ -74,15 +74,57 @@ def test_the_table_is_named_once_into_its_caption_cell_and_nothing_moves(tmp_pat
     assert not skipped
 
 
-def test_keys_that_are_formulas_merge_when_the_block_reads_the_column(tmp_path):
-    """Result_CF's keys are formulas (=Ctrl_01!D35): the column counts as the key column because the
-    block's formulas read it ($A3), on this sheet -- not Other!A3, not BA3."""
+def test_keys_that_are_formulas_merge_whether_or_not_the_block_still_reads_them(tmp_path):
+    """Result_CF's keys are formulas (=Ctrl_01!D35) and the block reads them ($A3) -- until FRM-007
+    rewrites INDIRECT($A3&"!A:B") as BBA_01!A:B, after which nothing reads column A any more. The
+    table is the same table in both states (once the caption holds a title Mind reads one grid), so
+    the merge looks at the shape alone: the keys may be values or formulas, read or not."""
     keys_as_formulas = {**RESULT_CF, "A3": "=Ctrl!A1", "A4": "=Ctrl!A2", "A5": "=Ctrl!A3"}
     analysis = _analysis(tmp_path, {"R": keys_as_formulas, "Ctrl": {"A1": "BBA_01", "A2": "BBA_02", "A3": "VFA_01"}})
     assert [g["ref"] for g in all_grids(analysis) if g["sheet"] == "R"] == ["A2:C5"]
-    not_read = {**keys_as_formulas, "B3": "=Ctrl!A1&BA3", "B4": "=Ctrl!A2", "B5": "=Ctrl!A3", "C3": "=1", "C4": "=2", "C5": "=3"}
-    analysis = _analysis(tmp_path, {"R": not_read, "Ctrl": {"A1": "BBA_01", "A2": "BBA_02", "A3": "VFA_01"}})
-    assert [g["ref"] for g in all_grids(analysis) if g["sheet"] == "R"] == ["A1:A5", "B2:C5"]  # two grids, as Mind reads them
+    after_frm_007 = {**keys_as_formulas, "B3": '=IFERROR(VLOOKUP("k",Ctrl!A:B,2,FALSE),"-")', "B4": "=Ctrl!A2", "B5": "=Ctrl!A3", "C3": "=1", "C4": "=2", "C5": "=3"}
+    analysis = _analysis(tmp_path, {"R": after_frm_007, "Ctrl": {"A1": "BBA_01", "A2": "BBA_02", "A3": "VFA_01"}})
+    assert [g["ref"] for g in all_grids(analysis) if g["sheet"] == "R"] == ["A2:C5"]
+    ops, skipped = _titles(analysis)
+    assert [(o["sheet"], o["cell"], o["after"]) for o in ops if o["sheet"] == "R"] == [("R", "A1", "#Running scenario")]
+
+
+def test_a_number_a_date_or_a_switch_on_top_of_a_key_column_is_not_a_caption(tmp_path):
+    """A year, a valuation date or TRUE above a key column is a value something may read (a macro, a
+    dropdown, a person): never merged as the caption, so no title is ever written over it."""
+    import datetime
+
+    for top in (2024, datetime.datetime(2024, 1, 1), True, 0.5):
+        cells = {"A1": top, "A2": "k1", "A3": "k2", "A4": "k3", "B2": 1, "C2": "x", "B3": 2, "C3": "y", "B4": 3, "C4": "z"}
+        analysis = _analysis(tmp_path, {"S": cells})
+        grids = [g for g in all_grids(analysis) if g["sheet"] == "S"]
+        assert [g["ref"] for g in grids] == ["A1:A4", "B2:C4"] and not any(g.get("caption_cell") for g in grids), top
+        ops, skipped = _titles(analysis)
+        assert not any(o["cell"] == "A1" for o in ops), (top, ops)
+        assert any(s.startswith("S!A1:A4: starts on row 1") for s in skipped), (top, skipped)
+    # a text caption merges, as before
+    analysis = _analysis(tmp_path, {"S": {"A1": "Keys", "A2": "k1", "A3": "k2", "A4": "k3", "B2": 1, "C2": "x", "B3": 2, "C3": "y", "B4": 3, "C4": "z"}})
+    assert [g["ref"] for g in all_grids(analysis) if g["sheet"] == "S"] == ["A2:C4"]
+
+
+def test_a_label_beside_the_title_is_moved_only_when_the_title_is_made_from_it(tmp_path):
+    """The Grid Namer writes the user's own name (and the automatic pass may use the assistant's):
+    the label's text would not reach the title, so clearing it would just lose it. Then the label
+    stays and the grid is reported; the automatic pass that names the grid FROM the label moves it."""
+    cells = {"B2": "Mortality", "C3": "Age", "D3": "Qx", "C4": 40, "D4": 0.001}
+    analysis = _analysis(tmp_path, {"L": cells})
+    out = prep.plan_named_areas(analysis, [{"sheet": "L", "ref": "C3:D4", "name": "Qx table", "flags": []}])
+    assert not out["ops"], out["ops"]
+    assert any(s.startswith("L!C3:D4: a title in C2 would touch B2 ('Mortality') beside it, which is a label of its own") for s in out["skipped"]), out["skipped"]
+    # the assistant's name instead of the label's weak text: the label stays too
+    weak = {"B2": "x", "C3": "Age", "D3": "Qx", "C4": 40, "D4": 0.001}
+    analysis = _analysis(tmp_path, {"L": weak})
+    ops, skipped = _titles(analysis, names={"L!C3:D4": "Mortality by age"})
+    assert not any(o["op"] == "clear_cell" for o in ops), ops
+    assert not any(o["sheet"] == "L" and o["cell"] == "C2" for o in ops) and any(s.startswith("L!C3:D4: a title in C2 would touch B2") for s in skipped), (ops, skipped)
+    # the automatic pass naming the grid from that very label moves it, as before
+    ops, skipped = _titles(_analysis(tmp_path, {"L": cells}))
+    assert [(o["op"], o["cell"], o["after"]) for o in ops] == [("set_value", "C2", "#Mortality"), ("clear_cell", "B2", None)]
 
 
 def test_two_lists_that_only_touch_are_not_joined():

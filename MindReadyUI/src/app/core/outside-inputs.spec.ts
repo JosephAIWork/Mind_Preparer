@@ -545,6 +545,8 @@ describe("the Outside files card and Do everything", () => {
     expect(page.waitingFiles()).toEqual([{ name: "BBA_01", present: true, fills: null }, { name: "BBA_02", present: false, fills: "BBA_02" }]);
     expect(page.canGoOn()).toBe(false);
     expect(page.canMakeStandIns()).toBe(false);
+    // the countdown pauses: nothing runs, so no "taking longer than usual" and no time counted against the step
+    expect(page.timerLine()).toMatch(/so far · paused: waiting for the input files$/);
     // the card points at the box
     expect(page.outsideCard()).toMatchObject({ line: "Waiting for 1 input file: BBA_02", detail: "See the box under Do everything." });
     expect(f.autoFixStarts).toBe(0);
@@ -579,8 +581,16 @@ describe("the Outside files card and Do everything", () => {
     expect(page.waitingMissing()).toEqual([]);
     expect(page.waitingLine()).toBe("Every input file is there: press Go on.");
     expect(page.canGoOn()).toBe(true);
+    expect(page.canMakeStandIns()).toBe(false); // nothing is missing: nothing for the assistant to make
+    // a double click sends one continue: the second click finds the first on its way
+    const first = page.goOn();
+    expect(page.goingOn()).toBe(true);
     await page.goOn();
+    await first;
     expect(f.continues).toEqual([false]);
+    expect(page.goingOn()).toBe(false);
+    expect(page.outsideWaiting()).toBe(false); // the box went with the server's yes, not a second later
+    expect(page.inputsError()).toBe("");
     await run;
     expect(f.starts).toBe(1); // the step was not started over: the server's job went on
     expect(f.standIns).toEqual([false]);

@@ -3,7 +3,7 @@ import { provideRouter } from "@angular/router";
 import type { HomePage } from "../pages/home.page";
 import type { RecentWorkbooks } from "../pages/recent-workbooks";
 import { ApiService } from "./api.service";
-import { PendingUpload, SavedWorkbook, SessionStart } from "./models";
+import { AutoFixStatus, PendingUpload, SavedWorkbook, SessionStart } from "./models";
 import { SessionStore } from "./session.store";
 
 // ---- 1.14.0: the main screen's "Recent workbooks" (the workbooks kept in the data folder) ----------------
@@ -217,6 +217,39 @@ describe("Recent workbooks: the main screen opens a saved workbook where it was"
     expect(page.steps()).toEqual([]); // no Do everything started
     expect(page.chainRunning()).toBe(false);
     page.setAutoRun(false);
+  });
+
+  it("never starts Do everything after a Reopen, even for a workbook that still needs its scan", async () => {
+    const f = fakeServer([saved("model_b", { pending: true, has_result: false })]);
+    f.api.analyze = () => Promise.resolve(started("model_b")); // the scan the reopen leads to
+    open(f);
+    page.setAutoRun(true); // the box is remembered in the browser: ticked from an earlier upload
+    const pending = (await f.api.openSavedWorkbook("model_b")) as PendingUpload;
+    page.openSaved(pending);
+    expect(page.phase()).toBe("scanning");
+    for (let i = 0; i < 5; i++) await settle(); // the scan answers, the loop plan is asked for
+    expect(page.phase()).toBe("loaded");
+    expect(store.sessionId()).toBe("model_b");
+    expect(page.steps()).toEqual([]); // no chain: "Do everything right after the upload" is for uploads
+    expect(page.chainRunning()).toBe(false);
+    page.setAutoRun(false);
+  });
+
+  it("says that a Fix all issues the restart cut was stopped, after the reopen", async () => {
+    const f = fakeServer([saved("model_a")]);
+    f.api.autoFixStatus = () => Promise.resolve({ state: "error", error: "The app was closed while this ran.", version: { id: "ver-004", major: 4, minor: 0, label: "v4 — Fix all issues", file_name: "a_v4.xlsm", source: "autofix" } } as AutoFixStatus);
+    open(f);
+    page.openSaved(started("model_a"));
+    await (page as unknown as { resumeFixer: () => Promise<void> }).resumeFixer();
+    expect(page.fixAll().running).toBe(false);
+    expect(page.fixAll().tone).toBe("error");
+    expect(page.fixAll().line).toBe("Stopped: the app was closed while it ran");
+    expect(page.fixAll().detail).toBe("The app was closed while this ran. · What it fixed before is in v4 — Fix all issues");
+    // a fixer that ended on its own error, or never ran, is not called stopped
+    f.api.autoFixStatus = () => Promise.resolve({ state: "error", error: "Excel refused the file." } as AutoFixStatus);
+    page.openSaved(started("model_a"));
+    await (page as unknown as { resumeFixer: () => Promise<void> }).resumeFixer();
+    expect(page.fixAll().line).toBe("");
   });
 
   it("takes a workbook that was uploaded but never checked to the scan", async () => {

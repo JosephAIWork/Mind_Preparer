@@ -1055,8 +1055,8 @@ def _workbook_names(s: Session | None) -> list[str]:
 
 
 def _report_problem(exc: BaseException | None, step: str, s: Session | None = None, **kw: Any) -> dict[str, Any]:
-    """One incident for the Tel Aviv team, with the rule and the stage the scan or the Apply was
-    in when it failed, when the session knows them."""
+    """One incident for Send feedback, with the rule and the stage the scan or the Apply was in when
+    it failed, when the session knows them."""
     if s is not None:
         if not kw.get("rule_id") and (s.scan or {}).get("state") in ("error", "running"):
             kw["rule_id"] = s.scan.get("rule_id")
@@ -1201,8 +1201,7 @@ def save_assistant_key(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @app.post("/api/feedback")
 def compose_feedback(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """The message for "Send feedback to the Tel Aviv team": the incident `ref` (none from the
-    header), the user's `note`, `useAssistant` (the assistant writes the opening lines when a key
+    """The message for "Send feedback": the incident `ref` (none from the header), the user's `note`, `useAssistant` (the assistant writes the opening lines when a key
     is saved), `sessionId` (the workbook's counts when no incident holds them). In codes, with
     nothing from the workbook: the screen shows it, then copies it and opens an email."""
     ref = str(payload.get("ref") or "").strip()
@@ -1257,6 +1256,7 @@ def create_session(
     sid = uuid.uuid4().hex[:12]
     try:
         work_dir = session_store.new_folder(sid)  # <data folder>/sessions/<id>: kept between runs of the app
+        session_store.hold(sid)  # this copy of the app holds it: another copy's list leaves it out
     except OSError as exc:  # the data folder cannot be written: the session lives for this run only, as before
         print(f"Could not make the session folder in the data folder ({str(exc)[:160]}): using a temporary one.", flush=True)
         work_dir = Path(tempfile.mkdtemp(prefix="mind_ready_"))
@@ -1301,8 +1301,16 @@ def _pending_state(s: Session) -> dict[str, Any]:
 def saved_workbooks() -> dict[str, Any]:
     """The workbooks kept in the data folder (app/session_store.py), the last opened first: id, name,
     when uploaded and last opened, how many versions, the file's size, whether a check result exists.
-    Nothing is loaded: the main screen shows the list and waits."""
+    Nothing is loaded: the main screen shows the list and waits. A workbook another copy of the app
+    (another port, the same data folder) holds open is left out: it is that copy's to show."""
     return {"workbooks": session_store.list_saved()}
+
+
+def _held_elsewhere(session_id: str) -> None:
+    """409 when another copy of the app that is still running holds the session (app/session_store.py)."""
+    who = session_store.held_elsewhere(session_id) if session_store.valid_id(session_id) else None
+    if who:
+        raise HTTPException(status_code=409, detail=f"This workbook is open in {who}. Use it there, or close that copy of the app first.")
 
 
 @app.post("/api/saved-workbooks/{session_id}/open")
@@ -1311,13 +1319,15 @@ def open_saved_workbook(session_id: str) -> dict[str, Any]:
     (every version, the last check result, the plan, the recalculation, the plans and results of the
     other steps), so the screens open where they were. A workbook uploaded but never analysed answers
     in the shape of a deferred upload (`pending`). A job that was running when the app stopped shows
-    as stopped: "The app was closed while this ran."."""
+    as stopped: "The app was closed while this ran." 409 when another copy of the app holds it."""
     s = SESSIONS.get(session_id)
     if s is None:
+        _held_elsewhere(session_id)
         loaded = session_store.load(session_id, Session) if session_store.valid_id(session_id) else None
         if loaded is None:
             raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")
         s, autofix = loaded
+        session_store.hold(session_id)
         SESSIONS[session_id] = s
         if autofix:
             AUTOFIX[session_id] = autofix
@@ -1331,15 +1341,20 @@ def open_saved_workbook(session_id: str) -> dict[str, Any]:
 @app.delete("/api/saved-workbooks/{session_id}")
 def remove_saved_workbook(session_id: str) -> dict[str, Any]:
     """Remove a saved workbook from this computer: its folder (every version and result) and the
-    session in memory. Refused while a step still runs on it."""
+    session in memory. Refused while a step still runs on it (Run in Mind too), and when another
+    copy of the app holds it."""
     s = SESSIONS.get(session_id)
     if s is not None:
         busy = _busy_with(s)
+        if (MIND_LOOPS.get(session_id) or {}).get("state") == "running":  # not in _busy_with: Run in Mind checks that itself
+            busy = "Run in Mind is still running"
         if busy and busy != "the workbook has not been analysed yet":  # an upload never scanned may go; a running step may not
             raise HTTPException(status_code=409, detail=f"Not removed: {busy}. Wait for it to finish, then remove it.")
         excel_worker.release(session_id)  # an Excel that holds a version open would keep the folder
         SESSIONS.pop(session_id, None)
         AUTOFIX.pop(session_id, None)
+    else:
+        _held_elsewhere(session_id)
     existed = session_store.remove(session_id) if session_store.valid_id(session_id) else False
     if not existed and s is None:
         raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")

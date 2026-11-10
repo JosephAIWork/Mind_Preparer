@@ -23,7 +23,7 @@ def main() -> int:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(os.environ["LOCALAPPDATA"]) / "MindReadyBuild" / "MindReady_Guide.pdf"
     version = (APP / "VERSION").read_text(encoding="utf-8").strip()
     settings = yaml.safe_load((APP / "settings.yaml").read_text(encoding="utf-8")) or {}
-    email = ((settings.get("feedback") or {}).get("email")) or "the Milliman Tel Aviv team"
+    email = ((settings.get("feedback") or {}).get("email")) or "the Mind Ready feedback address"
     html = (HERE / "guide.html").read_text(encoding="utf-8")
     html = html.replace("{{VERSION}}", version).replace("{{DATE}}", time.strftime("%d %B %Y").lstrip("0")).replace("{{EMAIL}}", email)
     filled = out.with_suffix(".html")

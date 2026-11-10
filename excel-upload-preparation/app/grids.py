@@ -258,12 +258,6 @@ def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: in
     return grid
 
 
-def _reads_column(formula: str, col: int) -> bool:
-    """Does the formula read a cell of column `col` on its own sheet ($A3, A3, $A$3 -- not BA3, not Other!A3)?"""
-    letters = num_to_col(col)
-    return re.search(r"(?<![A-Za-z!])\$?" + letters + r"\$?\d+(?![\dA-Za-z])", formula) is not None
-
-
 def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], grids: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A key column and the block beside it are one table.
 
@@ -277,8 +271,11 @@ def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], gr
 
     Tight, so two lists that only touch are never joined: both grids untitled; the column one cell
     wide, directly left of the block; the column starts exactly one row above the block (the caption)
-    and ends on the block's last row; and its cells on the block's rows are keys (values, no formulas)
-    or the block's formulas read that column."""
+    and ends on the block's last row; and the caption is text (a formula counts: it is reported, not
+    replaced) -- never a number, a date or a switch that a title would overwrite. What the column's
+    cells hold is not looked at: once the caption cell holds a title Mind reads one grid whatever they
+    are, and the keys may be formulas the block no longer reads (after FRM-007 rewrote its INDIRECT,
+    say)."""
     out: list[dict[str, Any]] = []
     taken: set[int] = set()
     for k in grids:
@@ -297,18 +294,9 @@ def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], gr
         if g is None:
             out.append(k)
             continue
-        col, r1, r2 = k["first_col"], g["first_row"], g["last_row"]
-        read = all(not is_formula(occupied.get((r, col))) for r in range(r1, r2 + 1))  # keys: values, no formulas
-        if not read:  # else: the block's formulas read the column (Result_CF: VLOOKUP(..., INDIRECT($A3&"!A:B"), ...))
-            for r in range(r1, r2 + 1):
-                for c in range(g["first_col"], g["last_col"] + 1):
-                    v = occupied.get((r, c))
-                    if is_formula(v) and _reads_column(json_safe(v), col):
-                        read = True
-                        break
-                if read:
-                    break
-        if not read:
+        col, r1 = k["first_col"], g["first_row"]
+        caption = occupied.get((k["first_row"], col))
+        if not (isinstance(caption, str) and caption.strip()):  # a year, a date, TRUE: not a caption, and a title would destroy it
             out.append(k)
             continue
         table = _grid(sheet_name, occupied, r1, col, g["n_cols"] + 1, g["n_rows"], None)

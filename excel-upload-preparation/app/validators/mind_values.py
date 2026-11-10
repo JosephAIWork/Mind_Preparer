@@ -560,7 +560,9 @@ def scan(analysis: dict[str, Any]) -> dict[str, Any]:
         stamp = os.stat(path).st_mtime_ns
     except OSError:
         stamp = 0
-    key = f"{path}|{stamp}|{len(wb0.get('formulas', []))}|{sorted(wb0.get('ignored_sheets') or [])}"
+    # the skipped sheets by name (they are dicts: sorting them raised TypeError with two or more)
+    skipped = sorted(str(x.get("name") if isinstance(x, dict) else x) for x in (wb0.get("ignored_sheets") or []))
+    key = f"{path}|{stamp}|{len(wb0.get('formulas', []))}|{skipped}"
     hit = _SCANS.get(key)
     if hit is None:
         hit = _scan(analysis)

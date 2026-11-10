@@ -3,11 +3,17 @@
 Each session lives in `SETTINGS.data_folder / "sessions" / <session id>` (its work folder: the
 upload, every version, the analysis copies, the recalculations, the Mind inputs, the instances zip,
 with the same layout the %TEMP% folder had) next to one `state.json` that holds everything the
-`Session` dataclass (app/web/server.py) can save: the versions and their files, the last check
-result, the plan, the recalculation, the plans of the Mind loop and the instances, the bring-in and
-next-quarter results, the grid names, the settings chosen. Locks, threads and live job state are not
-saved: a job that was running when the app stopped shows as stopped when the session is opened
-again, with the sentence `CLOSED_WHILE_RUNNING`.
+`Session` dataclass (app/web/server.py) can save: the versions and their files, the plan, the
+recalculation, the plans of the Mind loop and the instances, the bring-in and next-quarter results,
+the grid names, the settings chosen -- and `result.json`, the last check result (the whole analysis:
+tens of MB on a big model), written only when the check result changed since the last save. Locks,
+threads and live job state are not saved: a job that was running when the app stopped shows as
+stopped when the session is opened again, with the sentence `CLOSED_WHILE_RUNNING`.
+
+Two copies of the app (two ports, the same data folder) never work on the same session: the copy
+that holds a session in memory keeps `open.lock` locked (the OS releases it when the process ends,
+however it ends); the other copy's list leaves that workbook out and its Reopen / Remove answer 409
+(`held_elsewhere`).
 
 `save(s)` is called by the server after every step that changes a session's state; it never raises
 (a save must not break the step: the problem is printed and the step's answer goes out as before).
@@ -29,15 +35,20 @@ from typing import Any
 from app.settings import SETTINGS
 
 STATE_FILE = "state.json"
+RESULT_FILE = "result.json"  # the last check result, apart: big, and it changes only at a scan
+LOCK_FILE = "open.lock"  # locked by the copy of the app that holds the session in memory
 CLOSED_WHILE_RUNNING = "The app was closed while this ran."
 # Do everything was waiting for the input files when the app closed (1.14.0, outside_run "waiting_for_inputs")
 CLOSED_WHILE_WAITING = "The app was closed while Do everything waited for the input files. Pick them, then press Do everything again."
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _WRITE_LOCK = threading.Lock()  # one state file written at a time (jobs end in their own threads)
+_RESULT_SAVED: dict[str, Any] = {}  # session id -> the result object result.json holds (written again only when replaced)
+_HELD: dict[str, int] = {}  # session id -> the open file descriptor of its lock (this copy of the app holds it)
+_LOCK_AT = 4096  # the byte locked, past the text that names the holder (a read of the text never touches it)
 
 # The Session fields saved as they are (JSON-safe already) ...
 _PLAIN_FIELDS = (
-    "mode", "versions", "current_version_id", "result", "plan", "last_delta", "recalc", "recalc_version_id",
+    "mode", "versions", "current_version_id", "plan", "last_delta", "recalc", "recalc_version_id",
     "grid_names", "created_at", "size", "ignore_sheets", "pivot_mode", "pending", "scan", "plan_history",
     "apply_history", "apply_status", "model_map", "model_map_version_id", "input_seq", "outside_vba",
     "outside_inputs", "outside_run", "next_quarter", "brought_in_files", "instance_finder",
@@ -73,6 +84,95 @@ def new_folder(session_id: str) -> Path:
     folder = folder_of(session_id)
     folder.mkdir(parents=True, exist_ok=False)
     return folder
+
+
+# --- which copy of the app holds a session ---------------------------------------------------------
+def _holder_text() -> bytes:
+    port = os.environ.get("MIND_READY_PORT") or getattr(SETTINGS, "port", "") or ""
+    return json.dumps({"pid": os.getpid(), "port": str(port)}).encode("utf-8")
+
+
+def _try_lock(fd: int) -> bool:
+    """Lock the session's lock file through `fd` (no wait); False when another process holds it."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, _LOCK_AT, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def hold(session_id: str) -> bool:
+    """This copy of the app holds the session (in memory): its lock file is written with the holder's
+    port and locked until `release` or the end of the process. False when another copy holds it, or
+    the lock file cannot be made (printed; the session is then not protected, as before)."""
+    if session_id in _HELD:
+        return True
+    try:
+        fd = os.open(str(folder_of(session_id) / LOCK_FILE), os.O_RDWR | os.O_CREAT)
+    except (OSError, ValueError) as exc:
+        print(f"Could not mark the session {session_id} as open: {type(exc).__name__}: {str(exc)[:120]}", flush=True)
+        return False
+    if not _try_lock(fd):
+        os.close(fd)
+        return False
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        text = _holder_text()
+        os.write(fd, text + b" " * max(0, 200 - len(text)))
+    except OSError:
+        pass
+    _HELD[session_id] = fd
+    return True
+
+
+def release(session_id: str) -> None:
+    """The session is no longer held by this copy of the app (removed, or let go)."""
+    fd = _HELD.pop(session_id, None)
+    if fd is not None:
+        try:
+            os.close(fd)  # closing releases the lock
+        except OSError:
+            pass
+
+
+def release_all() -> None:
+    for sid in list(_HELD):
+        release(sid)
+
+
+def held_elsewhere(session_id: str) -> str | None:
+    """'another copy of the app (port 8600)' when a copy of the app that is still running -- not this
+    one -- holds the session; None when nobody does, or this copy does."""
+    if session_id in _HELD or not valid_id(session_id):
+        return None
+    path = folder_of(session_id) / LOCK_FILE
+    if not path.is_file():
+        return None
+    try:
+        fd = os.open(str(path), os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        if _try_lock(fd):
+            return None  # nobody holds it (the lock went with its process)
+        port = ""
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            head = json.loads(os.read(fd, 200).decode("utf-8", "replace").strip() or "{}")
+            port = str(head.get("port") or "")
+        except (OSError, ValueError):
+            pass
+        return f"another copy of the app ({'port ' + port if port else 'another port'})"
+    finally:
+        os.close(fd)
 
 
 # --- paths and odd shapes ---------------------------------------------------------------------
@@ -132,7 +232,8 @@ def to_state(s: Any, autofix: dict[str, Any] | None = None) -> dict[str, Any]:
     state["original_baseline"] = next((k for k, b in (s.baselines or {}).items() if b is s.original_baseline), None) if s.original_baseline is not None else None
     # the automatic fixer's state lives next to the sessions in the server (AUTOFIX): its public part
     state["autofix"] = None if autofix is None else {k: v for k, v in autofix.items() if k != "stop"}
-    return json.loads(json.dumps(state, default=str))  # dates, Paths and openpyxl values as text
+    state["result_file"] = RESULT_FILE if getattr(s, "result", None) else None  # the check result, apart
+    return state  # written with default=str: dates, Paths and openpyxl values as text
 
 
 def apply_state(s: Any, state: dict[str, Any]) -> dict[str, Any] | None:
@@ -142,6 +243,10 @@ def apply_state(s: Any, state: dict[str, Any]) -> dict[str, Any] | None:
     for name in _PLAIN_FIELDS:
         if name in state and name != "mode":
             setattr(s, name, state[name])
+    if "result" in state:  # a state file written before the result had a file of its own
+        s.result = state["result"]
+    elif state.get("result_file"):
+        s.result = _read_json(folder / str(state["result_file"]))
     for name in _PATH_FIELDS:
         path = _unpack_path(state.get(name), folder)
         setattr(s, name, str(path) if path is not None and name in _TEXT_PATHS else path)
@@ -164,28 +269,35 @@ def apply_state(s: Any, state: dict[str, Any]) -> dict[str, Any] | None:
     return _stopped(autofix) if autofix else None
 
 
+def _write_whole(folder: Path, name: str, text: str) -> Path:
+    """Written whole, then renamed: a stop in the middle leaves the previous file."""
+    tmp = folder / f"{name}.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, folder / name)
+    return folder / name
+
+
 def save(s: Any, autofix: dict[str, Any] | None = None) -> Path | None:
-    """Write the session's state file; never raises (the problem is printed)."""
+    """Write the session's state file -- and the check result's file when the result object was
+    replaced since the last save (a scan; an Apply keeps it): on a big model that file is tens of MB
+    and takes seconds, the state file stays small. Never raises (the problem is printed)."""
     try:
         folder = Path(s.work_dir)
         folder.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(to_state(s, autofix), ensure_ascii=False)
-        target = folder / STATE_FILE
+        text = json.dumps(to_state(s, autofix), ensure_ascii=False, default=str)
+        result = getattr(s, "result", None)
         with _WRITE_LOCK:
-            tmp = folder / f"{STATE_FILE}.tmp"
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, target)
+            if result is not None and _RESULT_SAVED.get(s.id) is not result:
+                _write_whole(folder, RESULT_FILE, json.dumps(result, ensure_ascii=False, default=str))
+                _RESULT_SAVED[s.id] = result
+            target = _write_whole(folder, STATE_FILE, text)
         return target
     except Exception as exc:  # a save must never break the step it follows
         print(f"Could not save the session {getattr(s, 'id', '?')}: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
         return None
 
 
-def read_state(session_id: str) -> dict[str, Any] | None:
-    """The state file of a saved session, or None when there is none."""
-    if not valid_id(session_id):
-        return None
-    path = folder_of(session_id) / STATE_FILE
+def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
@@ -193,6 +305,13 @@ def read_state(session_id: str) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def read_state(session_id: str) -> dict[str, Any] | None:
+    """The state file of a saved session (without the check result), or None when there is none."""
+    if not valid_id(session_id):
+        return None
+    return _read_json(folder_of(session_id) / STATE_FILE)
 
 
 def load(session_id: str, session_cls: Any) -> tuple[Any, dict[str, Any] | None] | None:
@@ -203,6 +322,8 @@ def load(session_id: str, session_cls: Any) -> tuple[Any, dict[str, Any] | None]
         return None
     s = session_cls(id=session_id, work_dir=folder_of(session_id), mode=state.get("mode") or "plan")
     autofix = apply_state(s, state)
+    if s.result is not None:
+        _RESULT_SAVED[session_id] = s.result  # what result.json holds now: not written again until replaced
     return s, autofix
 
 
@@ -235,13 +356,14 @@ def summary_of(state: dict[str, Any]) -> dict[str, Any]:
         "versions": len(versions),
         "current_version": state.get("current_version_id"),
         "bytes": _file_bytes(folder, state),
-        "has_result": bool(state.get("result")),
+        "has_result": bool(state.get("result") or state.get("result_file")),
         "pending": bool(state.get("pending")),
     }
 
 
 def list_saved() -> list[dict[str, Any]]:
-    """What is on disk, the last opened first; a folder without a readable state file is skipped."""
+    """What is on disk, the last opened first; a folder without a readable state file is skipped, and
+    so is a session another copy of the app (another port) holds open: it is that copy's to show."""
     root = sessions_root()
     if not root.is_dir():
         return []
@@ -250,7 +372,7 @@ def list_saved() -> list[dict[str, Any]]:
         if not child.is_dir() or not valid_id(child.name):
             continue
         state = read_state(child.name)
-        if state is None:
+        if state is None or held_elsewhere(child.name):
             continue
         state.setdefault("id", child.name)
         rows.append(summary_of(state))
@@ -267,8 +389,10 @@ def remove(session_id: str) -> bool:
     folder = folder_of(session_id)
     if not folder.exists():
         return False
+    release(session_id)  # our own lock would keep the folder
+    _RESULT_SAVED.pop(session_id, None)
     with _WRITE_LOCK:
-        for name in (STATE_FILE, f"{STATE_FILE}.tmp"):
+        for name in (STATE_FILE, f"{STATE_FILE}.tmp", RESULT_FILE, f"{RESULT_FILE}.tmp"):
             with_suppress_unlink(folder / name)
     shutil.rmtree(folder, ignore_errors=True)
     return True
