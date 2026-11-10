@@ -87,6 +87,9 @@ tool, through the app's own routes on a dev server):**
 - Set B, the same with BBA_04's numbers x 1.1 (one raw file changed, 62,019 cells): the app's file
   `IN_BBA_04.csv` differs in 26,456 values, the other five in none. All six SUCCESS; Mind = Excel
   120 of 120; against set A, 16 numbers changed, all in the BBA_04 row. No model upload.
+- After the review (the raw files given to the macro as picked): set A made again in 84 s, 0 values
+  changed against the bring-in; uploaded to the same project, all six SUCCESS, run consistent,
+  Result_CF the same 120 numbers as above (Mind = Excel). The project holds set A again.
 - Found on the way, fixed: `mind_client.upload_inputs` read the rows while Mind's "Inputs import"
   box was still up. Those rows show the last upload's status and file -- the same names when files
   replace earlier ones -- so a refused file could pass as SUCCESS. It now waits for the box to come

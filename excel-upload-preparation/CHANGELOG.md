@@ -36,6 +36,12 @@
   the last result and its zip); a new workbook clears the last job's line, files and zip, and an
   old job's polling stops, so its result never lands on another workbook's card. The zip link is
   only offered in the session that made it.
+- **Checked again after the review** (dev server, the anonymized IFRS 17 tool, Joseph's six raw
+  CSVs): the macro opened all six as picked; 6 files made in 84 s (239 s with the copy); 0 values
+  changed against the bring-in; set B (BBA_04 x 1.1) changes 26,456 values of `IN_BBA_04.csv` only.
+  In real Mind (`zzz_mindready_tokyo_inputs_1`): all six SUCCESS, run consistent with the audit
+  trail, Result_CF the same 120 numbers as the first proof (Mind = Excel). The project holds the
+  original quarter (set A) again.
 - **Mind's refusal in words**: `mind_client.upload_inputs` reads Mind's reason for a refused file from
   the row's LOG ("CSV Logs") into `errors`, and for a raw file says what to do instead (`advice`).
 - **Fix: Inputs window read too early.** `upload_inputs` read the rows while Mind's "Inputs import" box
