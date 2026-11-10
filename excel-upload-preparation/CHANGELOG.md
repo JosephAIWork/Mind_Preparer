@@ -2,6 +2,25 @@
 
 ## Unreleased (iteration 1.14.0)
 
+- **Workbooks are kept between sessions.** A session's files now live in the data folder
+  (`<data folder>\sessions\<id>\`, the same layout the %TEMP% folder had) next to a state file the app
+  writes after every step that changes the session: the upload, each scan, each Apply, the end of Fix
+  all issues, of Bring in the outside files and of next quarter's files, a recalculation, the pivot
+  setting, the grid names, the model map, the instance finder, the instances build, the reports, added
+  input files. A restart of the app or a new browser window loses nothing. (`app/session_store.py`,
+  `docs/SAVED_WORKBOOKS.md`, `tests/unit/test_session_store.py`.)
+- **Recent workbooks, on the main screen.** Under the upload box, only when at least one workbook is
+  saved: name, when it was last opened, how many versions, **Reopen** and **Remove**. Reopen loads the
+  workbook with everything it had -- every version, the last check result, the plan, the last
+  recalculation (Advanced > Recalculate shows its list without recalculating), the Mind loop and
+  instances plans, the outside files and their results, the downloads -- and shows the same screens as
+  after its last step; nothing runs by itself. Remove asks once, in place ("Remove <name> from this
+  computer?" Yes / No), then deletes the folder. On start the app shows the list and waits. A job that
+  was running when the app was closed shows as stopped: "The app was closed while this ran." A browser
+  tab still on an old `?session=` link is told "Open it again from Recent workbooks on the main screen",
+  with a Show me to the list. (`GET /api/saved-workbooks`, `POST /api/saved-workbooks/{id}/open`,
+  `DELETE /api/saved-workbooks/{id}`; `MindReadyUI` `pages/recent-workbooks.ts`,
+  `core/recent-workbooks.spec.ts`, `core/show-me.ts`.)
 - **Send feedback, without a team name.** The box under the header, the dialog and the docs no longer say
   "to the Tel Aviv team": the button is **Send feedback**, the hint "You can send the details: where it
   stopped and why, with nothing from your workbook.", the dialog is titled Send feedback and its sent step

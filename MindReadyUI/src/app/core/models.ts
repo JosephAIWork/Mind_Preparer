@@ -152,6 +152,23 @@ export interface SessionStart {
   /** the upload's model workbook and the input files picked with it (several files picked at once) */
   main?: string;
   inputs?: InputFile[];
+  /** 1.14.0: the last recalculation of the current version, when a saved workbook is opened again */
+  recalc?: RecalcResult | null;
+}
+
+/** 1.14.0: one line of the main screen's "Recent workbooks" list (GET /api/saved-workbooks): a session
+ *  kept in the data folder, to open again after a restart of the app. */
+export interface SavedWorkbook {
+  id: string;
+  name: string;
+  /** seconds since 1970, as the server keeps them */
+  uploaded_at: number | null;
+  last_opened: number | null;
+  versions: number;
+  current_version: string | null;
+  bytes: number;
+  has_result: boolean;
+  pending: boolean;
 }
 
 export type PivotMode = "formulas" | "values";

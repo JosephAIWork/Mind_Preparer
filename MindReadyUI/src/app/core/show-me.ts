@@ -35,6 +35,7 @@ export type ShowMeId =
   | "outside-add" // main screen: the card's Add files
   | "outside-bring-in" // main screen: the card's button that brings the files in
   | "do-everything" // main screen: Do everything
+  | "recent-workbooks" // main screen: the Recent workbooks list (a saved workbook to open again)
   | "download"; // main screen: Download this version; on Advanced: Run in Mind (send it to Mind)
 
 /** A pointer to start: the place, and the rule whose Findings row to point at ("Fix FRM-009 with the assistant"). */
@@ -161,6 +162,8 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "outside-add": [{ page: "main", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "main", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
   "do-everything": [{ page: "main", targets: [{ el: "do-everything", text: "Click Do everything" }] }],
+  // the list is drawn only while a saved workbook exists and no workbook is open (the idle main screen)
+  "recent-workbooks": [{ page: "main", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
   download: [
     { page: "main", targets: [{ el: "download", text: "Download the file here" }] },
     { page: "advanced", tab: "mind", targets: [{ el: "mind-run", text: "Send it to Mind here" }] },
@@ -211,6 +214,8 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: /\bOutside files card\b/i, id: "outside-card" },
   { words: /\bpress Do everything\b/i, id: "do-everything" },
   { words: /\bDownload or send to Mind\b/i, id: "download" },
+  // "Open it again from Recent workbooks on the main screen" (the server, for a session the restart closed)
+  { words: /\bRecent workbooks\b/i, id: "recent-workbooks" },
 ];
 
 /** The place a text sends the user to, or null when it names none (most texts: a "Show me" appears

@@ -324,6 +324,14 @@ for the tests, then `python -m pytest tests` (the Excel-backed ones skip without
 Run the app: `run_mind_ready_web.bat`. Settings (port, data folder, AI gateway, Mind addresses, sandbox
 folder and project prefix, MM for Excel add-in): `settings.yaml`; the AI key is pasted in the app.
 
+Saved workbooks (1.14.0): every workbook the app is given is kept in the data folder
+(`<data folder>\sessions\<id>\`, with every version, result and plan in a state file written after each
+step), so a restart of the app or a new browser window loses nothing. The main screen's **Recent
+workbooks** list (under the upload box, only when something is saved) opens one again where it was --
+Reopen -- or deletes it -- Remove, asked once in place. Nothing reopens by itself; a job that was
+running when the app was closed shows as stopped. `docs/SAVED_WORKBOOKS.md`, `app/session_store.py`,
+`GET /api/saved-workbooks`, `POST /api/saved-workbooks/{id}/open`, `DELETE /api/saved-workbooks/{id}`.
+
 ## Implementation note
 
 Rules are mined from `01_Mind_Readiness_Standard.md` and

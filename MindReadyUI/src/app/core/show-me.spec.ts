@@ -53,6 +53,8 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
     id: "outside-card",
   },
   { where: "Do everything: Fix all issues did not run", text: 'Stopped at "Fix all issues": Not started. Press Do everything again.', id: "do-everything" },
+  // 1.14.0: a session the restart closed (app/web/server.py `_session`): the saved workbook is in the list
+  { where: "a session closed by a restart", text: "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen.", id: "recent-workbooks" },
   {
     where: "Do everything: Fix all issues, the comparison did not run",
     text: 'Stopped at "Fix all issues": The errors left could not be checked against the original (the comparison did not run). Check the numbers under Advanced › Deliver, then press Do everything again.',

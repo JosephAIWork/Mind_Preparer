@@ -65,7 +65,7 @@ export class SessionStore {
     this.pivotMode.set(start.pivot_mode ?? "values");
     if (start.pivot_modes) this.pivotModes.set(start.pivot_modes);
     this.outsideInputs.set(start.outsideInputs ?? null);
-    this.recalc.set(null);
+    this.recalc.set(start.recalc ?? null); // a saved workbook opened again brings its last recalculation
     this.chatHistory.set([]);
     this.fixTarget.set(null);
     this.numbers.set(null);

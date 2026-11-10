@@ -1190,3 +1190,24 @@ def test_a_set_range_values_op_is_shown_with_twenty_values_and_their_count():
     public = server._public_op({"op": "set_range_values", "sheet": "Data", "ref": "A7:A106", "values": [[i] for i in range(100)]})
     assert public["values"] == [[i] for i in range(20)] and public["values_count"] == 100 and public["ref"] == "A7:A106"
     assert "values" not in server._public_op({"op": "set_value", "sheet": "Data", "cell": "A1", "after": 1})
+
+
+def test_a_session_lives_in_the_data_folder_and_its_state_says_where_it_went(client, plain_grid_xlsx):
+    """1.14.0 (saved workbooks): the session's folder is under the data folder's `sessions`, with its
+    state file; GET /api/sessions/{id} carries the last recalculation only when it is the current
+    version's (None before one); after a restart the same GET says to open it again from Recent workbooks."""
+    from app.settings import SETTINGS
+
+    body = _upload(client, plain_grid_xlsx)
+    sid = body["sessionId"]
+    s = server.SESSIONS[sid]
+    assert s.work_dir == Path(SETTINGS.data_folder) / "sessions" / sid and (s.work_dir / "state.json").is_file()
+    assert client.get(f"/api/sessions/{sid}").json()["recalc"] is None
+    s.recalc, s.recalc_version_id = {"status": "PASS", "message": "clean", "ran": True, "formula_errors": [], "addin_gap_errors": []}, "ver-000"
+    assert client.get(f"/api/sessions/{sid}").json()["recalc"] is None  # an earlier version's
+    s.recalc_version_id = s.current_version_id
+    assert client.get(f"/api/sessions/{sid}").json()["recalc"]["message"] == "clean"
+    server.SESSIONS.pop(sid)  # the app was restarted: the file is there, the session is not
+    res = client.get(f"/api/sessions/{sid}")
+    assert res.status_code == 404 and res.json()["detail"] == "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen."
+    assert client.get("/api/sessions/never-there").json()["detail"] == "unknown session never-there"

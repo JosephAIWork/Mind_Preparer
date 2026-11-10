@@ -4,7 +4,7 @@ import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
 import {
-  ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, NEXT_QUARTER_LEAD, NextQuarterResult, NextQuarterStatus, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus,
+  ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, NEXT_QUARTER_LEAD, NextQuarterResult, NextQuarterStatus, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus, SessionStart,
   appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, nextQuarterLines, nextQuarterOutcome, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
   pickedFilesProblem, withOutsideStep,
 } from "../core/models";
@@ -13,6 +13,7 @@ import { ReadinessBanner } from "../core/readiness-banner";
 import { SessionStore } from "../core/session.store";
 import { ShowMeLink } from "../core/show-me-link";
 import { KeyBox } from "./advanced/key-box";
+import { RecentWorkbooks } from "./recent-workbooks";
 
 type Phase = "idle" | "uploading" | "choose" | "scanning" | "loaded";
 type Tone = "idle" | "ok" | "warn" | "error";
@@ -114,7 +115,7 @@ function stoppedWhere(id: StepId, r: ActionState): string {
 @Component({
   selector: "mr-home",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner],
+  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner, RecentWorkbooks],
   templateUrl: "./home.page.html",
   styleUrl: "./home.page.scss",
 })
@@ -503,6 +504,38 @@ export class HomePage implements OnDestroy {
   cancelChoose(): void {
     this.pending.set(null);
     this.phase.set("idle");
+  }
+
+  /** 1.14.0: a saved workbook opened again from the Recent workbooks list, with everything it had. The
+   *  same screens as after its last step: the constructor's effect shows the loaded screen and picks up
+   *  the results of Fix all issues, the outside files and next quarter from the server. A workbook that
+   *  was uploaded but never checked goes where an upload goes: the sheet choice, or straight to the
+   *  scan. Nothing runs by itself: Do everything is for uploads only. */
+  openSaved(started: SessionStart | PendingUpload): void {
+    this.uploadError.set("");
+    this.scan.set(null);
+    this.pickedInputs.set(started.inputs ?? []);
+    if (isPending(started)) {
+      if (started.size?.above_threshold && started.size.sheets?.length > 1) {
+        this.pending.set(started);
+        this.skip.set(new Set());
+        this.phase.set("choose");
+      } else {
+        void this.scanSession(started.sessionId, []);
+      }
+      return;
+    }
+    this.pending.set(null);
+    this.resetOutside();
+    this.fixAll.set(idle());
+    this.fixFormulas.set(idle());
+    this.loop.set(idle());
+    this.recalc.set(idle());
+    this.prepare.set(idle());
+    this.steps.set([]);
+    this.chainLine.set("");
+    this.store.setSession(started);
+    void this.router.navigate([], { queryParams: { session: started.sessionId }, replaceUrl: true });
   }
 
   loadAnother(): void {

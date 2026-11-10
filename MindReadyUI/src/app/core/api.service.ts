@@ -4,7 +4,7 @@ import { firstValueFrom } from "rxjs";
 import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
-  AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NextQuarterStatus, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, SheetCells, Version,
+  AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NextQuarterStatus, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SavedWorkbook, ScanStatus, SessionStart, SheetCells, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -94,6 +94,23 @@ export class ApiService {
 
   resume(id: string): Promise<SessionStart> {
     return firstValueFrom(this.http.get<SessionStart>(this.s(id)));
+  }
+
+  /** 1.14.0: the workbooks kept in the data folder (the main screen's "Recent workbooks"), last opened first. */
+  async savedWorkbooks(): Promise<SavedWorkbook[]> {
+    const out = await firstValueFrom(this.http.get<{ workbooks: SavedWorkbook[] }>(`${this.base}/saved-workbooks`));
+    return out.workbooks ?? [];
+  }
+
+  /** Loads a saved workbook again (every version, the check result, the plans and results) and answers as
+   *  `resume` does; a workbook uploaded but never checked comes back as a pending upload. */
+  openSavedWorkbook(id: string): Promise<SessionStart | PendingUpload> {
+    return firstValueFrom(this.http.post<SessionStart | PendingUpload>(`${this.base}/saved-workbooks/${encodeURIComponent(id)}/open`, {}));
+  }
+
+  /** Removes a saved workbook from this computer (its folder with every version). */
+  removeSavedWorkbook(id: string): Promise<{ removed: boolean; id: string }> {
+    return firstValueFrom(this.http.delete<{ removed: boolean; id: string }>(`${this.base}/saved-workbooks/${encodeURIComponent(id)}`));
   }
 
   scanStatus(id: string): Promise<ScanStatus> {

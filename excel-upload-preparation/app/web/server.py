@@ -9,7 +9,9 @@ the engine's dicts onto the front end's TypeScript contracts and keeps a per-ses
 with its change log.
 
 Sessions live in memory (this is a local, single-user tool); their files
-live in a temp directory per session. The built front-end (`dist/`) is
+live in a folder per session under the data folder (`<data folder>/sessions/<id>`), with a state
+file the app writes after every step, so a workbook can be opened again after a restart from the
+main screen's "Recent workbooks" list (app/session_store.py). The built front-end (`dist/`) is
 served from the same process with an SPA fallback, so one URL does it all:
 
     python -m app.web.server            (or run_mind_ready_web.bat)
@@ -56,6 +58,7 @@ from app.excel_report import build_report_workbook, build_standalone_report  # n
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
 from app import ai_key, feedback  # noqa: E402
 from app import expiry  # noqa: E402  (through the module: tests replace its checker)
+from app import session_store  # noqa: E402  (saved workbooks: each session's folder and state file in the data folder)
 from app.settings import SETTINGS  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, check_api_key, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
@@ -222,6 +225,10 @@ class Session:
     instance_plan_default_version_id: str | None = None
     # The zip of the last "Build the Mind instances" (the model + its main workbook), None until one is built
     instances_zip: Path | None = None
+    # Saved workbooks (app/session_store.py): the name the Recent workbooks list shows (the upload's
+    # file name) and when the session was last opened there
+    name: str = ""
+    last_opened: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     # one Apply at a time: two at once would both copy the same version and the last one to finish
     # would become current without the other's changes
@@ -245,8 +252,17 @@ SESSIONS: dict[str, Session] = {}
 def _session(session_id: str) -> Session:
     s = SESSIONS.get(session_id)
     if s is None:
+        # saved on disk but not in memory (the app was restarted): nothing reopens by itself
+        if session_store.valid_id(session_id) and session_store.read_state(session_id) is not None:
+            raise HTTPException(status_code=404, detail="This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen.")
         raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
     return s
+
+
+def _save(s: Session) -> None:
+    """The session's state file (app/session_store.py), after every step that changes it. Never
+    raises: a save that fails is printed and the step answers as before."""
+    session_store.save(s, AUTOFIX.get(s.id))
 
 
 def _register_file(s: Session, path: Path) -> str:
@@ -712,12 +728,15 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
                 out = _analyze(s, path, progress)
         except HTTPException as exc:
             _scan_finish(s, error=str(exc.detail))
+            _save(s)
             raise
         except Exception as exc:
             _scan_finish(s, error=f"analysis failed: {plain_error(exc)}")
+            _save(s)
             raise HTTPException(status_code=500, detail=f"analysis failed: {plain_error(exc)}") from exc
         _scan_finish(s)
         s.pending = False
+        _save(s)
         current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
         return {**out, "version": current, "versions": s.versions, "size": s.size, "scan": _scan_snapshot(s)}
     finally:
@@ -1236,7 +1255,11 @@ def create_session(
     if file is None and not any(Path(f.filename or "").suffix.lower() in ALLOWED_SUFFIXES for f in picked):
         raise HTTPException(status_code=422, detail="Pick the workbook itself (.xlsx, .xlsm or .xlsb) together with its input files.")
     sid = uuid.uuid4().hex[:12]
-    work_dir = Path(tempfile.mkdtemp(prefix="mind_ready_"))
+    try:
+        work_dir = session_store.new_folder(sid)  # <data folder>/sessions/<id>: kept between runs of the app
+    except OSError as exc:  # the data folder cannot be written: the session lives for this run only, as before
+        print(f"Could not make the session folder in the data folder ({str(exc)[:160]}): using a temporary one.", flush=True)
+        work_dir = Path(tempfile.mkdtemp(prefix="mind_ready_"))
     upload_dir = work_dir / "upload"
     upload_dir.mkdir(parents=True)
     s = Session(id=sid, work_dir=work_dir, mode=mode)
@@ -1258,13 +1281,69 @@ def create_session(
     from app.inventory import sha256_of
 
     version = _add_version(s, raw_path, "upload", "original upload", [], None, sha256_of(raw_path))
+    s.name = raw_path.name
     s.size = size_gate(raw_path, load_config())
     s.ignore_sheets = _parse_ignore(s, ignore_sheets)
     picked_out = {"main": raw_path.name, "inputs": _inputs_public(s)}
     if str(defer).strip().lower() in ("1", "true", "yes", "on"):
         s.pending = True
-        return {"sessionId": sid, "pending": True, "mode": mode, "size": s.size, "version": version, "versions": s.versions, "scan": _scan_snapshot(s), **picked_out}
+        _save(s)
+        return {"sessionId": sid, **_pending_state(s)}
     return {"sessionId": sid, **_run_scan(s, raw_path), **picked_out}
+
+
+def _pending_state(s: Session) -> dict[str, Any]:
+    """An uploaded, not yet analysed session, in the shape a deferred upload returns."""
+    return {"pending": True, "mode": s.mode, "size": s.size, "version": _current_version(s) or s.versions[-1], "versions": s.versions, "scan": _scan_snapshot(s), "main": _main_name(s), "inputs": _inputs_public(s)}
+
+
+@app.get("/api/saved-workbooks")
+def saved_workbooks() -> dict[str, Any]:
+    """The workbooks kept in the data folder (app/session_store.py), the last opened first: id, name,
+    when uploaded and last opened, how many versions, the file's size, whether a check result exists.
+    Nothing is loaded: the main screen shows the list and waits."""
+    return {"workbooks": session_store.list_saved()}
+
+
+@app.post("/api/saved-workbooks/{session_id}/open")
+def open_saved_workbook(session_id: str) -> dict[str, Any]:
+    """Load a saved workbook into memory under the same id and answer as GET /api/sessions/{id} does
+    (every version, the last check result, the plan, the recalculation, the plans and results of the
+    other steps), so the screens open where they were. A workbook uploaded but never analysed answers
+    in the shape of a deferred upload (`pending`). A job that was running when the app stopped shows
+    as stopped: "The app was closed while this ran."."""
+    s = SESSIONS.get(session_id)
+    if s is None:
+        loaded = session_store.load(session_id, Session) if session_store.valid_id(session_id) else None
+        if loaded is None:
+            raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")
+        s, autofix = loaded
+        SESSIONS[session_id] = s
+        if autofix:
+            AUTOFIX[session_id] = autofix
+    s.last_opened = time.time()
+    _save(s)
+    if not s.result:
+        return {"sessionId": s.id, **_pending_state(s)}
+    return session_state(s.id)
+
+
+@app.delete("/api/saved-workbooks/{session_id}")
+def remove_saved_workbook(session_id: str) -> dict[str, Any]:
+    """Remove a saved workbook from this computer: its folder (every version and result) and the
+    session in memory. Refused while a step still runs on it."""
+    s = SESSIONS.get(session_id)
+    if s is not None:
+        busy = _busy_with(s)
+        if busy and busy != "the workbook has not been analysed yet":  # an upload never scanned may go; a running step may not
+            raise HTTPException(status_code=409, detail=f"Not removed: {busy}. Wait for it to finish, then remove it.")
+        excel_worker.release(session_id)  # an Excel that holds a version open would keep the folder
+        SESSIONS.pop(session_id, None)
+        AUTOFIX.pop(session_id, None)
+    existed = session_store.remove(session_id) if session_store.valid_id(session_id) else False
+    if not existed and s is None:
+        raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")
+    return {"removed": True, "id": session_id}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -1293,6 +1372,9 @@ def session_state(session_id: str) -> dict[str, Any]:
         "outsideInputs": _outside_public(s),
         "main": _main_name(s),
         "inputs": _inputs_public(s),
+        # the last recalculation, when it is the current version's (a saved workbook opened again
+        # shows its error list under Advanced > Recalculate without recalculating)
+        "recalc": s.recalc if s.recalc and s.recalc_version_id == s.current_version_id else None,
     }
 
 
@@ -1308,6 +1390,7 @@ def set_pivot_mode(session_id: str, payload: dict[str, Any] = Body(...)) -> dict
     s.pivot_mode = mode
     if s.result:
         s.plan = plan_actions(s.result["workbook_analysis"], s.result["validation_report"], s.grid_names or None, s.pivot_mode)
+    _save(s)
     return {"pivot_mode": s.pivot_mode, "plan": s.plan, "readiness": s.readiness()}
 
 
@@ -1351,6 +1434,7 @@ def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: 
         return _apply_and_version_locked(s, ops, source, who, reanalyze, minor)
     finally:
         s.apply_lock.release()
+        _save(s)  # the new version (its label settled after the check that it opens), the gauge
 
 
 def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool) -> dict[str, Any]:
@@ -1477,6 +1561,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     if applied:
         s.grid_names.update({k: v for k, v in proposed.items() if v})
         s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
+        _save(s)
     return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
 
 
@@ -2068,6 +2153,7 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
         out["plan"] = s.plan
     s.recalc_path = copy_path
     out["readiness"] = s.readiness()  # a clean recalculation is what turns the verdict green
+    _save(s)
     return out
 
 
@@ -2543,6 +2629,7 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
             # scan ran while the job was still going)
             with contextlib.suppress(Exception):
                 _patch_outside_finding(s, s.result)
+        _save(s)  # the versions it made, the Mind inputs, its result or error
 
 
 @app.post("/api/sessions/{session_id}/outside-inputs/run", status_code=202)
@@ -2635,6 +2722,7 @@ def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str
             _keep_input(s, _save_upload(f, _input_folder(s)))
     _rematch(s)
     _patch_outside_finding(s, s.result)
+    _save(s)
     return {"inputs": _inputs_public(s), "outsideInputs": _outside_public(s), "readiness": s.readiness()}
 
 
@@ -2718,6 +2806,7 @@ def _next_quarter_worker(s: Session, base: dict[str, Any], grids: list[dict[str,
             end.update(_problem_fields(_report_problem(exc, "Make next quarter's Mind input files", s, stage=str(st.get("stage") or ""))))
     finally:
         st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
+        _save(s)  # next quarter's zip and how the job ended
 
 
 @app.post("/api/sessions/{session_id}/next-quarter-inputs", status_code=202)
@@ -2939,6 +3028,8 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
         except Exception as exc:  # the thread must never die silently
             state.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
             state.update(_problem_fields(_report_problem(exc, "Fix all issues", s, stage=str(state.get("stage") or ""))))
+        finally:
+            _save(s)  # the fixer's version, recalculation and analysis, or how it ended
 
     threading.Thread(target=worker, name=f"autofix-{session_id}", daemon=True).start()
     return _autofix_public(s, state, full=False)
@@ -3084,6 +3175,7 @@ def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"model map failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
         s.model_map_version_id = s.current_version_id
+        _save(s)
     return s.model_map
 
 
@@ -3300,6 +3392,7 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
     out["download"] = download
     out["files"] = [model_file, main_file]
     out["warnings"] = warnings
+    _save(s)  # the zip of this build (the version itself was saved by the Apply)
     return json.loads(json.dumps(out, default=str))
 
 
@@ -3353,6 +3446,7 @@ def _instance_finder_of(s: Session, refresh: bool = False) -> dict[str, Any]:
             raise HTTPException(status_code=500, detail=f"instance finder failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
         s.instance_finder_version_id = s.current_version_id
         s.instance_finder_assistant = None
+        _save(s)
     return s.instance_finder
 
 
@@ -3378,6 +3472,7 @@ def instance_finder(session_id: str, assistant: str = "0", refresh: str = "0") -
                 block = {**EMPTY_ASSISTANT, "asked": True, "available": True, "message": f"Request failed: {type(exc).__name__}"}
         if block.get("available") and not block.get("message"):
             s.instance_finder_assistant = block  # an answer is kept per version; no key or a failed call is asked again next time
+            _save(s)
     else:
         block = s.instance_finder_assistant
     return {"version_id": s.current_version_id, "finder": merge_assistant(result, block)}
@@ -3525,6 +3620,7 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     if res.get("failed"):
         out.update(_problem_fields(_report_problem(None, "Grid Namer", s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
+    _save(s)
     return out
 
 
@@ -3541,13 +3637,15 @@ def reports(session_id: str) -> dict[str, Any]:
     excel_worker.release(s.id)
     standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
     built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
-    return {
+    out = {
         "standalone_name": _register_file(s, standalone),
         "workbook_name": _register_file(s, Path(built.path)),
         "method": built.method,
         "verified_opens_in_excel": built.verified_opens_in_excel,
         "warnings": built.warnings,
     }
+    _save(s)  # the two report files stay downloadable after a reopen
+    return out
 
 
 @app.get("/api/sessions/{session_id}/versions")
