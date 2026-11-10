@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -16,7 +17,8 @@ from app.web import server
 def _files(tmp_path, monkeypatch):
     monkeypatch.setattr(feedback, "_path", lambda: tmp_path / "incidents.jsonl")
     timings = tmp_path / "timings.jsonl"
-    timings.write_text(json.dumps({"at": "2026-10-27 10:00:00", "stage": "scan", "s": 12.5, "thread": "excel-abc", "file": "Secret Client Model.xlsm"}) + "\n", encoding="utf-8")
+    # dated now: feedback._timings() keeps the last day only, so a fixed date would age out of the report
+    timings.write_text(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "stage": "scan", "s": 12.5, "thread": "excel-abc", "file": "Secret Client Model.xlsm"}) + "\n", encoding="utf-8")
     monkeypatch.setenv("MINDREADY_PERF_LOG", str(timings))
 
 

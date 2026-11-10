@@ -305,3 +305,15 @@ def test_ranges_reached_through_names_refers_to_range_and_range_variables():
     assert loops["cohortYear"]["from"]["name"] == "StartCohortYear" and loops["cohortYear"]["to"]["name"] == "CalcYear"
     assert loops["i"]["drivers"][0]["name"] == "Scenario"
     assert v["entry_points"] == ["AllScenarioRun"]
+
+
+def test_a_workbook_level_name_wins_over_a_sheet_local_one():
+    """A model held the same name twice, two rows apart: the workbook's definition is what a macro's
+    Range("Name") reads, whichever order the scan lists them in."""
+    from app.model_map import _Names
+
+    both = [{"name": "Block", "value": "Macro!$A$13:$J$140", "local_sheet_id": None}, {"name": "Block", "value": "Macro!$A$11:$J$138", "local_sheet_id": 4}]
+    assert _Names(both).ref("block") == "Macro!$A$13:$J$140"
+    assert _Names(both[::-1]).ref("Block") == "Macro!$A$13:$J$140"
+    assert _Names(both[1:]).ref("Block") == "Macro!$A$11:$J$138"
+    assert _Names(both).name_of("Macro", "A13:J140") == "Block"

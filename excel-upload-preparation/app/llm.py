@@ -28,6 +28,12 @@ from typing import Any, Callable, Iterator
 from . import ai_key
 from .settings import SETTINGS
 
+try:  # token meter (PyCodes\TokenUsage) - optional, never breaks the app
+    from token_meter import record_response as meter, record_usage as meter_usage
+except ImportError:
+    def meter(*_a, **_k): pass
+    meter_usage = meter
+
 DEFAULT_AZURE_ENDPOINT = SETTINGS.ai_endpoint
 # /claude/invocations stopped answering (200 + empty body, 2026-09-16); the
 # native Anthropic Messages passthrough takes a top-level "system" param.
@@ -123,14 +129,18 @@ def _sse_data(resp: Any) -> Iterator[dict[str, Any]]:
             yield ev
 
 
-def _parse_claude_stream(resp: Any, on_delta: Callable[[str], None]) -> tuple[str, str | None]:
+def _parse_claude_stream(resp: Any, on_delta: Callable[[str], None],
+                         usage: dict[str, Any] | None = None) -> tuple[str, str | None]:
     """Consume an Anthropic Messages SSE stream: every `text_delta` goes to
     `on_delta` as it arrives (thinking deltas are skipped); returns the whole
-    text and the stop_reason."""
+    text and the stop_reason. Token counts are merged into `usage` if given."""
     parts: list[str] = []
     stop_reason = None
     for ev in _sse_data(resp):
         kind = ev.get("type")
+        if usage is not None and kind in ("message_start", "message_delta"):
+            u = ((ev.get("message") or {}) if kind == "message_start" else ev).get("usage") or {}
+            usage.update({k: v for k, v in u.items() if v is not None})
         if kind == "content_block_delta":
             d = ev.get("delta") or {}
             if d.get("type") == "text_delta" and d.get("text"):
@@ -220,12 +230,15 @@ def chat_completion(
             resp = requests.post(url, headers=headers, json=payload, timeout=timeout, **({"stream": True} if stream else {}))
         resp.raise_for_status()
         if stream and "text/event-stream" in (resp.headers.get("content-type") or ""):
+            usage: dict[str, Any] = {}
             try:
-                text, stop_reason = _parse_claude_stream(resp, on_delta)  # type: ignore[arg-type]
+                text, stop_reason = _parse_claude_stream(resp, on_delta, usage)  # type: ignore[arg-type]
             finally:
                 resp.close()
+            meter_usage("Mind Ready", model_id, usage)
             return _finish(text, stop_reason, on_delta)
         body = resp.json()
+        meter("Mind Ready", body, model_id)
         text = _body_text(body)
         if text is None:
             return {"available": True, "text": None, "message": f"Unrecognized response shape: {list(body.keys())}"}
