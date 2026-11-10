@@ -117,12 +117,12 @@ run are deleted afterwards. Both names can be changed in the settings.
 
 ## Feedback
 
-When a step fails, a box under the header says what stopped and why, with the button **Send feedback
-to the Tel Aviv team**. The same button is in the header, for anything else you want to tell us.
+When a step fails, a box under the header says what stopped and why, with the button **Send
+feedback**. The same button is in the header, for anything else you want to tell us.
 
 1. Click it, add a line about what you were doing if you like, and click **Prepare the message**.
 2. Read the message if you like, then click **Copy and open email**: the message is copied and an email
-   to the Tel Aviv team opens (the address is `feedback.email` in the settings).
+   opens, to the address in the settings (`feedback.email`); the reply comes back to you.
 3. Paste it into the email (**Ctrl+V**) and send. If the email cuts it short, click **Save as a file**
    and attach the file.
 

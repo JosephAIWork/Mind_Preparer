@@ -108,8 +108,7 @@ Excel's own words in brackets:
 - The screens show the reason of a refused change whole (a plain sentence and Excel's words, often
   160 characters): up to 200 characters, cut after a whole word; changes refused for the same reason
   share it ("S!B5, S!B6: ...").
-- The message to the Tel Aviv team (`app/feedback.py`) keeps its codes as they are: the decoder
-  reads them.
+- The feedback message (`app/feedback.py`) keeps its codes as they are: the decoder reads them.
 
 ## Adding a rule
 

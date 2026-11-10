@@ -1,4 +1,4 @@
-"""Problem reports for the Milliman Tel Aviv team: in codes, with nothing from the user's workbook.
+"""Problem reports behind "Send feedback": in codes, with nothing from the user's workbook.
 
 When a step fails, `record()` writes an *incident* into the data folder (feedback\\incidents.jsonl):
 the step, the stage and the functions the app was in (as short codes), the error's kind, the rule
@@ -8,7 +8,8 @@ sent from the header) into the text of the email, with the recent stage timings 
 never a file name, a sheet name, a cell address or a cell's content.
 
 The codes are short hashes (`code()`): what they stand for is worked out from the source by the
-team's own decoder, not kept in the app.
+developers' own decoder, not kept in the app. The email goes to the address in the settings
+(`feedback.email`); the reply comes back to whoever sent it.
 """
 from __future__ import annotations
 
@@ -485,7 +486,9 @@ def _workbook_line(w: dict[str, Any]) -> str:
 
 def assistant_lines(incident: dict[str, Any] | None, note: str, rule_title: str | None = None) -> str | None:
     """Two or three plain-English sentences opening the message, written by the assistant from the
-    same facts the message holds (never the workbook). None when the assistant is off or fails."""
+    same facts the message holds (never the workbook). The user's note is given to it as background
+    only: the message prints the note itself, so the assistant is told to say what happened in its
+    own words and never to copy the note. None when the assistant is off or fails."""
     from .llm import chat_completion, llm_available
 
     if not llm_available():
@@ -504,23 +507,60 @@ def assistant_lines(incident: dict[str, Any] | None, note: str, rule_title: str 
     else:
         facts.append("The user is sending feedback from the app's header; no step failed.")
     if note.strip():
-        facts.append(f"The user's own words: {note.strip()[:600]}")
+        facts.append(
+            "Background only, already printed below your lines, so do not repeat or quote it -- the user's note: "
+            + note.strip()[:600]
+        )
     system = (
         "You write the opening lines of a problem report that a user of the Mind Ready app (it prepares Excel models "
         "for Milliman Mind) sends to the app's developers. Write two or three short sentences in plain English, in the "
-        "first person ('I was ...'). Use only the facts given. Do not guess the cause, do not give advice, do not mention codes."
+        "first person ('I was ...'), telling what happened in your own words. Use only the facts given. "
+        "The user's note is printed in full right under your lines: never copy it, never quote it, never repeat its "
+        "sentences; say what it means in different words, or leave it out. "
+        "Do not guess the cause, do not give advice, do not mention codes."
     )
     res = chat_completion([{"role": "user", "content": "\n".join(facts)}], system, max_tokens=220, timeout=45)
     text = (res.get("text") or "").strip()
     return text or None
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
+
+
+def without_note(ai_text: str | None, note: str) -> str | None:
+    """The assistant's opening without any sentence that repeats the user's note word for word
+    (the note is printed in the message anyway). A sentence goes when it holds the whole note or
+    one of the note's sentences (of 10 characters or more, so "Thanks." does not match everything);
+    case and the spaces around do not matter. None when nothing of the opening is left."""
+    if not ai_text:
+        return None
+    pieces = [note.strip()] + _sentences(note)
+    pieces = [re.sub(r"\s+", " ", p).casefold().rstrip(".!?") for p in pieces]
+    pieces = [p for p in pieces if len(p) >= 10]
+    if not pieces:
+        return ai_text
+    kept = []
+    for sentence in _sentences(ai_text):
+        plain = re.sub(r"\s+", " ", sentence).casefold()
+        if any(p in plain for p in pieces):
+            continue
+        kept.append(sentence)
+    return " ".join(kept) or None
+
+
 def compose(incident: dict[str, Any] | None, note: str = "", ai_text: str | None = None, workbook: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The email: subject, the text to paste, the file name to save it under, the address."""
+    """The email: subject, the text to paste, the file name to save it under, the address. The
+    assistant's `ai_text` opens it, less any sentence that is the user's note word for word (the
+    note has its own part, "The user's note")."""
     version, run = _version(), _how_run()
     ref = incident["ref"] if incident else _new_ref()
     at = time.strftime("%d %b %Y %H:%M")
     lines = [f"Mind Ready {version} ({run}) · ref {ref} · {at}", ""]
+    ai_text = without_note(ai_text, note)
     if ai_text:
         lines += [ai_text, ""]
     if incident:

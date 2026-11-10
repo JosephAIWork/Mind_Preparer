@@ -2,7 +2,7 @@ import { HttpErrorResponse, HttpInterceptorFn, HttpResponse } from "@angular/com
 import { Injectable, inject, signal } from "@angular/core";
 import { tap } from "rxjs";
 
-/** "Send feedback to the Tel Aviv team": the problem the backend just reported (its incident ref),
+/** "Send feedback": the problem the backend just reported (its incident ref),
  *  shown as a box under the header, and the dialog that turns it into an email. */
 @Injectable({ providedIn: "root" })
 export class FeedbackService {

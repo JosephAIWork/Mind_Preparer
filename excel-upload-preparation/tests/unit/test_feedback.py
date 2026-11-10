@@ -1,4 +1,4 @@
-"""Problem reports for the Tel Aviv team (app/feedback.py): codes, formula shapes, nothing from the workbook."""
+"""Problem reports behind "Send feedback" (app/feedback.py): codes, formula shapes, nothing from the workbook."""
 from __future__ import annotations
 
 import json
@@ -8,22 +8,32 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app import feedback
+from app import feedback, llm
 from app.perf import stage
+from app.settings import SETTINGS
 from app.web import server
 
 
 @pytest.fixture(autouse=True)
 def _files(tmp_path, monkeypatch):
-    monkeypatch.setattr(feedback, "_path", lambda: tmp_path / "incidents.jsonl")
+    # the incidents go under tmp_path through tests/unit/conftest.py (SETTINGS.data_folder); the timings too,
+    # but one dated now is needed: feedback._timings() keeps the last day only, so a fixed date would age out
     timings = tmp_path / "timings.jsonl"
-    # dated now: feedback._timings() keeps the last day only, so a fixed date would age out of the report
     timings.write_text(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "stage": "scan", "s": 12.5, "thread": "excel-abc", "file": "Secret Client Model.xlsm"}) + "\n", encoding="utf-8")
     monkeypatch.setenv("MINDREADY_PERF_LOG", str(timings))
 
 
+def test_the_incidents_of_a_test_never_reach_the_users_real_file(tmp_path):
+    # tests/unit/conftest.py: the data folder of every test is its own tmp_path, so a recorded incident
+    # lands there and the user's %LOCALAPPDATA%\MindReady\feedback\incidents.jsonl is never touched
+    assert SETTINGS.data_folder == tmp_path / "MindReady"
+    inc = feedback.record(None, step="Build the Mind instances", what="no plan today")
+    assert feedback._path() == tmp_path / "MindReady" / "feedback" / "incidents.jsonl"
+    assert feedback._path().is_file() and feedback.find(inc["ref"]) == inc
+
+
 def test_codes_are_stable():
-    # the decoder in Tel Aviv computes the same codes: a change here breaks every message already sent
+    # the developers' decoder computes the same codes: a change here breaks every message already sent
     assert feedback.code("stage", "scan") == "RT515"
     assert feedback.code("fn", "app.prep._write_one") == "HA467"
 
@@ -139,6 +149,62 @@ def test_feedback_from_the_header_has_no_incident():
     client = TestClient(server.app)
     msg = client.post("/api/feedback", json={"note": "Works well", "useAssistant": False}).json()
     assert "Feedback (no step failed)" in msg["text"] and "Works well" in msg["text"] and "Machine:" in msg["text"]
+
+
+@pytest.fixture
+def fake_assistant(monkeypatch):
+    """A chat_completion that answers with a fixed text and keeps what it was asked."""
+    asked: dict[str, str] = {}
+
+    def install(answer: str):
+        def chat_completion(messages, system_prompt, **kw):
+            asked["system"] = system_prompt
+            asked["user"] = messages[-1]["content"]
+            return {"available": True, "text": answer}
+
+        monkeypatch.setattr(llm, "llm_available", lambda: True)
+        monkeypatch.setattr(llm, "chat_completion", chat_completion)
+        return asked
+
+    return install
+
+
+NOTE = "I clicked Do everything and it stopped at the second step."
+
+
+def test_the_assistant_is_told_to_say_it_in_its_own_words_and_never_copy_the_note(fake_assistant):
+    asked = fake_assistant("I was running Fix the formulas when the app stopped.")
+    inc = feedback.record(ValueError("boom"), step="Fix the formulas", names=[])
+    assert feedback.assistant_lines(inc, NOTE, "a formula asks Excel about its own file") == "I was running Fix the formulas when the app stopped."
+    assert "own words" in asked["system"] and "never copy it" in asked["system"]
+    assert "do not repeat or quote it" in asked["user"] and NOTE in asked["user"]  # the note is background, labelled as such
+    assert "The step the user ran: Fix the formulas." in asked["user"]
+
+
+def test_a_sentence_of_the_opening_that_repeats_the_note_is_dropped(fake_assistant):
+    fake_assistant(f"I was running Fix the formulas. {NOTE} The app reported an error.")
+    inc = feedback.record(ValueError("boom"), step="Fix the formulas", names=[])
+    ai = feedback.assistant_lines(inc, NOTE)
+    text = feedback.compose(inc, NOTE, ai)["text"]
+    assert "I was running Fix the formulas. The app reported an error.\n" in text
+    assert text.count(NOTE) == 1  # once, under "The user's note"
+    assert "The user's note\n  " + NOTE in text
+
+
+def test_the_opening_goes_when_it_is_only_the_note(fake_assistant):
+    fake_assistant(f'"{NOTE}"')
+    msg = feedback.compose(None, NOTE, feedback.assistant_lines(None, NOTE))
+    assert msg["text"].count(NOTE) == 1 and msg["text"].index("Feedback (no step failed)") < msg["text"].index(NOTE)
+
+
+@pytest.mark.parametrize("ai, note, expected", [
+    ("I was fixing. The scan stopped early. Nothing else.", "the scan stopped early", "I was fixing. Nothing else."),  # case, no full stop
+    ("I was fixing.\nIt stopped. Thanks.", "It stopped.\nThanks.", "I was fixing. Thanks."),  # a short line of the note ("Thanks.") does not match
+    ("I was fixing the formulas.", "", "I was fixing the formulas."),
+    (None, "anything", None),
+])
+def test_without_note(ai, note, expected):
+    assert feedback.without_note(ai, note) == expected
 
 
 def test_a_stage_error_carries_the_innermost_stage():

@@ -5,9 +5,9 @@ import { FeedbackService } from "./feedback.service";
 import { FeedbackMessage } from "./models";
 import { SessionStore } from "./session.store";
 
-/** The dialog behind "Send feedback to the Tel Aviv team": an optional note, the message prepared and
- *  shown (codes only, nothing from the workbook), then one click that copies it and opens an email.
- *  A file is saved only when asked (Save as a file). */
+/** The dialog behind "Send feedback": an optional note, the message prepared and shown (codes only,
+ *  nothing from the workbook), then one click that copies it and opens an email to the address the
+ *  backend gives (`feedback.email` in the settings). A file is saved only when asked (Save as a file). */
 @Component({
   selector: "mr-feedback-dialog",
   standalone: true,

@@ -28,9 +28,9 @@
       <div class="shell__problem" role="alert">
         <span class="shell__problem-text">
           <b>{{ problem.text || "Something went wrong." }}</b>
-          <span class="shell__problem-hint">You can send the details to the Tel Aviv team: where it stopped and why, with nothing from your workbook.</span>
+          <span class="shell__problem-hint">You can send the details: where it stopped and why, with nothing from your workbook.</span>
         </span>
-        <button class="shell__problem-send" (click)="feedback.open(problem.ref)">Send feedback to the Tel Aviv team</button>
+        <button class="shell__problem-send" (click)="feedback.open(problem.ref)">Send feedback</button>
         <button class="shell__problem-close" (click)="feedback.dismiss()" aria-label="Dismiss">Dismiss</button>
       </div>
     }
