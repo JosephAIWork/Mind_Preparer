@@ -62,7 +62,7 @@ the two honest cases below.
   **Copies from loops**: tick one or more of the macro's loops (a scenario
   and a cohort, say) instead of a key column: one copy per combination of
   their values, each copy reading its own values from a small
-  `#Instance values /InstanceSplit` grid, the macro's other loops staying
+  `#Instance values /InstanceSplit` grid, the same macro's other loops staying
   `MM_LOOP`s inside every copy, and the main workbook showing each copy's
   results block (`MM_INSTANCE`, one row per copy and block row). Checked in
   Mind on the anonymized IFRS 17 tool (10 November 2026): 24 copies, every

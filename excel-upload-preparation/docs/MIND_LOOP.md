@@ -20,6 +20,27 @@ The loop name is the driver's defined name (e.g. `RUN_ROW`, `ACTIVE_SCENARIO`), 
 source sheet's name (e.g. `Policies`); the bounds are the bound cells' numbers (a formula's
 stored value counts). All three can be changed before writing.
 
+## One macro at a time (review, 10 November 2026)
+
+A workbook can have two run macros, each with its own loops (the IFRS 17 tool: `AllScenarioRun` over
+cohort x scenario, `EndemicCalculationRun` over group x roll-forward year). Excel runs each macro on
+its own, with the other macro's drivers fixed at their saved values. Written into one model, Mind
+would run all four loops inside each other (6 x 4 x 6 x 6 passes) and `MM_RESULT` with one loop would
+add up the passes of the others: the values would differ from Excel.
+
+- The plan builds the loops of one macro (`macro=`, default: the first macro with a loop; the Mind
+  loop panel shows a **Macro** dropdown when there are two or more). The plan lists the macros and
+  their loops (`macros`). The other macros' loops are listed as `not built`, with why.
+- A driver of another macro that already holds an `MM_LOOP` (written earlier) is named in the notes:
+  build on a version without it.
+- A macro's outputs and cleared areas are its own: another macro's block is not written.
+- Inside one macro, the loops are told apart by procedure and loop variable, so two procedures that
+  both use `i` keep their own loop.
+- A count cell that already holds the count this plan writes (an earlier write with the same choices)
+  is accepted. The label `<loop> count` goes to the left of the count only when that cell is free:
+  empty, not another loop's count or label, not a cell the plan writes, and read by no formula.
+- A first value typed as a cell (`Sheet!A1`) counts as chosen, like a number: the header pass is kept.
+
 ## What is not written, and said
 
 - a block the macro places by a counter of its own (UC-2's `.Offset(0,

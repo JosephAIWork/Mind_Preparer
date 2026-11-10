@@ -5,6 +5,32 @@
 Built in October on a side branch as 1.13.0 and 1.14.0 and never released; brought onto this branch
 and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes, per-loop choices).
 
+- **One macro's loops at a time** (review of 10 November 2026; `docs/MIND_LOOP.md`). Excel runs each
+  run macro on its own, with the other macro's drivers fixed. The Mind loop plan wrote the loops of
+  every macro into one model, so Mind ran them inside each other (the IFRS 17 tool: 6 x 4 x 6 x 6
+  passes) and the values could differ from Excel. Now the plan builds one macro (`macro=` on
+  `GET` / `POST .../mind-loop-plan`; a **Macro** dropdown on the Mind loop panel), lists the others'
+  loops as not built, and names a driver of another macro that already holds a loop. Copies from loops
+  take the loops of one macro (two macros: refused), pick that macro's loop plan, and no longer write
+  another macro's loops into every copy. The Tokyo instances built before this fix
+  (`zzz_mindready_tokyo_instances_1`) had the group and roll-forward loops inside every copy. Built
+  again through the API (91 changes, no other macro's loops) as `zzz_mindready_tokyo_instances_2`:
+  Mind's upload test 57 cells (a subset of the 63: rounding residues below 4e-6 and the 8 "TRUE"
+  cells), run consistent with the audit trail, export against Excel 12,528 cells, 0 differences.
+- **Loops told apart by procedure and loop variable**: two macros both using `i` no longer overwrite
+  each other, and an output block is written by its own macro's loop.
+- **Count cells**: a count cell that already holds the count this plan writes is accepted (the loop
+  can be planned again after a write); the count's label never goes on another loop's count or label,
+  a cell the plan writes, or a cell a formula reads.
+- **A first value typed as a cell** counts as chosen, like a number: the header pass is kept.
+- **Copies from loops** keep the clears of the macro's paste areas; copies' keys are always different
+  (by position when two values would clash).
+- **Prep's repairs with the instances** are compared with the plan's cells at their addresses before
+  the plan's row and column inserts: no repair is dropped or overwritten because of another cell that
+  only shares an address.
+- **Screens**: the instances panel sends the Mind loop panel's choices (`loop_choices`, `macro`) and
+  previews again when they change; a new preview drops the earlier write's download link.
+
 - **Copies from loops** (`app/instance_builder.py`, the instances panel's "Copies from loops" boxes;
   `GET` / `POST .../mind-instances-plan` take `loops`, `results` and `loop_choices`). For a model whose
   macro runs the whole model once per scenario and cohort (or any counter or list loop), not one row

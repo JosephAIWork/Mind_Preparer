@@ -186,19 +186,33 @@ loops under **Copies from loops** (API: `loops=CohortRng,Scenario`) and the buil
 combination of their values instead of one copy per key of a table.
 
 - **Which loops.** Any ready loop of the Mind loop plan whose one driver cell takes the loop value itself
-  (a counter, `2021 .. 2026`) or the items of a list (`0, 1, 2, 3`). A loop that reads a row or a
-  column of a table is not offered (the table way is the one for it). The order of the keys follows
-  the order of the loops in the plan -- the macro's nesting: `CohortRng2021_Scenario0`,
-  `CohortRng2021_Scenario1`, ... A value that is long or has other characters becomes its position
-  (`GroupName3`). At most 1,000 copies.
+  (a counter, `2021 .. 2026`) or the items of a list (`0, 1, 2, 3`), all of **one macro**. Loops of
+  two macros are refused: Excel runs each macro on its own. The loops asked for pick their macro's
+  loop plan, so any macro's loops can be chosen. A loop that reads a row or a column of a table is not
+  offered (the table way is the one for it). The order of the keys follows the order of the loops in
+  the plan -- the macro's nesting: `CohortRng2021_Scenario0`, `CohortRng2021_Scenario1`, ... A value
+  that is long or has other characters becomes its position (`GroupName3`); when two values of a loop
+  would give the same key (a repeated item, or `Base case` and `1`), every value of that loop goes by
+  its position. At most 1,000 copies.
+- **Each loop's own choices.** The instances panel sends what was set for each loop on the Mind loop
+  panel (`loop_choices`: first, last, count cell, name; and the macro), so both panels show the same
+  loops. It previews again when those choices change.
 - **In the model.** Two empty rows below the used range of the first loop's sheet: a cell `This copy's
   key` with `MM_INSTANCEKEY`, an empty row, then the split grid `#Instance values /InstanceSplit` --
   header `Instance key` and one column per loop, one row per copy. Each chosen driver gets
   `=INDEX(<its column of the grid>,1)`: in each copy Mind keeps the copy's one row; in Excel it is the
   first copy. A dropdown on a driver is removed (Mind drops the formula of a cell with a dropdown).
-- **The other loops** of the macro (in the Tokyo tool: the group and the roll-forward year of a second
-  macro) are written as `MM_LOOP`s exactly as the Mind loop plan has them; they run inside every copy.
-  A loop already written is left alone.
+- **The same macro's other loops** are written as `MM_LOOP`s exactly as the Mind loop plan has them;
+  they run inside every copy. A loop already written is left alone. **Another macro's loops are left
+  out** (review, 10 November 2026): Excel runs that macro on its own, with these drivers fixed. In the
+  Tokyo tool the group and the roll-forward year belong to `EndemicCalculationRun`, not to
+  `AllScenarioRun`: inside every copy Mind would run them and add their passes up.
+- **The areas the macro clears** before a run are emptied as the Mind loop plan empties them (asked
+  for, or read by a block), so what an earlier run left there does not stay in every copy.
+- **Prep's formula repairs** are written with the instances. They run before the plan's row and column
+  inserts, on the workbook's own addresses; the plan's cells are compared with them at the addresses
+  they had before the inserts, so a repair is never dropped because of another cell with the same
+  address.
 - **The main workbook.** The keys grid, and `#Results by <loops>`: one row per copy and row of one
   block of the model -- by default the biggest run of formula rows on the output sheet the model map
   names (the sheet with the most formulas), or the range asked for (`results=Sheet!A3:CI8`) -- each cell
@@ -222,6 +236,16 @@ copy's cohort and scenario typed into the two driver cells and recalculated: 12,
 differences (largest relative gap 4.8e-15). The copies differ from each other by up to 402 of their 522
 cells, so each copy really computes its own scenario and cohort. The tool's macro skips scenario 0
 except in the last cohort: in Mind those 5 copies compute too.
+
+**Built again after the review, 10 November 2026** (one macro at a time): the same API call now writes
+91 changes (7 for the instances, 84 FRM-014 repairs) and leaves `EndemicCalculationRun`'s group and
+roll-forward loops out. Project `zzz_mindready_tokyo_instances_2`: converted in 152 s; Mind's upload
+test lists 57 cells, all of them among the 63 of the first build (49 rounding residues below 4e-6 and
+the 8 "TRUE" text cells; the 6 residues on the roll-forward and summary sheets are gone with the
+loops); the run completed, consistent with the audit trail. Mind's export against Excel, each copy's
+cohort and scenario set in the driver cells: 12,528 cells, 0 differences (largest relative gap
+4.8e-15). Result_CF does not read the group or the roll-forward year, so Excel's answers are the same
+as for the first build, cell for cell.
 
 ## What the builder does not do yet
 
