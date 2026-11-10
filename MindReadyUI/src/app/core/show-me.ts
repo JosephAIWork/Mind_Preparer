@@ -193,15 +193,17 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: under("Recalculate"), id: "recalc-errors" },
   { words: /\bReview the new formula errors\b/i, id: "recalc-errors" },
   { words: /\bRecalculate in Excel\b/i, id: "recalc-run" },
-  // "Build it under Advanced › Mind loop": the button, named before the tab
-  { words: /\b(?:press|click) Build it\b|\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Mind loop\b/i, id: "loop-build" },
+  // "Build it under Advanced › Mind loop": the button, named before the tab; "click Build it" is the loop's
+  // unless the same sentence names the Instances tab ("click Build it under Advanced › Instances")
+  { words: /\b(?:press|click) Build it\b(?![^.!?]*\bInstances\b)|\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Mind loop\b/i, id: "loop-build" },
   { words: /\bthe loop's result\b/i, id: "loop-result" },
   { words: under("Mind loop"), id: "loop-choices" },
   // "1 loop needs one answer", "2 loops need one answer each"; the older "needs a decision" still read
   { words: /\bloop(?:\(s\)|s)? needs? (?:one answer|a decision)\b/i, id: "loop-choices" },
-  // the Instances tab: "Build it under Advanced › Instances" (the button, named before the tab), "the
-  // copies' result" / "the instances' result" (the line with the download), else the question
-  { words: /\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Instances\b/i, id: "instances-build" },
+  // the Instances tab: "Build it under Advanced › Instances" or "click Build it (Advanced › Instances)" (the
+  // button, with the tab named in the same sentence), "the copies' result" / "the instances' result" (the
+  // line with the download), else the question
+  { words: /\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Instances\b|\b(?:press|click) Build it\b(?=[^.!?]*\bInstances\b)/i, id: "instances-build" },
   { words: /\bthe (?:copies|instances)' result\b/i, id: "instances-result" },
   { words: under("Instances"), id: "instances-choice" },
   { words: /\bOutside files card \(Add files\)/i, id: "outside-add" },

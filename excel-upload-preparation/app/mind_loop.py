@@ -765,7 +765,9 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                 # every iteration uploads a new model into a new project, so its inputs go up again too
                 progress({"event": "mind", **_inputs_stage(), "message": f"iteration {n}: uploading {len(inputs)} input file(s) through Mind's Inputs window"})
                 mb = sum(f.stat().st_size for f in inputs) / 2**20  # Tokyo's inputs: about 1.4 M cells
-                up = out["inputs_upload"] = mc.upload_inputs(page, Path(cfg.inputs_dir), timeout_s=int(300 + 30 * mb), shots=shots)
+                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened again before
+                # the run, else the run still uses the copies as loaded before the import (K2 showed 120 for 915)
+                up = out["inputs_upload"] = mc.upload_inputs(page, Path(cfg.inputs_dir), timeout_s=int(300 + 30 * mb), shots=shots, project_url=init)
                 if not up.get("ok"):
                     out["error"] = f"Mind did not take the input files: {up.get('reason') or 'no reason recorded'}"
                     progress({"event": "mind", "message": f"iteration {n}: {out['error']}"[:300]})

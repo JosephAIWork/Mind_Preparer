@@ -106,7 +106,7 @@ describe("the Mind instances panel and the loop panel's choices", () => {
   it("sends each loop's choices and the macro, and says so", async () => {
     const { sent, page, panel, detect } = await draw({ loops: { "Ctrl_01!C22": { first: "2022", last: "2025" } }, macro: "AllScenarioRun" });
     expect(sent[0]).toEqual({ key: undefined, keys: undefined, loop_choices: { "Ctrl_01!C22": { first: "2022", last: "2025" } }, macro: "AllScenarioRun" });
-    expect(page.querySelector(".loop-choices-used")?.textContent).toContain("Mind loop panel");
+    expect(page.querySelector(".loop-choices-used")?.textContent).toContain("Mind loop tab");
     panel.toggleLoop("CohortRng");
     await detect();
     expect(sent.at(-1)).toEqual({ loops: "CohortRng", loop_choices: { "Ctrl_01!C22": { first: "2022", last: "2025" } } });

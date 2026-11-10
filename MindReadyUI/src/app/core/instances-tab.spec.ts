@@ -91,6 +91,7 @@ function mockCarbon(): void {
 }
 
 async function render<T>(cls: Type<T>, api: unknown, store: unknown): Promise<{ page: HTMLElement; panel: T; detect: () => Promise<void> }> {
+  TestBed.resetTestingModule(); // a test may render twice (a retry, a second plan)
   TestBed.configureTestingModule({ providers: [{ provide: ApiService, useValue: api }, { provide: SessionStore, useValue: store }] });
   TestBed.overrideComponent(cls, { set: { imports: [], schemas: [NO_ERRORS_SCHEMA] } });
   const fixture = TestBed.createComponent(cls);
@@ -196,8 +197,10 @@ describe("the Instances tab: one question, then one line and one button", () => 
     expect(details?.textContent).toContain("Also keys with no rows");
     expect(details?.textContent).toContain("the cell the macro changes");
     const all = page.textContent ?? "";
-    // (the backend's own why texts, "the driver reads a row of a table", are shown as they come)
-    expect(all).not.toMatch(/Key column|Every key of the list|Write it into a new version|needs a decision|not built|Where instances could help/);
+    // the backend's why texts come through plain-words: "the driver reads a row of a table" is said as
+    // "the cell the macro changes reads a row of a table"
+    expect(all).toContain("Rows (the cell the macro changes reads a row of a table)");
+    expect(all).not.toMatch(/Key column|Every key of the list|Write it into a new version|needs a decision|not built|Where instances could help|\bdriver\b|Mind loop panel|count cell|MM_LOOP/);
     const what = page.querySelector('[data-test="inst-what"]') as HTMLDetailsElement;
     expect(what.open).toBe(false);
     expect(what.textContent).toContain("MM_INSTANCE");
@@ -258,5 +261,64 @@ describe("the Instances tab: one question, then one line and one button", () => 
     await detect();
     expect(page.querySelector('[data-test="inst-next"]')).toBeNull();
     expect(page.querySelector('[data-test="inst-download"]')).toBeNull();
+  });
+
+  // review of 10 November 2026: the finder reads the formulas, not the macro, so it must be there for a
+  // workbook without a run loop (repeated year sheets built by hand) and when the plan could not be read
+  it("keeps the finder reachable without a run loop, and offers Try again when the plan fails", async () => {
+    const noLoop = { mindInstancesPlan: () => Promise.resolve({ version_id: "v1", plan: { found: false, status: "not_built", notes: ["No run loop in the macros: nothing to build."], operation_count: 0 } }) };
+    const { page, detect } = await draw(noLoop);
+    expect(page.textContent).toContain("No run loop in this workbook: nothing to copy.");
+    const fold = page.querySelector('[data-test="inst-finder"]') as HTMLDetailsElement;
+    expect(fold).not.toBeNull();
+    (fold.querySelector("summary") as HTMLElement).click();
+    await detect();
+    expect(finds).toBe(1);
+    expect(page.querySelectorAll(".suggestion").length).toBe(1);
+
+    let calls = 0;
+    const failing = {
+      mindInstancesPlan: () => {
+        calls += 1;
+        return Promise.reject(new Error("scan still running"));
+      },
+    };
+    const { page: broken, detect: detect2 } = await draw(failing);
+    expect(broken.querySelector('[data-show-me="instances-result"]')?.textContent).toContain("Could not read the plan");
+    expect(broken.querySelector('[data-test="inst-finder"]')).not.toBeNull();
+    const retry = broken.querySelector('[data-test="inst-retry"]') as HTMLButtonElement;
+    expect(retry.textContent?.trim()).toBe("Try again");
+    retry.click();
+    await detect2();
+    expect(calls).toBe(2);
+  });
+
+  it("keeps step 2 to one line and one button: Prep's blockers stay visible, the other notes fold away", async () => {
+    const prep = "Prep still has 1 blocking item that is not a formula, e.g. a pivot table (STR-009). Run Fix all issues before uploading.";
+    const upload = "After the upload, Mind's test may list two kinds of cell that are not errors: check cells that are 0 in Excel and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE / FALSE.";
+    const kept = "The loop RollYear is not written (it needs a decision on the Mind loop panel): in Mind its driver keeps one value.";
+    const api = { mindInstancesPlan: (_id: string, o: InstanceChoices) => Promise.resolve({ version_id: "v1", plan: { ...plan(o), notes: [upload, prep, kept], prep_blockers: [{ id: "pivot_tables", title: "Pivot tables", count: 1 }] } }) };
+    const { page, detect } = await draw(api);
+    // before a choice the plan is not ready: its notes are not step 2's business
+    expect(page.querySelector('[data-test="inst-prep"]')).toBeNull();
+    boxes(page)[0].click();
+    await detect();
+    expect(page.querySelector('[data-test="inst-summary"]')).not.toBeNull();
+    expect(page.querySelector('[data-test="inst-prep"]')?.textContent?.trim()).toBe(prep);
+    const notes = page.querySelector('[data-test="inst-notes"]') as HTMLDetailsElement;
+    expect(notes.open).toBe(false);
+    expect(notes.querySelector("summary")?.textContent?.trim()).toBe("Notes (2)");
+    expect(notes.textContent).toContain(upload);
+    // the old words are said plainly inside the fold
+    expect(notes.textContent).toContain("The loop RollYear is not written (it needs one answer on the Mind loop tab): in Mind the cell the macro changes keeps one value.");
+    expect(summaries(page)).toEqual(["Not sure? Let the app look", "Details", "Notes (2)", "What is this?"]);
+    // between the summary line and Build it: nothing but Prep's line
+    const between: string[] = [];
+    let el = page.querySelector('[data-test="inst-summary"]')?.nextElementSibling ?? null;
+    while (el && !el.querySelector('[data-show-me="instances-build"]')) {
+      between.push(el.textContent?.trim() ?? "");
+      el = el.nextElementSibling;
+    }
+    expect(between.filter(Boolean)).toEqual([prep]);
   });
 });

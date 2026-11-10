@@ -4,16 +4,20 @@ import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-com
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { LoopChoice, LoopChoices, LoopPlan, LoopPlanLoop, appliedCount, failedCount, failedText } from "../../core/models";
+import { plainWhy, splitNotes } from "../../core/plain-words";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
 
-/** The box a loop still needs an answer in: the cell for the number of passes, the first value, or the last. */
-export type LoopAnswerKey = "count_cell" | "first" | "last";
+/** The box a loop still needs an answer in: the cell for the number of passes, the first value, the last,
+ *  or both bounds ("range": the plan knows them but cannot run with them, e.g. the last before the first). */
+export type LoopAnswerKey = "count_cell" | "first" | "last" | "range";
 
 /** The Mind loop tab: one sentence that says what the macro runs, one button that builds it. The choices
  *  (each loop's own name, runs from / to, a cell for the number of passes; the macro; the two options;
- *  Preview) sit behind the fold "Change the choices"; what gets written behind "What gets written". A
- *  loop that still needs one answer shows only that box, above the folds. */
+ *  Preview) sit behind the fold "Change the choices"; what gets written behind "What gets written"; the
+ *  plan's notes behind "Notes" (Prep's blockers above Build it). A loop that still needs one answer shows
+ *  only that box, above the folds. The choices start from the store's (the Instances tab follows them,
+ *  so coming back from it keeps the answers). */
 @Component({
   selector: "mr-loop-panel",
   standalone: true,
@@ -46,6 +50,7 @@ export class LoopPanel implements OnInit, OnDestroy {
   /** the folds: closed until the user opens them */
   readonly choicesOpen = signal(false);
   readonly writtenOpen = signal(false);
+  readonly notesOpen = signal(false);
   readonly whatOpen = signal(false);
   /** the last build wrote the loop: "Done. Next: Run in Mind" */
   readonly built = signal(false);
@@ -70,22 +75,35 @@ export class LoopPanel implements OnInit, OnDestroy {
       .filter((l) => l.status !== "not_built")
       .map((l) => `${l.name}${this.span(l)}`);
     const runs = parts.length ? `The macro runs ${this.joined(parts)}.` : "The macro's loop cannot be written as it is.";
-    const open = this.needsAnswer().length;
-    const open2 = this.ownLoops().filter((l) => l.status === "needs_decision").length;
-    const asked = Math.max(open, open2);
     if (!parts.length) return runs;
+    const asked = this.needsAnswer().length;
     if (asked) return `${runs} Mind can do the same, after ${asked === 1 ? "one answer" : asked + " answers"} below.`;
+    // a loop that needs something the boxes cannot give (no driver cell): its why is in the fold
+    if (this.ownLoops().some((l) => l.status === "needs_decision")) return `${runs} Mind can do the same, after a change under "Change the choices" below.`;
     return `${runs} Mind can do the same.`;
   });
 
-  /** How many things the build writes, for the fold's title: the formulas, plus the cleared areas. */
-  readonly writtenCount = computed(() => {
-    const p = this.plan();
-    if (!p) return 0;
-    return p.operation_count + (this.clearOld() ? p.clears.filter((c) => c.included).length : 0);
+  /** Build it writes the ready loops only while another still waits: said under the button. */
+  readonly partialNote = computed(() => {
+    const open = this.needsAnswer().map((l) => l.name);
+    if (!open.length || !this.canWrite()) return "";
+    const ready = this.ownLoops()
+      .filter((l) => l.status === "ready")
+      .map((l) => l.name);
+    return `Builds ${this.joined(ready)} only; ${this.joined(open)} ${open.length === 1 ? "waits" : "wait"} for the answer above.`;
   });
 
+  /** How many things the build writes, for the fold's title: every operation (the cleared cells are operations too). */
+  readonly writtenCount = computed(() => this.plan()?.operation_count ?? 0);
+
+  /** The plan's own notes: Prep's blockers (shown above Build it) and the rest (behind "Notes"). */
+  readonly notes = computed(() => splitNotes(this.plan()?.notes));
+
   ngOnInit(): void {
+    // the choices the store holds (the last preview here, followed by the Instances tab): the answers stay
+    const saved = this.store.loopChoices?.();
+    if (saved?.loops) this.picks.set(saved.loops);
+    if (saved?.macro) this.macro.set(saved.macro);
     void this.preview();
   }
 
@@ -140,13 +158,14 @@ export class LoopPanel implements OnInit, OnDestroy {
   }
 
   /** The one box a loop that needs an answer is missing: the cell for the number of passes when its
-   *  why asks for one, else the first or the last value the plan does not know. */
+   *  why asks for one, else the first or the last value the plan does not know; "range" (both bounds)
+   *  when the plan knows them and still cannot run (the last before the first, a bound it cannot use). */
   missingKey(l: LoopPlanLoop): LoopAnswerKey | null {
     if (l.status !== "needs_decision") return null;
     if (/count cell/i.test(l.why ?? "") || l.suggested_count_cell) return "count_cell";
     if (l.first === null || l.first === undefined) return "first";
     if (l.last === null || l.last === undefined) return "last";
-    return null;
+    return "range";
   }
 
   /** The missing box's label: the loop's own why, in plain words, else what the box is for. */
@@ -154,7 +173,7 @@ export class LoopPanel implements OnInit, OnDestroy {
     const key = this.missingKey(l);
     const why = this.plainWhy(l.why ?? "");
     if (why) return why;
-    return key === "count_cell" ? `${l.name}: a cell for the number of passes` : key === "first" ? `${l.name} runs from` : `${l.name} runs to`;
+    return key === "count_cell" ? `${l.name}: a cell for the number of passes` : key === "first" ? `${l.name} runs from` : key === "range" ? `${l.name} runs from / to` : `${l.name} runs to`;
   }
 
   /** The missing box's greyed-in words. */
@@ -164,18 +183,9 @@ export class LoopPanel implements OnInit, OnDestroy {
     return "a number, or a cell (Sheet!A1)";
   }
 
-  /** The plan's why with its jargon said plainly: "count cell" -> "a cell for the number of passes",
-   *  "the driver" -> "the cell the macro changes", "MM_LOOP needs" -> "Mind needs". */
+  /** The plan's why with its jargon said plainly (core/plain-words). */
   plainWhy(why: string): string {
-    return why
-      .replace(/\s*\(count cell\)/gi, "")
-      .replace(/\bMM_LOOP needs a cell that holds the count\b/g, "Mind needs a cell that holds the number of passes")
-      .replace(/\bthe count cell\b/gi, "the cell for the number of passes")
-      .replace(/\bcount cell\b/gi, "a cell for the number of passes")
-      .replace(/\bthe driver cell\b/gi, "the cell the macro changes")
-      .replace(/\bthe driver\b/gi, "the cell the macro changes")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+    return plainWhy(why);
   }
 
   useSuggested(l: LoopPlanLoop): void {

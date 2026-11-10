@@ -337,6 +337,8 @@ export interface LoopPlan {
   operations?: LoopPlanOperation[];
   operation_count: number;
   notes?: string[];
+  /** Prep's blocking items that are not formulas (a lone text cell, a pivot table), still open for this version */
+  prep_blockers?: { id: string; title: string; count: number; rule_ids?: string[] }[];
   counts?: { loop_cells?: number; result_cells?: number; cleared?: number; extra?: number; repairs?: number };
   how_it_runs?: string;
   /** the formula repairs Prep still had for this version: written with the loop (written = false: only named) */
@@ -497,6 +499,8 @@ export interface InstancePlan {
   /** the block the main workbook shows for every copy */
   results?: { block: string; rows: number; cols: number; chosen_by: string } | null;
   notes?: string[];
+  /** Prep's blocking items that are not formulas, still open for this version (as on the loop plan) */
+  prep_blockers?: { id: string; title: string; count: number; rule_ids?: string[] }[];
   loop?: InstancePlanLoop | null;
   table?: InstancePlanTable | null;
   key?: InstancePlanKey | null;

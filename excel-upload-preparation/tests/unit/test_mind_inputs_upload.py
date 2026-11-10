@@ -696,20 +696,25 @@ class FakeRunPage:
         if key == "Escape":
             self.unmatched_window = False
 
+    @staticmethod
+    def _time(v: str) -> str:
+        """Mind writes a run under a minute as "0.694 seconds", one of a minute or more as a clock time "00:03:01"."""
+        return v if ":" in v else f"{v} seconds"
+
     def _body(self) -> str:
         top = "Inputs\nRun\n"
         if self.unmatched_window:
             top += "Some of your imported files have not been automatically matched. Please select a corresponding grid for each file.\nRates.csv\nDo not match\nClose\nMatch selection\n"
         tail = "\nSave after run\nOff\nInstMain\nInstModel\nExports\nProjects > zzz_mindready_test"
         if self.clicked_at is None:
-            return top + (f"Last run in {self.last} seconds.\nConsistent with the audit trail." if self.last else "") + tail
+            return top + (f"Last run in {self._time(self.last)}.\nConsistent with the audit trail." if self.last else "") + tail
         t = self.clock.now - self.clicked_at
         if t < self.run_s:
             return top + "Consistent with the audit trail.\nSave after run\nOff\nRun in Progress\nInstMain"
         if self.fail:
             return top + "Consistent with the audit trail." + tail + "\nRun failed\nError: division by zero in Calc!B4"
-        notes = f"\nCalculations completed\nRun completed in {self.new} seconds" if t < self.run_s + 8 else ""
-        return top + f"Last run in {self.new} seconds.\nConsistent with the audit trail." + tail + notes
+        notes = f"\nCalculations completed\nRun completed in {self._time(self.new)}" if t < self.run_s + 8 else ""
+        return top + f"Last run in {self._time(self.new)}.\nConsistent with the audit trail." + tail + notes
 
 
 def test_a_second_run_waits_for_its_own_result_not_the_audit_line_of_the_run_before(tmp_path, clock):
@@ -751,6 +756,23 @@ def test_run_model_closes_mind_s_unmatched_inputs_window_first(clock):
     assert res["completed"] and page.calls[0] == ("press", "Escape") and ("click", "Run") in page.calls
 
 
+def test_a_run_of_minutes_is_written_as_a_clock_time_and_still_seen_as_finished(clock):
+    """Recorded on the anonymized IFRS 17 tool (tokyo_instances_2026-11-10, mind_r1/4_run.txt, 233 s wall): the page
+    showed "Last run in 00:03:01." and "Run completed in 00:03:01" -- a clock time, no "seconds" -- so the patterns
+    that only knew "N seconds" never saw the run end and the Run in Mind loop timed out on every iteration."""
+    page = FakeRunPage(clock, run_s=5.0, last="0.223", new="00:03:01")
+    res = mc.run_model(page, timeout_s=60)
+    assert res["completed"] and res["audit_consistent"] and res["started"] and not res["timed_out"] and res["reason"] is None
+    assert res["seconds"] == 181.0
+    # a second long run after a long one: its own line, its own time
+    page = FakeRunPage(clock, run_s=5.0, last="00:03:01", new="00:02:58")
+    res = mc.run_model(page, timeout_s=60)
+    assert res["completed"] and res["seconds"] == 178.0
+    assert mc.run_marker("Last run in 00:03:01.\nConsistent with the audit trail.\nCalculations completed\nRun completed in 00:03:01") == ("Last run in 00:03:01", 1)
+    assert mc.run_seconds("0.694 seconds") == 0.694 and mc.run_seconds("00:03:01.") == 181.0 and mc.run_seconds("03:01.5") == 181.5
+    assert mc.run_seconds("1:00:00") == 3600.0 and mc.run_seconds("soon") is None
+
+
 def test_the_run_marker_changes_with_a_new_run():
     before = mc.run_marker("Run\nLast run in 0.223 seconds.\nConsistent with the audit trail.")
     assert before == ("Last run in 0.223 seconds", 0)
@@ -776,10 +798,11 @@ def fake_mind(monkeypatch):
         calls.append(("session",))
         yield None, Page()
 
-    def upload_inputs(page, folder, timeout_s=300, shots=None):
+    def upload_inputs(page, folder, timeout_s=300, shots=None, project_url=None):
         files = [f.name for f in mc.input_files(folder)]
         calls.append(("upload_inputs", tuple(files)))
         state["timeout_s"] = timeout_s
+        state["project_url"] = project_url  # the loop passes the project's link, so a copy's file reopens the project
         if state["inputs_ok"]:
             return {"ok": True, "statuses": {Path(f).stem: "SUCCESS" for f in files}, "unmatched": [], "failed": {},
                     "files": files, "closed": True, "reason": None}
@@ -835,6 +858,7 @@ def test_the_loop_uploads_the_inputs_after_the_template_and_before_the_run(tmp_p
     assert _steps(calls) == ["upload_and_convert", "add_template", "upload_inputs", "template_names", "run_model"]
     assert ("upload_inputs", tuple(sorted(FILES, key=str.casefold))) in calls
     assert state["timeout_s"] >= 300 + 30 * 6
+    assert state["project_url"] == report["projects"][0]["init_url"]  # a copy's file reopens the project before the run
     assert out["inputs_upload"]["ok"] and report["projects"][0]["ran"]
     assert any("Inputs window" in e["message"] for e in events) and any("SUCCESS" in e["message"] for e in events)
     assert _decide(out)["verdict"] == "converged"

@@ -4,6 +4,7 @@ import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-com
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { FinderDimension, FinderFits, FinderResult, InstanceChoices, InstanceLoopOption, InstancePlan, InstancePlanOperation, InstancePlanSplitGrid, appliedCount, failedCount, failedText } from "../../core/models";
+import { plainWhy, splitNotes } from "../../core/plain-words";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
 
@@ -54,6 +55,7 @@ export class InstancesPanel implements OnInit, OnDestroy {
   /** the folds: Details (the cards, the cleared areas, how it runs), the finder, What is this? */
   readonly detailsOpen = signal(false);
   readonly finderOpen = signal(false);
+  readonly notesOpen = signal(false);
   readonly whatOpen = signal(false);
   // ---- Where instances could help (GET .../instance-finder): runs only when its fold is opened, never on init ----
   readonly finder = signal<FinderResult | null>(null);
@@ -115,6 +117,8 @@ export class InstancesPanel implements OnInit, OnDestroy {
   });
   /** the finder's top suggestion, the one shown first */
   readonly topSuggestion = computed<FinderDimension | null>(() => this.finder()?.dimensions[0] ?? null);
+  /** The plan's notes in two parts: Prep's blockers (above Build it) and the rest (behind "Notes" once the plan is ready) */
+  readonly notes = computed(() => splitNotes(this.plan()?.notes));
 
   ngOnInit(): void {
     void this.preview();
@@ -147,9 +151,14 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return (p.copies_from ?? []).map((c) => `${c.name} (${c.count ?? c.values?.length ?? 0})`).join(" × ");
   }
 
-  /** "6 values" / "4 values" beside a loop's tick box, or why copies cannot be made from it. */
+  /** The plan's texts with their jargon said plainly (core/plain-words): "the driver" -> "the cell the macro changes". */
+  plainWhy(text: string): string {
+    return plainWhy(text);
+  }
+
+  /** "6 values" / "4 values" beside a loop's tick box, or why copies cannot be made from it, in plain words. */
   loopText(o: InstanceLoopOption): string {
-    if (!o.usable) return o.why ?? "not usable";
+    if (!o.usable) return plainWhy(o.why ?? "not usable");
     const span = o.first != null && o.last != null && o.kind === "counter" ? `, ${o.first} to ${o.last}` : "";
     return `${o.count ?? "?"} ${plural(o.count ?? 0, "value")}${span}`;
   }

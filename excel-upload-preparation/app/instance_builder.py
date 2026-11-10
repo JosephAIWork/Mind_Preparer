@@ -144,11 +144,11 @@ def _pick_loop(loop_plan: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
         if le.get("kind") == "counter" and le.get("status") == "ready" and le.get("cells"):
             return le, None, "ready"
     if not loops:
-        return None, "The macro's loop cannot be written as a Mind loop (the Mind loop panel says why): nothing to build.", "not_built"
+        return None, "The macro's loop cannot be written as a Mind loop (the Mind loop tab says why): nothing to build.", "not_built"
     le = loops[0]
     if le.get("kind") == "counter":
-        return le, (f"The loop {le['name']} counts {le.get('first')} to {le.get('last')} but no cell holds the count. Choose a count cell on the Mind loop panel first: "
-                    "each copy counts its own rows in that cell."), "needs_decision"
+        return le, (f"The loop {le['name']} counts {le.get('first')} to {le.get('last')} but no cell holds the count. Answer the Mind loop tab's question first "
+                    "(a cell for the number of passes): each copy counts its own rows in that cell."), "needs_decision"
     how = le.get("how") or le.get("kind") or "another kind of loop"
     return le, (f"The loop {le['name']} is not a counter over the rows of a table ({how}). The instances are built from a loop that sets a row number "
                 "(1, 2, 3 ...) in a cell and reads a cell that holds the count."), "needs_decision"
@@ -508,7 +508,7 @@ def build_instance_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, 
         plan["mode"] = "table"
         usable = [o["name"] for o in options if o["usable"]]
         if plan["status"] != "ready" and usable:
-            plan["notes"].append(f"Or make one copy per value of a loop ({', '.join(usable)}): choose the loops under \"Copies from loops\".")
+            plan["notes"].append(f"Or make one copy per value of a loop ({', '.join(usable)}): tick the loops under \"Make one copy per...\".")
     plan["loop_options"] = options
     return plan
 
@@ -939,7 +939,7 @@ def loop_options(loop_plan: dict[str, Any]) -> list[dict[str, Any]]:
         usable = le.get("status") == "ready" and le.get("kind") in LOOP_COPY_KINDS and len(le.get("cells") or []) == 1
         why = None
         if le.get("status") != "ready":
-            why = le.get("why") or "the loop needs a decision first (Mind loop panel)"
+            why = le.get("why") or "the loop needs one answer first (Advanced > Mind loop)"
         elif not usable and str(le.get("kind") or "").endswith("_of_table"):
             why = "the driver reads a row or a column of a table: copies are made from a loop that counts, or runs through a list"
         elif not usable:
@@ -1219,7 +1219,7 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
             other_macros.setdefault(str(le.get("run") or le.get("macro")), []).append(str(le["name"]))
             continue
         if le.get("status") != "ready":
-            notes.append(f"The loop {le['name']} is not written ({le.get('why') or 'it needs a decision on the Mind loop panel'}): in Mind its driver keeps one value.")
+            notes.append(f"The loop {le['name']} is not written ({le.get('why') or 'it needs one answer on the Mind loop tab'}): in Mind its driver keeps one value.")
             continue
         mine = [o for o in loop_plan.get("operations") or [] if o.get("action_id") == LOOP_ACTION_ID and o.get("loop") == le["name"]]
         todo = [o for o in mine if not (o["op"] == "set_formula" and _same_formula(o.get("before"), o.get("after")))]

@@ -1028,7 +1028,8 @@ export class HomePage implements OnDestroy {
     if (!p.found) return "No run loop in this workbook: nothing to build.";
     const ready = p.loops.filter((l) => l.status === "ready");
     const parts = ready.map((l) => `${l.name} (${l.first} to ${l.last})`);
-    const open = p.loops.filter((l) => l.status !== "ready").length;
+    // only a loop that waits for an answer counts: another macro's loops and the ones left as is need none
+    const open = p.loops.filter((l) => l.status === "needs_decision").length;
     const asked = open === 1 ? "1 loop needs one answer" : `${open} loops need one answer each`;
     return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${asked} (Advanced › Mind loop)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
   }
@@ -1136,7 +1137,7 @@ export class HomePage implements OnDestroy {
           }
         }
         if (step.id === "loop" && !this.canBuildLoop()) {
-          this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs a decision first (Advanced › Mind loop)" : "No run loop in this workbook" });
+          this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs one answer first (Advanced › Mind loop)" : "No run loop in this workbook" });
           continue;
         }
         this.stepT0 = Date.now();

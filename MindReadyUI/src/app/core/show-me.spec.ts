@@ -35,6 +35,9 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
   { where: "a text that names the Instances tab", text: "One copy of the model per scenario: choose it under Advanced › Instances", id: "instances-choice" },
   { where: "a text that names the Instances tab (plain >)", text: "Tick the loops under Advanced > Instances", id: "instances-choice" },
   { where: "a text that names the Instances tab's Build it button", text: "Build it under Advanced › Instances", id: "instances-build" },
+  // review of 10 November 2026: "click Build it" is the loop's only when the sentence does not name the Instances tab
+  { where: "a text that names the Instances tab's Build it button (click first)", text: "Click Build it under Advanced › Instances", id: "instances-build" },
+  { where: "a text that names the Instances tab's Build it button (the tab in brackets)", text: "Tick a loop, then click Build it (Advanced › Instances).", id: "instances-build" },
   { where: "a text that names the copies' result", text: "See the copies' result under Advanced › Instances", id: "instances-result" },
   { where: "a text that names the instances' result", text: "Download the instances' result under Advanced › Instances", id: "instances-result" },
   { where: "Recalculate tile", text: "Recalculated in Excel · 2 new since the original · 3 already in the original · The list is under Advanced › Recalculate.", id: "recalc-errors" },
@@ -655,5 +658,21 @@ describe("Show me on the main screen's texts", () => {
     } as LoopPlan);
     expect(page.loopSummary()).toBe("2 loops need one answer each (Advanced › Mind loop)");
     expect(showMeFor(page.loopSummary())).toEqual({ id: "loop-choices" });
+    // review of 10 November 2026: another macro's loops and the ones left as is need no answer (the Tokyo
+    // shape: two ready, two of the other macro) -- the tile must not send the user to look for answers
+    page.loopPlan.set({
+      found: true,
+      loops: [
+        { name: "CohortRng", status: "ready", cells: [{}], first: 2021, last: 2026 },
+        { name: "Scenario", status: "ready", cells: [{}], first: 0, last: 3 },
+        { name: "GroupName", status: "not_built", other_macro: true, cells: [], why: "a loop of the macro EndemicCalculationRun" },
+        { name: "CohortYear", status: "not_built", other_macro: true, cells: [], why: "a loop of the macro EndemicCalculationRun" },
+      ],
+      outputs: [],
+      clears: [],
+      operation_count: 91,
+    } as LoopPlan);
+    expect(page.loopSummary()).toBe("Loop CohortRng (2021 to 2026), Scenario (0 to 3): 91 formulas to write");
+    expect(showMeFor(page.loopSummary())).toBeNull();
   });
 });

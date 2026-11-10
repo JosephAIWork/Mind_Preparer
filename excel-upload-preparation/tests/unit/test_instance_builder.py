@@ -236,7 +236,8 @@ def test_a_workbook_without_a_loop_has_nothing_to_build(tmp_path):
 def test_a_counter_without_a_count_cell_needs_a_decision_first(tmp_path, monkeypatch):
     plan = _plan_for(_book(tmp_path), tmp_path, MACRO_WITHOUT_COUNT_CELL, monkeypatch)
     assert plan["found"] is True and plan["status"] == "needs_decision" and plan["operations"] == []
-    assert plan["loop"]["name"] == "POLICY_ROW" and any("no cell holds the count" in n and "Mind loop panel" in n for n in plan["notes"])
+    assert plan["loop"]["name"] == "POLICY_ROW" and any("no cell holds the count" in n and "Mind loop tab" in n and "a cell for the number of passes" in n for n in plan["notes"])
+    assert not any("panel" in n or "Choose a count cell" in n for n in plan["notes"])  # the screens' words: tab, one answer
 
 
 def test_a_range_that_starts_on_its_header_row_offsets_the_driver(tmp_path, monkeypatch):
@@ -603,7 +604,8 @@ def test_copies_from_two_loops_a_split_grid_of_their_values_and_the_other_macros
     opts = {o["name"]: o for o in plan["loop_options"]}
     assert set(opts) == {"CohortRng", "Scenario", "RollYear"} and all(o["usable"] for o in opts.values())
     assert (opts["CohortRng"]["kind"], opts["CohortRng"]["count"], opts["Scenario"]["kind"], opts["Scenario"]["count"]) == ("counter", 3, "list", 3)
-    assert any("Copies from loops" in n and "CohortRng" in n for n in plan["notes"])
+    assert any('tick the loops under "Make one copy per..."' in n and "CohortRng" in n for n in plan["notes"])  # the Instances tab's question
+    assert not any("Copies from loops" in n for n in plan["notes"])  # the old heading is gone from the screen
 
     plan = _plan_for(path, tmp_path, SCENARIO_MACRO, monkeypatch, loops=["CohortRng", "Ctrl!$C$7"])
     assert plan["status"] == "ready" and plan["mode"] == "loops" and plan["found"] is True

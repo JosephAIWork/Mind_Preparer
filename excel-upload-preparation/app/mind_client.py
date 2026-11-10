@@ -1156,11 +1156,30 @@ def close_open_windows(page: Page, tries: int = 4) -> bool:
 # goes: "Run in Progress"; the "Last run in N seconds." line of the run before is taken down. When it
 # ends: "Last run in N seconds." with this run's time, "Consistent with the audit trail." and, for a few
 # seconds, the notes "Calculations completed" / "Run completed in N seconds". The audit line of the run
-# before STAYS on the page the whole time, so it is no sign that this run has finished.
+# before STAYS on the page the whole time, so it is no sign that this run has finished. A run of a
+# minute or more is written as a clock time: "Last run in 00:03:01." / "Run completed in 00:03:01"
+# (the anonymized IFRS 17 tool, 10 November 2026: 3 min 06 s), so both forms are read.
 _RUN_PROGRESS = re.compile(r"Run in Progress", re.I)
-_LAST_RUN_RE = re.compile(r"Last run in ([\d.]+) seconds", re.I)
-_RUN_NOTE_RE = re.compile(r"Run completed in ([\d.]+) seconds", re.I)
+_RUN_TIME = r"(\d+(?::\d{2}){1,2}(?:\.\d+)?|\d+(?:\.\d+)?\s*seconds?)"
+_LAST_RUN_RE = re.compile(r"Last run in " + _RUN_TIME, re.I)
+_RUN_NOTE_RE = re.compile(r"Run completed in " + _RUN_TIME, re.I)
 _RUN_FAILED_RE = re.compile(r"\bfailed\b|\berror\b", re.I)
+
+
+def run_seconds(shown: str) -> float | None:
+    """The seconds of a run time as Mind writes it: "0.694 seconds" -> 0.694, "00:03:01" -> 181.0,
+    "03:01.5" -> 181.5; None for anything else."""
+    s = (shown or "").strip().rstrip(".")
+    try:
+        if ":" in s:
+            parts = [float(p) for p in s.split(":")]
+            while len(parts) < 3:
+                parts.insert(0, 0.0)
+            h, m, sec = parts[-3:]
+            return h * 3600 + m * 60 + sec
+        return float(s.split()[0])
+    except (ValueError, IndexError):
+        return None
 
 
 def run_marker(text: str) -> tuple[str | None, int]:
@@ -1249,7 +1268,7 @@ def run_model(page: Page, timeout_s: int = 300, shots: Path | None = None) -> di
     return {
         "completed": finished,
         "audit_consistent": finished and bool(re.search(r"consistent with the audit trail", text, re.I)),
-        "seconds": float(m.group(1)) if (finished and m) else None,
+        "seconds": run_seconds(m.group(1)) if (finished and m) else None,
         "started": started or finished or failed,
         "timed_out": timed_out,
         "reason": reason,

@@ -3,7 +3,7 @@
   <div class="step" data-show-me="instances-choice">
     <p class="lead" data-test="inst-question">Make one copy per…</p>
     @if (usesLoopChoices()) {
-      <p class="hint loop-choices-used">Uses the choices you made for each loop on the Mind loop panel.<mr-show-me to="loop-choices"></mr-show-me></p>
+      <p class="hint loop-choices-used">Uses the choices you made for each loop on the Mind loop tab.<mr-show-me to="loop-choices"></mr-show-me></p>
     }
     @if (loopOptions().length) {
       <div class="row copies-from">
@@ -41,8 +41,9 @@
     <cds-inline-loading [state]="'active'" loadingText="Reading the model and its table…"></cds-inline-loading>
   }
 
-  <!-- not sure? the finder: where instances could help, top suggestion first -->
-  @if (plan()?.found) {
+  <!-- not sure? the finder: where instances could help, top suggestion first. It reads the formulas, not the
+       macro, so it is there with or without a run loop, and when the plan could not be read -->
+  @if (store.sessionId()) {
     <details class="fold fold--quiet" data-test="inst-finder" [open]="finderOpen()">
       <summary (click)="$event.preventDefault(); toggleFinder()">Not sure? Let the app look</summary>
       <div class="fold__body">
@@ -128,7 +129,7 @@
   @if (plan(); as p) {
     @if (!p.found) {
       <p class="hint">No run loop in this workbook: nothing to copy.</p>
-      @for (n of p.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
+      @for (n of p.notes ?? []; track $index) { <p class="card__caution">{{ plainWhy(n) }}</p> }
     } @else if (chosen()) {
       <!-- step 2: one line, one button -->
       <p class="hint">{{ perSentence() }} Mind gets two files.</p>
@@ -136,7 +137,12 @@
         <span [class]="chipClass(p.status)">{{ statusText(p.status) }}</span>
         {{ summary(p) }}
       </p>
-      @for (n of p.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
+      <!-- Prep's blocking items that are not formulas: Mind refuses or computes wrong without them -->
+      @if (notes().prep; as prep) { <p class="card__caution" data-test="inst-prep">{{ prep }}</p> }
+      <!-- a plan that is not ready says why here; a ready plan's other notes sit behind "Notes" below -->
+      @if (p.status !== "ready") {
+        @for (n of notes().rest; track $index) { <p class="card__caution">{{ plainWhy(n) }}</p> }
+      }
 
       <div class="row">
         <button type="button" cdsButton="primary" size="md" data-show-me="instances-build" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Build it ({{ changes(p.operation_count) }})</button>
@@ -266,9 +272,20 @@
           }
         </div>
       </details>
+
+      <!-- the plan's other notes (a ready plan): what Mind does with the rest, the upload test's harmless cells -->
+      @if (p.status === "ready" && notes().rest.length) {
+        <details class="fold" data-test="inst-notes" [open]="notesOpen()" (toggle)="notesOpen.set($any($event.target).open)">
+          <summary>Notes ({{ notes().rest.length }})</summary>
+          <div class="fold__body">
+            @for (n of notes().rest; track $index) { <p class="hint">{{ plainWhy(n) }}</p> }
+          </div>
+        </details>
+      }
     }
   } @else if (line()) {
     <div class="result result--error" data-show-me="instances-result"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
+    <div class="row"><button type="button" cdsButton="tertiary" size="md" data-test="inst-retry" (click)="preview()" [disabled]="loading()">Try again</button></div>
   }
 
   <!-- what instances are, for whoever asks -->

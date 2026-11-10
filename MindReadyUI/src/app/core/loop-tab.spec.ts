@@ -40,6 +40,7 @@ function mockCarbon(): void {
 }
 
 async function render<T>(cls: Type<T>, api: unknown, store: unknown): Promise<{ page: HTMLElement; panel: T; detect: () => Promise<void> }> {
+  TestBed.resetTestingModule(); // a test may render twice (a retry, a second plan)
   TestBed.configureTestingModule({ providers: [{ provide: ApiService, useValue: api }, { provide: SessionStore, useValue: store }] });
   TestBed.overrideComponent(cls, { set: { imports: [], schemas: [NO_ERRORS_SCHEMA] } });
   const fixture = TestBed.createComponent(cls);
@@ -180,6 +181,93 @@ describe("the Mind loop tab: one sentence, one button, the rest folded", () => {
     await panel.preview();
     await detect();
     expect(page.querySelector('[data-test="loop-next"]')).toBeNull();
+  });
+
+  // review of 10 November 2026 (the two tabs): the panel is made anew on every visit, so the answers
+  // must come back from the store the Instances tab followed, or that tab loses the loop it was using
+  it("starts from the choices the store holds, so coming back from the Instances tab keeps the answer", async () => {
+    sent = [];
+    served = plan({ loops: [cohort, scenarioReady] });
+    const store = {
+      sessionId: signal("s1"),
+      loopChoices: signal<LoopChoices | null>({ loops: { "Ctrl_01!C27": { count_cell: "Ctrl_01!N27" } }, macro: "AllScenarioRun" }),
+      advancedTab: signal("loop"),
+      applyAnalysis: () => undefined,
+    };
+    const api = { mindLoopPlan: (_id: string, o: LoopChoices) => (sent.push(o), Promise.resolve({ version_id: "v1", plan: served })) };
+    const { panel, page } = await render(PanelClass, api, store);
+    expect(sent[0].loops).toEqual({ "Ctrl_01!C27": { count_cell: "Ctrl_01!N27" } });
+    expect(sent[0].macro).toBe("AllScenarioRun");
+    expect(panel.pick(scenarioReady, "count_cell")).toBe("Ctrl_01!N27");
+    // the store still holds them (not wiped by the first preview)
+    expect(store.loopChoices()).toEqual({ loops: { "Ctrl_01!C27": { count_cell: "Ctrl_01!N27" } }, macro: "AllScenarioRun" });
+    expect(Array.from(page.querySelectorAll("details .loop-choices input")).some((i) => (i as HTMLInputElement).value === "Ctrl_01!N27")).toBe(true);
+  });
+
+  it("asks for both bounds when the plan knows them and still cannot run with them", async () => {
+    const down: LoopPlanLoop = { name: "Year", driver: "Ctrl!B2", status: "needs_decision", cells: [], first: 10, last: 1, why: "the last value (1) is before the first (10): the macro would do nothing" };
+    const { page, panel } = await draw(plan({ loops: [down] }));
+    expect(panel.missingKey(down)).toBe("range");
+    expect(page.querySelector('[data-test="loop-sentence"]')?.textContent?.trim()).toBe("The macro runs Year 10 to 1. Mind can do the same, after one answer below.");
+    const answer = page.querySelector(".loop-answer") as HTMLElement;
+    expect(answer).not.toBeNull();
+    expect(answer.textContent).toContain("the last value (1) is before the first (10)");
+    expect(answer.querySelectorAll("input").length).toBe(2); // runs from, to
+    // the sentence never promises an answer box that is not there
+    expect(panel.needsAnswer().length).toBe(1);
+  });
+
+  it("says the build writes the ready loops only while another still waits for its answer", async () => {
+    const { page } = await draw();
+    const build = page.querySelector('[data-show-me="loop-build"]') as HTMLButtonElement;
+    expect(build.disabled).toBe(false);
+    expect(page.querySelector('[data-test="loop-partial"]')?.textContent?.trim()).toBe("Builds CohortRng only; Scenario waits for the answer above.");
+    const { page: done } = await draw(plan({ loops: [cohort, scenarioReady] }));
+    expect(done.querySelector('[data-test="loop-partial"]')).toBeNull();
+  });
+
+  it("shows the plan's own notes: Prep's blockers above Build it, the rest behind Notes", async () => {
+    const prep = "Prep still has 2 blocking items that are not formulas, e.g. a formula reads a lone text cell (STR-008). Run Fix all issues before uploading.";
+    const upload = "After the upload, Mind's test may list two kinds of cell that are not errors: check cells that are 0 in Excel and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE / FALSE.";
+    const other = "The macro Other has loops too (GroupName): the plan builds one macro at a time.";
+    const { page } = await draw(plan({ loops: [cohort, scenarioReady], notes: [other, prep, upload], prep_blockers: [{ id: "title_lone_text_cells", title: "Title lone text cells", count: 2 }] }));
+    const shown = page.querySelector('[data-test="loop-prep"]');
+    expect(shown?.textContent?.trim()).toBe(prep);
+    expect(shown?.closest("details")).toBeNull(); // above the folds, before Build it
+    const notes = page.querySelector('[data-test="loop-notes"]') as HTMLDetailsElement;
+    expect(notes.open).toBe(false);
+    expect(notes.querySelector("summary")?.textContent?.trim()).toBe("Notes (2)");
+    expect(notes.textContent).toContain(upload);
+    expect(notes.textContent).toContain(other);
+    expect(folds(page).map((d) => d.querySelector("summary")?.textContent?.trim())).toEqual(["Change the choices", "What gets written (7)", "Notes (2)", "What is this?"]);
+    // a plan without notes has no Notes fold
+    const { page: bare } = await draw(plan({ loops: [cohort, scenarioReady] }));
+    expect(bare.querySelector('[data-test="loop-notes"]')).toBeNull();
+  });
+
+  it("counts what gets written once: the cleared cells are operations already", async () => {
+    const { page, panel, detect } = await draw(plan({ loops: [cohort, scenarioReady], clears: [{ target: "Out!A1:J6", cells: 12, included: true }], operation_count: 19 }));
+    panel.clearOld.set(true);
+    await detect();
+    expect(page.querySelector('[data-test="loop-written"] summary')?.textContent?.trim()).toBe("What gets written (19)");
+    expect(page.querySelector('[data-show-me="loop-build"]')?.textContent?.trim()).toBe("Build it (19 formulas)");
+  });
+
+  it("offers Try again when the plan could not be read", async () => {
+    let calls = 0;
+    const api = {
+      mindLoopPlan: () => {
+        calls += 1;
+        return Promise.reject(new Error("scan still running"));
+      },
+    };
+    const { page, detect } = await draw(plan(), api);
+    expect(page.querySelector('[data-show-me="loop-result"]')?.textContent).toContain("Could not read the plan");
+    const retry = page.querySelector('[data-test="loop-retry"]') as HTMLButtonElement;
+    expect(retry.textContent?.trim()).toBe("Try again");
+    retry.click();
+    await detect();
+    expect(calls).toBe(2);
   });
 });
 

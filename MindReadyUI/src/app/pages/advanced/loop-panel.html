@@ -28,6 +28,12 @@
                 <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="answerPlaceholder(l)" />
               </label>
             }
+            @case ("range") {
+              <!-- the plan knows both values and still cannot run with them: both boxes, the why above -->
+              <p class="hint loop-answer__why">{{ answerLabel(l) }}</p>
+              <label class="field">{{ l.name }} runs from <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.first)" /></label>
+              <label class="field">To <input type="text" [value]="pick(l, 'last')" (input)="setPick(l, 'last', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.last)" /></label>
+            }
             @default {
               <label class="field field--wide">{{ answerLabel(l) }}
                 <input type="text" [value]="pick(l, 'last')" (input)="setPick(l, 'last', value($event))" (keyup.enter)="preview()" [placeholder]="answerPlaceholder(l)" />
@@ -38,8 +44,12 @@
         </div>
       }
 
+      <!-- Prep's blocking items that are not formulas: Mind refuses or computes wrong without them -->
+      @if (notes().prep; as prep) { <p class="card__caution" data-test="loop-prep">{{ prep }}</p> }
+
       <div class="row">
         <button type="button" cdsButton="primary" size="md" data-show-me="loop-build" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Build it ({{ formulas(p.operation_count) }})</button>
+        @if (partialNote(); as note) { <span class="hint" data-test="loop-partial">{{ note }}</span> }
       </div>
 
       @if (writing()) {
@@ -146,9 +156,20 @@
           }
         </div>
       </details>
+
+      <!-- the plan's other notes: what Mind does with the rest, the upload test's harmless cells -->
+      @if (notes().rest.length) {
+        <details class="fold" data-test="loop-notes" [open]="notesOpen()" (toggle)="notesOpen.set($any($event.target).open)">
+          <summary>Notes ({{ notes().rest.length }})</summary>
+          <div class="fold__body">
+            @for (n of notes().rest; track $index) { <p class="hint">{{ plainWhy(n) }}</p> }
+          </div>
+        </details>
+      }
     }
   } @else if (line()) {
     <div class="result result--error" data-show-me="loop-result"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
+    <div class="row"><button type="button" cdsButton="tertiary" size="md" data-test="loop-retry" (click)="preview()" [disabled]="loading()">Try again</button></div>
   }
 
   <!-- what the loop is, for whoever asks -->

@@ -62,12 +62,57 @@ _ASSIGN_RE = re.compile(r"^(?P<lhs>[^=<>]+?)\s*=\s*(?P<rhs>.+)$")
 # writes 0 there ("the system's"), which olevba answers with UTF-8 and replacement characters, so a
 # Japanese comment or a search word -- Find("年月") -- arrived as mojibake and the stand-in assistant
 # and the message-box matching could not read it. The bytes are decoded here instead: the stored
-# code page when there is one, else the first of a short list that decodes without error and gives
-# the script it is for (kana for Japanese, Hangul for Korean), then the system's own, then cp1252.
-_KANA_RE = re.compile(r"[぀-ヿ]")
-_HANGUL_RE = re.compile(r"[가-힣]")
-_CJK_RE = re.compile(r"[一-鿿]")
+# code page when there is one (trusted), else the first of a short list that decodes without error
+# and gives the script it is for (Japanese: the kana and the common kanji; Korean: the common Hangul
+# syllables), then the system's own (trusted), then cp1252.
+_KANA_RE = re.compile("[\u3040-\u30ff\uff66-\uff9f]")  # hiragana, katakana, half-width katakana
+_HANGUL_RE = re.compile("[\uac00-\ud7a3]")
+_CJK_RE = re.compile("[\u4e00-\u9fff]")
 _FALLBACK_CODE_PAGE = "cp1252"
+
+
+def _looks_japanese(text: str) -> bool:
+    """cp932 gave Japanese: at least half of its non-ASCII characters come from the first half of the
+    code page -- the kana, the full-width symbols and the common (JIS level 1) kanji, lead bytes
+    0x81-0x9F -- so kanji-only text (Find("年月"), Worksheets("計算")) counts as much as kana. Half-width
+    katakana are neutral: any single-byte text read as cp932 gives them (bytes 0xA1-0xDF). Hebrew,
+    Western, Korean or Chinese bytes read as cp932 give half-width katakana, rare (level 2) kanji and
+    private-use characters, never the common ones."""
+    strong = weak = 0
+    for ch in text:
+        if ord(ch) <= 127 or "\uff61" <= ch <= "\uff9f":
+            continue
+        try:
+            b = ch.encode("cp932")
+        except UnicodeEncodeError:
+            weak += 1
+            continue
+        if len(b) == 2 and 0x81 <= b[0] <= 0x9F:
+            strong += 1
+        else:
+            weak += 1
+    return strong >= 1 and strong >= 0.5 * (strong + weak)
+
+
+def _looks_korean(text: str) -> bool:
+    """cp949 gave Korean: mostly Hangul, and mostly the 2,350 common syllables of KS X 1001 (lead
+    bytes 0xB0-0xC8, trail bytes 0xA1-0xFE). Japanese bytes read as cp949 give the rare syllables of
+    the UHC extension; Chinese bytes give Hanja with a third of Hangul."""
+    foreign = sum(1 for ch in text if ord(ch) > 127)
+    hangul = _HANGUL_RE.findall(text)
+    if not foreign or len(hangul) < 0.5 * foreign:
+        return False
+    common = sum(1 for ch in hangul if 0xB0 <= ch.encode("cp949")[0] <= 0xC8 and ch.encode("cp949")[1] >= 0xA1)
+    return common >= 0.7 * len(hangul)
+
+
+def _looks_chinese(text: str) -> bool:
+    """cp936 / cp950 gave Chinese: mostly ideographs."""
+    foreign = sum(1 for ch in text if ord(ch) > 127)
+    return bool(foreign) and len(_CJK_RE.findall(text)) >= 0.5 * foreign
+
+
+_SCRIPT_CHECKS = {"cp932": _looks_japanese, "cp949": _looks_korean, "cp936": _looks_chinese, "cp950": _looks_chinese}
 
 
 def _system_code_page() -> int | None:
@@ -104,32 +149,38 @@ def _codec_of(codepage: int | None) -> str | None:
 def decode_vba_source(raw: bytes, codepage: int | None = None, system_codepage: int | None = None) -> tuple[str, str]:
     """The module text of `raw` and the codec it was read with. `codepage` is the project's stored
     code page (0 / None: not recorded); `system_codepage` the PC's own (default: Windows' GetACP).
-    Order: the stored code page; UTF-8; cp932 when it gives kana; cp949 when it gives Hangul; the
-    system's; cp936 / cp950 when they give ideographs; cp1252 -- each only when it decodes every byte.
-    cp1252 with replacement characters is the last resort."""
+    Order: the stored code page (trusted: taken as soon as it decodes every byte, whatever the text
+    looks like -- a module of half-width katakana only, MsgBox "ｴﾗｰ", is Japanese when the project says
+    932); UTF-8; cp932 when it gives Japanese; cp949 when it gives Korean; the system's own (trusted
+    at its place: it is tried with its check first among the East Asian ones, so a Korean file on a
+    Japanese PC is read as Korean, and trusted after them); cp936 / cp950 when they give ideographs;
+    cp1252 -- each only when it decodes every byte. cp1252 with replacement characters is the last
+    resort. The limits: a single-byte script with no code page recorded reads in the PC's own code
+    page (a Western file on a Hebrew PC gets Hebrew letters); Chinese on a Western or Hebrew PC with
+    no code page recorded is not told apart from that PC's own code page."""
     if not any(b > 127 for b in raw):
         return raw.decode("ascii"), "ascii"
     if system_codepage is None:
         system_codepage = _system_code_page()
-    # a multi-byte code page is taken only when the script it is for makes up enough of what it gives:
-    # Japanese text is a quarter kana or more, Korean mostly Hangul, Chinese mostly ideographs
-    # (Chinese bytes read as cp949 give some Hangul; Hebrew bytes read as cp932 give ideographs, no kana)
-    checks = {"cp932": (_KANA_RE, 0.25), "cp949": (_HANGUL_RE, 0.5), "cp936": (_CJK_RE, 0.5), "cp950": (_CJK_RE, 0.5)}
-    order: list[str] = []
-    for codec in (_codec_of(codepage), "utf-8", "cp932", "cp949", _codec_of(system_codepage), "cp936", "cp950", _FALLBACK_CODE_PAGE):
-        if codec and codec not in order:
-            order.append(codec)
-    for codec in order:
+    stored, system = _codec_of(codepage), _codec_of(system_codepage)
+    order: list[tuple[str | None, bool]] = [(stored, True), ("utf-8", False), ("cp932", False), ("cp949", False)]
+    if system in _SCRIPT_CHECKS:  # a CJK PC: the other East Asian code pages get their checks before it is trusted
+        order += [("cp936", False), ("cp950", False), (system, True)]
+    else:
+        order += [(system, True), ("cp936", False), ("cp950", False)]
+    order.append((_FALLBACK_CODE_PAGE, False))
+    tried: set[tuple[str, bool]] = set()
+    for codec, trusted in order:
+        if not codec or (codec, trusted) in tried or (codec, True) in tried:
+            continue
+        tried.add((codec, trusted))
         try:
             text = raw.decode(codec)
         except (UnicodeDecodeError, LookupError):
             continue
-        check = checks.get(codec)
-        if check is not None:
-            marker, share = check
-            foreign = sum(1 for ch in text if ord(ch) > 127)
-            if not foreign or len(marker.findall(text)) < share * foreign:
-                continue
+        check = _SCRIPT_CHECKS.get(codec)
+        if not trusted and check is not None and not check(text):
+            continue
         return text, codec
     return raw.decode(_FALLBACK_CODE_PAGE, errors="replace"), _FALLBACK_CODE_PAGE
 
