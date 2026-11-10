@@ -2,6 +2,17 @@
 
 ## Unreleased (iteration 1.14.0)
 
+- **Send feedback, without a team name.** The box under the header, the dialog and the docs no longer say
+  "to the Tel Aviv team": the button is **Send feedback**, the hint "You can send the details: where it
+  stopped and why, with nothing from your workbook.", the dialog is titled Send feedback and its sent step
+  says "An email to <address> should be open." with the address the backend gives (`feedback.email` in the
+  settings, unchanged: the reply still comes back to Joseph). The assistant's opening lines of the message
+  are told to say what happened in their own words and never to copy the user's note; a sentence that still
+  repeats the note word for word is dropped from the opening (the note has its own part, "The user's
+  note"). The unit tests write their incidents and timings into a folder of their own, never into the
+  user's `%LOCALAPPDATA%\MindReady` (`tests/unit/conftest.py` points `SETTINGS.data_folder` at tmp_path).
+  (`app/feedback.py` `assistant_lines`, `without_note`, `compose`; `MindReadyUI` `app.html`,
+  `core/feedback-dialog.*`; `core/feedback-dialog.spec.ts`.)
 - **A sheet left out of the scan still exists for the formulas that point at it.** Joseph ticked the
   six calculation sheets of the Tokyo IFRS 17 tool as "do not check"; the 480 INDIRECT lookups on
   Result_CF that build addresses on them (`INDIRECT($A3&"!A:B")`) were then written as
