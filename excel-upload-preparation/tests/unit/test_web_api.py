@@ -366,7 +366,10 @@ def test_grid_names_endpoint_proposes_names_and_folds_them_into_the_plan(client,
     assert rows["CF!B8:C8"]["suggested"] == "Section Two Heading"
     titles = {o["after"] for a in out["plan"] if a["id"] == "create_grid_titles" for o in a["operations"] if o["op"] == "set_value"}
     assert "#Section Two Heading" in titles and "#CF B8" not in titles
-    assert "#Demographic Assumptions" in titles  # heading-derived name is untouched
+    # 1.14.0: the block under the heading row has no free cell above it and nothing is moved for a
+    # title: it is reported, with the heading's text, instead of being named through a row insert
+    skipped = [s for a in out["plan"] if a["id"] == "create_grid_titles" for s in a["skipped"]]
+    assert "#Demographic Assumptions" not in titles and any(s.startswith("CF!C3:D5: the cell above (C2) holds 'Demographic Assumptions'") for s in skipped), skipped
 
 
 def test_grid_names_endpoint_survives_an_unavailable_assistant(client, section_heading_grids_xlsx, monkeypatch):

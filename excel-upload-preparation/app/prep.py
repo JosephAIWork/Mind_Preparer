@@ -682,6 +682,83 @@ def is_weak_name(name: str | None, sheet: str) -> bool:
     return bool(re.fullmatch(r"[I|\s.]+", text))
 
 
+def _short_text(value: Any, limit: int = 40) -> str:
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _title_site(
+    analysis: dict[str, Any],
+    index: dict[str, Any],
+    by_sheet: dict[str, list[dict[str, Any]]],
+    g: dict[str, Any],
+    titled_cells: set[tuple[str, str]],
+    label: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Where the title of the untitled grid `g` goes, moving nothing: the cell directly above its
+    top-left cell, the one cell Mind reads a title from. -> {"cell", "before", "note"} when it can be
+    written, {"skip": reason} when it cannot (the reason says what to do by hand).
+
+    A table made of a key column and the block beside it (grids._merge_key_columns) has a caption on
+    top of the key column: that caption cell is the title cell, and its own text becomes the title.
+    A caption that is a formula is left alone (replacing it would change what it shows). An empty
+    cell above is written when nothing reads it and nothing sits right above it that Mind would
+    read on through the title into the grid (a lone text, or a grid whose first column is this one;
+    a label this plan moves into the title does not count). A grid that starts on row 1, or whose
+    cell above belongs to another grid (a section heading row, a table right above), is reported."""
+    sheet = g["sheet"]
+    r0, c0 = g["first_row"], g["first_col"]
+    if g.get("caption_cell"):
+        cap = g.get("caption_value")
+        parts = g.get("merged_from") or []
+        table = f" (the key column {parts[0]} and the block {parts[1]} are one table)" if len(parts) == 2 else ""
+        if isinstance(cap, str) and cap.startswith("="):
+            return {"skip": f"the cell above it, {g['caption_cell']}, holds a formula ({_short_text(cap)}) and the title would replace it{table}. Move that formula somewhere else by hand, then name the table again"}
+        reader = referenced_by(index, sheet, r0 - 1, c0)
+        if reader:
+            return {"skip": f"the caption above it ({g['caption_cell']}) is read by {reader} -- turning it into a title would change that result"}
+        return {"cell": g["caption_cell"], "before": cap, "note": f"; the caption becomes the title{table}"}
+    if r0 == 1:
+        return {"skip": "starts on row 1, so there is no cell above it for a title. Insert an empty row above it by hand, then name it again"}
+    above_cell = ref_text(c0, r0 - 1)
+    if (sheet, above_cell) in titled_cells:
+        return {"skip": f"the cell above ({above_cell}) gets another grid's title in this plan"}
+    above_val = cell_value(analysis, sheet, r0 - 1, c0)
+    holder = grid_containing(by_sheet.get(sheet, []), r0 - 1, c0)
+    if holder is not None or not _blank(above_val):
+        what = f"holds '{_short_text(above_val)}'" if not _blank(above_val) else "is taken"
+        part = f" (part of the grid {holder['display_name']}, {holder['ref']})" if holder is not None else ""
+        return {"skip": f"the cell above ({above_cell}) {what}{part} -- a title needs that cell and nothing is moved to make room. Leave an empty row above the grid by hand, then name it again"}
+    if r0 > 2:
+        over_val = cell_value(analysis, sheet, r0 - 2, c0)
+        moved = label is not None and label["sheet"] == sheet and label["row"] == r0 - 2 and label["col"] == c0 and not referenced_by(index, sheet, r0 - 2, c0)
+        if not _blank(over_val) and not moved:
+            over = grid_containing(by_sheet.get(sheet, []), r0 - 2, c0)
+            if over is None or over["first_col"] == c0:
+                return {"skip": f"a title in {above_cell} would touch {ref_text(c0, r0 - 2)} ('{_short_text(over_val)}') right above it, and Mind would read the two as one grid. Leave an empty row between them by hand, then name it again"}
+    reader = referenced_by(index, sheet, r0 - 1, c0)
+    if reader:
+        return {"skip": f"the cell above ({above_cell}) is read by {reader} -- a title there would change that result"}
+    # Mind reads left to right: a cell right beside the title, on its left, is read first and runs on
+    # into the title (a lone text, or a grid that starts on that row). A lone label nothing reads is
+    # moved into the title (its text names the grid: _section_header_name); anything else is reported.
+    if c0 > 1:
+        left_cell = ref_text(c0 - 1, r0 - 1)
+        left_val = cell_value(analysis, sheet, r0 - 1, c0 - 1)
+        left_grid = grid_containing(by_sheet.get(sheet, []), r0 - 1, c0 - 1)
+        if not _blank(left_val) and (left_grid is None or left_grid["first_row"] == r0 - 1):
+            left_reader = referenced_by(index, sheet, r0 - 1, c0 - 1)
+            if left_grid is None and not left_reader and _is_text(left_val):
+                return {"cell": above_cell, "before": None, "note": f"; the label beside it ({left_cell}) is moved into the title", "clear": {"cell": left_cell, "text": left_val}}
+            why = f"is read by {left_reader}" if left_reader else f"is part of the grid {left_grid['display_name']}, {left_grid['ref']}" if left_grid is not None else "is not a plain label"
+            return {"skip": f"a title in {above_cell} would touch {left_cell} ('{_short_text(left_val)}') beside it, which {why}, and Mind would read the two as one grid. Leave an empty cell between them by hand, then name it again"}
+    return {"cell": above_cell, "before": None, "note": ""}
+
+
 def plan_create_grid_titles(
     analysis,
     report,
@@ -693,20 +770,23 @@ def plan_create_grid_titles(
     pre_banded: dict[str, list[tuple[int, int, int]]] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """STR-004 / STR-002 / STR-001: every untitled grid gets exactly one
-    '#Name' title with a name taken from its surroundings.
+    '#Name' title with a name taken from its surroundings -- and no cell is
+    ever moved to make room for it (Joseph, 10 November 2026: a row inserted
+    for one grid's title pushed the key column of the IFRS 17 tool's Result_CF
+    out of line with its rows).
 
-    Cases, in order:
-      A. caption above a table -- a text cell whose right neighbour is empty
-         while the row below starts a block that is wider: Mind (and this
-         app) read the caption as a one-column grid that swallows the table's
-         first column, and the rest of the table as a second grid ("two
-         headers for one range"). Prepending '#' turns the caption into the
-         title and the table below becomes one grid.
-      B. the cell above the grid is empty -> write '#<name>' there; the name
-         comes from a nearby standalone label (which is then moved into the
-         title), else the header row, else sheet + position.
-      C. the grid starts on row 1 -> insert a row first (only when that
-         cuts no other grid), then write the title.
+    The title goes into the one cell Mind reads a title from: the cell
+    directly above the grid's top-left cell (_title_site).
+      * empty -> '#<name>' is written there; the name comes from the section
+        heading or a nearby standalone label (which is then moved into the
+        title), else the header row, else sheet + position;
+      * a caption on top of the table's key column (the table is one grid of a
+        key column plus the block beside it, grids._merge_key_columns): the
+        caption's own text becomes the title ('#' + text);
+      * a formula there (a caption computed from another cell), another grid's
+        cell there, or no cell there at all (the grid starts on row 1): the
+        grid is left as it is and reported under "could not name" with the
+        reason and what to do by hand.
     Names are unique across the workbook; a grid that already has a title
     or contains a trapped title (STR-001) is never given another one.
 
@@ -716,10 +796,11 @@ def plan_create_grid_titles(
     uniqueness rules, so it can change *which* name is written but never
     where it is written or whether the operation is safe.
 
-    `exclude` / `reserved` / `pre_titled` / `pre_inserted` come from the Grid
-    Namer (plan_named_areas): grids the user handled by hand are left alone,
-    their chosen names are already taken, and their write sites and row
-    inserts count as used, so one combined apply never collides."""
+    `exclude` / `reserved` / `pre_titled` come from the Grid Namer
+    (plan_named_areas): grids the user handled by hand are left alone, their
+    chosen names are already taken, and their write sites count as used, so
+    one combined apply never collides. `pre_inserted` / `pre_banded` are kept
+    for the callers of older versions: nothing inserts rows any more."""
     ops: list[dict[str, Any]] = []
     skipped: list[str] = []
     exclude = exclude or set()
@@ -730,95 +811,35 @@ def plan_create_grid_titles(
     labels = standalone_labels(analysis)
     consumed: set[tuple[str, str]] = set()
     titled_cells: set[tuple[str, str]] = set(pre_titled or ())
-    inserted_rows: dict[str, set[int]] = {k: set(v) for k, v in (pre_inserted or {}).items()}
-    banded: dict[str, list[tuple[int, int, int]]] = {k: list(v) for k, v in (pre_banded or {}).items()}  # row inserts that shift only some columns: (row, first, last)
     by_sheet: dict[str, list[dict[str, Any]]] = {}
     for g in grids:
         by_sheet.setdefault(g["sheet"], []).append(g)
 
-    # A. captions that split a table
-    caption_handled: set[int] = set()
     for g in grids:
-        if g.get("name") or g["n_cols"] != 1 or not _is_text(g.get("header_values", [None])[0]):
-            continue
-        r0, c0 = g["first_row"], g["first_col"]
-        right = [h for h in by_sheet.get(g["sheet"], []) if h is not g and h["first_row"] == r0 + 1 and h["first_col"] == c0 + 1]
-        if not right:
-            continue
-        if f"{g['sheet']}!{g['ref']}" in exclude or f"{right[0]['sheet']}!{right[0]['ref']}" in exclude:
-            continue  # the user named this pair (or one of it) in the Grid Namer
-        caption = str(g["header_values"][0])
-        reader = referenced_by(index, g["sheet"], r0, c0)
-        if reader:
-            skipped.append(f"{g['sheet']}!{g['anchor']}: the caption is read by {reader} -- turning it into a title would change that result")
-            caption_handled.add(id(g))
-            caption_handled.add(id(right[0]))
-            continue
-        name = _unique_name(_clean_name(caption), used)
-        ops.append(_op("set_value", "create_grid_titles", "STR-001", g["sheet"], cell=g["anchor"], before=caption, after=f"#{name}", note=f"caption above the table {right[0]['ref']}: becomes its title so the table is one grid"))
-        titled_cells.add((g["sheet"], g["anchor"]))
-        caption_handled.add(id(g))
-        caption_handled.add(id(right[0]))
-
-    # B / C. every other untitled grid
-    for g in grids:
-        if g.get("name") or id(g) in caption_handled or f"{g['sheet']}!{g['ref']}" in exclude:
+        if g.get("name") or f"{g['sheet']}!{g['ref']}" in exclude:
             continue
         if g.get("inner_title_cells"):
             skipped.append(f"{g['sheet']}!{g['ref']}: contains a trapped '#Title', {cite('STR-001')} -- separate the grids first")
             continue
-        r0, c0 = g["first_row"], g["first_col"]
-        name, source, label = _context_name(analysis, g, labels, consumed)
+        label = None
+        if g.get("caption_cell") and _is_text(g.get("caption_value")) and _clean_name(g["caption_value"]):
+            name, source = _clean_name(g["caption_value"]), f"the caption above at {g['caption_cell']}"
+        else:
+            name, source, label = _context_name(analysis, g, labels, consumed)
         proposed = _clean_name((names or {}).get(f"{g['sheet']}!{g['ref']}", ""))
         if proposed and is_weak_name(name, g["sheet"]):
             name, source = proposed, "the assistant, from the surrounding cells"
+        site = _title_site(analysis, index, by_sheet, g, titled_cells, label)
+        if site.get("skip"):
+            skipped.append(f"{g['sheet']}!{g['ref']}: {site['skip']}")
+            continue
         name = _unique_name(name, used)
         title = f"#{name}"
-        above_cell = ref_text(c0, r0 - 1) if r0 > 1 else None
-        above_val = cell_value(analysis, g["sheet"], r0 - 1, c0) if r0 > 1 else None
-        above_is_free = (
-            r0 > 1
-            and (g["sheet"], above_cell) not in titled_cells
-            and (above_val is None or (isinstance(above_val, str) and above_val.strip() == ""))
-            and grid_containing(by_sheet.get(g["sheet"], []), r0 - 1, c0) is None
-        )
-        if above_is_free:
-            reader = referenced_by(index, g["sheet"], r0 - 1, c0)
-            if reader:
-                skipped.append(f"{g['sheet']}!{g['ref']}: the cell above ({above_cell}) is read by {reader} -- a title there would change that result")
-                continue
-            ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=above_cell, before=None, after=title, note=f"name from {source}"))
-            titled_cells.add((g["sheet"], above_cell))
-        else:
-            # The cell above is taken (a section heading, another grid, another
-            # grid's title) or the grid starts on row 1: make room with a whole
-            # row insert -- but only when no other grid spans that row and no
-            # formula counts or indexes whole columns of this sheet.
-            reason = "starts on row 1" if r0 == 1 else f"the cell above ({above_cell}) is not free"
-            already = r0 in inserted_rows.get(g["sheet"], set()) or any(r == r0 and b1 <= c0 <= b2 for r, b1, b2 in banded.get(g["sheet"], []))
-            band = None
-            if not already:
-                band, cutting = plan_row_insert(analysis, grids, g["sheet"], r0, g)
-                if cutting:
-                    skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
-                    continue
-                blocker = insert_blocker(index, g["sheet"], r0, band)
-                if blocker:
-                    skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and {blocker}")
-                    continue
-            reader = referenced_by(index, g["sheet"], r0, c0)
-            if reader:
-                skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and the title row would fall inside the range {reader} reads")
-                continue
-            if not already:
-                before = f"grid {g['ref']} starts on row 1" if r0 == 1 else f"'{above_val}' sits directly above grid {g['ref']}"
-                ops.append(_op("insert_row", "create_grid_titles", "STR-004", g["sheet"], row=r0, before=before, after=f"{_insert_words(r0, band)} (the grid moves down one row)", note="makes room for the title; Excel shifts every reference automatically", **_insert_fields(r0, band)))
-                if band is None:
-                    inserted_rows.setdefault(g["sheet"], set()).add(r0)
-                else:
-                    banded.setdefault(g["sheet"], []).append((r0, band[0], band[1]))
-            ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=ref_text(c0, r0), before=None, after=title, note=f"name from {source}; written after the row insert", after_inserts=True, insert_at=r0))
-            titled_cells.add((g["sheet"], ref_text(c0, r0)))
+        ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=site["cell"], before=site["before"], after=title, note=f"name from {source}{site['note']}"))
+        titled_cells.add((g["sheet"], site["cell"]))
+        if site.get("clear"):
+            consumed.add((g["sheet"], site["clear"]["cell"]))
+            ops.append(_op("clear_cell", "create_grid_titles", "STR-002", g["sheet"], cell=site["clear"]["cell"], before=site["clear"]["text"], after=None, note=f"label beside the title moved into the title of {g['sheet']}!{g['ref']}"))
         if label is not None:
             lref = parse_ref(label["cell"])
             reader = referenced_by(index, label["sheet"], lref["r1"], lref["c1"]) if lref else None
@@ -875,16 +896,16 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
     Returns {"ops", "skipped", "named" (grid keys "Sheet!Ref" a title was
     planned for), "exclude" (grid keys the automatic pass must leave alone,
     including refused ones -- retrying them would only repeat the refusal),
-    "reserved" (names now taken), "titled_cells", "inserted_rows"} -- the last
-    four feed plan_create_grid_titles so one combined apply never collides."""
+    "reserved" (names now taken), "titled_cells"} -- the last three feed
+    plan_create_grid_titles so one combined apply never collides
+    ("inserted_rows" / "banded_rows" stay, empty: no row is inserted for a
+    title any more; the title goes where _title_site says or nowhere)."""
     ops: list[dict[str, Any]] = []
     skipped: list[str] = []
     named: list[str] = []
     exclude: set[str] = set()
     reserved: list[str] = []
     titled_cells: set[tuple[str, str]] = set()
-    inserted_rows: dict[str, set[int]] = {}
-    banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns: (row, first, last)
     grids = all_grids(analysis)
     index = reference_index(analysis)
     docs = documented_flags()
@@ -916,46 +937,14 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
         c1, c2 = min(r["c1"], r["c2"]), max(r["c1"], r["c2"])
         hits = []
         for g in by_sheet[sheet]:
-            t = parse_ref(g["title_cell"]) if g.get("title_cell") else None
+            # the title cell, and the caption on top of a table's key column, belong to the grid
+            t = parse_ref(g["title_cell"] or g.get("caption_cell") or "") if (g.get("title_cell") or g.get("caption_cell")) else None
             in_rect = not (g["last_row"] < r1 or g["first_row"] > r2 or g["last_col"] < c1 or g["first_col"] > c2)
             on_title = t is not None and r1 <= t["r1"] <= r2 and c1 <= t["c1"] <= c2
             if in_rect or on_title:
                 hits.append(g)
         if len(hits) == 1:
-            # A hit that is one half of an untitled caption-above-a-table pair is
-            # extended to the pair: titling only one half would leave the other to
-            # the automatic pass, whose separate title lands adjacent and makes the
-            # re-detected grids merge wrongly (seen live on the caption layout).
-            g = hits[0]
-            cap = table = None
-            if not g.get("name"):
-                if g["n_cols"] == 1 and _is_text(g.get("header_values", [None])[0]):
-                    t = [h for h in by_sheet[sheet] if h is not g and not h.get("name") and h["first_row"] == g["first_row"] + 1 and h["first_col"] == g["first_col"] + 1]
-                    if t:
-                        cap, table = g, t[0]
-                if cap is None:
-                    c = [
-                        h for h in by_sheet[sheet]
-                        if h is not g and not h.get("name") and h["n_cols"] == 1 and _is_text(h.get("header_values", [None])[0])
-                        and g["first_row"] == h["first_row"] + 1 and g["first_col"] == h["first_col"] + 1
-                    ]
-                    if c:
-                        cap, table = c[0], g
-            resolved.append({"grid": cap or g, "name": name, "flags": flags, "table": table})
-            continue
-        # the documented caption-above-a-table split reads as two grids; the
-        # user naturally selects both -- turning the caption into the title
-        # merges them into one named grid
-        if len(hits) == 2:
-            for cap, table in ((hits[0], hits[1]), (hits[1], hits[0])):
-                if (
-                    not cap.get("name") and cap["n_cols"] == 1 and _is_text(cap.get("header_values", [None])[0])
-                    and table["first_row"] == cap["first_row"] + 1 and table["first_col"] == cap["first_col"] + 1
-                ):
-                    resolved.append({"grid": cap, "name": name, "flags": flags, "table": table})
-                    break
-            else:
-                skipped.append(f"{label}: the selection touches 2 grids ({hits[0]['ref']}, {hits[1]['ref']}) -- Mind reads them separately; select and name one at a time")
+            resolved.append({"grid": hits[0], "name": name, "flags": flags})
             continue
         if not hits:
             skipped.append(f"{label}: Mind detects no grid there (an alone text cell or empty space is ignored) -- nothing to name")
@@ -966,25 +955,12 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
     used = {g["name"].strip().lower() for g in grids if g.get("name") and id(g) not in retitled}
 
     for item in resolved:
-        g, table = item["grid"], item["table"]
+        g = item["grid"]
         gkey = f"{g['sheet']}!{g['ref']}"
         exclude.add(gkey)
-        if table is not None:
-            exclude.add(f"{table['sheet']}!{table['ref']}")
         unique = _unique_name(item["name"], used)
         suffix = "" if unique == item["name"] else f" (made unique: '{item['name']}' is already a grid name)"
         title = "#" + unique + "".join(f" /{f}" for f in item["flags"])
-
-        if table is not None:  # caption case: the caption cell becomes the title of the table below
-            reader = referenced_by(index, g["sheet"], g["first_row"], g["first_col"])
-            if reader:
-                skipped.append(f"{gkey}: the caption is read by {reader} -- turning it into a title would change that result")
-                continue
-            ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=g["anchor"], before=g["header_values"][0], after=title, note=f"user-chosen name; the caption becomes the title of the table {table['ref']}{suffix}"))
-            titled_cells.add((g["sheet"], g["anchor"]))
-            named.append(gkey)
-            reserved.append(unique)
-            continue
 
         if g.get("title_cell"):  # already titled: rewrite the title cell
             if (g.get("title") or "").strip() == title:
@@ -1002,53 +978,19 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
             reserved.append(unique)
             continue
 
-        # untitled: same write sites and safety checks as create_grid_titles
-        r0, c0 = g["first_row"], g["first_col"]
-        above_cell = ref_text(c0, r0 - 1) if r0 > 1 else None
-        above_val = cell_value(analysis, g["sheet"], r0 - 1, c0) if r0 > 1 else None
-        above_is_free = (
-            r0 > 1
-            and (g["sheet"], above_cell) not in titled_cells
-            and (above_val is None or (isinstance(above_val, str) and above_val.strip() == ""))
-            and grid_containing(by_sheet.get(g["sheet"], []), r0 - 1, c0) is None
-        )
-        if above_is_free:
-            reader = referenced_by(index, g["sheet"], r0 - 1, c0)
-            if reader:
-                skipped.append(f"{gkey}: the cell above ({above_cell}) is read by {reader} -- a title there would change that result")
-                continue
-            ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=above_cell, before=None, after=title, note=f"user-chosen name and flags{suffix}"))
-            titled_cells.add((g["sheet"], above_cell))
-        else:
-            reason = "starts on row 1" if r0 == 1 else f"the cell above ({above_cell}) is not free"
-            already = r0 in inserted_rows.get(g["sheet"], set()) or any(r == r0 and b1 <= c0 <= b2 for r, b1, b2 in banded.get(g["sheet"], []))
-            band = None
-            if not already:
-                band, cutting = plan_row_insert(analysis, grids, g["sheet"], r0, g)
-                if cutting:
-                    skipped.append(f"{gkey}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
-                    continue
-                blocker = insert_blocker(index, g["sheet"], r0, band)
-                if blocker:
-                    skipped.append(f"{gkey}: {reason} and {blocker}")
-                    continue
-            reader = referenced_by(index, g["sheet"], r0, c0)
-            if reader:
-                skipped.append(f"{gkey}: {reason} and the title row would fall inside the range {reader} reads")
-                continue
-            if not already:
-                before = f"grid {g['ref']} starts on row 1" if r0 == 1 else f"'{above_val}' sits directly above grid {g['ref']}"
-                ops.append(_op("insert_row", "named_areas", "STR-004", g["sheet"], row=r0, before=before, after=f"{_insert_words(r0, band)} (the grid moves down one row)", note="makes room for the user-chosen title; Excel shifts every reference automatically", **_insert_fields(r0, band)))
-                if band is None:
-                    inserted_rows.setdefault(g["sheet"], set()).add(r0)
-                else:
-                    banded.setdefault(g["sheet"], []).append((r0, band[0], band[1]))
-            ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=ref_text(c0, r0), before=None, after=title, note=f"user-chosen name and flags{suffix}; written after the row insert", after_inserts=True, insert_at=r0))
-            titled_cells.add((g["sheet"], ref_text(c0, r0)))
+        # untitled: the same write site and safety checks as create_grid_titles, nothing moved
+        site = _title_site(analysis, index, by_sheet, g, titled_cells)
+        if site.get("skip"):
+            skipped.append(f"{gkey}: {site['skip']}")
+            continue
+        ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=site["cell"], before=site["before"], after=title, note=f"user-chosen name and flags{suffix}{site['note']}"))
+        titled_cells.add((g["sheet"], site["cell"]))
+        if site.get("clear"):
+            ops.append(_op("clear_cell", "named_areas", "STR-002", g["sheet"], cell=site["clear"]["cell"], before=site["clear"]["text"], after=None, note=f"label beside the title moved into the title of {gkey}"))
         named.append(gkey)
         reserved.append(unique)
 
-    return {"ops": ops, "skipped": skipped, "named": named, "exclude": exclude, "reserved": reserved, "titled_cells": titled_cells, "inserted_rows": inserted_rows, "banded_rows": banded}
+    return {"ops": ops, "skipped": skipped, "named": named, "exclude": exclude, "reserved": reserved, "titled_cells": titled_cells, "inserted_rows": {}, "banded_rows": {}}
 
 
 def plan_explicit_colors(analysis, report) -> tuple[list[dict], list[str]]:

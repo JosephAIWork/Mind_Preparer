@@ -68,6 +68,39 @@
   `docs/OUTSIDE_INPUTS.md`, `tests/unit/test_outside_inputs_api.py` section 8; `MindReadyUI`
   `pages/home.page.*`, `core/models.ts` `outsideWaitingLine`, `core/api.service.ts`, `core/show-me.ts`
   `outside-waiting`, `core/outside-inputs.spec.ts`, `core/show-me.spec.ts`.)
+- **Grid titles never move cells: one title per table, written into the header cell.** Joseph's
+  report (the IFRS 17 tool's `Result_CF`): after the automatic grid namer the key column (column A,
+  the sheet name each row's lookups use) sat one row below its rows. Reproduced on the anonymized
+  model: the app read two untitled grids there, the column `A1:A8` (a caption formula on top of the
+  keys) and the block `B2:CI8`; the title action inserted cells `A1:A1` over column A only to make
+  room for its title, so column A moved down and the block stayed. Three changes, all general:
+  (1) a key column with a caption on top and the block beside it that reads it (or that holds plain
+  keys) are **one table** from the scan on (`grids._merge_key_columns`: one column wide, directly
+  left of the block, starting one row above it and ending on its last row); two lists that only
+  touch, differ in length, or where the column is already titled stay apart. (2) The title goes into
+  the one cell Mind reads a title from, directly above the table's top-left cell, and **nothing is
+  ever inserted to make room**: an empty cell above gets the made-up title; a caption on top of the
+  key column becomes the title with its own text ('#' + the caption); a caption that is a formula, a
+  grid on row 1, a cell above that belongs to another grid (a section heading row), and a title that
+  would touch a cell Mind reads on through (the cell right above it, or the cell beside it on the
+  left, when that cell is a lone text or a grid starting there; a lone label nothing reads is moved
+  into the title instead) are reported under "could not name" with what to do by hand (leave an
+  empty row, move the formula). The old namer wrote those touching titles: the app's own re-scan of
+  its output on the anonymized model found 85 grids with a `#Title` trapped inside (122 cells),
+  which the next scan would have "freed" with more row inserts. (3) The Grid Namer's user-chosen
+  names follow the same rule (the user's name replaces the caption's text; the same refusals). The
+  "a title there would change that result" checks stay; the apply path still carries out an older
+  plan's `insert_row` (STR-001's separate-the-grids action still inserts rows, as before). On the
+  anonymized model the new plan writes nothing on `Result_CF` and says why (`A1` holds the caption
+  formula `="実行中のシナリオ　["&Ctrl_01!$C$27&"]"`, so the table `A2:CI8` cannot be titled
+  without replacing it), no row is inserted anywhere (12 before), the titled copy's own re-scan
+  holds no trapped title of the namer's making, and an Excel recalculation of the titled copy
+  against the source shows 0 changed values (506,766 cells;
+  `%LOCALAPPDATA%\MindReady\iteration_1_14_0\namer`). Synthetic proofs in
+  `tests/unit/test_grid_titles_never_move_cells.py`; the older tests that expected a row insert now
+  expect the report. (`app/grids.py` `_grid`, `_reads_column`, `_merge_key_columns`; `app/prep.py`
+  `_title_site`, `plan_create_grid_titles`, `plan_named_areas`; `README.md`;
+  `docs/RUN_IN_MIND_NAMING.md`.)
 
 ## 1.13.0 (10 November 2026): Mind loop and Mind instances, with plainer screens
 

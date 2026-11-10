@@ -61,7 +61,7 @@ def test_caption_pair_is_named_as_one_grid(tmp_path):
     assert [o["op"] for o in out["ops"]] == ["set_value"]
     op = out["ops"][0]
     assert op["cell"] == "B2" and op["after"] == "#Lapse Rates /Input" and op["before"] == "Rates"
-    assert len(out["named"]) == 1 and len(out["exclude"]) == 2  # the table grid is excluded from the automatic pass too
+    assert out["named"] == ["S!B3:C4"] and out["exclude"] == {"S!B3:C4"}  # 1.14.0: the caption and the table are one grid from the start
 
 
 def test_selecting_only_the_table_of_a_caption_pair_names_the_pair(tmp_path):
@@ -76,7 +76,7 @@ def test_selecting_only_the_table_of_a_caption_pair_names_the_pair(tmp_path):
     out = prep.plan_named_areas(analysis, [{"sheet": "S", "ref": "B2:C3", "name": "Projection Table", "flags": ["Input"]}])
     assert [o["op"] for o in out["ops"]] == ["set_value"]
     assert out["ops"][0]["cell"] == "A1" and out["ops"][0]["after"] == "#Projection Table /Input" and out["ops"][0]["before"] == "Inputs"
-    assert len(out["exclude"]) == 2
+    assert out["exclude"] == {"S!A2:C3"}  # 1.14.0: the key column (with its caption) and the table are one grid
     auto_ops, _ = prep.plan_create_grid_titles(
         analysis, {"findings": []}, None,
         exclude=out["exclude"], reserved=out["reserved"],
@@ -136,36 +136,33 @@ def test_automatic_pass_respects_manual_names_and_grids(tmp_path):
     assert f2["after"] == "#H2 K2 (2)"  # the user's name is reserved
 
 
-def test_two_areas_sharing_row_one_each_shift_only_their_own_columns(tmp_path):
-    # 1.12.1: the grids beside each other each get their own insert (columns A and C only) --
-    # the same cells move as with one whole row, and nothing else on the row does
+def test_two_areas_sharing_row_one_are_both_reported_and_nothing_moves(tmp_path):
+    # 1.12.1 inserted cells over each grid's own columns; 1.14.0 (Joseph): a title never moves a
+    # cell -- a grid on row 1 has no cell above it, so it is reported with what to do by hand
     analysis = _analysis(tmp_path, {"Q": {"A1": "a", "A2": 1, "C1": "b", "C2": 2}})
     out = prep.plan_named_areas(analysis, [
         {"sheet": "Q", "ref": "A1:A2", "name": "Left", "flags": []},
         {"sheet": "Q", "ref": "C1:C2", "name": "Right", "flags": []},
     ])
-    inserts = [o for o in out["ops"] if o["op"] == "insert_row"]
-    writes = [o for o in out["ops"] if o["op"] == "set_value"]
-    assert sorted((o["row"], o["columns"]) for o in inserts) == [(1, "A:A"), (1, "C:C")]
-    assert {w["cell"] for w in writes} == {"A1", "C1"} and all(w.get("after_inserts") for w in writes)
-    assert out["banded_rows"] == {"Q": [(1, 1, 1), (1, 3, 3)]} and not out["inserted_rows"]
+    assert not out["ops"] and not out["named"]
+    assert sorted(s.split(":")[0] for s in out["skipped"]) == ["Q!A1", "Q!C1"]
+    assert all("starts on row 1" in s and "Insert an empty row above it by hand" in s for s in out["skipped"]), out["skipped"]
+    assert out["inserted_rows"] == {} and out["banded_rows"] == {}
+    assert out["exclude"] == {"Q!A1:A2", "Q!C1:C2"}  # the automatic pass does not retry them
 
 
-def test_a_named_area_beside_a_taller_grid_shifts_only_its_own_columns(tmp_path):
-    # both grids start on row 1: before 1.12.1 the whole row inserted for 'Rates' title pushed the
-    # taller grid beside it down too
+def test_a_named_area_beside_a_taller_grid_moves_neither_of_them(tmp_path):
+    # both grids start on row 1: 1.12.1 shifted only the named grid's columns down; now nothing moves
     analysis = _analysis(tmp_path, {"R": {"B1": "Year", "C1": "Rate", "B2": 1, "C2": 0.5, "B3": 2, "C3": 0.6,
                                           "E1": "Age", "F1": "Qx", **{f"E{r}": 40 + r for r in range(2, 9)}, **{f"F{r}": 0.001 * r for r in range(2, 9)}}})
     out = prep.plan_named_areas(analysis, [{"sheet": "R", "ref": "B1:C3", "name": "Rates", "flags": []}])
-    inserts = [o for o in out["ops"] if o["op"] == "insert_row"]
-    assert len(inserts) == 1 and inserts[0]["row"] == 1 and inserts[0]["columns"] == "B:C", out
-    # the automatic titles that follow know the row is taken in those columns only
-    auto_ops, _ = prep.plan_create_grid_titles(
+    assert not out["ops"] and any(s.startswith("R!B1:C3: starts on row 1") for s in out["skipped"]), out
+    auto_ops, auto_skipped = prep.plan_create_grid_titles(
         analysis, {"findings": []}, None, exclude=out["exclude"], reserved=out["reserved"],
         pre_titled=out["titled_cells"], pre_inserted=out["inserted_rows"], pre_banded=out["banded_rows"],
     )
-    assert not any(o["op"] == "insert_row" and o["row"] == 1 and o.get("columns") == "B:C" for o in auto_ops)
-    assert all(o.get("cell") != "B1" for o in auto_ops)  # the user's title is left alone
+    assert not any(o["op"] == "insert_row" for o in auto_ops) and not any(o["sheet"] == "R" for o in auto_ops)
+    assert any(s.startswith("R!E1:F8: starts on row 1") for s in auto_skipped), auto_skipped
 
 
 # --- the endpoints behind the Grid Namer screen ----------------------------------------

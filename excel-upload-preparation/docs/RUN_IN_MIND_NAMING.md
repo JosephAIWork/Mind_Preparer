@@ -196,17 +196,41 @@ new names. Run **one** pass, then handle what is left by hand.
 ## What the app cannot name, and why
 
 The reasons printed under `blocked` are worth understanding — they are design
-limits, not bugs:
+limits, not bugs. Since **1.14.0 a title never moves a cell**: up to 1.13.0 the
+app inserted a row (or cells over the grid's own columns) when the cell above
+was taken, and on the IFRS 17 tool's `Result_CF` that pushed the key column
+(read as a grid of its own) one row down while the block beside it stayed —
+every key then sat beside the wrong row. Now the title goes into the one cell
+Mind reads a title from, directly above the grid's top-left cell, or nowhere:
 
-- **“the cell above (D4) is not free and inserting a row would cut *X*”** — a
-  title must sit directly above its grid. Here the row above holds the grid's
-  own header row, and a whole-row insert would slice a neighbouring wide table.
-  On one client model this is most of its assumption lookup tables
-  (mortality, lapses, discount curves, tariffs …): their **header row and their
-  data are read as two separate grids**, because the label column beside the
-  data is empty so the block is not rectangular. Merging header and data into
-  one block is a modelling decision for a human — the app will not restructure
-  a table to win a name.
+- **“the cell above (C2) holds 'Demographic Assumptions' (part of the grid
+  …) — a title needs that cell and nothing is moved to make room”** — a
+  title must sit directly above its grid, and that cell belongs to another
+  grid (a section heading row, the table right above). Leave an empty row
+  above the grid by hand, then name it again. On one client model this is most
+  of its assumption lookup tables (mortality, lapses, discount curves,
+  tariffs …): their **header row and their data are read as two separate
+  grids**, because the label column beside the data is empty so the block is
+  not rectangular. Merging header and data into one block is a modelling
+  decision for a human — the app will not restructure a table to win a name.
+- **“starts on row 1, so there is no cell above it for a title”** — insert an
+  empty row above it by hand, then name it again.
+- **“the cell above it, A1, holds a formula (…) and the title would replace
+  it (the key column A1:A8 and the block B2:CI8 are one table)”** — a key
+  column with a caption on top and the block that reads it are one table; its
+  title goes into the caption cell ('#' + the caption's own text). A caption
+  that is a formula is left alone: move it somewhere else by hand, then name
+  the table again (or name it in the Grid Namer once the formula is gone).
+- **“a title in B3 would touch B2 ('…') right above it, and Mind would read
+  the two as one grid”** — a lone text or a grid ends right above the title
+  cell, and Mind reads on from it through the title into the grid. Leave an
+  empty row between them by hand. The same beside the title cell, on its
+  left (“… would touch B2 ('…') beside it, which is read by … / is part of
+  the grid …”): Mind reads left to right and would run from that cell into
+  the title. A lone label there that nothing reads is simply moved into the
+  title (its text names the grid). The old namer wrote such titles: on the
+  anonymized IFRS 17 tool its own re-scan then found 85 grids with a
+  `#Title` trapped inside; the 1.14.0 namer's output has none of its own.
 - **“contains a trapped '#Title' (STR-001) — separate the grids first”** — a
   `#Title` sits inside the grid. Deal with that deliberately; do not chain the
   separation action blindly (see above).
@@ -220,7 +244,7 @@ limits, not bugs:
 | Audit CLI | `scripts/audit_grid_names.py` |
 | Grid detection, title vs error value | `app/grids.py` — `looks_like_title()`, `ERROR_LITERALS` |
 | Deterministic naming | `app/prep.py` — `_section_header_name()`, `_context_name()`, `is_weak_name()` |
-| Title placement | `app/prep.py` — `plan_create_grid_titles()`, `_resolve_insert_at()` |
+| Title placement (nothing moved) | `app/prep.py` — `_title_site()`, `plan_create_grid_titles()`; `app/grids.py` — `_merge_key_columns()` |
 | Assistant naming | `app/grid_naming.py` — `build_grid_context()`, `suggest_names()` |
 | API | `POST /api/sessions/{id}/grid-names` (`{"apply": true}`) |
 | UI | Prep screen → “Name grids from their context” |

@@ -44,7 +44,15 @@ def test_no_row_insert_and_no_title_on_a_sheet_counted_by_whole_column_formulas(
     assert prep.whole_reference_to(index, "Data") == "Calc!C2"
     ops, skipped = _titles(analysis)
     assert not any(o["sheet"] == "Data" for o in ops), ops
-    assert any("Data!A1:B3" in s and "counts or indexes over whole columns" in s and "Calc!C2" in s for s in skipped), skipped
+    assert any(s.startswith("Data!A1:B3: starts on row 1") for s in skipped), skipped  # 1.14.0: no row is inserted at all
+    # the same table one row lower: the empty cell above it is counted by the COUNTA, so no title there either
+    path = _wb(tmp_path / "m2.xlsx", {
+        "Data": {"A2": "Id", "B2": "Value", "A3": 1, "B3": 10, "A4": 2, "B4": 20},
+        "Calc": {"B2": "Size", "C2": "=COUNTA(Data!A:A)"},
+    })
+    ops, skipped = _titles(build_analysis(path, tmp_path / "w2", "t"))
+    assert not any(o["sheet"] == "Data" for o in ops), ops
+    assert any("Data!A2:B4" in s and "the cell above (A1) is read by Calc!C2" in s and "would change that result" in s for s in skipped), skipped
 
 
 def test_no_title_inside_a_range_a_formula_reads(tmp_path):
@@ -72,15 +80,24 @@ def test_no_title_inside_a_range_a_formula_reads(tmp_path):
 def test_a_label_something_reads_is_never_cleared(tmp_path):
     """The label's text still names the grid, but the cell stays put."""
     path = _wb(tmp_path / "m.xlsx", {
-        "Info": {"B2": "Company Name", "B4": "Key", "C4": "Value", "B5": "a", "C5": 1},
+        "Info": {"B2": "Company Name", "B5": "Key", "C5": "Value", "B6": "a", "C6": 1},
         "Other": {"A1": "=Info!B2"},
     })
     analysis = build_analysis(path, tmp_path / "w", "t")
     ops, skipped = _titles(analysis)
-    titles = {o["after"] for o in ops if o["op"] == "set_value"}
-    assert "#Company Name" in titles
+    titles = {o["after"]: o["cell"] for o in ops if o["op"] == "set_value"}
+    assert titles.get("#Company Name") == "B4"
     assert not any(o["op"] == "clear_cell" for o in ops), ops
     assert any("Info!B2" in s and "label kept in place" in s and "Other!A1" in s for s in skipped), skipped
+    # 1.14.0: when the kept label sits right above the title cell, Mind would read label, title and
+    # grid as one grid -- so no title is written there either, and the reason says so
+    path = _wb(tmp_path / "m2.xlsx", {
+        "Info": {"B2": "Company Name", "B4": "Key", "C4": "Value", "B5": "a", "C5": 1},
+        "Other": {"A1": "=Info!B2"},
+    })
+    ops, skipped = _titles(build_analysis(path, tmp_path / "w2", "t"))
+    assert not any(o["sheet"] == "Info" for o in ops), ops
+    assert any(s.startswith("Info!B4:C5: a title in B3 would touch B2 ('Company Name')") for s in skipped), skipped
 
 
 def test_a_caption_a_formula_reads_is_not_turned_into_a_title(tmp_path):
@@ -93,7 +110,7 @@ def test_a_caption_a_formula_reads_is_not_turned_into_a_title(tmp_path):
     analysis = build_analysis(path, tmp_path / "w", "t")
     ops, skipped = _titles(analysis)
     assert not any(o.get("cell") == "B2" and str(o.get("after", "")).startswith("#") for o in ops)
-    assert any("S!B2" in s and "caption is read by T!A1" in s for s in skipped), skipped
+    assert any(s.startswith("S!B3:C4: the caption above it (B2) is read by T!A1") and "would change that result" in s for s in skipped), skipped
 
 
 def test_reference_index_reads_defined_names_and_skips_broken_ones(tmp_path):
@@ -147,9 +164,11 @@ def test_no_row_insert_on_a_sheet_inside_a_3d_reference(tmp_path):
     assert "3-D reference" in prep.insert_blocker(index, "Line 2") and prep.insert_blocker(index, "Other") is None
     assert prep.referenced_by(index, "Line 2", 2, 2) == "Total!B2"  # the cells it reads are known on every sheet of the range
     ops, skipped = _titles(analysis)
-    assert not any(o["op"] == "insert_row" and o["sheet"] in ("Line 1", "Line 2") for o in ops), ops
-    assert any(o["op"] == "insert_row" and o["sheet"] == "Other" for o in ops), ops  # a sheet nothing reads by position still gets its title row
-    assert any(s.startswith("Line 1!") and "3-D reference" in s and "Total!B2" in s for s in skipped), skipped
+    # 1.14.0: no row is inserted for a title anywhere; every grid on row 1 is left for a person
+    assert not any(o["op"] == "insert_row" for o in ops), ops
+    assert not any(o["sheet"] in ("Line 1", "Line 2", "Other") for o in ops), ops
+    assert all(any(s.startswith(f"{sheet}!A1:B3: starts on row 1") for s in skipped) for sheet in ("Line 1", "Line 2")), skipped
+    assert any(s.startswith("Other!A1:B2: starts on row 1") for s in skipped), skipped
 
 
 def test_no_row_insert_on_a_sheet_an_indirect_addresses_as_text(tmp_path):
@@ -170,9 +189,9 @@ def test_no_row_insert_on_a_sheet_an_indirect_addresses_as_text(tmp_path):
     assert set(index["text_addressed"]) == {"Line 1", "CoC 1", "CoC 2"}
     assert "INDIRECT" in prep.insert_blocker(index, "CoC 2") and prep.insert_blocker(index, "Free") is None
     ops, skipped = _titles(analysis)
-    inserted = {o["sheet"] for o in ops if o["op"] == "insert_row"}
-    assert "Free" in inserted and not inserted & {"Line 1", "CoC 1", "CoC 2"}, (inserted, skipped)
-    assert any(s.startswith("Line 1!") and "address built as text" in s and "Report!C1" in s for s in skipped), skipped
+    assert not any(o["op"] == "insert_row" for o in ops), ops  # 1.14.0: nothing is inserted for a title
+    assert not any(o["sheet"] in ("Line 1", "CoC 1", "CoC 2", "Free") for o in ops), ops
+    assert all(any(s.startswith(f"{sheet}!A1:B3: starts on row 1") for s in skipped) for sheet in ("Line 1", "CoC 1", "CoC 2", "Free")), skipped
 
 
 def test_an_indirect_that_names_no_sheet_anyone_can_tell_blocks_every_sheet(tmp_path):

@@ -229,21 +229,29 @@ the two honest cases below.
   error values (`#N/A`, `#REF!`, ...) -- they begin with '#' but are results,
   not titles (1.6.7).
 - **Grid naming**: `app/prep.py` names an untitled grid from the cells around
-  it -- including the *section heading directly above it*, the layout real
-  models use -- and inserts a row when the cell above is occupied, so a block
-  with a heading still gets a title. When the surroundings say nothing the
-  heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can then
-  ask the APIM assistant for a context-aware name instead (one batched call,
-  `POST /api/sessions/{id}/grid-names`). Assistant names are advisory: they
-  only change *which* name a reviewable prep operation writes (1.6.7).
+  it -- the caption on top of its key column, the *section heading directly
+  above it*, a label nearby, its header row. The title goes into the one cell
+  Mind reads a title from, directly above the grid's top-left cell: into that
+  cell when it is empty, into the caption cell ('#' + its own text) when the
+  grid is a key column with a caption plus the block beside it (one table,
+  `grids._merge_key_columns`). **No cell is ever moved for a title** (1.14.0;
+  up to 1.13.0 a row was inserted when the cell above was taken, which pushed
+  a key column out of line with its rows): a formula in the caption cell, a
+  grid on row 1 or a cell above that belongs to another grid is reported under
+  "could not name" with what to do by hand. When the surroundings say nothing
+  the heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can
+  then ask the APIM assistant for a context-aware name instead (one batched
+  call, `POST /api/sessions/{id}/grid-names`). Assistant names are advisory:
+  they only change *which* name a reviewable prep operation writes (1.6.7).
 - **Grid Namer** (1.7.0): a screen where the *user* names grids by hand --
   the whole current version is shown sheet by sheet with the detected grids
   outlined; drag over an area, type a name, tick documented flags, Submit.
   `plan_named_areas` (app/prep.py) resolves each selection to the grid Mind's
-  detection sees there (or the caption-above-a-table pair), writes the
-  `#Name /Flags` title under the same reference-safety rules, and the
-  automatic titler names everything else in the same apply without colliding
-  (user names reserved, user grids excluded, row inserts shared).
+  detection sees there (a key column with its caption and the block beside it
+  count as one), writes the `#Name /Flags` title into the same cell and under
+  the same rules as the automatic titler (nothing moved, the reference-safety
+  checks), and the automatic titler names everything else in the same apply
+  without colliding (user names reserved, user grids excluded).
 - **Runs itself in Milliman Mind** (1.6.8): `app/mind_loop.py` /
   `scripts/run_in_mind.py` / the **Mind** screen take a raw model and, with
   nobody in the loop, prepare → verify the numbers (full Excel recalculation

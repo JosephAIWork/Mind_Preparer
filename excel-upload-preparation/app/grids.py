@@ -20,6 +20,11 @@ merged over B4:E4 as a header row four columns wide (a conversion of a real
 model failed with "the array formula ... exceeds the grid size. Ensure that
 the column headers cover the entire array formula" at the first column past
 the merge); reading the merge as one cell would hide that.
+
+One reading of its own (1.14.0): a key column with a caption on top, beside the
+block that reads it, is one table with the caption cell as the place for its
+title (`_merge_key_columns`). Mind reads two untitled grids there today and one
+grid once the title is written; the app reads the one table from the start.
 """
 from __future__ import annotations
 
@@ -193,60 +198,126 @@ def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple
                 assigned.add((rr, cc))
         if title_cell:
             assigned.add(title_cell)
+        grids.append(_grid(sheet_name, occupied, ar, ac, width, height, title_cell))
+    return _merge_key_columns(sheet_name, occupied, grids), standalone
 
-        header_values = [json_safe(occupied.get((ar, ac + i))) for i in range(width)]
-        header_is_all_text = all(isinstance(v, str) and not v.startswith("=") for v in header_values)
-        inner_titles = [
-            ref_text(cc, rr)
-            for rr in range(ar, ar + height)
-            for cc in range(ac, ac + width)
-            if looks_like_title(occupied.get((rr, cc))) and (rr, cc) != (ar, ac)
-        ]
-        formula_count = sum(
-            1 for rr in range(ar, ar + height) for cc in range(ac, ac + width) if is_formula(occupied.get((rr, cc)))
-        )
-        empty_inside = sum(
-            1 for rr in range(ar, ar + height) for cc in range(ac, ac + width) if not is_occupied(occupied.get((rr, cc)))
-        )
 
-        name: str | None = None
-        flags: list[dict[str, Any]] = []
-        title_text: str | None = None
-        if title_cell:
-            title_text = occupied[title_cell]
-            name, flags = parse_title(title_text)
-        title_marker_text = (title_text or "").replace(" ", "").lower()
-        grid: dict[str, Any] = {
-            "sheet": sheet_name,
-            "title_cell": ref_text(title_cell[1], title_cell[0]) if title_cell else None,
-            "title": title_text,
-            "name": name,
-            "display_name": name or f"untitled {ref_text(ac, ar)}",
-            "flags": flags,
-            "flag_names": sorted({f["name"] for f in flags}),
-            "anchor": ref_text(ac, ar),
-            "ref": ref_text(ac, ar, ac + width - 1, ar + height - 1),
-            "first_row": ar,
-            "last_row": ar + height - 1,
-            "first_col": ac,
-            "last_col": ac + width - 1,
-            "n_rows": height,
-            "n_cols": width,
-            "header_values": header_values,
-            "header_is_all_text": header_is_all_text,
-            "header_has_formula": any(isinstance(v, str) and v.startswith("=") for v in header_values),
-            "header_has_number": any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in header_values),
-            "header_markers": header_markers(header_values),
-            "inner_title_cells": inner_titles,
-            "formula_count": formula_count,
-            "empty_cells_inside": empty_inside,
-            "looks_like_step_labels": STEP_LABELS_MARKER in title_marker_text
-            or STEP_LABELS_MARKER in " ".join(str(v) for v in header_values if isinstance(v, str)).replace(" ", "").lower(),
-        }
-        if (flags or name) and width * height <= MAX_STORED_CELLS:
-            grid["rows"] = [[json_safe(occupied.get((ar + i, ac + j))) for j in range(width)] for i in range(height)]
-        grids.append(grid)
-    return grids, standalone
+def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: int, width: int, height: int, title_cell: tuple[int, int] | None) -> dict[str, Any]:
+    """The grid record for the block `ar, ac` of `width` x `height` cells (with its title cell, if any)."""
+    header_values = [json_safe(occupied.get((ar, ac + i))) for i in range(width)]
+    header_is_all_text = all(isinstance(v, str) and not v.startswith("=") for v in header_values)
+    inner_titles = [
+        ref_text(cc, rr)
+        for rr in range(ar, ar + height)
+        for cc in range(ac, ac + width)
+        if looks_like_title(occupied.get((rr, cc))) and (rr, cc) != (ar, ac)
+    ]
+    formula_count = sum(
+        1 for rr in range(ar, ar + height) for cc in range(ac, ac + width) if is_formula(occupied.get((rr, cc)))
+    )
+    empty_inside = sum(
+        1 for rr in range(ar, ar + height) for cc in range(ac, ac + width) if not is_occupied(occupied.get((rr, cc)))
+    )
+
+    name: str | None = None
+    flags: list[dict[str, Any]] = []
+    title_text: str | None = None
+    if title_cell:
+        title_text = occupied[title_cell]
+        name, flags = parse_title(title_text)
+    title_marker_text = (title_text or "").replace(" ", "").lower()
+    grid: dict[str, Any] = {
+        "sheet": sheet_name,
+        "title_cell": ref_text(title_cell[1], title_cell[0]) if title_cell else None,
+        "title": title_text,
+        "name": name,
+        "display_name": name or f"untitled {ref_text(ac, ar)}",
+        "flags": flags,
+        "flag_names": sorted({f["name"] for f in flags}),
+        "anchor": ref_text(ac, ar),
+        "ref": ref_text(ac, ar, ac + width - 1, ar + height - 1),
+        "first_row": ar,
+        "last_row": ar + height - 1,
+        "first_col": ac,
+        "last_col": ac + width - 1,
+        "n_rows": height,
+        "n_cols": width,
+        "header_values": header_values,
+        "header_is_all_text": header_is_all_text,
+        "header_has_formula": any(isinstance(v, str) and v.startswith("=") for v in header_values),
+        "header_has_number": any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in header_values),
+        "header_markers": header_markers(header_values),
+        "inner_title_cells": inner_titles,
+        "formula_count": formula_count,
+        "empty_cells_inside": empty_inside,
+        "looks_like_step_labels": STEP_LABELS_MARKER in title_marker_text
+        or STEP_LABELS_MARKER in " ".join(str(v) for v in header_values if isinstance(v, str)).replace(" ", "").lower(),
+    }
+    if (flags or name) and width * height <= MAX_STORED_CELLS:
+        grid["rows"] = [[json_safe(occupied.get((ar + i, ac + j))) for j in range(width)] for i in range(height)]
+    return grid
+
+
+def _reads_column(formula: str, col: int) -> bool:
+    """Does the formula read a cell of column `col` on its own sheet ($A3, A3, $A$3 -- not BA3, not Other!A3)?"""
+    letters = num_to_col(col)
+    return re.search(r"(?<![A-Za-z!])\$?" + letters + r"\$?\d+(?![\dA-Za-z])", formula) is not None
+
+
+def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], grids: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A key column and the block beside it are one table.
+
+    The shape (the IFRS 17 tool's Result_CF, 2026-11-10): a caption in A1, the keys of each row in
+    A2:A8 (the sheet names its lookups use) and the block B2:CI8 that reads them. Mind, and the
+    detection above, read two untitled grids: the column A1:A8 (the caption on top, nothing to its
+    right) and B2:CI8. A title written for one of them moved its cells and left the keys out of line
+    with their rows. With a title in the caption cell Mind reads one grid, A2:CI8, so the app reads
+    them as one table from the start: the key column's cells on the block's rows plus the block, the
+    caption cell kept apart as `caption_cell` / `caption_value` (the place for the title).
+
+    Tight, so two lists that only touch are never joined: both grids untitled; the column one cell
+    wide, directly left of the block; the column starts exactly one row above the block (the caption)
+    and ends on the block's last row; and its cells on the block's rows are keys (values, no formulas)
+    or the block's formulas read that column."""
+    out: list[dict[str, Any]] = []
+    taken: set[int] = set()
+    for k in grids:
+        if id(k) in taken:
+            continue
+        g = None
+        if not k["title_cell"] and k["n_cols"] == 1 and k["n_rows"] >= 2:
+            g = next(
+                (
+                    x for x in grids
+                    if x is not k and id(x) not in taken and not x["title_cell"]
+                    and x["first_col"] == k["first_col"] + 1 and x["last_row"] == k["last_row"] and x["first_row"] == k["first_row"] + 1
+                ),
+                None,
+            )
+        if g is None:
+            out.append(k)
+            continue
+        col, r1, r2 = k["first_col"], g["first_row"], g["last_row"]
+        read = all(not is_formula(occupied.get((r, col))) for r in range(r1, r2 + 1))  # keys: values, no formulas
+        if not read:  # else: the block's formulas read the column (Result_CF: VLOOKUP(..., INDIRECT($A3&"!A:B"), ...))
+            for r in range(r1, r2 + 1):
+                for c in range(g["first_col"], g["last_col"] + 1):
+                    v = occupied.get((r, c))
+                    if is_formula(v) and _reads_column(json_safe(v), col):
+                        read = True
+                        break
+                if read:
+                    break
+        if not read:
+            out.append(k)
+            continue
+        table = _grid(sheet_name, occupied, r1, col, g["n_cols"] + 1, g["n_rows"], None)
+        table["caption_cell"] = ref_text(col, k["first_row"])
+        table["caption_value"] = json_safe(occupied.get((k["first_row"], col)))
+        table["merged_from"] = [k["ref"], g["ref"]]
+        taken.add(id(g))
+        out.append(table)
+    return out
 
 
 def grid_containing(grids: list[dict[str, Any]], row: int, col: int) -> dict[str, Any] | None:
