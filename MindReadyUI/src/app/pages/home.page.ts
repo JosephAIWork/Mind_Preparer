@@ -1029,7 +1029,8 @@ export class HomePage implements OnDestroy {
     const ready = p.loops.filter((l) => l.status === "ready");
     const parts = ready.map((l) => `${l.name} (${l.first} to ${l.last})`);
     const open = p.loops.filter((l) => l.status !== "ready").length;
-    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${open} loop(s) need a decision (Advanced › Mind loop)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
+    const asked = open === 1 ? "1 loop needs one answer" : `${open} loops need one answer each`;
+    return [parts.length ? `Loop ${parts.join(", ")}: ${p.operation_count} formulas to write` : "", open ? `${asked} (Advanced › Mind loop)` : "", this.headerRow() ? "row 1 is a header row: skipped" : ""].filter(Boolean).join(" · ");
   }
 
   /** The plan says the first row of the table is a header row: the loop then starts at 2. */

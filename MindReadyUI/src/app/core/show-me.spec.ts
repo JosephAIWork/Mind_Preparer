@@ -24,7 +24,13 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
     id: "outside-add",
   },
   { where: "Fix all issues: errors left", text: "3 → 1 error cells · 12 cells rewritten · v3 · 1 left for a person: Calc!B2 #DIV/0! (Advanced › Recalculate)", id: "recalc-errors" },
-  { where: "Build the Mind loop tile", text: "Loop Policy (1 to 40): 120 formulas to write · 1 loop(s) need a decision (Advanced › Mind loop)", id: "loop-choices" },
+  { where: "Build the Mind loop tile", text: "Loop Policy (1 to 40): 120 formulas to write · 1 loop needs one answer (Advanced › Mind loop)", id: "loop-choices" },
+  { where: "Build the Mind loop tile: two loops", text: "2 loops need one answer each (Advanced › Mind loop)", id: "loop-choices" },
+  { where: "Build the Mind loop tile (older words)", text: "1 loop(s) need a decision (Advanced › Mind loop)", id: "loop-choices" },
+  // the Mind loop tab's own places: the Build it button, the line that says what the build did
+  { where: "a text that names the Build it button", text: "Build it under Advanced › Mind loop", id: "loop-build" },
+  { where: "a text that names the Build it button (click)", text: "Type the answer, then click Build it.", id: "loop-build" },
+  { where: "a text that names the loop's result", text: "See the loop's result under Advanced › Mind loop", id: "loop-result" },
   { where: "Recalculate tile", text: "Recalculated in Excel · 2 new since the original · 3 already in the original · The list is under Advanced › Recalculate.", id: "recalc-errors" },
   { where: "Do everything: the loop step skipped", text: "The loop needs a decision first (Advanced › Mind loop)", id: "loop-choices" },
   {
@@ -233,6 +239,23 @@ describe("Show me: the clicks to a place", () => {
     expect(planShowMe({ id: "prep-action" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-list"]);
     expect(planShowMe({ id: "stack-apply" }, "advanced")).toEqual([{ kind: "place", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }]);
     expect(planShowMe({ id: "stack-apply" }, "main").map((s) => s.kind)).toEqual(["page", "place"]);
+  });
+
+  it("leads to the Mind loop tab's places: the answer box else the fold, the Build it button, the result", () => {
+    expect(TAB_NAMES.instances).toBe("Instances"); // the copies builder's own tab, next to the loop's
+    expect(planShowMe({ id: "loop-choices" }, "advanced")).toEqual([
+      { kind: "tab", tab: "loop", targets: [{ el: "tab-loop", text: "Click Mind loop" }] },
+      {
+        kind: "place",
+        targets: [
+          { el: "loop-answer", text: "Type the answer here, then click Build it" },
+          { el: "loop-choices", text: "Open this to change the loop's choices" },
+        ],
+      },
+    ]);
+    expect(planShowMe({ id: "loop-build" }, "main").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
+    expect(planShowMe({ id: "loop-build" }, "advanced")[1].targets).toEqual([{ el: "loop-build", text: "Click Build it" }]);
+    expect(planShowMe({ id: "loop-result" }, "advanced")[1].targets[0].el).toBe("loop-result");
   });
 
   it("takes the way on the screen the user is on when there are two", () => {
@@ -597,9 +620,21 @@ describe("Show me on the main screen's texts", () => {
     expect(showMeFor(`${errors.line} · ${errors.detail}`)).toEqual({ id: "recalc-errors" });
   });
 
-  it("names the Mind loop tab when a loop needs a decision", () => {
+  it("names the Mind loop tab when a loop needs one answer", () => {
     page.loopPlan.set({ found: true, loops: [{ name: "Policy", status: "needs_decision", cells: [], first: 1, last: 40 }], outputs: [], clears: [], operation_count: 0 } as LoopPlan);
-    expect(page.loopSummary()).toBe("1 loop(s) need a decision (Advanced › Mind loop)");
+    expect(page.loopSummary()).toBe("1 loop needs one answer (Advanced › Mind loop)");
+    expect(showMeFor(page.loopSummary())).toEqual({ id: "loop-choices" });
+    page.loopPlan.set({
+      found: true,
+      loops: [
+        { name: "Policy", status: "needs_decision", cells: [], first: 1, last: 40 },
+        { name: "Year", status: "needs_decision", cells: [], first: 1 },
+      ],
+      outputs: [],
+      clears: [],
+      operation_count: 0,
+    } as LoopPlan);
+    expect(page.loopSummary()).toBe("2 loops need one answer each (Advanced › Mind loop)");
     expect(showMeFor(page.loopSummary())).toEqual({ id: "loop-choices" });
   });
 });

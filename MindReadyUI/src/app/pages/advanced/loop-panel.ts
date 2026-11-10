@@ -5,12 +5,19 @@ import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { LoopChoice, LoopChoices, LoopPlan, LoopPlanLoop, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { ShowMeLink } from "../../core/show-me-link";
 
-/** The Mind loops, each with its own choices (name, first, last, count cell), and the clearing; preview, then write. */
+/** The box a loop still needs an answer in: the cell for the number of passes, the first value, or the last. */
+export type LoopAnswerKey = "count_cell" | "first" | "last";
+
+/** The Mind loop tab: one sentence that says what the macro runs, one button that builds it. The choices
+ *  (each loop's own name, runs from / to, a cell for the number of passes; the macro; the two options;
+ *  Preview) sit behind the fold "Change the choices"; what gets written behind "What gets written". A
+ *  loop that still needs one answer shows only that box, above the folds. */
 @Component({
   selector: "mr-loop-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule, ShowMeLink],
   templateUrl: "./loop-panel.html",
   styleUrl: "./panels.scss",
   // the macro dropdown, styled like the panel's text inputs (as the instances panel's key dropdown)
@@ -36,11 +43,46 @@ export class LoopPanel implements OnInit, OnDestroy {
   readonly detail = signal("");
   readonly tone = signal<"idle" | "ok" | "warn" | "error">("idle");
   readonly showOps = signal(false);
+  /** the folds: closed until the user opens them */
+  readonly choicesOpen = signal(false);
+  readonly writtenOpen = signal(false);
+  readonly whatOpen = signal(false);
+  /** the last build wrote the loop: "Done. Next: Run in Mind" */
+  readonly built = signal(false);
   private stop: (() => void) | null = null;
 
   readonly canWrite = computed(() => {
     const p = this.plan();
     return !!p && p.found && p.operation_count > 0 && p.loops.some((l) => l.status === "ready");
+  });
+
+  /** The loops of the macro this plan builds (another macro's loops are listed in the fold only). */
+  readonly ownLoops = computed(() => (this.plan()?.loops ?? []).filter((l) => !l.other_macro));
+
+  /** The loops that still need one answer, each with the box that is missing. */
+  readonly needsAnswer = computed(() => this.ownLoops().filter((l) => l.status === "needs_decision" && !!l.driver && !!this.missingKey(l)));
+
+  /** One sentence in plain words: what the macro runs, and that Mind can do the same. */
+  readonly sentence = computed(() => {
+    const p = this.plan();
+    if (!p || !p.found) return "";
+    const parts = this.ownLoops()
+      .filter((l) => l.status !== "not_built")
+      .map((l) => `${l.name}${this.span(l)}`);
+    const runs = parts.length ? `The macro runs ${this.joined(parts)}.` : "The macro's loop cannot be written as it is.";
+    const open = this.needsAnswer().length;
+    const open2 = this.ownLoops().filter((l) => l.status === "needs_decision").length;
+    const asked = Math.max(open, open2);
+    if (!parts.length) return runs;
+    if (asked) return `${runs} Mind can do the same, after ${asked === 1 ? "one answer" : asked + " answers"} below.`;
+    return `${runs} Mind can do the same.`;
+  });
+
+  /** How many things the build writes, for the fold's title: the formulas, plus the cleared areas. */
+  readonly writtenCount = computed(() => {
+    const p = this.plan();
+    if (!p) return 0;
+    return p.operation_count + (this.clearOld() ? p.clears.filter((c) => c.included).length : 0);
   });
 
   ngOnInit(): void {
@@ -49,6 +91,21 @@ export class LoopPanel implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stop?.();
+  }
+
+  /** "Scenario 0 to 3", "Cohort from 2021" (the last value still to come), "" when nothing is known */
+  private span(l: LoopPlanLoop): string {
+    const has = (v: number | null | undefined) => v !== null && v !== undefined;
+    if (has(l.first) && has(l.last)) return ` ${l.first} to ${l.last}`;
+    if (has(l.first)) return ` from ${l.first}`;
+    if (has(l.last)) return ` to ${l.last}`;
+    return "";
+  }
+
+  /** "A", "A and B", "A, B and C" */
+  private joined(parts: string[]): string {
+    if (parts.length <= 1) return parts.join("");
+    return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
   }
 
   private choices(): LoopChoices {
@@ -77,9 +134,48 @@ export class LoopPanel implements OnInit, OnDestroy {
     this.picks.update((all) => ({ ...all, [driver]: { ...all[driver], [key]: v } }));
   }
 
-  /** the count cell box shows when the loop asks for one, or one was typed */
+  /** the box for the number of passes shows when the loop asks for one, or one was typed */
   wantsCount(l: LoopPlanLoop): boolean {
     return /count cell/i.test(l.why ?? "") || !!this.pick(l, "count_cell") || !!l.suggested_count_cell;
+  }
+
+  /** The one box a loop that needs an answer is missing: the cell for the number of passes when its
+   *  why asks for one, else the first or the last value the plan does not know. */
+  missingKey(l: LoopPlanLoop): LoopAnswerKey | null {
+    if (l.status !== "needs_decision") return null;
+    if (/count cell/i.test(l.why ?? "") || l.suggested_count_cell) return "count_cell";
+    if (l.first === null || l.first === undefined) return "first";
+    if (l.last === null || l.last === undefined) return "last";
+    return null;
+  }
+
+  /** The missing box's label: the loop's own why, in plain words, else what the box is for. */
+  answerLabel(l: LoopPlanLoop): string {
+    const key = this.missingKey(l);
+    const why = this.plainWhy(l.why ?? "");
+    if (why) return why;
+    return key === "count_cell" ? `${l.name}: a cell for the number of passes` : key === "first" ? `${l.name} runs from` : `${l.name} runs to`;
+  }
+
+  /** The missing box's greyed-in words. */
+  answerPlaceholder(l: LoopPlanLoop): string {
+    const key = this.missingKey(l);
+    if (key === "count_cell") return l.suggested_count_cell || "Sheet!A1 (an empty cell)";
+    return "a number, or a cell (Sheet!A1)";
+  }
+
+  /** The plan's why with its jargon said plainly: "count cell" -> "a cell for the number of passes",
+   *  "the driver" -> "the cell the macro changes", "MM_LOOP needs" -> "Mind needs". */
+  plainWhy(why: string): string {
+    return why
+      .replace(/\s*\(count cell\)/gi, "")
+      .replace(/\bMM_LOOP needs a cell that holds the count\b/g, "Mind needs a cell that holds the number of passes")
+      .replace(/\bthe count cell\b/gi, "the cell for the number of passes")
+      .replace(/\bcount cell\b/gi, "a cell for the number of passes")
+      .replace(/\bthe driver cell\b/gi, "the cell the macro changes")
+      .replace(/\bthe driver\b/gi, "the cell the macro changes")
+      .replace(/\s{2,}/g, " ")
+      .trim();
   }
 
   useSuggested(l: LoopPlanLoop): void {
@@ -89,9 +185,19 @@ export class LoopPanel implements OnInit, OnDestroy {
     }
   }
 
+  /** "1 formula", "120 formulas" */
+  formulas(n: number): string {
+    return `${n} formula${n === 1 ? "" : "s"}`;
+  }
+
   /** the value the loop has now, shown greyed in an empty box */
   shown(v: number | null | undefined): string {
     return v === null || v === undefined ? "type it" : String(v);
+  }
+
+  /** The Instances tab: one copy of the model per value, instead of one model that loops. */
+  openInstances(): void {
+    this.store.advancedTab?.set("instances");
   }
 
   async preview(): Promise<void> {
@@ -100,6 +206,7 @@ export class LoopPanel implements OnInit, OnDestroy {
     this.loading.set(true);
     this.tone.set("idle");
     this.line.set("");
+    this.built.set(false);
     try {
       const choices = this.choices();
       const { plan } = await this.api.mindLoopPlan(id, choices);
@@ -121,6 +228,7 @@ export class LoopPanel implements OnInit, OnDestroy {
     if (!id || this.writing() || !this.canWrite()) return;
     this.writing.set(true);
     this.tone.set("idle");
+    this.built.set(false);
     this.line.set("Writing the loop through Excel…");
     this.detail.set("");
     this.stop = followApply(this.api, id, (t) => {
@@ -140,6 +248,7 @@ export class LoopPanel implements OnInit, OnDestroy {
       this.tone.set(refused ? "warn" : "ok");
       this.line.set(refused ? `${done} written, ${refused} refused` : `${done} loop formulas written`);
       this.detail.set([out.version?.label ?? "", out.plan.how_it_runs ?? "", failedText(r)].filter(Boolean).join(" · "));
+      this.built.set(done > 0);
     } catch (e) {
       this.stop?.();
       this.tone.set("error");
@@ -155,8 +264,9 @@ export class LoopPanel implements OnInit, OnDestroy {
     return status === "ready" ? "chip chip--ok" : status === "needs_decision" ? "chip chip--warn" : status === "nothing_to_do" ? "chip" : "chip chip--error";
   }
 
+  /** The status in plain words: "left as is" is not an error, the model keeps what it has there. */
   statusText(status: string): string {
-    return status === "ready" ? "ready" : status === "needs_decision" ? "needs a decision" : status === "nothing_to_do" ? "nothing to do" : "not built";
+    return status === "ready" ? "ready" : status === "needs_decision" ? "needs one answer" : status === "nothing_to_do" ? "nothing to do" : "left as is";
   }
 
   value(event: Event): string {

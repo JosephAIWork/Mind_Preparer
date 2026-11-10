@@ -312,7 +312,11 @@
       <!-- Build the Mind loop -->
       <cds-tile class="action">
         <h2 class="action__title">Build the Mind loop</h2>
-        <p class="action__text">Writes the macro's run loop as MM_LOOP and MM_RESULT formulas, from the model map, with the default choices.</p>
+        <p class="action__text">Mind runs no macro. This writes the macro's run loop into the model, so Mind runs every pass itself. With the default choices; change them under Advanced › Mind loop.</p>
+        <details class="action__text">
+          <summary>What is this?</summary>
+          Mind's own loop formulas: MM_LOOP in the cell the macro changes (one pass per value), MM_RESULT in the block each pass writes. Read from the model map. The results come out the same as in Excel.
+        </details>
         <p class="action__fact">{{ loopSummary() }}<mr-show-me [text]="loopSummary()"></mr-show-me></p>
         <div class="action__row">
           <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()" [title]="busyHint()">Build the Mind loop</button>

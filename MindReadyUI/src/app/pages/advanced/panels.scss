@@ -416,3 +416,65 @@
     color: theme.$text-placeholder;
   }
 }
+
+// the Mind loop tab: one sentence, the folds that hold the rest
+.lead {
+  @include type.type-style("body-01");
+  color: theme.$text-primary;
+  max-width: 48rem;
+  margin: 0;
+}
+
+.fold {
+  max-width: 64rem;
+  border-top: 1px solid theme.$border-subtle-01;
+  padding-top: $spacing-03;
+
+  > summary {
+    cursor: pointer;
+    color: theme.$link-primary;
+    @include type.type-style("body-compact-01");
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+
+    &::before {
+      content: "▸";
+      display: inline-block;
+      width: 1rem;
+      color: theme.$text-secondary;
+    }
+  }
+
+  &[open] > summary::before {
+    content: "▾";
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-04;
+    padding: $spacing-04 0 $spacing-03;
+  }
+
+  &--quiet > summary {
+    color: theme.$text-secondary;
+  }
+}
+
+// the one answer a loop still needs: the why as the label, a wider box
+.loop-answer .field--wide input[type="text"] {
+  width: 20rem;
+}
+
+.link--inline {
+  display: inline;
+  align-self: auto;
+}
+
+.result__next {
+  color: theme.$text-primary !important;
+  font-weight: 600;
+}

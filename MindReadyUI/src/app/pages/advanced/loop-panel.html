@@ -1,111 +1,161 @@
 <div class="panel">
-  <p class="hint">The macro's run loops as MM_LOOP in the driver cells and MM_RESULT in the block each pass writes. Each loop has its own choices: leave a box empty to keep what the model says. First and last take a number or a cell (Sheet!A1). Preview, then write.</p>
-
-  <div class="row">
-    <label class="check"><input type="checkbox" [checked]="clearOld()" (change)="clearOld.set(!clearOld())" /> Also empty the areas the macro clears</label>
-    <label class="check" title="By default the ranges follow the table (MM_COLUMN / MM_ROW): rows added to the input table join the loop in Mind."><input type="checkbox" [checked]="fixedRanges()" (change)="fixedRanges.set(!fixedRanges())" /> Fixed ranges (the rows of today only)</label>
-    <button cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
-  </div>
+  <!-- the alternative: one copy of the model per value, on its own tab -->
+  <p class="hint">One model that loops (usual). Or one copy of the model per value: <button type="button" class="link link--inline" data-show-me="link-instances" (click)="openInstances()">Instances</button></p>
 
   @if (loading()) {
-    <cds-inline-loading [state]="'active'" loadingText="Reading the model map…"></cds-inline-loading>
+    <cds-inline-loading [state]="'active'" loadingText="Reading the model…"></cds-inline-loading>
   }
 
   @if (plan(); as p) {
     @if (!p.found) {
       <p class="hint">No run loop in this workbook: nothing to build.</p>
     } @else {
-      @if ((p.macros?.length ?? 0) > 1) {
-        <div class="row macro-choice">
-          <label class="field">Macro
-            <select (change)="pickMacro($event)">
-              @for (m of p.macros; track m.name) {
-                <option [value]="m.name" [selected]="m.name === p.macro">{{ m.name }} ({{ m.loops.join(", ") }})</option>
-              }
-            </select>
-          </label>
-          <span class="hint">Excel runs each macro on its own. The plan builds the loops of one macro at a time.</span>
-        </div>
-      }
-      @for (l of p.loops; track l.name + $index) {
-        <div class="card">
-          <div class="card__head">
-            <span class="card__title">{{ l.name }} <span [class]="chipClass(l.status)">{{ statusText(l.status) }}</span></span>
-            @if (!l.other_macro) { <span class="card__count">{{ l.cells.length }} cells · values {{ l.first }} to {{ l.last }}</span> }
-          </div>
-          <div class="card__meta">
-            @if (l.driver) { <span class="mono">driver {{ l.driver }}</span> }
-            @if (l.source) { <span class="mono">from {{ l.source }}</span> }
-            @if (l.macro) { <span>macro {{ l.macro }}</span> }
-          </div>
-          @if (l.driver && !l.other_macro) {
-            <div class="row loop-choices" [attr.data-show-me]="$first ? 'loop-choices' : null">
-              <label class="field">Name <input type="text" [value]="pick(l, 'name')" (input)="setPick(l, 'name', value($event))" (keyup.enter)="preview()" [placeholder]="l.name" /></label>
-              <label class="field">First <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.first)" /></label>
-              <label class="field">Last <input type="text" [value]="pick(l, 'last')" (input)="setPick(l, 'last', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.last)" /></label>
-              @if (wantsCount(l)) {
-                <label class="field">Count cell <input type="text" [value]="pick(l, 'count_cell')" (input)="setPick(l, 'count_cell', value($event))" (keyup.enter)="preview()" [placeholder]="l.suggested_count_cell || 'Sheet!A1 (empty)'" /></label>
-                @if (l.suggested_count_cell && !pick(l, 'count_cell')) { <button class="link" (click)="useSuggested(l)">Use {{ l.suggested_count_cell }}</button> }
-              }
-            </div>
+      <!-- one sentence, one button -->
+      <p class="lead" data-test="loop-sentence">{{ sentence() }}</p>
+
+      <!-- a loop that still needs one answer: only its missing box, with the why as the label -->
+      @for (l of needsAnswer(); track l.driver) {
+        <div class="row loop-answer" [attr.data-show-me]="$first ? 'loop-answer' : null">
+          @switch (missingKey(l)) {
+            @case ("count_cell") {
+              <label class="field field--wide">{{ answerLabel(l) }}
+                <input type="text" [value]="pick(l, 'count_cell')" (input)="setPick(l, 'count_cell', value($event))" (keyup.enter)="preview()" [placeholder]="answerPlaceholder(l)" />
+              </label>
+              @if (l.suggested_count_cell && !pick(l, 'count_cell')) { <button type="button" class="link" (click)="useSuggested(l)">Use {{ l.suggested_count_cell }}</button> }
+            }
+            @case ("first") {
+              <label class="field field--wide">{{ answerLabel(l) }}
+                <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="answerPlaceholder(l)" />
+              </label>
+            }
+            @default {
+              <label class="field field--wide">{{ answerLabel(l) }}
+                <input type="text" [value]="pick(l, 'last')" (input)="setPick(l, 'last', value($event))" (keyup.enter)="preview()" [placeholder]="answerPlaceholder(l)" />
+              </label>
+            }
           }
-          @if (l.label) { <p class="card__caution">{{ l.label }}</p> }
-          @for (n of l.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
-          @if (l.why) { <p class="card__caution">{{ l.why }}</p> }
+          <button type="button" cdsButton="tertiary" size="md" (click)="preview()" [disabled]="loading() || writing()">Check</button>
         </div>
-      }
-      @for (o of p.outputs; track $index) {
-        <div class="card" [class.card--off]="o.status !== 'ready'">
-          <div class="card__head">
-            <span class="card__title">Output {{ o.target }} <span [class]="chipClass(o.status)">{{ statusText(o.status) }}</span></span>
-            <span class="card__count">{{ o.cells ?? 0 }} cells</span>
-          </div>
-          <div class="card__meta">
-            @if (o.from) { <span class="mono">from {{ o.from }}</span> }
-            @if (o.when) { <span>{{ o.when }}</span> }
-            @if (o.example) { <span class="mono">{{ o.example }}</span> }
-          </div>
-          @if (o.why) { <p class="card__caution">{{ o.why }}</p> }
-        </div>
-      }
-      @if (p.clears.length) {
-        <p class="hint">
-          Cleared before a run:
-          @for (c of p.clears; track $index) { {{ c.target }} ({{ c.cells ?? 0 }} filled cells{{ c.included ? ", emptied" : ", left" }}) }
-        </p>
-      }
-      @if (p.how_it_runs) { <p class="hint">{{ p.how_it_runs }}</p> }
-      @if (p.repairs?.length) {
-        <p class="card__caution" data-test="loop-repairs">
-          {{ p.repairs![0].written ? "Written with the loop, so Mind computes what Excel does:" : "Not written with the loop (Mind will compute other values until Prep applies them):" }}
-          @for (r of p.repairs!; track r.id) { {{ r.title }} ({{ r.count }}){{ $last ? "." : ";" }} }
-        </p>
       }
 
-      <div class="bar">
-        <div class="row">
-          <button cdsButton="primary" size="md" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Write it into a new version ({{ p.operation_count }} formulas)</button>
-          <button class="link" (click)="showOps.set(!showOps())">{{ showOps() ? "Hide the formulas" : "Show the formulas" }}</button>
-        </div>
-        @if (writing()) {
-          <div class="bar__progress"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
-        } @else if (line()) {
-          <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
-            <strong>{{ line() }}</strong>
-            @if (detail()) { <span>{{ detail() }}</span> }
-          </div>
-        }
-        @if (showOps()) {
-          <ul class="ops mono">
-            @for (op of p.operations ?? []; track $index) {
-              <li>{{ op.sheet }}!{{ op.cell }} {{ op.after ?? "(cleared)" }}</li>
-            }
-            @if (p.operation_count > (p.operations?.length ?? 0)) { <li>… {{ p.operation_count - (p.operations?.length ?? 0) }} more</li> }
-          </ul>
-        }
+      <div class="row">
+        <button type="button" cdsButton="primary" size="md" data-show-me="loop-build" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Build it ({{ formulas(p.operation_count) }})</button>
       </div>
+
+      @if (writing()) {
+        <div class="bar__progress"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
+      } @else if (line()) {
+        <div class="result" data-show-me="loop-result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
+          <strong>{{ line() }}</strong>
+          @if (detail()) { <span>{{ detail() }}</span> }
+          @if (built()) { <span class="result__next" data-test="loop-next">Done. Next: Run in Mind<mr-show-me to="download"></mr-show-me></span> }
+        </div>
+      }
+
+      <!-- the choices: every loop's own, the macro, the two options, Preview -->
+      <details class="fold" data-show-me="loop-choices" [open]="choicesOpen()" (toggle)="choicesOpen.set($any($event.target).open)">
+        <summary>Change the choices</summary>
+        <div class="fold__body">
+          <p class="hint">Leave a box empty to keep what the model says. "Runs from" and "to" take a number or a cell (Sheet!A1). Check, then Build it.</p>
+          @if ((p.macros?.length ?? 0) > 1) {
+            <div class="row macro-choice">
+              <label class="field">Macro
+                <select (change)="pickMacro($event)">
+                  @for (m of p.macros; track m.name) {
+                    <option [value]="m.name" [selected]="m.name === p.macro">{{ m.name }} ({{ m.loops.join(", ") }})</option>
+                  }
+                </select>
+              </label>
+              <span class="hint">Excel runs each macro on its own. The plan builds the loops of one macro at a time.</span>
+            </div>
+          }
+          @for (l of p.loops; track l.name + $index) {
+            <div class="card">
+              <div class="card__head">
+                <span class="card__title">{{ l.name }} <span [class]="chipClass(l.status)">{{ statusText(l.status) }}</span></span>
+                @if (!l.other_macro) { <span class="card__count">{{ l.cells.length }} cells · values {{ l.first }} to {{ l.last }}</span> }
+              </div>
+              <div class="card__meta">
+                @if (l.driver) { <span>the cell the macro changes: <span class="mono">{{ l.driver }}</span></span> }
+                @if (l.source) { <span>from <span class="mono">{{ l.source }}</span></span> }
+                @if (l.macro) { <span>macro {{ l.macro }}</span> }
+              </div>
+              @if (l.driver && !l.other_macro) {
+                <div class="row loop-choices">
+                  <label class="field">Name <input type="text" [value]="pick(l, 'name')" (input)="setPick(l, 'name', value($event))" (keyup.enter)="preview()" [placeholder]="l.name" /></label>
+                  <label class="field">Runs from <input type="text" [value]="pick(l, 'first')" (input)="setPick(l, 'first', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.first)" /></label>
+                  <label class="field">To <input type="text" [value]="pick(l, 'last')" (input)="setPick(l, 'last', value($event))" (keyup.enter)="preview()" [placeholder]="shown(l.last)" /></label>
+                  @if (wantsCount(l)) {
+                    <label class="field">A cell for the number of passes <input type="text" [value]="pick(l, 'count_cell')" (input)="setPick(l, 'count_cell', value($event))" (keyup.enter)="preview()" [placeholder]="l.suggested_count_cell || 'Sheet!A1 (empty)'" /></label>
+                    @if (l.suggested_count_cell && !pick(l, 'count_cell')) { <button type="button" class="link" (click)="useSuggested(l)">Use {{ l.suggested_count_cell }}</button> }
+                  }
+                </div>
+              }
+              @if (l.label) { <p class="card__caution">{{ l.label }}</p> }
+              @for (n of l.notes ?? []; track $index) { <p class="card__caution">{{ plainWhy(n) }}</p> }
+              @if (l.why) { <p class="card__caution">{{ plainWhy(l.why) }}</p> }
+            </div>
+          }
+          <div class="row">
+            <label class="check"><input type="checkbox" [checked]="clearOld()" (change)="clearOld.set(!clearOld())" /> Also empty the areas the macro clears</label>
+            <label class="check" title="By default the ranges follow the table (MM_COLUMN / MM_ROW): rows added to the input table join the loop in Mind. Ticked: only the rows the table has today."><input type="checkbox" [checked]="fixedRanges()" (change)="fixedRanges.set(!fixedRanges())" /> Only today's rows</label>
+            <button type="button" cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- what the build writes: the output blocks, the cleared areas, the repairs, the formulas -->
+      <details class="fold" data-test="loop-written" [open]="writtenOpen()" (toggle)="writtenOpen.set($any($event.target).open)">
+        <summary>What gets written ({{ writtenCount() }})</summary>
+        <div class="fold__body">
+          @if (p.how_it_runs) { <p class="hint">{{ p.how_it_runs }}</p> }
+          @for (o of p.outputs; track $index) {
+            <div class="card" [class.card--off]="o.status !== 'ready'">
+              <div class="card__head">
+                <span class="card__title">Output {{ o.target }} <span [class]="chipClass(o.status)">{{ statusText(o.status) }}</span></span>
+                <span class="card__count">{{ o.cells ?? 0 }} cells</span>
+              </div>
+              <div class="card__meta">
+                @if (o.from) { <span>from <span class="mono">{{ o.from }}</span></span> }
+                @if (o.when) { <span>{{ o.when }}</span> }
+                @if (o.example) { <span class="mono">{{ o.example }}</span> }
+              </div>
+              @if (o.why) { <p class="card__caution">{{ o.why }}</p> }
+            </div>
+          }
+          @if (p.clears.length) {
+            <p class="hint">
+              Cleared before a run:
+              @for (c of p.clears; track $index) { {{ c.target }} ({{ c.cells ?? 0 }} filled cells{{ c.included ? ", emptied" : ", left" }}) }
+            </p>
+          }
+          @if (p.repairs?.length) {
+            <p class="card__caution" data-test="loop-repairs">
+              {{ p.repairs![0].written ? "Written with the loop, so Mind computes what Excel does:" : "Not written with the loop (Mind will compute other values until Prep applies them):" }}
+              @for (r of p.repairs!; track r.id) { {{ r.title }} ({{ r.count }}){{ $last ? "." : ";" }} }
+            </p>
+          }
+          <button type="button" class="link" (click)="showOps.set(!showOps())">{{ showOps() ? "Hide the formulas" : "Show the formulas" }}</button>
+          @if (showOps()) {
+            <ul class="ops mono">
+              @for (op of p.operations ?? []; track $index) {
+                <li>{{ op.sheet }}!{{ op.cell }} {{ op.after ?? "(cleared)" }}</li>
+              }
+              @if (p.operation_count > (p.operations?.length ?? 0)) { <li>… {{ p.operation_count - (p.operations?.length ?? 0) }} more</li> }
+            </ul>
+          }
+        </div>
+      </details>
     }
   } @else if (line()) {
-    <div class="result result--error"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
+    <div class="result result--error" data-show-me="loop-result"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
   }
+
+  <!-- what the loop is, for whoever asks -->
+  <details class="fold fold--quiet" data-test="loop-what" [open]="whatOpen()" (toggle)="whatOpen.set($any($event.target).open)">
+    <summary>What is this?</summary>
+    <div class="fold__body">
+      <p class="hint">Mind runs no macro. The macro's run loop is written into the model as Mind's own loop formulas: MM_LOOP in the cell the macro changes (one pass per value), MM_RESULT in the block each pass writes. Mind then runs every pass itself, and the results come out the same as in Excel.</p>
+    </div>
+  </details>
 </div>

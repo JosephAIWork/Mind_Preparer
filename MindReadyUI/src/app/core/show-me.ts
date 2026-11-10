@@ -25,7 +25,9 @@ export type ShowMeId =
   | "assistant-ask" // Advanced › Findings: "Ask the assistant" on the rule's row, else the list
   | "recalc-run" // Recalculate: the main screen's button, or the one under Advanced
   | "recalc-errors" // Advanced › Recalculate: the list of formula errors, else the button that makes it
-  | "loop-choices" // Advanced › Mind loop: the loop's choices
+  | "loop-choices" // Advanced › Mind loop: the answer a loop still needs, else the fold "Change the choices"
+  | "loop-build" // Advanced › Mind loop: the Build it button
+  | "loop-result" // Advanced › Mind loop: the line that says what the build did
   | "outside-card" // main screen: the Outside files card
   | "outside-add" // main screen: the card's Add files
   | "outside-bring-in" // main screen: the card's button that brings the files in
@@ -74,6 +76,7 @@ export const TAB_NAMES: Record<AdvancedTab, string> = {
   prep: "Prep actions",
   recalc: "Recalculate",
   loop: "Mind loop",
+  instances: "Instances",
   map: "Model map",
   namer: "Grid Namer",
   assistant: "Assistant",
@@ -133,7 +136,20 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
       ],
     },
   ],
-  "loop-choices": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-choices", text: "Make the loop's choices here, then click Preview" }] }],
+  // the box of the one answer a loop still needs (drawn above the fold only while it is needed), else
+  // the fold that holds every choice
+  "loop-choices": [
+    {
+      page: "advanced",
+      tab: "loop",
+      targets: [
+        { el: "loop-answer", text: "Type the answer here, then click Build it" },
+        { el: "loop-choices", text: "Open this to change the loop's choices" },
+      ],
+    },
+  ],
+  "loop-build": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-build", text: "Click Build it" }] }],
+  "loop-result": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-result", text: "What the build did is here" }] }],
   "outside-card": [{ page: "main", targets: [OUTSIDE_CARD] }],
   "outside-add": [{ page: "main", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "main", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
@@ -170,8 +186,12 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: under("Recalculate"), id: "recalc-errors" },
   { words: /\bReview the new formula errors\b/i, id: "recalc-errors" },
   { words: /\bRecalculate in Excel\b/i, id: "recalc-run" },
+  // "Build it under Advanced › Mind loop": the button, named before the tab
+  { words: /\b(?:press|click) Build it\b|\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Mind loop\b/i, id: "loop-build" },
+  { words: /\bthe loop's result\b/i, id: "loop-result" },
   { words: under("Mind loop"), id: "loop-choices" },
-  { words: /\bloop(?:\(s\)|s)? needs? a decision\b/i, id: "loop-choices" },
+  // "1 loop needs one answer", "2 loops need one answer each"; the older "needs a decision" still read
+  { words: /\bloop(?:\(s\)|s)? needs? (?:one answer|a decision)\b/i, id: "loop-choices" },
   { words: /\bOutside files card \(Add files\)/i, id: "outside-add" },
   { words: /\bBring (?:them|the outside files) in again\b|\bBring in the outside files\b/i, id: "outside-bring-in" },
   { words: /\bOutside files card\b/i, id: "outside-card" },

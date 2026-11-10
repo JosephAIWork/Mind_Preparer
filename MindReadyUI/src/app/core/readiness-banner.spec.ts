@@ -24,6 +24,10 @@ describe("the readiness banner", () => {
   let Banner: typeof ReadinessBanner;
 
   beforeAll(async () => {
+    // The spec files share one module registry here (the builder runs them without isolation): a page
+    // spec that ran before this one in the same worker may have loaded the banner under its own inert
+    // Carbon. Let those modules go, so the banner is compiled against the stand-in below.
+    vi.resetModules();
     // The banner is compiled ahead of time against Carbon: its template names Carbon's `Notification`
     // component directly, and the module it imports only matters at build time.
     vi.doMock("carbon-components-angular", () => {
