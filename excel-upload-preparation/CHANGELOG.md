@@ -51,6 +51,23 @@
   Synthetic proofs in `tests/unit/test_skipped_sheet_references.py`. (`app/inventory.py` `sheet_order`;
   `app/validators/references.py` FRM-006 and FRM-007; `app/validators/mind_values.py` `_Book`;
   `app/prep.py` planner notes; `rules/formula-rules.yaml` FRM-007.)
+- **Do everything stops and asks for the input files, then goes on from where it stopped.** When its
+  first step finds that files the model's macro opens were not picked, it no longer has the assistant
+  make stand-ins quietly: the server's bring-in job waits (`waitForInputs`, state `waiting_for_inputs`;
+  nothing runs, the workbook is unchanged) and the main screen shows one box under Do everything --
+  "Do everything is waiting for 2 input files: BBA_05, VFA_01. Pick them, or let the assistant make
+  stand-ins." with the list (picked / missing, what each fills), **Pick the files**, **Go on** (greyed
+  out until every file is there), **Make them with AI** (only with an AI key saved; the stand-in path
+  with its warning) and **Stop**. Go on (`POST .../outside-inputs/continue`) starts the job at the
+  import itself -- the stages after the wait and only those (`stages` in `GET .../outside-inputs`);
+  the chain was held at this step, so the other steps follow. Stop (`POST .../outside-inputs/stop`)
+  ends the job in plain words and Do everything stops at its first step. A page reloaded while it
+  waited gets the box back; a workbook reopened after a restart shows the job as stopped ("The app
+  was closed while Do everything waited for the input files."). The card's own buttons and the
+  plain run are as before. (`app/web/server.py`, `app/session_store.py` `_stopped`,
+  `docs/OUTSIDE_INPUTS.md`, `tests/unit/test_outside_inputs_api.py` section 8; `MindReadyUI`
+  `pages/home.page.*`, `core/models.ts` `outsideWaitingLine`, `core/api.service.ts`, `core/show-me.ts`
+  `outside-waiting`, `core/outside-inputs.spec.ts`, `core/show-me.spec.ts`.)
 
 ## 1.13.0 (10 November 2026): Mind loop and Mind instances, with plainer screens
 

@@ -1310,6 +1310,34 @@ export interface OutsideRunStatus {
   elapsed_s?: number;
   /** the stand-in files the assistant made (or tried to): each try's outcome, also when it failed */
   standIns?: OutsideRunResult["standIns"];
+  /** 1.14.0: Do everything is waiting for the input files (state "waiting_for_inputs"): nothing runs until
+   *  POST .../outside-inputs/continue (the files picked meanwhile, or the assistant's stand-ins) or .../stop */
+  waiting?: boolean;
+  /** while it waits: the files the model's macro opens, which are there, what each fills */
+  needed?: OutsideNeededFile[] | null;
+  /** the stages the job went through, in order (waiting | start | stand_ins | import | scan | ... | done | stopped) */
+  stages?: string[];
+}
+
+/** One input file the model's macro opens, while Do everything waits for the files. */
+export interface OutsideNeededFile {
+  /** the file as the screens name it: the name the model expects, else its key, else its cell */
+  name: string;
+  cell: string;
+  /** a picked file is there for it */
+  present: boolean;
+  file: string | null;
+  /** the sheet the macro fills from it */
+  fills: string | null;
+}
+
+/** The box under Do everything while it waits for the input files: how many are missing, which, and
+ *  the ways on (pick them; with an AI key, let the assistant make stand-ins). */
+export function outsideWaitingLine(files: { name: string; present: boolean }[], assistant: boolean): string {
+  const missing = files.filter((f) => !f.present).map((f) => f.name);
+  if (!missing.length) return "Every input file is there: press Go on.";
+  const one = missing.length === 1;
+  return `Do everything is waiting for ${missing.length} input file${one ? "" : "s"}: ${nameList(missing, 6)}. Pick ${one ? "it" : "them"}${assistant ? ", or let the assistant make stand-ins" : ""}.`;
 }
 
 /** The model workbook itself (the main file of an upload). */

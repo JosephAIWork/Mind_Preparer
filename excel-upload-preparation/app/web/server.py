@@ -2243,7 +2243,36 @@ _OUTSIDE_TITLES = {
     "start": "Starting", "stand_ins": "Making stand-in input files with the assistant",
     "import": "Running the workbook's import macro", "scan": "Checking the workbook with the outside data",
     "mind_inputs": "Making the Mind inputs", "numbers": "Checking that no computed value changed", "rescan": "Checking the new version", "done": "Done",
+    "waiting": "Waiting for the input files", "stopped": "Stopped",
 }
+
+# Do everything stopped while it waited for the input files (POST .../outside-inputs/stop)
+_WAIT_STOPPED = "Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again."
+_ASSISTANT_NOT_SET_UP = ("The assistant is not set up, so it cannot make the missing input files: "
+                         "add the actual files, or paste an AI key under Advanced › Assistant.")
+
+
+def _row_name(r: dict[str, Any]) -> str:
+    """A row of the import table by the file it expects, else its key, else its cell (as the screens name it)."""
+    return str(r.get("expected") or " / ".join(str(k) for k in (r.get("keys") or []) if k) or f"{r.get('sheet')}!{r.get('cell')}")
+
+
+def _needed_public(s: Session) -> list[dict[str, Any]]:
+    """The input files the model's macro opens, one per row of the import table: its name, whether a
+    picked file is there for it (and which), and the sheet it fills -- what the wait is about."""
+    return [
+        {"name": _row_name(r), "cell": f"{r.get('sheet')}!{r.get('cell')}", "present": bool(r.get("file")), "file": r.get("file"),
+         "fills": r.get("target_sheet")}
+        for r in _match_rows(s)
+    ]
+
+
+def _waiting_message(s: Session) -> str:
+    """'Waiting for 2 input files: a.xlsm, b.xlsm' -- live: a file picked meanwhile leaves the list."""
+    missing = [n["name"] for n in _needed_public(s) if not n["present"]]
+    if not missing:
+        return "Every input file is there: press Go on."
+    return f"Waiting for {len(missing)} input file{'' if len(missing) == 1 else 's'}: {', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}"
 
 
 class _BringInStopped(Exception):
@@ -2591,6 +2620,7 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
 
     def stage(name: str, message: str) -> None:
         st.update(stage=name, title=_OUTSIDE_TITLES.get(name, name), message=message, updated=time.time())
+        st.setdefault("stages", []).append(name)  # the stages this job went through, in order
 
     def say(message: Any) -> None:
         st.update(message=str(message)[:300], updated=time.time())
@@ -2609,6 +2639,7 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
     try:
         result = _bring_in(s, base, note, check_numbers, stage, say, stand_ins)
         end = {"result": result, "state": "done", "stage": "done", "title": "Done", "message": result["summary"]}
+        st.setdefault("stages", []).append("done")
     except _MindInputsRefused as exc:  # says which version holds the outside data itself
         end = {"state": "error", "error": str(exc)}
     except _BringInStopped as exc:
@@ -2639,8 +2670,36 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
     in"); then each area it filled becomes a Mind input -- an IN_<sheet> /Input grid the formulas
     read, and its CSV for Mind's Input Manager (a new version, "Outside files made Mind inputs");
     then (`checkNumbers`, default true) every computed value is compared. Refused (409) while
-    another job runs on the session."""
+    another job runs on the session.
+
+    `waitForInputs` (Do everything): when input files are missing, nothing runs -- the job waits
+    (state "waiting_for_inputs", the needed files in GET .../outside-inputs) until POST
+    .../outside-inputs/continue (the files picked meanwhile through POST .../inputs, or
+    `makeStandIns`) or POST .../outside-inputs/stop. The workbook is not touched while it waits."""
     s = _session(session_id)
+    _bring_in_possible(s)
+    # standIns: the assistant makes the missing files from the model's own numbers first (the user has
+    # only the workbook, or some of the files); best results come with the actual files
+    missing = [r for r in _match_rows(s) if not r.get("file")]
+    stand_ins = bool(payload.get("standIns")) and bool(missing)
+    if stand_ins and not llm_available():
+        raise HTTPException(status_code=409, detail=_ASSISTANT_NOT_SET_UP)
+    check_numbers = bool(payload.get("checkNumbers", True))
+    if missing and not stand_ins and payload.get("waitForInputs"):
+        _free_for_bring_in(s, session_id)
+        now = time.time()
+        s.outside_run = {"state": "waiting_for_inputs", "stage": "waiting", "title": _OUTSIDE_TITLES["waiting"], "message": _waiting_message(s),
+                         "started": now, "updated": now, "finished": None, "result": None, "error": None, "versions": [], "base_version_id": None,
+                         "check_numbers": check_numbers, "stages": ["waiting"]}
+        _save(s)  # a session reopened after a restart shows this as stopped (app/session_store.py)
+        return {"running": False, "state": "waiting_for_inputs", "needed": _needed_public(s), "message": s.outside_run["message"]}
+    if not stand_ins and not ((s.outside_inputs or {}).get("match") or {}).get("matched"):
+        raise HTTPException(status_code=422, detail="None of the picked files goes with the workbook: add the outside files first.")
+    return _start_bring_in(s, session_id, stand_ins, check_numbers)
+
+
+def _bring_in_possible(s: Session) -> None:
+    """The app can run the model's own import: it knows the macro and the cells that name the files (else 422)."""
     oi = s.outside_inputs
     if not oi:
         raise HTTPException(status_code=422, detail="Nothing to bring in: the workbook's macros open no outside file.")
@@ -2648,14 +2707,10 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
         raise HTTPException(status_code=422, detail="Which macro brings the outside files in is not clear: they cannot be brought in automatically.")
     if not oi["table"]:
         raise HTTPException(status_code=422, detail="No cell of the workbook names the outside files: they cannot be brought in automatically.")
-    # standIns: the assistant makes the missing files from the model's own numbers first (the user has
-    # only the workbook, or some of the files); best results come with the actual files
-    missing = [r for r in _match_rows(s) if not r.get("file")]
-    stand_ins = bool(payload.get("standIns")) and bool(missing)
-    if stand_ins and not llm_available():
-        raise HTTPException(status_code=409, detail="The assistant is not set up, so it cannot make the missing input files: add the actual files, or paste an AI key under Advanced › Assistant.")
-    if not stand_ins and not (oi.get("match") or {}).get("matched"):
-        raise HTTPException(status_code=422, detail="None of the picked files goes with the workbook: add the outside files first.")
+
+
+def _free_for_bring_in(s: Session, session_id: str) -> None:
+    """Nothing else is changing the workbook (else 409): Excel is there, no other job, no Run in Mind."""
     if not com_available():
         raise HTTPException(status_code=409, detail="Bringing in the outside files needs Excel on this machine.")
     why = _busy_with(s)
@@ -2663,6 +2718,12 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
         raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
     if (MIND_LOOPS.get(session_id) or {}).get("state") == "running":
         raise HTTPException(status_code=409, detail="Wait a moment: Run in Mind is using this workbook.")
+
+
+def _start_bring_in(s: Session, session_id: str, stand_ins: bool, check_numbers: bool) -> dict[str, Any]:
+    """The bring-in job itself, in a thread: a fresh s.outside_run ("running", stage "start"); 409 when
+    the workbook is busy, 422 when the base version has no macros left."""
+    _free_for_bring_in(s, session_id)
     base, note = _bring_in_base(s)
     if not has_vba_project(s.paths[base["id"]]):
         raise HTTPException(status_code=422, detail=f"{base['label'].split(' — ')[0]} has no macros left to run: bring the outside files in on the uploaded workbook.")
@@ -2670,14 +2731,53 @@ def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={
         raise HTTPException(status_code=409, detail="Wait a moment: changes are still being written.")
     now = time.time()
     s.outside_run = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now, "finished": None,
-                     "result": None, "error": None, "versions": [], "base_version_id": base["id"]}
+                     "result": None, "error": None, "versions": [], "base_version_id": base["id"], "stages": ["start"]}
     try:
-        threading.Thread(target=_bring_in_worker, args=(s, base, note, bool(payload.get("checkNumbers", True)), stand_ins), name=f"outside-inputs-{session_id}", daemon=True).start()
+        threading.Thread(target=_bring_in_worker, args=(s, base, note, check_numbers, stand_ins), name=f"outside-inputs-{session_id}", daemon=True).start()
     except Exception:
         s.outside_run.update(state="error", error="the job could not start", finished=time.time())
         s.apply_lock.release()
         raise
     return {"running": True, "state": "running", "base_version_id": base["id"], "note": note}
+
+
+@app.post("/api/sessions/{session_id}/outside-inputs/continue", status_code=202)
+def continue_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Go on after the wait for the input files (state "waiting_for_inputs"): the bring-in runs with
+    the files picked meanwhile -- every file must be there (409 says which are still missing) -- or,
+    with `makeStandIns`, the assistant first makes the missing ones from the model's own numbers
+    (best results come with the actual files; 409 without an AI key). Nothing done before the wait
+    is done again: the wait held nothing, so the job starts at the import itself."""
+    s = _session(session_id)
+    st = s.outside_run or {}
+    if st.get("state") != "waiting_for_inputs":
+        raise HTTPException(status_code=409, detail="Do everything is not waiting for the input files.")
+    _bring_in_possible(s)
+    missing = [n["name"] for n in _needed_public(s) if not n["present"]]
+    make = bool(payload.get("makeStandIns")) and bool(missing)
+    if make and not llm_available():
+        raise HTTPException(status_code=409, detail=_ASSISTANT_NOT_SET_UP)
+    if missing and not make:
+        raise HTTPException(status_code=409, detail=f"{len(missing)} input file{'' if len(missing) == 1 else 's'} still missing: "
+                            f"{', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}. Pick {'it' if len(missing) == 1 else 'them'}, or let the assistant make stand-ins.")
+    return _start_bring_in(s, session_id, make, bool(st.get("check_numbers", True)))
+
+
+@app.post("/api/sessions/{session_id}/outside-inputs/stop")
+def stop_outside_inputs(session_id: str) -> dict[str, Any]:
+    """End the wait for the input files: the job is over (state "stopped", nothing was changed); Do
+    everything stops at its first step. A bring-in that is already running cannot be stopped (409)."""
+    s = _session(session_id)
+    st = s.outside_run or {}
+    if st.get("state") == "waiting_for_inputs":
+        now = time.time()
+        st.update(state="stopped", stage="stopped", title=_OUTSIDE_TITLES["stopped"], message=_WAIT_STOPPED, error=_WAIT_STOPPED, finished=now, updated=now)
+        st.setdefault("stages", []).append("stopped")
+        _save(s)
+        return {"running": False, "state": "stopped", "error": _WAIT_STOPPED}
+    if st.get("state") == "running":
+        raise HTTPException(status_code=409, detail="The outside files are being brought in: that cannot be stopped half-way. Wait for it to finish.")
+    return {"running": False, "state": st.get("state") or "idle"}
 
 
 @app.get("/api/sessions/{session_id}/outside-inputs")
@@ -2687,14 +2787,19 @@ def outside_inputs_state(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     st = s.outside_run or {}
     started = st.get("started")
+    waiting = st.get("state") == "waiting_for_inputs"
     return {
         "outsideInputs": _outside_public(s),
         "inputs": _inputs_public(s),
         "running": st.get("state") == "running",
         "state": st.get("state") or "idle",
         "stage": st.get("title"),  # in words, for the screen ("Running the workbook's import macro")
-        "stage_id": st.get("stage"),  # start | import | scan | mind_inputs | numbers | rescan | done
-        "message": st.get("message"),
+        "stage_id": st.get("stage"),  # waiting | start | stand_ins | import | scan | mind_inputs | numbers | rescan | done | stopped
+        "stages": list(st.get("stages") or []),  # the stages this job went through, in order
+        # Do everything waits for the input files: which the macro opens, which are there, what each fills
+        "waiting": waiting,
+        "needed": _needed_public(s) if waiting else None,
+        "message": _waiting_message(s) if waiting else st.get("message"),
         "elapsed_s": round((st.get("finished") or time.time()) - started, 1) if started else 0.0,
         "result": st.get("result"),
         "error": st.get("error"),

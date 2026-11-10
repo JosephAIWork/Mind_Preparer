@@ -34,6 +34,7 @@ export type ShowMeId =
   | "outside-card" // main screen: the Outside files card
   | "outside-add" // main screen: the card's Add files
   | "outside-bring-in" // main screen: the card's button that brings the files in
+  | "outside-waiting" // main screen: the box under Do everything while it waits for the input files (1.14.0)
   | "do-everything" // main screen: Do everything
   | "recent-workbooks" // main screen: the Recent workbooks list (a saved workbook to open again)
   | "download"; // main screen: Download this version; on Advanced: Run in Mind (send it to Mind)
@@ -162,6 +163,8 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "outside-add": [{ page: "main", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "main", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
   "do-everything": [{ page: "main", targets: [{ el: "do-everything", text: "Click Do everything" }] }],
+  // the box is drawn only while Do everything waits for the input files: the picker first, else the box
+  "outside-waiting": [{ page: "main", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "Do everything waits here for the input files" }] }],
   // the list is drawn only while a saved workbook exists and no workbook is open (the idle main screen)
   "recent-workbooks": [{ page: "main", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
   download: [
@@ -212,6 +215,8 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: /\bOutside files card \(Add files\)/i, id: "outside-add" },
   { words: /\bBring (?:them|the outside files) in again\b|\bBring in the outside files\b/i, id: "outside-bring-in" },
   { words: /\bOutside files card\b/i, id: "outside-card" },
+  // "See the box under Do everything." (the Outside files card while Do everything waits for the input files)
+  { words: /\bthe box under Do everything\b/i, id: "outside-waiting" },
   { words: /\bpress Do everything\b/i, id: "do-everything" },
   { words: /\bDownload or send to Mind\b/i, id: "download" },
   // "Open it again from Recent workbooks on the main screen" (the server, for a session the restart closed)

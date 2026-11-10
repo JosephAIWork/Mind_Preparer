@@ -6,7 +6,7 @@ import { ApiService, errorText } from "../core/api.service";
 import {
   ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, NEXT_QUARTER_LEAD, NextQuarterResult, NextQuarterStatus, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus, SessionStart,
   appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, nextQuarterLines, nextQuarterOutcome, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
-  pickedFilesProblem, withOutsideStep,
+  outsideWaitingLine, pickedFilesProblem, withOutsideStep,
 } from "../core/models";
 import { PlainCodes, meaningsText } from "../core/plain-codes";
 import { ReadinessBanner } from "../core/readiness-banner";
@@ -150,6 +150,20 @@ export class HomePage implements OnDestroy {
   readonly outsideFailed = signal(false);
   /** the last run brought the files in but could not compare the computed values: amber, and Do everything stops there */
   readonly outsideUnchecked = signal(false);
+  /** 1.14.0: Do everything stopped at its first step and waits for the input files (the server's job is in
+   *  state "waiting_for_inputs"): one box under Do everything -- pick them, Go on, or Make them with AI.
+   *  Nothing runs meanwhile; the chain goes on from the bring-in itself (nothing done before is done again). */
+  readonly outsideWaiting = signal(false);
+  /** the files the model's macro opens, as the import table has them now (a file picked meanwhile shows as present) */
+  readonly waitingFiles = computed(() => (this.store.outsideInputs()?.rows ?? []).map((r) => ({ name: outsideRowLabel(r), present: !!r.file, fills: r.target_sheet })));
+  readonly waitingMissing = computed(() => this.waitingFiles().filter((f) => !f.present));
+  readonly waitingLine = computed(() => outsideWaitingLine(this.waitingFiles(), !!this.store.outsideInputs()?.assistant));
+  /** Go on: every file is there (and none is being added) */
+  readonly canGoOn = computed(() => this.outsideWaiting() && this.waitingMissing().length === 0 && !this.addingInputs());
+  /** Make them with AI: only with an AI key saved (the server says so) */
+  readonly canMakeStandIns = computed(() => this.outsideWaiting() && !!this.store.outsideInputs()?.assistant && !this.addingInputs());
+  /** "Make them with AI" pressed after a reload (no chain in this page): the next Do everything takes the stand-in path */
+  private chainStandIns = false;
   readonly pickAccept = PICK_ACCEPT;
   /** Make next quarter's Mind input files: the new quarter's raw files through the model's own import
    *  macro, one file per Mind input grid (raw files cannot go into Mind's Inputs window as they are) */
@@ -196,8 +210,8 @@ export class HomePage implements OnDestroy {
     const include = this.chainRunning()
       ? this.steps().some((s) => s.id === "outside" && (s.state === "waiting" ? this.outsideWillRun() : s.state !== "skipped"))
       : this.outsideWillRun();
-    const o = this.store.outsideInputs();
-    return withOutsideStep(this.estimate(), include, !!o && !!o.assistant && o.missing.length > 0);
+    // 1.14.0: Do everything no longer makes stand-ins by itself (it stops and asks): the plain step's time
+    return withOutsideStep(this.estimate(), include, false);
   });
   readonly estimateLine = computed(() => {
     const e = this.fullEstimate();
@@ -245,7 +259,7 @@ export class HomePage implements OnDestroy {
   );
   /** Which step holds the buttons, for the hint on a disabled button. */
   readonly busyHint = computed(() => {
-    if (this.chainRunning()) return "Do everything is running";
+    if (this.chainRunning()) return this.outsideWaiting() ? "Do everything is waiting for the input files" : "Do everything is running";
     if (this.outside().running) return "Bring in the outside files is running";
     if (this.nextQuarter().running) return "Next quarter's Mind input files are being made";
     if (this.addingInputs()) return "The input files are being added";
@@ -556,6 +570,8 @@ export class HomePage implements OnDestroy {
     this.cardDragOver.set(false);
     this.outsideFailed.set(false);
     this.outsideUnchecked.set(false);
+    this.outsideWaiting.set(false);
+    this.chainStandIns = false;
     this.resetNextQuarter();
   }
 
@@ -605,8 +621,9 @@ export class HomePage implements OnDestroy {
   /** Bring in the outside files: the model's own import macro runs on a copy with the matched files, then
    *  each file's area becomes a Mind input (a background job, followed every second). `standIns`: the
    *  assistant first makes the missing files from the numbers the model holds ("Make them with AI").
-   *  From Do everything (`strict`) missing files are made that way behind the scenes when the assistant
-   *  is set up; without it they stop the chain: add them, or bring in the others with the card's button. */
+   *  From Do everything (`strict`) missing files stop the chain at this step: the server's job waits for
+   *  them (1.14.0, `waitForInputs`) and the box under Do everything asks -- pick them and Go on, or Make
+   *  them with AI (the stand-ins, on purpose); nothing runs meanwhile and the chain goes on from here. */
   async runOutside(strict = false, standIns = false): Promise<boolean> {
     const id = this.store.sessionId();
     const o = this.store.outsideInputs();
@@ -618,26 +635,24 @@ export class HomePage implements OnDestroy {
       return false;
     }
     const missing = o.rows.filter((r) => !r.file).map((r) => outsideRowLabel(r));
-    if (strict && missing.length && o.assistant) standIns = true; // the user did not add them: the assistant makes them
+    if (strict && missing.length && this.chainStandIns) standIns = true; // "Make them with AI" was pressed in the box, after a reload
+    this.chainStandIns = false;
     if (!missing.length) standIns = false;
-    if (!o.matched && !standIns) {
+    const wait = strict && missing.length > 0 && !standIns;
+    if (!o.matched && !standIns && !wait) {
       this.outside.set({ running: false, fraction: null, line: "No input file matched yet", detail: outsideAddLine(o), tone: "error" });
       return false;
     }
-    if (strict && missing.length && !standIns) {
-      this.outside.set({
-        running: false,
-        fraction: null,
-        line: `${missing.length} of ${o.rows.length} input file${o.rows.length === 1 ? "" : "s"} missing: ${nameList(missing)}`,
-        detail: `Add ${missing.length === 1 ? "it" : "them"} on the Outside files card (Add files), or press "${this.outsideButton(o)}" there: a missing file keeps the data the model already holds.`,
-        tone: "error",
-      });
-      return false;
-    }
     this.inputsError.set("");
-    this.outside.set({ running: true, fraction: null, line: standIns ? "Making the missing input files with the assistant…" : "Starting…", detail: "", tone: "idle" });
+    this.outside.set({
+      running: true,
+      fraction: null,
+      line: wait ? `Waiting for ${missing.length} input file${missing.length === 1 ? "" : "s"}: ${nameList(missing)}` : standIns ? "Making the missing input files with the assistant…" : "Starting…",
+      detail: "",
+      tone: "idle",
+    });
     try {
-      await this.api.startOutsideInputs(id, standIns);
+      await this.api.startOutsideInputs(id, standIns, wait);
     } catch (e) {
       // refused: it may run already (started before a reload, or in another tab): then follow that run
       const st = await this.api.outsideInputs(id).catch(() => null);
@@ -677,6 +692,15 @@ export class HomePage implements OnDestroy {
         }
         looks++;
         if (st.outsideInputs) this.store.outsideInputs.set(st.outsideInputs);
+        if (st.waiting) {
+          // Do everything waits for the input files: the box asks, this look-every-second holds the
+          // chain here until Go on / Make them with AI (the job runs) or Stop (the job ends, an error)
+          seenRunning = true;
+          this.showOutsideWaiting(st);
+          await this.sleep(1000);
+          continue;
+        }
+        if (this.outsideWaiting()) this.outsideWaiting.set(false); // the wait is over: the job runs, or ended
         if (st.running) {
           seenRunning = true;
           this.showOutsideRunning(st, t0);
@@ -716,6 +740,52 @@ export class HomePage implements OnDestroy {
     this.outside.set({ running: true, fraction: null, line: full ? said : stage, detail: [full ? "" : said, took].filter(Boolean).join(" · "), tone: "idle" });
   }
 
+  /** The wait on the card and in the chain's step: the server's line ("Waiting for 2 input files: ..."),
+   *  and the box under Do everything (outsideWaiting). The step counts as running: the chain is held here. */
+  private showOutsideWaiting(st: OutsideRunStatus): void {
+    this.outsideWaiting.set(true);
+    this.outside.set({ running: true, fraction: null, line: st.message || st.stage || "Waiting for the input files", detail: "See the box under Do everything.", tone: "idle" });
+  }
+
+  /** The box's "Go on" (every file picked) or "Make them with AI" (`makeStandIns`). While the chain is
+   *  held at the wait, the server's job is told to go on and the chain's look-every-second picks the run
+   *  up; after a reload (no chain in this page) Do everything starts again: its first step finds every
+   *  file there (or takes the stand-in path) and the rest follows. */
+  async goOn(makeStandIns = false): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || !this.outsideWaiting()) return;
+    if (!makeStandIns && this.waitingMissing().length) return;
+    this.inputsError.set("");
+    if (this.chainRunning()) {
+      try {
+        await this.api.continueOutsideInputs(id, makeStandIns);
+      } catch (e) {
+        this.inputsError.set(errorText(e)); // still waiting: the server says what is missing
+      }
+      return;
+    }
+    this.outsideWaiting.set(false);
+    this.chainStandIns = makeStandIns;
+    await this.runAll();
+  }
+
+  /** The box's Stop: the server's job ends (nothing was changed); the chain stops at this step. */
+  async stopWaiting(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || !this.outsideWaiting()) return;
+    try {
+      await this.api.stopOutsideInputs(id);
+    } catch (e) {
+      this.inputsError.set(errorText(e));
+      return;
+    }
+    if (!this.chainRunning()) {
+      // no chain holds here (after a reload): the card says it stopped, as the chain would
+      this.outsideWaiting.set(false);
+      this.showOutsideError("Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again.");
+    }
+  }
+
   /** The result on the card (and in the chain): the summary, then the details and the new versions. */
   private showOutsideResult(r: OutsideRunResult): boolean {
     this.outsideResult.set(r);
@@ -748,7 +818,12 @@ export class HomePage implements OnDestroy {
     if (st.outsideInputs) this.store.outsideInputs.set(st.outsideInputs);
     // the card then follows the server: a result that no longer describes the current version (files
     // replaced since, another version chosen) gives way to why (outsideCard)
-    if (st.running) {
+    if (st.waiting) {
+      // Do everything was waiting when the page was left or reloaded: the box asks again (no chain
+      // runs in this page: Go on starts Do everything again, which goes straight through this step)
+      this.showOutsideWaiting(st);
+      this.outside.update((s) => ({ ...s, running: false }));
+    } else if (st.running) {
       this.showOutsideRunning(st, Date.now());
       await this.followOutside(id, true);
     } else if (st.error) this.showOutsideError(st.error);
@@ -805,7 +880,8 @@ export class HomePage implements OnDestroy {
     const id = this.store.sessionId();
     const o = this.store.outsideInputs();
     if (!id || !o || !this.canBringIn(o)) return;
-    if (this.busy()) {
+    if (this.busy() && !this.outsideWaiting()) {
+      // (while Do everything waits for the input files, picking them is the point)
       this.inputsError.set(`Wait: ${this.busyHint()}.`);
       return;
     }

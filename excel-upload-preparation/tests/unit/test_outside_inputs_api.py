@@ -891,6 +891,127 @@ def test_stand_ins_only_for_the_missing_files_a_failure_changes_nothing_and_empt
     assert _wait(client, sid)["state"] == "done" and calls == []
 
 
+# --- 8. Do everything stops and asks for the input files (1.14.0) -------------------------------------
+# Do everything (the browser's chain) starts the bring-in with waitForInputs: with files missing the job
+# waits instead of making stand-ins quietly; the files are picked meanwhile (POST .../inputs), then
+# .../continue goes on from the import itself -- or makes the stand-ins on purpose; .../stop ends it.
+def _run_waiting(client, sid: str, **payload) -> dict:
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"waitForInputs": True, **payload})
+    assert res.status_code == 202, res.text
+    return res.json()
+
+
+def test_do_everything_waits_for_the_missing_files_then_goes_on_from_the_import_only(client, macros, excel_steps, monkeypatch, tmp_path):
+    from app import session_store
+
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS[:4])["sessionId"]  # BBA_05 and VFA_01 missing
+    s = server.SESSIONS[sid]
+    stand_in_calls: list = []
+    _assistant_on(monkeypatch, stand_in_calls)  # an AI key is there, and still nothing is made by itself
+    body = _run_waiting(client, sid)
+    assert body["state"] == "waiting_for_inputs" and body["running"] is False
+    assert body["message"] == "Waiting for 2 input files: BBA_05, VFA_01"
+    assert [(n["name"], n["present"], n["fills"]) for n in body["needed"]] == [
+        ("BBA_01", True, "BBA_01"), ("BBA_02", True, None), ("BBA_03", True, None), ("BBA_04", True, None), ("BBA_05", False, None), ("VFA_01", False, None)]
+    assert body["needed"][0]["file"] == INPUTS[0] and body["needed"][0]["cell"] == "Ctrl_01!H35"
+    st = client.get(f"/api/sessions/{sid}/outside-inputs").json()
+    assert st["waiting"] is True and st["running"] is False and st["state"] == "waiting_for_inputs" and st["stage"] == "Waiting for the input files"
+    assert st["stages"] == ["waiting"] and st["needed"] == body["needed"] and st["error"] is None and st["result"] is None
+    # nothing ran, nothing changed, no stand-in asked for
+    assert [v["id"] for v in s.versions] == ["ver-001"] and excel_steps["import"] == [] and stand_in_calls == [] and not s.apply_lock.locked()
+    assert st["outsideInputs"]["brought_in"] is False and st["outsideInputs"]["missing"] == ["Ctrl_01!H39", "Ctrl_01!H40"]
+    # the wait is saved with the session: reopened after a restart it is over, in plain words
+    assert session_store.read_state(sid)["outside_run"]["state"] == "waiting_for_inputs"
+    back, _ = session_store.load(sid, server.Session)
+    assert back.outside_run["state"] == "stopped" and back.outside_run["error"] == session_store.CLOSED_WHILE_WAITING
+    # Go on needs every file
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/continue", json={})
+    assert res.status_code == 409 and res.json()["detail"] == "2 input files still missing: BBA_05, VFA_01. Pick them, or let the assistant make stand-ins."
+    # the files are picked while it waits (the usual inputs route); the list follows
+    out = client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[4], b"BBA_05"), _part(INPUTS[5], b"VFA_01")]).json()
+    assert out["outsideInputs"]["missing"] == []
+    st = client.get(f"/api/sessions/{sid}/outside-inputs").json()
+    assert st["waiting"] is True and all(n["present"] for n in st["needed"]) and st["message"] == "Every input file is there: press Go on."
+    # Go on: the job starts at the import -- the stages after the wait, and only those
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/continue", json={})
+    assert res.status_code == 202, res.text
+    assert res.json()["state"] == "running"
+    st = _wait(client, sid)
+    assert st["state"] == "done", st
+    assert st["stages"] == ["start", "import", "scan", "mind_inputs", "numbers", "rescan", "done"]
+    assert st["waiting"] is False and st["needed"] is None
+    assert len(excel_steps["import"]) == 1 and len(excel_steps["import"][0]["files"]) == 6 and stand_in_calls == []
+    assert st["outsideInputs"]["brought_in"] is True and st["outsideInputs"]["stand_ins"] == []
+    assert [v["source"] for v in s.versions] == ["upload", "import", "mind_inputs"]
+    assert "stand-in" not in st["result"]["summary"]
+    # not waiting any more: Go on and Stop say so
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/continue", json={}).status_code == 409
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/stop").json() == {"running": False, "state": "done"}
+
+
+def test_while_waiting_make_them_with_ai_takes_the_stand_in_path_with_its_warning(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, [])["sessionId"]  # the workbook alone
+    s = server.SESSIONS[sid]
+    monkeypatch.setattr(server, "llm_available", lambda: False)
+    body = _run_waiting(client, sid)
+    assert body["state"] == "waiting_for_inputs" and body["message"] == "Waiting for 6 input files: BBA_01, BBA_02, BBA_03, BBA_04, BBA_05, VFA_01"
+    # without an AI key the assistant cannot make them: the wait goes on
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/continue", json={"makeStandIns": True})
+    assert res.status_code == 409 and "The assistant is not set up" in res.json()["detail"]
+    assert client.get(f"/api/sessions/{sid}/outside-inputs").json()["waiting"] is True
+    calls: list = []
+    _assistant_on(monkeypatch, calls)
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/continue", json={"makeStandIns": True}).status_code == 202
+    st = _wait(client, sid)
+    assert st["state"] == "done", st
+    assert st["stages"] == ["start", "stand_ins", "import", "scan", "mind_inputs", "numbers", "rescan", "done"]
+    (call,) = calls
+    assert call["need"] == [f"Ctrl_01!H{r}" for r in range(35, 41)] and call["real"] == []
+    assert st["result"]["summary"].endswith("best results come with the actual input files (add them, then bring them in again).")
+    assert st["result"]["standIns"]["ok"] is True and sorted(st["outsideInputs"]["stand_ins"]) == sorted(INPUTS)
+    assert [v["source"] for v in s.versions] == ["upload", "import", "mind_inputs"]
+    # with every file there, waitForInputs waits for nothing: the plain run starts at once
+    sid2 = _upload_picked(client, _main_book(tmp_path / "two"), INPUTS)["sessionId"]
+    body = _run_waiting(client, sid2)
+    assert body["state"] == "running" and body["running"] is True
+    st = _wait(client, sid2)
+    assert st["state"] == "done" and st["stages"][:2] == ["start", "import"] and calls == [call]
+
+
+def test_stop_while_waiting_ends_the_job_and_changes_nothing(client, macros, excel_steps, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS[:5])["sessionId"]
+    s = server.SESSIONS[sid]
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/stop").json() == {"running": False, "state": "idle"}  # nothing to stop
+    _run_waiting(client, sid)
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/stop")
+    assert res.status_code == 200 and res.json() == {"running": False, "state": "stopped", "error": server._WAIT_STOPPED}
+    st = client.get(f"/api/sessions/{sid}/outside-inputs").json()
+    assert st["state"] == "stopped" and st["running"] is False and st["waiting"] is False and st["needed"] is None
+    assert st["error"] == "Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again."
+    assert st["stages"] == ["waiting", "stopped"] and st["result"] is None
+    assert [v["id"] for v in s.versions] == ["ver-001"] and excel_steps["import"] == [] and not s.apply_lock.locked()
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/continue", json={}).status_code == 409
+    # the workbook is free: Do everything again waits again, the matched files alone still come in
+    assert _run_waiting(client, sid)["state"] == "waiting_for_inputs"
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202  # the card's "Bring in the 5 matched files"
+    st = _wait(client, sid)
+    assert st["state"] == "done" and st["waiting"] is False and len(excel_steps["import"][0]["files"]) == 5
+    # a bring-in that runs is not stopped half-way
+    gate = threading.Event()
+    monkeypatch.setattr(outside_inputs, "run_import", _fake_run_import(excel_steps["import"], gate=gate))
+    client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[5], b"VFA_01")])
+    assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={}).status_code == 202
+    try:
+        res = client.post(f"/api/sessions/{sid}/outside-inputs/stop")
+        assert res.status_code == 409 and "cannot be stopped half-way" in res.json()["detail"]
+    finally:
+        gate.set()
+    assert _wait(client, sid)["state"] == "done"
+
+
 # --- 6. next quarter's Mind input files (app/next_quarter_inputs.py) -------------------------------
 def _wait_next(client, sid: str, timeout: float = 60) -> dict:
     deadline = time.time() + timeout

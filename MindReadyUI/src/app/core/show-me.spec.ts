@@ -23,6 +23,10 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
     text: 'Add them on the Outside files card (Add files), or press "Bring in the 1 matched file" there: a missing file keeps the data the model already holds.',
     id: "outside-add",
   },
+  // 1.14.0: Do everything stops at its first step and waits for the input files (the card points at the box)
+  { where: "Outside files card: Do everything waits for the input files", text: "Waiting for 2 input files: BBA_05, VFA_01 · See the box under Do everything.", id: "outside-waiting" },
+  { where: "Outside files card: the wait was stopped", text: "Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again.", id: "do-everything" },
+  { where: "a saved workbook reopened while Do everything waited", text: "The app was closed while Do everything waited for the input files. Pick them, then press Do everything again.", id: "do-everything" },
   { where: "Fix all issues: errors left", text: "3 → 1 error cells · 12 cells rewritten · v3 · 1 left for a person: Calc!B2 #DIV/0! (Advanced › Recalculate)", id: "recalc-errors" },
   { where: "Build the Mind loop tile", text: "Loop Policy (1 to 40): 120 formulas to write · 1 loop needs one answer (Advanced › Mind loop)", id: "loop-choices" },
   { where: "Build the Mind loop tile: two loops", text: "2 loops need one answer each (Advanced › Mind loop)", id: "loop-choices" },

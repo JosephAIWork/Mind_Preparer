@@ -65,9 +65,24 @@ export class ApiService {
 
   /** Starts bringing the outside files in (a background job: the model's own import macro, then the
    *  Mind inputs); refused (409) while another long job runs on the session. */
-  startOutsideInputs(id: string, standIns = false): Promise<{ running: boolean }> {
-    // standIns: the assistant first makes the missing files from the numbers the model holds
-    return firstValueFrom(this.http.post<{ running: boolean }>(`${this.s(id)}/outside-inputs/run`, standIns ? { standIns: true } : {}));
+  startOutsideInputs(id: string, standIns = false, waitForInputs = false): Promise<{ running: boolean; state?: string }> {
+    // standIns: the assistant first makes the missing files from the numbers the model holds;
+    // waitForInputs (Do everything): with files missing the job waits for them instead (state "waiting_for_inputs")
+    const body: Record<string, boolean> = {};
+    if (standIns) body["standIns"] = true;
+    if (waitForInputs) body["waitForInputs"] = true;
+    return firstValueFrom(this.http.post<{ running: boolean; state?: string }>(`${this.s(id)}/outside-inputs/run`, body));
+  }
+
+  /** 1.14.0: go on after the wait for the input files: with every file picked, or with the assistant's
+   *  stand-ins for the missing ones (`makeStandIns`). 409 says what is still missing. */
+  continueOutsideInputs(id: string, makeStandIns = false): Promise<{ running: boolean; state?: string }> {
+    return firstValueFrom(this.http.post<{ running: boolean; state?: string }>(`${this.s(id)}/outside-inputs/continue`, makeStandIns ? { makeStandIns: true } : {}));
+  }
+
+  /** 1.14.0: end the wait for the input files (nothing was changed). */
+  stopOutsideInputs(id: string): Promise<{ running: boolean; state: string }> {
+    return firstValueFrom(this.http.post<{ running: boolean; state: string }>(`${this.s(id)}/outside-inputs/stop`, {}));
   }
 
   /** Where that job is (stage), and its result or error once it has ended. */

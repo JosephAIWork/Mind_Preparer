@@ -30,6 +30,8 @@ from app.settings import SETTINGS
 
 STATE_FILE = "state.json"
 CLOSED_WHILE_RUNNING = "The app was closed while this ran."
+# Do everything was waiting for the input files when the app closed (1.14.0, outside_run "waiting_for_inputs")
+CLOSED_WHILE_WAITING = "The app was closed while Do everything waited for the input files. Pick them, then press Do everything again."
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _WRITE_LOCK = threading.Lock()  # one state file written at a time (jobs end in their own threads)
 
@@ -105,6 +107,9 @@ def _stopped(job: dict[str, Any] | None) -> dict[str, Any]:
     if job.get("state") == "running":
         now = time.time()
         job.update(state="error", error=CLOSED_WHILE_RUNNING, message=CLOSED_WHILE_RUNNING, title="Stopped", finished=job.get("finished") or now, finished_at=job.get("finished_at") or now, updated=now, updated_at=now)
+    elif job.get("state") == "waiting_for_inputs":  # the wait held nothing: over, nothing was changed
+        now = time.time()
+        job.update(state="stopped", stage="stopped", error=CLOSED_WHILE_WAITING, message=CLOSED_WHILE_WAITING, title="Stopped", finished=job.get("finished") or now, updated=now)
     return job
 
 

@@ -349,21 +349,51 @@ interface Fake {
   starts: number;
   /** the standIns choice of each start */
   standIns: boolean[];
+  /** the waitForInputs choice of each start (Do everything asks the server to wait for missing files) */
+  waits: boolean[];
+  /** POST .../outside-inputs/continue: the makeStandIns choice of each call */
+  continues: boolean[];
+  stops: number;
+  /** the files added through POST .../inputs, by name */
+  added: string[];
   autoFixStarts: number;
 }
 
-function fakeServer(statuses: OutsideRunStatus[]): Fake {
-  const f: Fake = { api: null as unknown as ApiService, statuses, starts: 0, standIns: [], autoFixStarts: 0 };
+function fakeServer(statuses: OutsideRunStatus[], onContinue?: (makeStandIns: boolean) => OutsideRunStatus[] | Error, onStop?: () => OutsideRunStatus[]): Fake {
+  const f: Fake = { api: null as unknown as ApiService, statuses, starts: 0, standIns: [], waits: [], continues: [], stops: 0, added: [], autoFixStarts: 0 };
   let last: OutsideRunStatus | undefined;
   f.api = {
     outsideInputs: () => {
       last = f.statuses.shift() ?? last;
       return last ? Promise.resolve(last) : Promise.reject(new Error("no status"));
     },
-    startOutsideInputs: (_id: string, standIns = false) => {
+    startOutsideInputs: (_id: string, standIns = false, waitForInputs = false) => {
       f.starts++;
       f.standIns.push(standIns);
+      f.waits.push(waitForInputs);
+      return Promise.resolve({ running: !waitForInputs });
+    },
+    continueOutsideInputs: (_id: string, makeStandIns = false) => {
+      f.continues.push(makeStandIns);
+      const next = onContinue?.(makeStandIns);
+      if (next instanceof Error) return Promise.reject(next);
+      f.statuses.push(...(next ?? []));
       return Promise.resolve({ running: true });
+    },
+    stopOutsideInputs: () => {
+      f.stops++;
+      f.statuses.push(...(onStop?.() ?? []));
+      return Promise.resolve({ running: false, state: "stopped" });
+    },
+    addInputs: (_id: string, files: File[]) => {
+      f.added.push(...files.map((x) => x.name));
+      // the server matches the files again: every row now has one
+      const o = last?.outsideInputs ?? outside();
+      const rows = o.rows.map((r) => ({ ...r, file: r.file ?? files.find((x) => x.name.includes(r.keys[0] ?? ""))?.name ?? r.file }));
+      const matched = rows.filter((r) => r.file).length;
+      const again: OutsideInputs = { ...o, rows, matched, missing: rows.filter((r) => !r.file).map((r) => r.cell) };
+      if (last) last = { ...last, outsideInputs: again };
+      return Promise.resolve({ inputs: [], outsideInputs: again });
     },
     // Do everything went on past the outside step: the fake stops it at the next one
     startAutoFix: () => {
@@ -380,6 +410,23 @@ function fakeServer(statuses: OutsideRunStatus[]): Fake {
 
 const status = (o: OutsideInputs, extra: Partial<OutsideRunStatus> = {}): OutsideRunStatus => ({ outsideInputs: o, running: false, state: "idle", stage: null, result: null, error: null, ...extra });
 const running = (o: OutsideInputs) => status(o, { running: true, state: "running", stage: "Running the workbook's import macro" });
+/** 1.14.0: Do everything waits for the input files (the server's job holds, nothing runs) */
+const waiting = (o: OutsideInputs, message: string) =>
+  status(o, {
+    state: "waiting_for_inputs",
+    waiting: true,
+    stage: "Waiting for the input files",
+    message,
+    stages: ["waiting"],
+    needed: o.rows.map((r) => ({ name: outsideRowLabel(r), cell: r.cell, present: !!r.file, file: r.file, fills: r.target_sheet })),
+  });
+const STOPPED = "Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again.";
+/** a real turn of the event loop: the page's look-every-second must not starve the test while the server waits */
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !cond(); i++) await tick();
+  expect(cond()).toBe(true);
+}
 
 describe("the Outside files card and Do everything", () => {
   let Page: typeof HomePage;
@@ -397,6 +444,7 @@ describe("the Outside files card and Do everything", () => {
   });
 
   function open(f: Fake, o: OutsideInputs): void {
+    TestBed.resetTestingModule(); // a test may open a second page against another fake
     TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: ApiService, useValue: f.api }] });
     store = TestBed.inject(SessionStore);
     page = TestBed.runInInjectionContext(() => new Page());
@@ -469,31 +517,157 @@ describe("the Outside files card and Do everything", () => {
     expect(f.autoFixStarts).toBe(1);
   });
 
-  it("with only the workbook, Do everything has the assistant make the files behind the scenes", async () => {
+  // ---- 1.14.0: with files missing, Do everything stops at its first step and asks for them ----------
+  /** one file of two picked; the server's job waits for the other */
+  const someMissing = (assistant: boolean) =>
+    outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"], file: "2026Q1_2026_BBA_01.xlsm", how: "key" }), row("Ctrl_01!H36", { keys: ["BBA_02"], target_sheet: "BBA_02" })], matched: 1, missing: ["Ctrl_01!H36"], assistant });
+
+  function openWaiting(f: Fake, o: OutsideInputs): void {
+    open(f, o);
+    (page as unknown as { sleep: () => Promise<void> }).sleep = tick; // the wait is a look every turn, not a hot loop
+  }
+
+  it("with a file missing, Do everything waits: one box with the names, nothing runs, Go on greyed out, Stop ends it", async () => {
+    const some = someMissing(false);
+    const f = fakeServer([status(some), waiting(some, "Waiting for 1 input file: BBA_02")], undefined, () => [status(some, { state: "stopped", error: STOPPED })]);
+    openWaiting(f, some);
+    const run = page.runAll();
+    await until(() => page.outsideWaiting());
+    // the server was asked to wait, not to make stand-ins; the chain is held at its first step
+    expect(f.starts).toBe(1);
+    expect(f.waits).toEqual([true]);
+    expect(f.standIns).toEqual([false]);
+    expect(page.chainRunning()).toBe(true);
+    expect(page.steps()[0]).toMatchObject({ id: "outside", state: "running" });
+    expect(page.busyHint()).toBe("Do everything is waiting for the input files");
+    // the box: the names, which are there, and the ways on (no AI key: no stand-ins offered)
+    expect(page.waitingLine()).toBe("Do everything is waiting for 1 input file: BBA_02. Pick it.");
+    expect(page.waitingFiles()).toEqual([{ name: "BBA_01", present: true, fills: null }, { name: "BBA_02", present: false, fills: "BBA_02" }]);
+    expect(page.canGoOn()).toBe(false);
+    expect(page.canMakeStandIns()).toBe(false);
+    // the card points at the box
+    expect(page.outsideCard()).toMatchObject({ line: "Waiting for 1 input file: BBA_02", detail: "See the box under Do everything." });
+    expect(f.autoFixStarts).toBe(0);
+    // Go on does nothing while a file is missing
+    await page.goOn();
+    expect(f.continues).toEqual([]);
+    // Stop: the server's job ends, the chain stops at this step, nothing ran
+    await page.stopWaiting();
+    await run;
+    expect(f.stops).toBe(1);
+    expect(page.outsideWaiting()).toBe(false);
+    expect(page.chainRunning()).toBe(false);
+    expect(page.steps()[0]).toMatchObject({ state: "failed", line: "Stopped while waiting for the input files" });
+    expect(page.chainLine()).toBe('Stopped at "Bring in the outside files": Stopped while waiting for the input files. See the Outside files card above, then press Do everything again.');
+    expect(f.autoFixStarts).toBe(0);
+    expect(page.outsideFailed()).toBe(true);
+  });
+
+  it("the files picked in the box, then Go on: the bring-in runs from where it stopped and the other steps follow", async () => {
+    const some = someMissing(true);
+    const done = outside({ brought_in: true, assistant: true });
+    const f = fakeServer([status(some), waiting(some, "Waiting for 1 input file: BBA_02")], () => [running(some), status(done, { state: "done", result: result() })]);
+    openWaiting(f, some);
+    const run = page.runAll();
+    await until(() => page.outsideWaiting());
+    expect(page.canMakeStandIns()).toBe(true); // an AI key is saved: the other way on is offered
+    expect(page.waitingLine()).toBe("Do everything is waiting for 1 input file: BBA_02. Pick it, or let the assistant make stand-ins.");
+    // picking is allowed while it waits (the other buttons are not)
+    await page.addInputs([new File(["x"], "2026Q1_2026_BBA_02.xlsm")]);
+    expect(f.added).toEqual(["2026Q1_2026_BBA_02.xlsm"]);
+    expect(page.inputsError()).toBe("");
+    expect(page.waitingMissing()).toEqual([]);
+    expect(page.waitingLine()).toBe("Every input file is there: press Go on.");
+    expect(page.canGoOn()).toBe(true);
+    await page.goOn();
+    expect(f.continues).toEqual([false]);
+    await run;
+    expect(f.starts).toBe(1); // the step was not started over: the server's job went on
+    expect(f.standIns).toEqual([false]);
+    expect(page.outsideWaiting()).toBe(false);
+    expect(page.steps()[0].state).toBe("done");
+    expect(f.autoFixStarts).toBe(1); // and the chain went on
+    expect(store.outsideInputs()?.brought_in).toBe(true);
+  });
+
+  it("Make them with AI in the box takes the stand-in path on purpose, with its warning", async () => {
     const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] }), row("Ctrl_01!H36", { keys: ["BBA_02"] })], matched: 0, missing: ["Ctrl_01!H35", "Ctrl_01!H36"], assistant: true });
     const made = outside({
       rows: [row("Ctrl_01!H35", { keys: ["BBA_01"], file: "2026Q1_2026_BBA_01.xlsm", stand_in: true }), row("Ctrl_01!H36", { keys: ["BBA_02"], file: "2026Q1_2026_BBA_02.xlsm", stand_in: true })],
       matched: 2, brought_in: true, assistant: true, stand_ins: ["2026Q1_2026_BBA_01.xlsm", "2026Q1_2026_BBA_02.xlsm"],
     });
-    const f = fakeServer([status(alone), running(alone), status(made, { state: "done", result: result() })]);
-    open(f, alone);
-    await page.runAll();
-    expect(f.starts).toBe(1);
-    expect(f.standIns).toEqual([true]);
+    const f = fakeServer([status(alone), waiting(alone, "Waiting for 2 input files: BBA_01, BBA_02")], (ai) =>
+      ai ? [running(alone), status(made, { state: "done", result: result() })] : new Error("2 input files still missing: BBA_01, BBA_02. Pick them, or let the assistant make stand-ins."),
+    );
+    openWaiting(f, alone);
+    const run = page.runAll();
+    await until(() => page.outsideWaiting());
+    expect(f.standIns).toEqual([false]); // nothing made quietly
+    expect(page.waitingLine()).toBe("Do everything is waiting for 2 input files: BBA_01, BBA_02. Pick them, or let the assistant make stand-ins.");
+    expect(page.canGoOn()).toBe(false);
+    await page.goOn(true);
+    expect(f.continues).toEqual([true]);
+    await run;
     expect(page.steps()[0].state).toBe("done");
-    expect(f.autoFixStarts).toBe(1); // and the chain went on
+    expect(f.autoFixStarts).toBe(1);
     expect(page.standInLine(store.outsideInputs()!)).toMatch(/^All input files are stand-ins the AI assistant made/);
   });
 
-  it("without the assistant, Do everything stops and says to add the files", async () => {
-    const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] })], matched: 0, missing: ["Ctrl_01!H35"], assistant: false });
-    const f = fakeServer([status(alone)]);
-    open(f, alone);
-    await page.runAll();
-    expect(f.starts).toBe(0);
-    expect(page.steps()[0]).toMatchObject({ id: "outside", state: "failed", line: "No input file matched yet" });
-    expect(page.outsideCard().detail).toBe("Add the model's input files on the Outside files card (Add files).");
-    expect(f.autoFixStarts).toBe(0);
+  it("a Go on the server refuses keeps the box, with its words", async () => {
+    const some = someMissing(true);
+    const f = fakeServer([status(some), waiting(some, "Waiting for 1 input file: BBA_02")], () => new Error("1 input file still missing: BBA_02. Pick it, or let the assistant make stand-ins."), () => [status(some, { state: "stopped", error: STOPPED })]);
+    openWaiting(f, some);
+    const run = page.runAll();
+    await until(() => page.outsideWaiting());
+    await page.goOn(true); // the assistant's try is refused by the server (say, the key expired)
+    expect(page.outsideWaiting()).toBe(true);
+    expect(page.inputsError()).toBe("1 input file still missing: BBA_02. Pick it, or let the assistant make stand-ins.");
+    await page.stopWaiting();
+    await run;
+    expect(page.outsideWaiting()).toBe(false);
+  });
+
+  it("after a reload the box is back; Go on starts Do everything again, which goes straight through the step", async () => {
+    const all = outside({ assistant: false }); // the files were picked before the reload
+    const f = fakeServer([waiting(all, "Every input file is there: press Go on."), waiting(all, "Every input file is there: press Go on."), running(all), status(outside({ brought_in: true }), { state: "done", result: result() })]);
+    openWaiting(f, all);
+    await (page as unknown as { resumeOutside: () => Promise<void> }).resumeOutside();
+    expect(page.outsideWaiting()).toBe(true);
+    expect(page.chainRunning()).toBe(false);
+    expect(page.busy()).toBe(false); // nothing runs: the box is the one thing to do
+    expect(page.canGoOn()).toBe(true);
+    expect(page.waitingLine()).toBe("Every input file is there: press Go on.");
+    await page.goOn();
+    expect(f.continues).toEqual([]); // no chain was held here: Do everything again
+    expect(f.starts).toBe(1);
+    expect(f.waits).toEqual([false]); // every file there: the plain bring-in, no wait
+    expect(page.outsideWaiting()).toBe(false);
+    expect(page.steps()[0].state).toBe("done");
+    expect(f.autoFixStarts).toBe(1);
+  });
+
+  it("after a reload, Make them with AI starts Do everything again on the stand-in path; Stop ends the wait on the card", async () => {
+    const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] })], matched: 0, missing: ["Ctrl_01!H35"], assistant: true });
+    const made = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"], file: "2026Q1_2026_BBA_01.xlsm", stand_in: true })], matched: 1, brought_in: true, assistant: true, stand_ins: ["2026Q1_2026_BBA_01.xlsm"] });
+    const f = fakeServer([waiting(alone, "Waiting for 1 input file: BBA_01"), waiting(alone, "Waiting for 1 input file: BBA_01"), running(alone), status(made, { state: "done", result: result() })]);
+    openWaiting(f, alone);
+    await (page as unknown as { resumeOutside: () => Promise<void> }).resumeOutside();
+    expect(page.outsideWaiting()).toBe(true);
+    await page.goOn(true);
+    expect(f.continues).toEqual([]);
+    expect(f.starts).toBe(1);
+    expect(f.standIns).toEqual([true]);
+    expect(f.waits).toEqual([false]);
+    expect(page.steps()[0].state).toBe("done");
+    // and Stop with no chain held: the card says it stopped, the box goes
+    const g = fakeServer([waiting(alone, "Waiting for 1 input file: BBA_01")]);
+    openWaiting(g, alone);
+    await (page as unknown as { resumeOutside: () => Promise<void> }).resumeOutside();
+    expect(page.outsideWaiting()).toBe(true);
+    await page.stopWaiting();
+    expect(g.stops).toBe(1);
+    expect(page.outsideWaiting()).toBe(false);
+    expect(page.outsideCard()).toMatchObject({ tone: "error", line: "Stopped while waiting for the input files" });
   });
 
   it("the card's button makes the missing files with the assistant, the others stay as picked", async () => {

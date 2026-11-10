@@ -253,10 +253,37 @@
           <button cdsButton="primary" size="lg" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
         } @else if (chainStep()?.id === "fixAll" && !fixAll().stopping) {
           <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
+        } @else if (outsideWaiting()) {
+          <button cdsButton="primary" size="lg" disabled>Waiting for the input files</button>
         } @else {
           <button cdsButton="primary" size="lg" disabled>Running…</button>
         }
       </div>
+      @if (outsideWaiting()) {
+        <!-- 1.14.0: Do everything stopped at its first step and asks for the input files: one box, nothing runs -->
+        <div class="chain__waiting outside" data-show-me="outside-waiting">
+          <p class="chain__text"><strong>{{ waitingLine() }}</strong></p>
+          <ul class="outside__rows">
+            @for (f of waitingFiles(); track f.name) {
+              <li class="outside__row" [class.outside__row--missing]="!f.present">
+                <bdi class="outside__file">{{ f.name }}</bdi>
+                <span class="outside__note">{{ f.present ? "picked" : "missing" }}</span>
+                @if (f.fills) { <span class="outside__note">(fills <bdi>{{ f.fills }}</bdi>)</span> }
+              </li>
+            }
+          </ul>
+          <div class="outside__buttons">
+            <button cdsButton="tertiary" size="md" data-show-me="outside-waiting-pick" (click)="waitPicker.click()" [disabled]="addingInputs()">{{ addingInputs() ? "Adding…" : "Pick the files" }}</button>
+            <input #waitPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
+            <button cdsButton="primary" size="md" data-show-me="outside-waiting-go-on" (click)="goOn()" [disabled]="!canGoOn()" [title]="canGoOn() ? 'Brings the files in, then the other steps follow' : 'Pick every file first'">Go on</button>
+            @if (canMakeStandIns()) {
+              <button cdsButton="secondary" size="md" (click)="goOn(true)" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
+            }
+            <button cdsButton="danger--tertiary" size="md" (click)="stopWaiting()">Stop</button>
+          </div>
+          @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
+        </div>
+      }
       @if (steps().length) {
         <ol class="chain__steps">
           @for (s of steps(); track s.id) {

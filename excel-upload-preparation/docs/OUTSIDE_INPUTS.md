@@ -101,8 +101,8 @@ stage, its result: files, grid, source file, values changed, the zip).
 
 ### Without the input files: stand-ins made with the assistant (`app/stand_in_inputs.py`)
 
-When files are missing, **Make them with AI** on the Outside files card (and "Do everything",
-behind the scenes, when the assistant is set up) has the assistant make them:
+When files are missing, **Make them with AI** on the Outside files card (or in the box under Do
+everything while it waits, below) has the assistant make them:
 
 1. The assistant reads the import macro (the VBA of the import chain), the import table and the
    shape of every sheet the files fill (where its labels, constant numbers and formulas are).
@@ -121,6 +121,39 @@ behind the scenes, when the assistant is set up) has the assistant make them:
    files are brought in again.
 
 Without an AI key the app says so and asks for the actual files.
+
+### "Do everything" stops and asks for the input files (1.14.0)
+
+Do everything never makes stand-ins by itself any more. When its first step finds that files the
+macro opens were not picked, it **stops and asks**:
+
+1. The server's bring-in job is started with `waitForInputs` and, with files missing, goes into the
+   state `waiting_for_inputs` instead of running: no Excel, no version, nothing changed. `GET
+   /api/sessions/{id}/outside-inputs` then says `waiting: true` and lists `needed`: every file the
+   macro opens, by the name the model expects (else its key, else its cell), whether a picked file is
+   there for it, and the sheet it fills; `message` is "Waiting for 2 input files: BBA_05, VFA_01".
+2. The main screen shows **one box** under Do everything: "Do everything is waiting for 2 input
+   files: BBA_05, VFA_01. Pick them, or let the assistant make stand-ins." with the list, **Pick the
+   files**, **Go on** (greyed out until every file is there), **Make them with AI** (only when an AI
+   key is saved) and **Stop**. The Outside files card says "Waiting for ... · See the box under Do
+   everything" with a Show me. Picking files uses the usual `POST .../inputs`; the list follows.
+3. **Go on** -> `POST .../outside-inputs/continue` (409 while a file is still missing, naming it):
+   the job starts at the import itself -- the stages after the wait, and only those (`stages` in the
+   GET answer: `start, import, scan, mind_inputs, numbers, rescan, done`, never `stand_ins`). The chain
+   in the browser was held at this step the whole time, so the steps after it follow as usual.
+   **Make them with AI** -> `continue` with `{"makeStandIns": true}`: the stand-in path above, with
+   its warning (best results come with the actual input files); 409 without an AI key.
+4. **Stop** -> `POST .../outside-inputs/stop`: the job ends (`state: stopped`, "Stopped while waiting
+   for the input files. Nothing was changed: pick the files, then press Do everything again."), Do
+   everything stops at its first step. A bring-in already running cannot be stopped (409).
+5. A page reloaded or a session reopened while it waited: the box comes back (Go on then starts Do
+   everything again, which goes straight through the step); a workbook saved while it waited and
+   opened after a restart of the app shows the job as stopped ("The app was closed while Do
+   everything waited for the input files. Pick them, then press Do everything again.").
+
+The card's own button ("Bring in the 4 matched files") still brings in the matched files alone, and
+`POST .../outside-inputs/run` without `waitForInputs` behaves as before. Tests:
+`tests/unit/test_outside_inputs_api.py` (section 8) and `MindReadyUI/src/app/core/outside-inputs.spec.ts`.
 
 ## How it works (`app/outside_inputs.py`)
 
