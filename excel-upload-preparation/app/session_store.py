@@ -5,9 +5,11 @@ upload, every version, the analysis copies, the recalculations, the Mind inputs,
 with the same layout the %TEMP% folder had) next to one `state.json` that holds everything the
 `Session` dataclass (app/web/server.py) can save: the versions and their files, the plan, the
 recalculation, the plans of the Mind loop and the instances, the bring-in and next-quarter results,
-the grid names, the settings chosen -- and `result.json`, the last check result (the whole analysis:
-tens of MB on a big model), written only when the check result changed since the last save. Locks,
-threads and live job state are not saved: a job that was running when the app stopped shows as
+the grid names, the settings chosen -- and, apart, the two big objects: `result.json`, the last check
+result (the whole analysis: tens of MB on a big model), and `plan.json`, the plan (every formula fix as an
+operation: 60 MB on the anonymized IFRS 17 tool), each written only when the server replaced that object
+since the last save (`s.result` and `s.plan` are set whole by a scan or a re-plan, never changed in
+place). Locks, threads and live job state are not saved: a job that was running when the app stopped shows as
 stopped when the session is opened again, with the sentence `CLOSED_WHILE_RUNNING`.
 
 Two copies of the app (two ports, the same data folder) never work on the same session: the copy
@@ -36,19 +38,23 @@ from app.settings import SETTINGS
 
 STATE_FILE = "state.json"
 RESULT_FILE = "result.json"  # the last check result, apart: big, and it changes only at a scan
+PLAN_FILE = "plan.json"  # the plan, apart: big, and it changes only at a scan or a re-plan
+# the Session fields kept in a file of their own, (field, file name): written only when the server has
+# replaced the object (identity), so a step that keeps it rewrites the small state file alone
+_APART = (("result", RESULT_FILE), ("plan", PLAN_FILE))
 LOCK_FILE = "open.lock"  # locked by the copy of the app that holds the session in memory
 CLOSED_WHILE_RUNNING = "The app was closed while this ran."
 # Do everything was waiting for the input files when the app closed (1.14.0, outside_run "waiting_for_inputs")
 CLOSED_WHILE_WAITING = "The app was closed while Do everything waited for the input files. Pick them, then press Do everything again."
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _WRITE_LOCK = threading.Lock()  # one state file written at a time (jobs end in their own threads)
-_RESULT_SAVED: dict[str, Any] = {}  # session id -> the result object result.json holds (written again only when replaced)
+_APART_SAVED: dict[tuple[str, str], Any] = {}  # (session id, field) -> the object its file holds (written again only when replaced)
 _HELD: dict[str, int] = {}  # session id -> the open file descriptor of its lock (this copy of the app holds it)
 _LOCK_AT = 4096  # the byte locked, past the text that names the holder (a read of the text never touches it)
 
 # The Session fields saved as they are (JSON-safe already) ...
 _PLAIN_FIELDS = (
-    "mode", "versions", "current_version_id", "plan", "last_delta", "recalc", "recalc_version_id",
+    "mode", "versions", "current_version_id", "last_delta", "recalc", "recalc_version_id",
     "grid_names", "created_at", "size", "ignore_sheets", "pivot_mode", "pending", "scan", "plan_history",
     "apply_history", "apply_status", "model_map", "model_map_version_id", "input_seq", "outside_vba",
     "outside_inputs", "outside_run", "next_quarter", "brought_in_files", "instance_finder",
@@ -232,7 +238,8 @@ def to_state(s: Any, autofix: dict[str, Any] | None = None) -> dict[str, Any]:
     state["original_baseline"] = next((k for k, b in (s.baselines or {}).items() if b is s.original_baseline), None) if s.original_baseline is not None else None
     # the automatic fixer's state lives next to the sessions in the server (AUTOFIX): its public part
     state["autofix"] = None if autofix is None else {k: v for k, v in autofix.items() if k != "stop"}
-    state["result_file"] = RESULT_FILE if getattr(s, "result", None) else None  # the check result, apart
+    for name, file_name in _APART:  # the check result and the plan, apart (None: nothing to read)
+        state[f"{name}_file"] = file_name if getattr(s, name, None) else None
     return state  # written with default=str: dates, Paths and openpyxl values as text
 
 
@@ -243,10 +250,13 @@ def apply_state(s: Any, state: dict[str, Any]) -> dict[str, Any] | None:
     for name in _PLAIN_FIELDS:
         if name in state and name != "mode":
             setattr(s, name, state[name])
-    if "result" in state:  # a state file written before the result had a file of its own
-        s.result = state["result"]
-    elif state.get("result_file"):
-        s.result = _read_json(folder / str(state["result_file"]))
+    for name, _file_name in _APART:
+        if name in state:  # a state file written before that object had a file of its own
+            setattr(s, name, state[name])
+        elif state.get(f"{name}_file"):
+            data = _read_json(folder / str(state[f"{name}_file"]), (dict, list))
+            if data is not None:
+                setattr(s, name, data)
     for name in _PATH_FIELDS:
         path = _unpack_path(state.get(name), folder)
         setattr(s, name, str(path) if path is not None and name in _TEXT_PATHS else path)
@@ -278,18 +288,20 @@ def _write_whole(folder: Path, name: str, text: str) -> Path:
 
 
 def save(s: Any, autofix: dict[str, Any] | None = None) -> Path | None:
-    """Write the session's state file -- and the check result's file when the result object was
-    replaced since the last save (a scan; an Apply keeps it): on a big model that file is tens of MB
-    and takes seconds, the state file stays small. Never raises (the problem is printed)."""
+    """Write the session's state file -- and the check result's or the plan's own file when the
+    server replaced that object since the last save (a scan, a re-plan; an Apply without a re-scan, a
+    grid name, a reopen keep them): on a big model each of those files is tens of MB and takes
+    seconds, the state file stays small. Never raises (the problem is printed)."""
     try:
         folder = Path(s.work_dir)
         folder.mkdir(parents=True, exist_ok=True)
         text = json.dumps(to_state(s, autofix), ensure_ascii=False, default=str)
-        result = getattr(s, "result", None)
         with _WRITE_LOCK:
-            if result is not None and _RESULT_SAVED.get(s.id) is not result:
-                _write_whole(folder, RESULT_FILE, json.dumps(result, ensure_ascii=False, default=str))
-                _RESULT_SAVED[s.id] = result
+            for name, file_name in _APART:
+                obj = getattr(s, name, None)
+                if obj and _APART_SAVED.get((s.id, name)) is not obj:
+                    _write_whole(folder, file_name, json.dumps(obj, ensure_ascii=False, default=str))
+                    _APART_SAVED[(s.id, name)] = obj
             target = _write_whole(folder, STATE_FILE, text)
         return target
     except Exception as exc:  # a save must never break the step it follows
@@ -297,18 +309,19 @@ def save(s: Any, autofix: dict[str, Any] | None = None) -> Path | None:
         return None
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
+def _read_json(path: Path, kinds: tuple[type, ...] = (dict,)) -> Any:
+    """The JSON of `path` when it is one of `kinds` (a dict: the state, the result; a list: the plan)."""
     if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    return data if isinstance(data, kinds) else None
 
 
 def read_state(session_id: str) -> dict[str, Any] | None:
-    """The state file of a saved session (without the check result), or None when there is none."""
+    """The state file of a saved session (without the check result and the plan), or None when there is none."""
     if not valid_id(session_id):
         return None
     return _read_json(folder_of(session_id) / STATE_FILE)
@@ -322,8 +335,10 @@ def load(session_id: str, session_cls: Any) -> tuple[Any, dict[str, Any] | None]
         return None
     s = session_cls(id=session_id, work_dir=folder_of(session_id), mode=state.get("mode") or "plan")
     autofix = apply_state(s, state)
-    if s.result is not None:
-        _RESULT_SAVED[session_id] = s.result  # what result.json holds now: not written again until replaced
+    for name, _file_name in _APART:
+        obj = getattr(s, name, None)
+        if obj and name not in state:  # read from its own file: not written again until replaced
+            _APART_SAVED[(session_id, name)] = obj  # (from a state file of the first shape: written at the next save)
     return s, autofix
 
 
@@ -390,10 +405,12 @@ def remove(session_id: str) -> bool:
     if not folder.exists():
         return False
     release(session_id)  # our own lock would keep the folder
-    _RESULT_SAVED.pop(session_id, None)
+    for key in [k for k in _APART_SAVED if k[0] == session_id]:
+        _APART_SAVED.pop(key, None)
     with _WRITE_LOCK:
-        for name in (STATE_FILE, f"{STATE_FILE}.tmp", RESULT_FILE, f"{RESULT_FILE}.tmp"):
+        for name in (STATE_FILE, RESULT_FILE, PLAN_FILE):
             with_suppress_unlink(folder / name)
+            with_suppress_unlink(folder / f"{name}.tmp")
     shutil.rmtree(folder, ignore_errors=True)
     return True
 

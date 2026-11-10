@@ -30,8 +30,12 @@ review of the night's changes with every confirmed finding fixed. No Mind run, n
 - **Review fixes (saved workbooks).** (1) The check result -- the whole analysis, 87 MB of JSON on the
   anonymized IFRS 17 tool -- is no longer written into `state.json` after every step: it has a file of
   its own, `result.json`, written only when a scan replaced it; the state file stays small, is written in
-  one pass (no more dumps-loads-dumps), and the Recent workbooks list reads the small file alone. A
-  state file of the first shape (the result inside) still opens. (2) Two copies of the app on the same
+  one pass (no more dumps-loads-dumps), and the Recent workbooks list reads the small file alone. The
+  plan -- every formula fix as an operation, 61 MB on that tool -- has its own file too, `plan.json`,
+  written only when a scan or a re-plan (the pivot setting, the grid names) replaced it: the state file
+  is under 1 MB on that tool instead of 63 MB, and a step that keeps the plan (an Apply without a
+  re-scan, a reopen) no longer waits seconds for it. A state file of the first shape (the result or
+  the plan inside) still opens. (2) Two copies of the app on the same
   data folder (two ports, say 8600 and 8601) no longer list, reopen or remove each other's open
   workbooks: the copy that holds a workbook keeps its `open.lock` locked (the OS lets go of it when the
   process ends, however it ends); the other copy's list leaves it out and its Reopen / Remove answer 409

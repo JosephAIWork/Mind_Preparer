@@ -40,7 +40,7 @@ was.
 `settings.yaml` says otherwise (`data_folder`). Inside, the same layout the %TEMP% folder had before
 1.14.0: `upload\` (the original), `inputs\<nn>\` (the picked input files), `analysis\<version>\`,
 `apply\`, `recalc\`, `outside_inputs\`, `instances\`, `reports\`, and so on. Next to them `state.json`
-holds the session's state (below), `result.json` the last check result, and `open.lock` is locked by
+holds the session's state (below), `result.json` the last check result, `plan.json` the plan, and `open.lock` is locked by
 the copy of the app that holds the session (the OS releases it when that process ends). Nothing is
 written to %TEMP% any more; when the data folder cannot be written, the session falls back to a %TEMP%
 folder for that run only and is not listed.
@@ -66,10 +66,13 @@ inputs folders, the instance finder's result (and the assistant's block), the in
 the name shown in the list, when it was uploaded and last opened. The automatic fixer's state (kept next
 to the sessions in the server) is saved with it.
 
-The check result (`result`: the whole analysis, every formula -- 87 MB of JSON on the anonymized IFRS 17
-tool) is not in the state file: it goes to `result.json`, written only when a scan replaced the result
-object (an Apply without a re-scan, a grid name, a pivot setting rewrite the small state file alone), and
-read back on Reopen. A state file of the first shape, with the result inside, still opens.
+The two big objects are not in the state file. The check result (`result`: the whole analysis, every
+formula -- 19 MB of JSON on the anonymized IFRS 17 tool) goes to `result.json`, written only when a scan
+replaced the result object; the plan (`plan`: every formula fix as an operation -- 61 MB on that tool)
+goes to `plan.json`, written only when a scan or a re-plan (the pivot setting, the grid names) replaced
+it. An Apply without a re-scan, a reopen, a recalculation rewrite the small state file alone (under
+1 MB on that tool), and the Recent workbooks list reads that file alone. Both are read back on Reopen.
+A state file of the first shape, with the result or the plan inside, still opens.
 
 Locks, threads and live job state are not saved. A state saved while a job was running (`"running"`)
 comes back as stopped (`"error"`, "The app was closed while this ran.").

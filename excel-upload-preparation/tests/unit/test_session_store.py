@@ -290,6 +290,49 @@ def test_the_check_result_has_a_file_of_its_own_written_only_when_it_changes(cli
     assert client.post(f"/api/saved-workbooks/{sid}/open").json()["report"]["findings"] == before["report"]["findings"]
 
 
+def test_the_plan_has_a_file_of_its_own_written_only_when_it_changes(client, data_folder, flagged_model_broken_xlsx):
+    """The plan (every formula fix as an operation) is 60 MB on the anonymized IFRS 17 tool: it goes
+    to plan.json, written only when a scan or a re-plan replaced it; state.json stays small."""
+    body = _upload(client, flagged_model_broken_xlsx)
+    sid = body["sessionId"]
+    s = server.SESSIONS[sid]
+    folder = s.work_dir
+    state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+    assert "plan" not in state and state["plan_file"] == "plan.json"
+    plan_file = folder / "plan.json"
+    assert plan_file.is_file() and (folder / "state.json").stat().st_size < plan_file.stat().st_size
+    assert [a["id"] for a in json.loads(plan_file.read_text(encoding="utf-8"))] == [a["id"] for a in body["plan"]]
+    stamp = (plan_file.stat().st_mtime_ns, plan_file.read_bytes())
+    # a step that keeps the plan (last opened) rewrites the state file alone
+    s.last_opened = 5.0
+    server._save(s)
+    assert (plan_file.stat().st_mtime_ns, plan_file.read_bytes()) == stamp
+    # a re-plan (the pivot setting) replaces the plan object: its file is written again (the same
+    # words on this workbook, which has no pivot table: the write time says it was written)
+    time.sleep(0.05)
+    res = client.post(f"/api/sessions/{sid}/pivot-mode", json={"mode": "formulas"})
+    assert res.status_code == 200, res.text
+    assert plan_file.stat().st_mtime_ns > stamp[0]
+    assert json.loads(plan_file.read_text(encoding="utf-8")) == res.json()["plan"]
+    # the reopen brings the plan back, and does not write it again until it is replaced
+    before = client.get(f"/api/sessions/{sid}").json()
+    _restart()
+    after = client.post(f"/api/saved-workbooks/{sid}/open").json()
+    assert after["plan"] == before["plan"] and after["plan"]
+    stamp = plan_file.stat().st_mtime_ns
+    server._save(server.SESSIONS[sid])
+    assert plan_file.stat().st_mtime_ns == stamp
+    # a state file of the first shape (the plan inside, no plan.json) still opens
+    _restart()
+    state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+    state["plan"] = json.loads(plan_file.read_text(encoding="utf-8"))
+    state.pop("plan_file")
+    plan_file.unlink()
+    (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    assert client.post(f"/api/saved-workbooks/{sid}/open").json()["plan"] == before["plan"]
+    assert plan_file.is_file()  # written once more, in its own file, by that reopen's save
+
+
 def test_a_workbook_open_in_another_copy_of_the_app_is_left_alone(client, data_folder, plain_grid_xlsx):
     """Two copies of the app on the same data folder (two ports): the one that holds a workbook keeps
     its lock file locked; the other lists it not, and refuses to open or remove it."""
