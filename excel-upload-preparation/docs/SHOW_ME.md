@@ -34,7 +34,9 @@ to the words. It starts a pointer: one arrow with a short bubble at the next thi
 | "Pivot tables (…). Change it in Advanced › Prep actions." | Prep actions: the pivot tables choice |
 | "Fix that under Advanced › Prep actions" (Do everything stopped) | Prep actions: Apply |
 | "(Advanced › Recalculate)", "The list is under Advanced › Recalculate" (only when there is a list) | Recalculate: the list of formula errors, else its button |
-| "The loop needs a decision first (Advanced › Mind loop)", "loop(s) need a decision" | Mind loop: the loop's choices |
+| "The loop needs a decision first (Advanced › Mind loop)", "loop(s) need(s) one answer / a decision" | Mind loop: the answer a loop still needs, else the fold "Change the choices" |
+| "Build it under Advanced › Mind loop", "click Build it" (unless the sentence names Advanced › Instances), "the loop's result" | Mind loop: the Build it button, the result line |
+| "Advanced › Instances", "Build it under Advanced › Instances", "click Build it" with Advanced › Instances named in the same sentence, "the copies' result" | Instances: the question "Make one copy per...", the Build it button, the result line |
 | "Add … on the Outside files card (Add files)" | main screen: Add files |
 | "See the Outside files card above" | main screen: the Outside files card |
 | "Bring them in again first (the Outside files card …)" (Run in Mind) | main screen: the card's button that brings the files in |

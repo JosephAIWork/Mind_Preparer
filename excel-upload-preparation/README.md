@@ -22,11 +22,21 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.11.0)
+## Current status (1.13.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Plainer screens for the loop and the instances** (1.13.0): Advanced > Mind loop opens with
+  one sentence ("The macro runs Scenario 0 to 3 and Cohort 2021 to 2026. Mind can do the same.")
+  and one button, **Build it**; the choices and what gets written are folded away, and a loop that
+  still needs one answer shows only that one box. The instances have their own tab, **Instances**,
+  which asks one thing at a time: make one copy per... (the macro's loops, or a column of a
+  table), then **Build it**, then download both files and run in Mind. The finder sits behind
+  **Not sure? Let the app look**. `CHANGELOG.md` 1.13.0 has the whole list, with the Run in Mind
+  fixes (a second run, the Inputs window of a copied workbook) and the macro's text read in its
+  own code page.
 
 - **Carbon front end** (1.11.0): the web app rewritten in Angular with
   Carbon, Mind's design system. Main screen = one workbook, three buttons
@@ -39,7 +49,7 @@ the two honest cases below.
   import macro on a copy; raw files cannot go into Mind's Inputs window as they are). Checked in
   Mind on 10 November 2026: Mind = Excel, and a changed raw file changes Mind's result.
 
-- **Mind loop** (1.10.0): on the Model map screen, the macro's run loop as
+- **Mind loop** (1.10.0; Advanced > Mind loop since 1.13.0): the macro's run loop as
   Mind formulas -- `MM_LOOP` in every driver cell over its column of the
   table (or the list, or the count), `MM_RESULT` row by row in the block the
   macro writes per pass -- previewed with its bounds and name, then written
@@ -47,7 +57,7 @@ the two honest cases below.
   listed as not built, with why. `scripts/check_loop_plan.py` proves the
   wiring in Excel against the macro (a client model: 60 of 60 cells the same).
 
-- **Mind instances** (1.12.5): under Advanced > Mind loop, the macro's run
+- **Mind instances** (1.13.0): under Advanced > Instances, the macro's run
   loop as Mind instances instead of one loop -- for a macro that runs one
   policy at a time and adds each policy's results to its group's block. One
   copy of the model per value of a key column of the model-point table (a
@@ -75,8 +85,8 @@ the two honest cases below.
   one equal to Excel with its cohort and scenario set (12,528 cells, 0
   differences).
 
-- **Where instances could help** (1.12.5): below the instances builder, the
-  button **Find where instances could help** reads every formula of the
+- **Where instances could help** (1.13.0): on the Instances tab, the fold
+  **Not sure? Let the app look** reads every formula of the
   model and its macro and points to what repeats: a column of the looped
   table that splits its rows into groups, the same formulas side by side in
   one sheet, sheets with the same layout, and near copies with the edits

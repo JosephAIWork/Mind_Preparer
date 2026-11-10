@@ -6,7 +6,10 @@ rows, and a second small workbook -- the main one -- with the keys and the resul
 `app/instance_builder.py`, `GET /api/sessions/{id}/mind-instances-plan?key=&keys=present|all` (the
 plan, nothing written), `POST /api/sessions/{id}/mind-instances-plan/apply` (written as a new version,
 the main workbook beside it, both in one zip), `GET /api/sessions/{id}/mind-instances/download` (the
-zip), and the **Mind instances** section under Advanced > Mind loop, below the loop panel.
+zip), and the **Instances** tab under Advanced (since 1.13.0; before that a section below the loop
+panel). The tab asks one thing at a time: **Make one copy per...** (the macro's loops as tick boxes, or
+a column of a table), then one line with the copy count and **Build it**, then the download and the
+next step. The cards described below sit under its **Details** fold.
 
 ## Why instances here
 
@@ -150,10 +153,10 @@ into a number, a date or a boolean).
 
 ## Uploading the two files to one Mind project
 
-1. On the Mind instances section: keep the key found or pick another; tick **Every key of the list,
-   even without rows** if every value of the macro's list should get a copy; click **Preview**; read
-   the cards (Key, Loop, Output block, Main workbook) and the notes; then **Write it into a new
-   version**.
+1. On the Instances tab: under **Make one copy per...** pick a column of a table (the key found is
+   the first in the list) or tick the macro's loops; under **Details** tick **Also keys with no rows**
+   if every value of the macro's list should get a copy, and read the cards (Key, Loop, Output block,
+   Main workbook) and the notes; then **Build it**.
 2. Click **Download both files (zip)**: `<stem>_instances.zip` holds the model and the main workbook,
    side by side.
 3. In Mind, make an empty project and drop **both files on it together**, in one upload. The two files
@@ -203,8 +206,8 @@ combination of their values instead of one copy per key of a table.
   that is long or has other characters becomes its position (`GroupName3`); when two values of a loop
   would give the same key (a repeated item, or `Base case` and `1`), every value of that loop goes by
   its position. At most 1,000 copies.
-- **Each loop's own choices.** The instances panel sends what was set for each loop on the Mind loop
-  panel (`loop_choices`: first, last, count cell, name; and the macro), so both panels show the same
+- **Each loop's own choices.** The Instances tab sends what was set for each loop on the Mind loop
+  tab (`loop_choices`: first, last, count cell, name; and the macro), so both tabs show the same
   loops. It previews again when those choices change.
 - **In the model.** Two empty rows below the used range of the first loop's sheet: a cell `This copy's
   key` with `MM_INSTANCEKEY`, an empty row, then the split grid `#Instance values /InstanceSplit` --
@@ -261,7 +264,8 @@ as for the first build, cell for cell.
 - Cells that only read the paste area are left as they are: the area is empty in a copy, so they show
   0. They are listed in the plan's notes.
 - A loop without a count cell (`For i = 1 To 5`) is not built: the plan says `needs_decision` and why.
-  Choose a count cell on the loop panel first, then build the instances.
+  Answer the Mind loop tab's one question first (a cell for the number of passes), then build the
+  instances.
 - The copy count and the run time of the full portfolio are Mind's cost; the builder states the keys
   and their row counts, nothing more.
 - By a table: one loop -- the first counter loop of the loop plan -- and one key column. By loops:

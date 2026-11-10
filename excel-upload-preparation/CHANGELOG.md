@@ -1,145 +1,79 @@
 # Changelog
 
-## Unreleased (10 November 2026): next quarter's Mind input files
+## 1.13.0 (10 November 2026): Mind loop and Mind instances, with plainer screens
 
-- **Make next quarter's Mind input files** (Outside files card, once the files are brought in;
-  `app/next_quarter_inputs.py`; `POST` / `GET /api/sessions/{id}/next-quarter-inputs`). Joseph put a
-  raw quarterly file (`2026_Q1 - BBA_01.csv`, 1,340 columns) in Mind's Inputs window and Mind refused
-  it: its grid `IN_BBA_01` has 93 columns. Raw input files cannot go into Mind directly: Mind takes one
-  file per input grid, shaped like the grid. Now the user picks the new quarter's raw files; the app
-  runs the model's own import macro on a copy of the version the files were first brought into, reads
-  each grid's block and writes it under the grid's name with the grid's own header. One zip:
-  `README.md` (which file goes into which grid, and why raw files cannot) and the folder `Mind inputs`.
-  No new model upload, no new version. A grid without a new file is left out (Mind keeps its data); a
-  file already shaped like a grid goes in as it is; a raw file named like a grid is recognised; a file
-  that fills more than its grid is refused with why; the macro's own message boxes are shown.
-- **The macro gets the raw files exactly as picked** (review of 10 November 2026). A first version
-  gave the macro a `.xlsx` copy of each raw `.csv` with every digit (Excel keeps 15 significant
-  digits when it opens a CSV). That skipped the macro's own way of opening the file (OpenText
-  settings, `Local:=True`, reading it line by line -- the Tokyo tool's `CountCSVRow` does
-  `Open ... For Input` -- or checks of the extension), and the bring-in from the same CSVs gave
-  other values. Now the macro opens each file itself, as at the bring-in and in the client's tool;
-  a CSV with numbers past 15 digits is said ("Excel keeps 15 when it opens a CSV, as in the
-  client's tool"). "Values changed" no longer counts a number that differs only past its 15th digit:
-  Joseph's raw CSVs against the bring-in's `.xlsx` files give 0 changed (15,011 such cells in
-  IN_BBA_01 before). Also gone with the copy: a raw `X.csv` and `X.xlsx` picked together no longer
-  reach Excel under the same name.
-- **Grid files checked before they go in**: a file shaped like a grid but not UTF-8 (a CSV saved on a
-  Japanese PC as "CSV (comma delimited)", cp932) is refused with what to do, and no longer stops
-  the whole job. A `.txt` is read as TAB-separated, as Mind reads it: a comma-separated `.txt`
-  shaped like a grid goes into the zip as `<grid>.csv` (refused, with why, when it holds quotes or
-  TABs).
-- **One Excel job at a time**: while next quarter's files are being made, the bring-in, Run in Mind,
-  the fixer, a recalculation, Apply and the other workbook changes wait (409, in words), as the
-  job already waited for them. A second bring-in could have changed the grids the job writes for.
-- **Screens**: the card picks a running job back up after a reload or a visit to Advanced (and shows
-  the last result and its zip); a new workbook clears the last job's line, files and zip, and an
-  old job's polling stops, so its result never lands on another workbook's card. The zip link is
-  only offered in the session that made it.
-- **Checked again after the review** (dev server, the anonymized IFRS 17 tool, Joseph's six raw
-  CSVs): the macro opened all six as picked; 6 files made in 84 s (239 s with the copy); 0 values
-  changed against the bring-in; set B (BBA_04 x 1.1) changes 26,456 values of `IN_BBA_04.csv` only.
-  In real Mind (`zzz_mindready_tokyo_inputs_1`): all six SUCCESS, run consistent with the audit
-  trail, Result_CF the same 120 numbers as the first proof (Mind = Excel). The project holds the
-  original quarter (set A) again.
-- **Mind's refusal in words**: `mind_client.upload_inputs` reads Mind's reason for a refused file from
-  the row's LOG ("CSV Logs") into `errors`, and for a raw file says what to do instead (`advice`).
-- **Fix: Inputs window read too early.** `upload_inputs` read the rows while Mind's "Inputs import" box
-  was still up; they show the last upload's status and file (the same names when files replace earlier
-  ones), so a refused file could pass as SUCCESS. It now waits for the box to come and go.
-- **Proven in real Mind** (`zzz_mindready_tokyo_inputs_1`, `docs/OUTSIDE_INPUTS.md`): the raw file
-  refused, with the app's advice; set A (Joseph's raw CSVs) all six files SUCCESS (incl.
-  `IN_VFA_01.txt`), Mind = Excel 120/120; set B (BBA_04 x 1.1) all SUCCESS, Mind = Excel 120/120, and
-  16 numbers changed against set A, all in the BBA_04 row.
-- **The macro's text in its own code page** (`model_map.read_vba`, `decode_vba_source`;
-  `docs/MIND_LOOP.md`). The VBE stores module text in the ANSI code page of the PC that saved the
-  workbook, and Excel 365 records 0 as the project's code page; olevba answered 0 with UTF-8 and
-  replacement characters, so the Japanese comments and string literals of the IFRS 17 tool
-  (`Find("年月")`, `MsgBox "完了しました"`; 363 replacement characters in M1_Main) arrived as mojibake and
-  the stand-in assistant and the message-box matching could not read them. The module bytes are now
-  decoded with the stored code page, else UTF-8, cp932 (when it gives kana), cp949 (Hangul), the PC's
-  own code page, cp936 / cp950 (ideographs), cp1252 -- each only when it decodes every byte. The
-  anonymized IFRS 17 tool reads clean (0 replacement characters, 290 Japanese characters in M1_Main);
-  the loops are found as before. Fixture `tests/unit/fixtures/vba_japanese_cp932.xlsm` (a small
-  row-per-record model, its module cp932 with code page 0 as a Japanese PC writes it; made once through
-  Excel, the module stream's source replaced at the same length) and `tests/unit/test_model_map_vba_text.py`.
-- **The loop and instances plans name Prep's blocking items that are not formulas.** Both steps
-  write Prep's formula repairs with the loop, but said nothing about a lone text cell to title
-  (STR-008), a pivot table (STR-009) or a trapped grid title (STR-001), which Mind's converter refuses
-  or computes wrong without. One line now: "Prep still has N blocking items that are not formulas, e.g.
-  a formula reads a lone text cell (STR-008). Run Fix all issues before uploading." (`prep_blockers`
-  on the plan; `loop_builder.prep_blockers`).
-- **The two harmless kinds of cell in Mind's upload test are said once** on every ready loop or
-  instances plan (`loop_builder.UPLOAD_TEST_NOTE`; `docs/MIND_VS_EXCEL.md`): check cells that are 0 in
-  Excel and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE / FALSE, which the
-  test reads as 1 / 0 on Excel's side. The values agree; nobody has to chase them.
-- **Fix: a second run in the same browser session returned at once.** `mind_client.run_model` took
-  the "Consistent with the audit trail" line of the run before -- Mind keeps it on the page the whole
-  time, also while the next run is in progress -- as this run's end. Now it notes the page's run
-  marker before the click (`run_marker`: the "Last run in N seconds" line, taken down during a run and
-  put back with the new time, and the number of "Run completed" notes) and waits until a new run was
-  seen ("Run in Progress" or a changed marker) and that run's own line is up. The result says
-  `completed`, `audit_consistent` and `seconds` of this run, `started`, and `reason` when the page only
-  ever showed the run before. Mind's unmatched-inputs window, when left open, is closed first (it
-  covered the Run button). Fake-page tests on a fake clock (`test_mind_inputs_upload.py`).
-- **Fix: Mind's Inputs window for a copied workbook (Mind instances).** `upload_inputs` could not read
-  the rows: a copied grid is listed once, collapsed, as "Rates (3 instances)", so it waited its full
-  300 s and said "still waiting". Now the collapsed rows are opened first (their carets), each copy's
-  row is read with its key (`statuses` "Rates [K2]", `rows[].key` / `copies`), and `<key>-<grid>.csv`
-  is found on its copy's row. Mind's new window for a file it could not match ("Some of your imported
-  files have not been automatically matched ... Match selection"; the old one said "Match unmatched
-  inputs") is recognised, closed with its own Close button (never "Match selection") and explained in
-  plain words: "Mind could not tell which copy of Rates Rates.csv belongs to: the grid has 3 copies
-  (K1, K2, K3). Name the file <key>-Rates.csv (K1-Rates.csv) to change one copy, or turn on 'Split
-  between instances' ..." / "Mind could not tell which grid X.csv belongs to. Name it <grid>.csv or
-  <key>-<grid>.csv for one copy." (`unmatched_advice`, also in `advice`).
-- **The project is opened again after a copy's file** (`upload_inputs(..., project_url=)`, `reloaded`):
-  the run right after a copy's first input file still used the copies as loaded before the import
-  (every copy with every row: K2 should have been 915 and showed 120); after a reload the run was
-  right. `app/mind_loop.py` does not pass the link yet (not this step's file): one argument,
-  `project_url=init`, on its `mc.upload_inputs(...)` call.
-- **Proven in real Mind on 10 November 2026** with a 3-copy invented model (probe 1's InstModel +
-  InstMain, grid `Rates /Input`), `docs/RUN_IN_MIND.md`, evidence in
-  `%LOCALAPPDATA%\MindReady\iteration_1_13_0\mind_client\`: `zzz_mindready_runtwice_1` -- run 1
-  (0.22 s), `K2-Rates.csv` read on K2's row in 12 s (300 s and "still waiting" before), run 2 waited
-  for its own result (marker `(None, 0)` -> `('Last run in 0.68 seconds', 1)`), a plain `Rates.csv`
-  opened the new window, which was closed and explained, and run 3 went through (the click timed out
-  on that window the night before). `zzz_mindready_runtwice_2`: opening the collapsed rows changes no
-  number; `zzz_mindready_runtwice_3`: reload before the run after `K2-Rates.csv` -> K1 242 / K2 915 /
-  K3 160, only K2 changed (Mind = the hand-worked values).
+One version for the work of 9 and 10 November: the Mind loop and Mind instances builders as Joseph will
+see them (one sentence and one button each, the choices folded away, a tab of their own for the
+instances), copies of the model from the macro's loops (a scenario x a cohort), each loop with its own
+choices and one macro at a time, next quarter's Mind input files, three Run in Mind fixes, and the
+macro's text read in its own code page. Checked in Mind on small invented models and on the anonymized
+IFRS 17 tool (24 copies, 12,528 cells, 0 differences from Excel). The 1.13.0 / 1.14.0 numbers the side
+branch used in October are taken by this release; the work there is in this section.
 
-## Unreleased (10 November 2026): Mind instances and where instances could help
+### The screens: Advanced > Mind loop and Advanced > Instances
 
-Built in October on a side branch as 1.13.0 and 1.14.0 and never released; brought onto this branch
-and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes, per-loop choices).
+- **Advanced > Mind loop opens with one sentence and one button.** "The macro runs CohortRng 2021 to
+  2026 and Scenario 0 to 3. Mind can do the same." and **Build it (N formulas)**. Everything else is
+  folded: **Change the choices** (each loop's Name / Runs from / To / A cell for the number of passes,
+  the Macro dropdown only with two or more macros, the two options, Preview) and **What gets written
+  (N)** (the output cards, the cleared areas, how it runs, the repairs, Show the formulas). What MM_LOOP
+  and MM_RESULT are sits behind **What is this?**, on the tab and on the main screen's loop tile. A loop
+  that still needs one answer shows only its missing box above the folds (a cell for the number of
+  passes, else the first value, else the last), with the plan's reason in plain words as the label, a
+  one-click **Use <cell>** and a Check button. After a build the result line adds "Done. Next: Run in
+  Mind" with a Show me to that tab. Words: "needs one answer" (was "needs a decision"), "left as is"
+  (was "not built"), "the cell the macro changes" (was "driver"). (`MindReadyUI`, `loop-panel.*`,
+  `core/loop-tab.spec.ts`.)
+- **The instances have a tab of their own, "Instances"**, right after Mind loop; one line at the top
+  of the Mind loop tab links to it (one model that loops, or one copy of the model per scenario). The
+  tab asks one thing at a time. Step 1: **Make one copy per...** -- tick the macro's loops, or pick a
+  column of a table from a dropdown; nothing else is drawn until there is a choice, except two closed
+  folds: **Not sure? Let the app look** (the finder: the top suggestion with **Use it**, the rest
+  behind **Show all N**, the assistant tick and **Look again** inside) and **What is this?**. Step 2:
+  one line "N copies - M result cells", the status chip and **Build it (N changes)**; the cards (Copies
+  from, One copy per <key>, Loop, Output block, Main workbook), the "Also keys with no rows" tick, the
+  emptied areas, how it runs and Show the changes sit under a closed **Details** fold. Step 3, after
+  the build: "Done. Download both files (zip). Next: Run in Mind - upload both files as one project",
+  with the download button and a Show me to Run in Mind. MM_INSTANCE is named only behind What is
+  this?. (`instances-panel.*`, `core/instances-tab.spec.ts`.)
+- **The main screen's loop tile** says "Mind runs no macro. This writes the macro's run loop into the
+  model, so Mind runs every pass itself." with a What is this? fold for the two functions; its summary
+  reads "1 loop needs one answer (Advanced > Mind loop)" or "2 loops need one answer each".
+- **Show me** knows the new places: on the Mind loop tab the answer box (else the choices fold), Build
+  it and the result line; on the Instances tab the question, Build it and the result line. "Advanced >
+  Instances" and "Advanced > Mind loop" in a message are told apart (`core/show-me.ts`).
+- **After the review of the two tabs** (the same evening; `core/loop-tab.spec.ts`,
+  `core/instances-tab.spec.ts`, `core/show-me.spec.ts`):
+  - The finder's fold **Not sure? Let the app look** is there with or without a run loop, and when the
+    plan could not be read: it reads the formulas, not the macro (a workbook with repeated year sheets
+    built by hand had lost it).
+  - The Mind loop tab starts from the choices the Instances tab followed, so coming back from Instances
+    keeps the answer. Before, the tab was made anew with empty boxes, the answer was wiped and the
+    Instances plan dropped the loop that needed it without a word (24 copies became 6).
+  - The main screen's loop tile counts only the loops that wait for an answer. Another macro's loops
+    and the ones left as is need none: on the IFRS 17 tool the tile said "2 loops need one answer
+    each" and the tab had no answer to give.
+  - A loop whose two values are known and still cannot run (the last before the first) gets both
+    boxes with the plan's reason above them; the sentence never promises an answer box that is not
+    there.
+  - **Try again** under "Could not read the plan", on both tabs (a scan still running, a session opened
+    again).
+  - While a loop still waits for its answer, Build it stays on and says under it "Builds CohortRng
+    only; Scenario waits for the answer above."
+  - **What gets written (N)** counts each cleared cell once (they are operations already).
+  - Both tabs show the plan's own notes: Prep's blocking items that are not formulas as one line above
+    Build it, the rest behind **Notes (N)** -- the two notes added in this version reached no screen
+    before.
+  - The Instances tab's question and notes go through the same plain words as the loop tab
+    (`core/plain-words.ts`: "the cell the macro changes", "a cell for the number of passes", "needs one
+    answer", "Mind loop tab"); the backend's own notes now say "tick the loops under Make one copy
+    per..." and "the Mind loop tab" (`app/instance_builder.py`).
+  - "click Build it" in a sentence that names Advanced > Instances points at the Instances tab's
+    button, not the loop's.
 
-- **One macro's loops at a time** (review of 10 November 2026; `docs/MIND_LOOP.md`). Excel runs each
-  run macro on its own, with the other macro's drivers fixed. The Mind loop plan wrote the loops of
-  every macro into one model, so Mind ran them inside each other (the IFRS 17 tool: 6 x 4 x 6 x 6
-  passes) and the values could differ from Excel. Now the plan builds one macro (`macro=` on
-  `GET` / `POST .../mind-loop-plan`; a **Macro** dropdown on the Mind loop panel), lists the others'
-  loops as not built, and names a driver of another macro that already holds a loop. Copies from loops
-  take the loops of one macro (two macros: refused), pick that macro's loop plan, and no longer write
-  another macro's loops into every copy. The Tokyo instances built before this fix
-  (`zzz_mindready_tokyo_instances_1`) had the group and roll-forward loops inside every copy. Built
-  again through the API (91 changes, no other macro's loops) as `zzz_mindready_tokyo_instances_2`:
-  Mind's upload test 57 cells (a subset of the 63: rounding residues below 4e-6 and the 8 "TRUE"
-  cells), run consistent with the audit trail, export against Excel 12,528 cells, 0 differences.
-- **Loops told apart by procedure and loop variable**: two macros both using `i` no longer overwrite
-  each other, and an output block is written by its own macro's loop.
-- **Count cells**: a count cell that already holds the count this plan writes is accepted (the loop
-  can be planned again after a write); the count's label never goes on another loop's count or label,
-  a cell the plan writes, or a cell a formula reads.
-- **A first value typed as a cell** counts as chosen, like a number: the header pass is kept.
-- **Copies from loops** keep the clears of the macro's paste areas; copies' keys are always different
-  (by position when two values would clash).
-- **Prep's repairs with the instances** are compared with the plan's cells at their addresses before
-  the plan's row and column inserts: no repair is dropped or overwritten because of another cell that
-  only shares an address.
-- **Screens**: the instances panel sends the Mind loop panel's choices (`loop_choices`, `macro`) and
-  previews again when they change; a new preview drops the earlier write's download link.
+### Mind instances: copies from loops (a scenario x a cohort)
 
-- **Copies from loops** (`app/instance_builder.py`, the instances panel's "Copies from loops" boxes;
+- **Copies from loops** (`app/instance_builder.py`, the Instances tab's question "Make one copy per...";
   `GET` / `POST .../mind-instances-plan` take `loops`, `results` and `loop_choices`). For a model whose
   macro runs the whole model once per scenario and cohort (or any counter or list loop), not one row
   of a table at a time: one copy per combination of the chosen loops' values. In the model: a split
@@ -161,23 +95,35 @@ and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes
   model without instances (rounding residues below 4e-6 and 8 "TRUE" text cells), the run took 3 min
   06 s, consistent with the audit trail. The main workbook's export after the run against Excel with
   each copy's cohort and scenario set in the driver cells: 24 x 6 x 87 = 12,528 cells, 0 differences.
-- **`scripts/mind_upload.py`**: the log reader clicks "Hide Logs" only. It took "Close", which closes the
-  upload window without adding the templates, so `--run` found no Run button.
-- **Written with the formula repairs Prep still has**, as the Mind loop is now: a version built before
-  Prep goes to Mind with CELL / INFO frozen, OFFSET ranges written out and the rest of the "Fix the
-  formulas" set, so Mind computes what Excel does. A cell the builder writes keeps the builder's
-  formula; a plan that is not ready writes nothing. The plan's notes list the repairs.
 - **Checked again in Mind on 10 November 2026** with three small invented projects
   (`docs/MIND_INSTANCES.md`): each copy runs MM_LOOPINSTANCE to its own count; `MM_INSTANCE` reads one
   copy by key cell, literal key or index, and on a looped cell gives only the first pass -- the builder
   points it at the `MM_RESULT` cells, so it is right; a plain link is the sum over the copies. Nothing
   in the builder had to change.
+- **Written with the formula repairs Prep still has**, as the Mind loop is now: a version built before
+  Prep goes to Mind with CELL / INFO frozen, OFFSET ranges written out and the rest of the "Fix the
+  formulas" set, so Mind computes what Excel does. A cell the builder writes keeps the builder's
+  formula; a plan that is not ready writes nothing. The plan's notes list the repairs.
+- **Copies from loops** keep the clears of the macro's paste areas; copies' keys are always different
+  (by position when two values would clash).
+- **Prep's repairs with the instances** are compared with the plan's cells at their addresses before
+  the plan's row and column inserts: no repair is dropped or overwritten because of another cell that
+  only shares an address.
+- **Screens**: the Instances tab sends the Mind loop tab's choices (`loop_choices`, `macro`) and
+  previews again when they change; a new preview drops the earlier write's download link.
+- **`scripts/mind_upload.py`**: the log reader clicks "Hide Logs" only. It took "Close", which closes the
+  upload window without adding the templates, so `--run` found no Run button.
 
-### Mind instances (the builder)
+### Mind instances: one copy per key of a table (the builder)
 
-- **Build the Mind instances** (Advanced > Mind loop, the Mind instances section below the loop). The
-  macro's run loop turned into Mind instances: one copy of the model per value of a key column of the
-  model-point table (a tariff, a product, a group), a loop inside each copy over that copy's own rows,
+Built in October on a side branch as 1.13.0 and 1.14.0 and never released; brought onto this branch in
+this version and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes, per-loop
+choices).
+
+- **Build the Mind instances** (Advanced > Instances; until the screen pass of 10 November a section
+  below the loop panel). The macro's run loop turned into Mind instances: one copy of the model per
+  value of a key column of the model-point table (a tariff, a product, a group), a loop inside each
+  copy over that copy's own rows,
   and a second small workbook -- the main one, which Mind does not copy -- with the keys and the results.
   Preview, write it into a new version, then download both files as one zip and drop them together on
   an empty Mind project (`app/instance_builder.py`; `GET` / `POST /api/sessions/{id}/mind-instances-plan`
@@ -236,9 +182,9 @@ and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes
 
 ### Where instances could help (the finder)
 
-- **Find where instances could help** (Advanced > Mind loop, the Mind instances section, a button
-  below the builder). The app reads every formula of the model and its macro and points to what
-  repeats: a column of the looped table that splits its rows into groups (one copy of the model per
+- **Find where instances could help** (Advanced > Instances, the fold **Not sure? Let the app look**;
+  until the screen pass of 10 November a button below the builder). The app reads every formula of
+  the model and its macro and points to what repeats: a column of the looped table that splits its rows into groups (one copy of the model per
   value), the same formulas side by side in one sheet (bands of columns or of rows), sheets with the
   same layout and formulas, and near copies that differ only in typed-in numbers or in a few cells of
   logic -- with the edits that would unify them. Each place is a card: one plain sentence, whether
@@ -287,8 +233,41 @@ and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes
   covered. A block or sheet dimension is reported with its edits; the builder builds grouping columns
   only.
 
-## Unreleased (9 November 2026): each Mind loop with its own choices
+### Each Mind loop with its own choices, one macro at a time
 
+- **One macro's loops at a time** (review of 10 November 2026; `docs/MIND_LOOP.md`). Excel runs each
+  run macro on its own, with the other macro's drivers fixed. The Mind loop plan wrote the loops of
+  every macro into one model, so Mind ran them inside each other (the IFRS 17 tool: 6 x 4 x 6 x 6
+  passes) and the values could differ from Excel. Now the plan builds one macro (`macro=` on
+  `GET` / `POST .../mind-loop-plan`; a **Macro** dropdown on the Mind loop panel), lists the others'
+  loops as not built, and names a driver of another macro that already holds a loop. Copies from loops
+  take the loops of one macro (two macros: refused), pick that macro's loop plan, and no longer write
+  another macro's loops into every copy. The Tokyo instances built before this fix
+  (`zzz_mindready_tokyo_instances_1`) had the group and roll-forward loops inside every copy. Built
+  again through the API (91 changes, no other macro's loops) as `zzz_mindready_tokyo_instances_2`:
+  Mind's upload test 57 cells (a subset of the 63: rounding residues below 4e-6 and the 8 "TRUE"
+  cells), run consistent with the audit trail, export against Excel 12,528 cells, 0 differences.
+- **Loops told apart by procedure and loop variable**: two macros both using `i` no longer overwrite
+  each other, and an output block is written by its own macro's loop.
+- **Count cells**: a count cell that already holds the count this plan writes is accepted (the loop
+  can be planned again after a write); the count's label never goes on another loop's count or label,
+  a cell the plan writes, or a cell a formula reads.
+- **A first value typed as a cell** counts as chosen, like a number: the header pass is kept.
+- **Advanced > Mind loop: every loop has its own boxes** (under **Change the choices** since the screen
+  pass: Name / Runs from / To), and a box for a cell for the number of passes when the loop asks for
+  one (with "Use <free cell>"). First and last take a number or a cell
+  (Sheet!A1). Sent as `loops` by driver cell (`GET .../mind-loop-plan?loops=<json>`, POST
+  `{"loops": {...}}`); the old shorthands (`name`, `first`, `last`, `count_cell`) still work.
+- **More loops are built from the workbook alone** (seen on the Tokyo tool):
+  - a driver set to item i of a named list (`GroupGrid(i + 1, 1)`): MM_LOOP over the list, its end
+    counted as the macro counts it (to the last filled cell);
+  - a counter whose own dropdown lists its values (0, 1, 2, 3): MM_LOOP over that list (fixed range);
+  - a bound reached through plain references (`=C10`, `=CalcYear`) reads the cell holding the number.
+- **A workbook-level name wins over a sheet's own name of the same spelling** (the macros'
+  `ThisWorkbook.Names("GroupName")`): the loop goes in the cell the macro writes, not a copy.
+- **Count cells are safe**: never a filled cell, a driver, or another loop's count cell; a label
+  ("<loop> count") is written to its left; a loop starting below 1 counts 1..n and shifts
+  (`=MM_LOOP("Scenario",X1)-1`).
 - **The Mind loop is written with the formula repairs Prep still has** for the version (CELL / INFO
   frozen, INDIRECT written out, ...: the "Fix the formulas" set). Found on Tokyo: the four loops were
   written before Prep, and `CELL("filename")` in B3 of the six calculation sheets -- the key of every
@@ -304,20 +283,151 @@ and fitted to what it has since (outside inputs, stand-ins, Show me, plain codes
   differences to 63 (Do-everything version + loops, zzz_mindready_tokyo_loops_2) and 75 (loop written
   on the unrepaired version), none a value: check cells that are 0 in Excel and a rounding residue below
   0.00002 in Mind, and the text "TRUE" read as 1 on Excel's side.
-- **Advanced › Mind loop: every loop card has its own Name / First / Last boxes**, and a Count cell
-  box when the loop asks for one (with "Use <free cell>"). First and last take a number or a cell
-  (Sheet!A1). Sent as `loops` by driver cell (`GET .../mind-loop-plan?loops=<json>`, POST
-  `{"loops": {...}}`); the old shorthands (`name`, `first`, `last`, `count_cell`) still work.
-- **More loops are built from the workbook alone** (seen on the Tokyo tool):
-  - a driver set to item i of a named list (`GroupGrid(i + 1, 1)`): MM_LOOP over the list, its end
-    counted as the macro counts it (to the last filled cell);
-  - a counter whose own dropdown lists its values (0, 1, 2, 3): MM_LOOP over that list (fixed range);
-  - a bound reached through plain references (`=C10`, `=CalcYear`) reads the cell holding the number.
-- **A workbook-level name wins over a sheet's own name of the same spelling** (the macros'
-  `ThisWorkbook.Names("GroupName")`): the loop goes in the cell the macro writes, not a copy.
-- **Count cells are safe**: never a filled cell, a driver, or another loop's count cell; a label
-  ("<loop> count") is written to its left; a loop starting below 1 counts 1..n and shifts
-  (`=MM_LOOP("Scenario",X1)-1`).
+
+### Next quarter's Mind input files
+
+- **Make next quarter's Mind input files** (Outside files card, once the files are brought in;
+  `app/next_quarter_inputs.py`; `POST` / `GET /api/sessions/{id}/next-quarter-inputs`). Joseph put a
+  raw quarterly file (`2026_Q1 - BBA_01.csv`, 1,340 columns) in Mind's Inputs window and Mind refused
+  it: its grid `IN_BBA_01` has 93 columns. Raw input files cannot go into Mind directly: Mind takes one
+  file per input grid, shaped like the grid. Now the user picks the new quarter's raw files; the app
+  runs the model's own import macro on a copy of the version the files were first brought into, reads
+  each grid's block and writes it under the grid's name with the grid's own header. One zip:
+  `README.md` (which file goes into which grid, and why raw files cannot) and the folder `Mind inputs`.
+  No new model upload, no new version. A grid without a new file is left out (Mind keeps its data); a
+  file already shaped like a grid goes in as it is; a raw file named like a grid is recognised; a file
+  that fills more than its grid is refused with why; the macro's own message boxes are shown.
+- **The macro gets the raw files exactly as picked** (review of 10 November 2026). A first version
+  gave the macro a `.xlsx` copy of each raw `.csv` with every digit (Excel keeps 15 significant
+  digits when it opens a CSV). That skipped the macro's own way of opening the file (OpenText
+  settings, `Local:=True`, reading it line by line -- the Tokyo tool's `CountCSVRow` does
+  `Open ... For Input` -- or checks of the extension), and the bring-in from the same CSVs gave
+  other values. Now the macro opens each file itself, as at the bring-in and in the client's tool;
+  a CSV with numbers past 15 digits is said ("Excel keeps 15 when it opens a CSV, as in the
+  client's tool"). "Values changed" no longer counts a number that differs only past its 15th digit:
+  Joseph's raw CSVs against the bring-in's `.xlsx` files give 0 changed (15,011 such cells in
+  IN_BBA_01 before). Also gone with the copy: a raw `X.csv` and `X.xlsx` picked together no longer
+  reach Excel under the same name.
+- **Grid files checked before they go in**: a file shaped like a grid but not UTF-8 (a CSV saved on a
+  Japanese PC as "CSV (comma delimited)", cp932) is refused with what to do, and no longer stops
+  the whole job. A `.txt` is read as TAB-separated, as Mind reads it: a comma-separated `.txt`
+  shaped like a grid goes into the zip as `<grid>.csv` (refused, with why, when it holds quotes or
+  TABs).
+- **One Excel job at a time**: while next quarter's files are being made, the bring-in, Run in Mind,
+  the fixer, a recalculation, Apply and the other workbook changes wait (409, in words), as the
+  job already waited for them. A second bring-in could have changed the grids the job writes for.
+- **Screens**: the card picks a running job back up after a reload or a visit to Advanced (and shows
+  the last result and its zip); a new workbook clears the last job's line, files and zip, and an
+  old job's polling stops, so its result never lands on another workbook's card. The zip link is
+  only offered in the session that made it.
+- **Checked again after the review** (dev server, the anonymized IFRS 17 tool, Joseph's six raw
+  CSVs): the macro opened all six as picked; 6 files made in 84 s (239 s with the copy); 0 values
+  changed against the bring-in; set B (BBA_04 x 1.1) changes 26,456 values of `IN_BBA_04.csv` only.
+  In real Mind (`zzz_mindready_tokyo_inputs_1`): all six SUCCESS, run consistent with the audit
+  trail, Result_CF the same 120 numbers as the first proof (Mind = Excel). The project holds the
+  original quarter (set A) again.
+- **Mind's refusal in words**: `mind_client.upload_inputs` reads Mind's reason for a refused file from
+  the row's LOG ("CSV Logs") into `errors`, and for a raw file says what to do instead (`advice`).
+- **Fix: Inputs window read too early.** `upload_inputs` read the rows while Mind's "Inputs import" box
+  was still up; they show the last upload's status and file (the same names when files replace earlier
+  ones), so a refused file could pass as SUCCESS. It now waits for the box to come and go.
+- **Proven in real Mind** (`zzz_mindready_tokyo_inputs_1`, `docs/OUTSIDE_INPUTS.md`): the raw file
+  refused, with the app's advice; set A (Joseph's raw CSVs) all six files SUCCESS (incl.
+  `IN_VFA_01.txt`), Mind = Excel 120/120; set B (BBA_04 x 1.1) all SUCCESS, Mind = Excel 120/120, and
+  16 numbers changed against set A, all in the BBA_04 row.
+
+### Run in Mind: a second run, and the Inputs window of a copied workbook
+
+- **Fix: a second run in the same browser session returned at once.** `mind_client.run_model` took
+  the "Consistent with the audit trail" line of the run before -- Mind keeps it on the page the whole
+  time, also while the next run is in progress -- as this run's end. Now it notes the page's run
+  marker before the click (`run_marker`: the "Last run in N seconds" line, taken down during a run and
+  put back with the new time, and the number of "Run completed" notes) and waits until a new run was
+  seen ("Run in Progress" or a changed marker) and that run's own line is up. The result says
+  `completed`, `audit_consistent` and `seconds` of this run, `started`, and `reason` when the page only
+  ever showed the run before. Mind's unmatched-inputs window, when left open, is closed first (it
+  covered the Run button). Fake-page tests on a fake clock (`test_mind_inputs_upload.py`).
+- **Fix: Mind's Inputs window for a copied workbook (Mind instances).** `upload_inputs` could not read
+  the rows: a copied grid is listed once, collapsed, as "Rates (3 instances)", so it waited its full
+  300 s and said "still waiting". Now the collapsed rows are opened first (their carets), each copy's
+  row is read with its key (`statuses` "Rates [K2]", `rows[].key` / `copies`), and `<key>-<grid>.csv`
+  is found on its copy's row. Mind's new window for a file it could not match ("Some of your imported
+  files have not been automatically matched ... Match selection"; the old one said "Match unmatched
+  inputs") is recognised, closed with its own Close button (never "Match selection") and explained in
+  plain words: "Mind could not tell which copy of Rates Rates.csv belongs to: the grid has 3 copies
+  (K1, K2, K3). Name the file <key>-Rates.csv (K1-Rates.csv) to change one copy, or turn on 'Split
+  between instances' ..." / "Mind could not tell which grid X.csv belongs to. Name it <grid>.csv or
+  <key>-<grid>.csv for one copy." (`unmatched_advice`, also in `advice`).
+- **The project is opened again after a copy's file** (`upload_inputs(..., project_url=)`, `reloaded`):
+  the run right after a copy's first input file still used the copies as loaded before the import
+  (every copy with every row: K2 should have been 915 and showed 120); after a reload the run was
+  right. `app/mind_loop.py` passes the project's link, so Run in Mind on an instances model with a
+  copy's own input file runs on the reloaded project.
+- **Fix: a run of a minute or more was never seen as finished.** Mind writes such a run as a clock
+  time -- "Last run in 00:03:01." / "Run completed in 00:03:01" (the anonymized IFRS 17 tool, 3 min
+  06 s) -- and the patterns above only knew "N seconds", so `run_model` waited its whole timeout and
+  the Run in Mind loop said the run did not complete, on every iteration. Both forms are read now
+  (`run_seconds`: "00:03:01" -> 181 s); fake-page test with a clock-time run.
+- **Proven in real Mind on 10 November 2026** with a 3-copy invented model (probe 1's InstModel +
+  InstMain, grid `Rates /Input`), `docs/RUN_IN_MIND.md`, evidence in
+  `%LOCALAPPDATA%\MindReady\iteration_1_13_0\mind_client\`: `zzz_mindready_runtwice_1` -- run 1
+  (0.22 s), `K2-Rates.csv` read on K2's row in 12 s (300 s and "still waiting" before), run 2 waited
+  for its own result (marker `(None, 0)` -> `('Last run in 0.68 seconds', 1)`), a plain `Rates.csv`
+  opened the new window, which was closed and explained, and run 3 went through (the click timed out
+  on that window the night before). `zzz_mindready_runtwice_2`: opening the collapsed rows changes no
+  number; `zzz_mindready_runtwice_3`: reload before the run after `K2-Rates.csv` -> K1 242 / K2 915 /
+  K3 160, only K2 changed (Mind = the hand-worked values).
+
+### The macro's text in its own code page, and two notes on the plans
+
+- **The macro's text in its own code page** (`model_map.read_vba`, `decode_vba_source`;
+  `docs/MIND_LOOP.md`). The VBE stores module text in the ANSI code page of the PC that saved the
+  workbook, and Excel 365 records 0 as the project's code page; olevba answered 0 with UTF-8 and
+  replacement characters, so the Japanese comments and string literals of the IFRS 17 tool
+  (`Find("年月")`, `MsgBox "完了しました"`; 363 replacement characters in M1_Main) arrived as mojibake and
+  the stand-in assistant and the message-box matching could not read them. The module bytes are now
+  decoded with the stored code page, else UTF-8, cp932 (when it gives Japanese), cp949 (Korean), the PC's
+  own code page, cp936 / cp950 (ideographs), cp1252 -- each only when it decodes every byte. The
+  anonymized IFRS 17 tool reads clean (0 replacement characters, 290 Japanese characters in M1_Main);
+  the loops are found as before. Fixture `tests/unit/fixtures/vba_japanese_cp932.xlsm` (a small
+  row-per-record model, its module cp932 with code page 0 as a Japanese PC writes it; made once through
+  Excel, the module stream's source replaced at the same length) and `tests/unit/test_model_map_vba_text.py`.
+- **Kanji-only Japanese is Japanese** (review of the same day). The first check asked cp932 for a
+  quarter of kana, so a module whose non-ASCII text was kanji only -- `Find("年月")`,
+  `Worksheets("計算")`, a comment `' 全契約計算実行` -- came back as Korean (cp949 gives clean-looking
+  Hangul for it) or as Chinese, and `MsgBox "ｴﾗｰ"` (half-width katakana) as Hebrew even with 932
+  stored. Now the stored code page is trusted as it is; cp932 is taken when at least half of what it
+  gives comes from the kana, the full-width symbols and the common (JIS level 1) kanji -- Hebrew,
+  Western, Korean or Chinese bytes read as cp932 give half-width katakana, rare kanji and private-use
+  characters, never those; cp949 when it gives the common Hangul syllables (Japanese bytes read as
+  cp949 give the rare ones of the UHC extension); the PC's own code page is tried with its check first
+  among the East Asian ones and trusted after them (a Korean file on a Japanese PC reads as Korean).
+  The limit that stays: half-width katakana alone, with no code page recorded, on a Hebrew or Western
+  PC read in that PC's code page. A test case for each.
+- **The loop and instances plans name Prep's blocking items that are not formulas.** Both steps
+  write Prep's formula repairs with the loop, but said nothing about a lone text cell to title
+  (STR-008), a pivot table (STR-009) or a trapped grid title (STR-001), which Mind's converter refuses
+  or computes wrong without. One line now: "Prep still has N blocking items that are not formulas, e.g.
+  a formula reads a lone text cell (STR-008). Run Fix all issues before uploading." (`prep_blockers`
+  on the plan; `loop_builder.prep_blockers`).
+- **The two harmless kinds of cell in Mind's upload test are said once** on every ready loop or
+  instances plan (`loop_builder.UPLOAD_TEST_NOTE`; `docs/MIND_VS_EXCEL.md`): check cells that are 0 in
+  Excel and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE / FALSE, which the
+  test reads as 1 / 0 on Excel's side. The values agree; nobody has to chase them.
+
+### Housekeeping
+
+- **The stash of 9 November** ("release-cleanup uncommitted work", 22 files) was checked hunk by hunk
+  against the branch and dropped; it is saved in full in
+  `%LOCALAPPDATA%\MindReady\iteration_1_13_0\stash0_release_cleanup_2026-11-09.patch`. Three pieces were
+  still live and came across: `tests/unit/test_feedback.py` dates its stage-timing row at run time
+  (`feedback._timings()` keeps the last day only, so the fixed date had aged out and the crash test
+  failed); a test that a workbook-level defined name wins over a sheet-local one of the same spelling;
+  and an optional token meter in `app/llm.py` (a try-import of the `TokenUsage` `token_meter`, a no-op
+  where it is not installed). Everything else was already on the branch or superseded (the side branch's
+  1.13.0 / 1.14.0 numbering, an older built dist).
+- **Version 1.13.0**: `VERSION`, this changelog, the README's status, and the docs name the tabs as they
+  are now (`docs/MIND_LOOP.md`, `docs/MIND_INSTANCES.md`, `docs/INSTANCE_FINDER.md`).
 
 ## 1.12.4 (9 November 2026): outside input files as Mind inputs (the Tokyo IFRS 17 tool)
 

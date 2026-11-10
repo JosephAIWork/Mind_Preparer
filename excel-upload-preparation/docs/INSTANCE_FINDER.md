@@ -5,9 +5,9 @@ loop, would remove repetition or compute every choice in one run. It reports and
 nothing. Added in 1.12.5. `app/instance_finder.py` (with `app/finder_shapes.py`,
 `app/finder_patterns.py` and `app/finder_grouping.py`), `GET /api/sessions/{id}/instance-finder`
 (`?assistant=1` adds the assistant's explanation, `?refresh=1` computes the result again for the current
-version), the **Where
-instances could help** section of the Mind instances panel under Advanced > Mind loop (the button
-**Find where instances could help**), and `python -m app.instance_finder <workbook> [--json]
+version), the fold **Not sure?
+Let the app look** on the Instances tab under Advanced (since 1.13.0; before that the section **Where
+instances could help** below the builder), and `python -m app.instance_finder <workbook> [--json]
 [--assistant]`.
 
 The finder is blind: it gets no hint of what the key is -- no column name, no word such as tariff or
@@ -317,8 +317,9 @@ result again. A no-key or failed answer is not kept: the next tick asks again. *
 
 ## Running it
 
-- **In the app:** Advanced > Mind loop > Mind instances > **Find where instances could help**. Three
-  cards by default and **Show all N** for the rest; each card has the headline, the three fit chips,
+- **In the app:** Advanced > Instances > **Not sure? Let the app look** (the finder runs when the fold
+  is first opened; the fold is there with or without a run loop, and when the plan could not be read --
+  the finder reads the formulas, not the macro). The top suggestion by default, with **Use it**, and **Show all N** for the rest; each card has the headline, the three fit chips,
   **Use as the key** (fills the builder's key column and previews the instances; a column the
   dropdown cannot show is named beside it) and **Show why** (the evidence, the reader classes, the
   reasons, the edits, the assistant's sentence; one card open at a time). **Read again** rebuilds the

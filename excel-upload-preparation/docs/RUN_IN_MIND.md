@@ -121,7 +121,8 @@ were loaded before the import (every copy held every row: K2 should have been 91
 120, KeyRead K1 everywhere); a reload of the project before the run gave the right numbers
 (K1 242 / K2 915 / K3 160, only K2 changed). By hand: close the Inputs window, reload the
 project, then Run. `upload_inputs(..., project_url=<the project's link>)` does that itself when a
-file went into a grid with copies (`reloaded` in its result).
+file went into a grid with copies (`reloaded` in its result); the Run in Mind loop (`app/mind_loop.py`)
+passes the link.
 
 ## A second run in the same browser session
 
@@ -129,7 +130,10 @@ Mind's project page keeps the line **Consistent with the audit trail.** of the r
 on the page the whole time, also while the next run is in progress ("Run in Progress"); the
 line **Last run in N seconds.** is taken down during the run and comes back with the new
 run's time, with the notes "Calculations completed" / "Run completed in N seconds" for a
-few seconds. `mind_client.run_model` therefore notes the page's run marker before it clicks
+few seconds. A run of a minute or more is written as a clock time -- **Last run in 00:03:01.** /
+"Run completed in 00:03:01" (the anonymized IFRS 17 tool) -- and both forms are read (`run_seconds`;
+the first version only knew "N seconds" and waited its whole timeout on such a run).
+`mind_client.run_model` therefore notes the page's run marker before it clicks
 Run (`run_marker`: the Last-run line and the number of notes) and waits until a new run was
 seen (the marker changed, or "Run in Progress") and the page shows that run's own
 Last-run line. Its result says `completed`, `audit_consistent` and `seconds` **of this run**,
