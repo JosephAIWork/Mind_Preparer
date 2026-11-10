@@ -71,12 +71,16 @@ class FakeKeyboard:
 class FakeInputsPage:
     """A project whose model has the /Input grids `grids` [(sheet, grid)]. A file goes to the grid
     of its name; `delay_s` after the hand-over its row shows `final` (default SUCCESS); a file no
-    grid is named after opens the 'Match unmatched inputs' popup (when `popup`)."""
+    grid is named after opens the 'Match unmatched inputs' popup (when `popup`). Until then Mind's
+    "Inputs import" box is up (when `box`) and the rows show what they showed before (`before`:
+    {grid: (status, file)} of an earlier upload -- as in real Mind on 10 November 2026)."""
 
     def __init__(self, clock: Clock, grids: list[tuple[str, str]], final: dict[str, str] | None = None, delay_s: float = 4.0,
                  inputs_button: bool = True, dom: bool = True, popup: bool = True, model: str = "tokyo_model",
-                 culture: str | None = "English - United Kingdom", separator: str | None = "Default") -> None:
+                 culture: str | None = "English - United Kingdom", separator: str | None = "Default",
+                 before: dict[str, tuple[str, str]] | None = None, box: bool = True) -> None:
         self.clock, self.grids, self.final, self.delay_s = clock, grids, final or {}, delay_s
+        self.before, self.box = before or {}, box
         self.inputs_button, self.dom, self.popup_enabled, self.model = inputs_button, dom, popup, model
         self.culture, self.separator = culture, separator
         self.window = False
@@ -162,10 +166,13 @@ class FakeInputsPage:
             else:
                 self.window = False
 
+    def _importing(self) -> bool:
+        return self.uploaded_at is not None and self.clock.now < self.uploaded_at + self.delay_s
+
     def _row(self, grid: str) -> tuple[str, str | None]:
         f = self.uploaded.get(grid)
-        if f is None or self.clock.now < (self.uploaded_at or 0) + self.delay_s:
-            return "-", None
+        if f is None or self._importing():
+            return self.before.get(grid, ("-", None))
         return self.final.get(grid, "SUCCESS"), f
 
     def _dom_rows(self) -> list[list[str]]:
@@ -195,7 +202,8 @@ class FakeInputsPage:
         top = f"Inputs\nRun\n{self.model}"
         if not self.window:
             return top + "\nProjects > zzz_mindready_test"
-        return top + "\n" + self._window_text() + ("\n" + self._popup_text() if self.popup_files else "")
+        importing = "\nInputs import\nUpload\nLinks\nResize\nUploading files ..." if self.box and self._importing() else ""
+        return top + "\n" + self._window_text() + importing + ("\n" + self._popup_text() if self.popup_files else "")
 
 
 def _folder(tmp_path: Path, names: list[str], name: str = "Mind inputs") -> Path:
@@ -323,7 +331,81 @@ def test_a_grid_mind_does_not_accept_is_not_ok(tmp_path, clock):
     res = mc.upload_inputs(page, folder)
     assert not res["ok"] and res["failed"] == {"IN_BBA_02": "ERROR"}
     assert res["statuses"] == {"IN_BBA_01": "SUCCESS", "IN_BBA_02": "ERROR"}
-    assert res["reason"] == "Mind did not accept IN_BBA_02 (ERROR)" and res["closed"]
+    assert res["reason"] == "Mind did not accept IN_BBA_02 (ERROR)" and res["closed"] and res["advice"] is None
+
+
+def test_the_last_upload_s_rows_are_not_read_while_mind_takes_the_new_files(tmp_path, clock):
+    """Real Mind, 10 November 2026: files replacing earlier ones of the same names. While the "Inputs import"
+    box is up the rows still show the last upload's SUCCESS; this upload ends in an ERROR for IN_BBA_01."""
+    folder = _folder(tmp_path, FILES[:2])
+    before = {"IN_BBA_01": ("SUCCESS", "IN_BBA_01.csv"), "IN_BBA_02": ("SUCCESS", "IN_BBA_02.csv")}
+    page = FakeInputsPage(clock, GRIDS[:2], final={"IN_BBA_01": "ERROR"}, delay_s=16, before=before)
+    res = mc.upload_inputs(page, folder)
+    assert not res["ok"] and res["failed"] == {"IN_BBA_01": "ERROR"} and res["statuses"]["IN_BBA_02"] == "SUCCESS"
+    assert res["seconds"] >= 16  # read only once the box was gone
+    # a box too quick to be seen: the rows are read after a while, not at once
+    page = FakeInputsPage(clock, GRIDS[:2], final={"IN_BBA_01": "ERROR"}, delay_s=2, before=before, box=False)
+    res = mc.upload_inputs(page, _folder(tmp_path, FILES[:2], name="again"))
+    assert not res["ok"] and res["failed"] == {"IN_BBA_01": "ERROR"} and res["seconds"] >= mc._IMPORT_START_S
+
+
+def test_a_raw_file_mind_refuses_for_its_columns_is_said_with_what_to_do(tmp_path, clock):
+    """Mind's own words when a raw input file goes where a grid's file is expected (seen 10 November 2026)."""
+    folder = _folder(tmp_path, FILES[:1])
+    page = FakeInputsPage(clock, GRIDS[:1], final={"IN_BBA_01": "ERROR"})
+    body = page._body
+    page._body = lambda: body() + ("\nFailed: Input control error: The file IN_BBA_01.csv doesn't have proper headers, there are 1340 columns "
+                                   "while grid 'IN_BBA_01' of instance Original_Instance has 93 columns." if page.window else "")
+    res = mc.upload_inputs(page, folder)
+    assert not res["ok"] and res["failed"] == {"IN_BBA_01": "ERROR"}
+    assert res["advice"].startswith("Mind refused IN_BBA_01.csv: it has 1,340 columns, the grid IN_BBA_01 has 93. It looks like a raw input file.")
+    assert "Make next quarter's Mind input files" in res["advice"]
+    assert res["reason"] == "Mind did not accept IN_BBA_01 (ERROR). " + res["advice"]
+
+
+class FakeLogTags:
+    """The LOG tag of each ERROR row: a click opens Mind's "CSV Logs" box with its reason; Escape closes it."""
+
+    def __init__(self, page: "FakeInputsPage", messages: list[str]) -> None:
+        self.page, self.messages = page, messages
+
+    def count(self) -> int:
+        return len(self.messages) if self.page.window and not self.page._importing() else 0
+
+    def nth(self, j: int) -> "FakeLogTags":
+        tag = FakeLogTags(self.page, self.messages)
+        tag.j = j
+        return tag
+
+    def is_visible(self) -> bool:
+        return True
+
+    def click(self, timeout: int | None = None) -> None:
+        self.page.log_open = self.messages[self.j]
+
+
+def test_mind_s_own_reason_for_a_refused_file_is_read_from_its_log(tmp_path, clock):
+    """Real Mind, 10 November 2026: the reason is not on the page; the row's LOG tag opens "CSV Logs"."""
+    refusal = ("Failed: Input control error: The file IN_BBA_01.csv doesn't have proper headers, there are 1340 columns "
+               "while grid 'IN_BBA_01' of instance Original_Instance has 93 columns.")
+    page = FakeInputsPage(clock, GRIDS[:2], final={"IN_BBA_01": "ERROR"})
+    page.log_open = None
+    tags = FakeLogTags(page, [refusal])
+    locator, body, press = page.locator, page._body, page._press
+    page.locator = lambda sel: tags if sel == mc._CSV_LOG_TAG else locator(sel)
+    page._body = lambda: body() + (f"\nCSV Logs\nClose modal\n{page.log_open}" if page.log_open else "")
+
+    def escape(key: str) -> None:
+        if key == "Escape" and page.log_open:
+            page.log_open = None  # the log box closes, the window stays
+            return
+        press(key)
+
+    page._press = escape
+    res = mc.upload_inputs(page, _folder(tmp_path, FILES[:2]))
+    assert not res["ok"] and res["failed"] == {"IN_BBA_01": "ERROR"} and res["errors"] == [refusal]
+    assert res["advice"].startswith("Mind refused IN_BBA_01.csv: it has 1,340 columns, the grid IN_BBA_01 has 93.")
+    assert res["reason"] == "Mind did not accept IN_BBA_01 (ERROR). " + res["advice"] and res["closed"] and not page.window
 
 
 def test_no_inputs_button_means_the_model_has_no_input_grid(tmp_path, clock):

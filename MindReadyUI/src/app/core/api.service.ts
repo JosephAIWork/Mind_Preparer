@@ -4,7 +4,7 @@ import { firstValueFrom } from "rxjs";
 import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
-  AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, SheetCells, Version,
+  AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NextQuarterStatus, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, SheetCells, Version,
 } from "./models";
 
 /** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
@@ -73,6 +73,19 @@ export class ApiService {
   /** Where that job is (stage), and its result or error once it has ended. */
   outsideInputs(id: string): Promise<OutsideRunStatus> {
     return firstValueFrom(this.http.get<OutsideRunStatus>(`${this.s(id)}/outside-inputs`));
+  }
+
+  /** Starts making next quarter's Mind input files from the new quarter's raw input files (a background
+   *  job: the model's own import macro on a copy, then one file per Mind input grid, in a zip). */
+  startNextQuarter(id: string, files: File[]): Promise<{ running: boolean; raw: string[]; grid_files: { file: string; grid: string }[]; notes: string[] }> {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return firstValueFrom(this.http.post<{ running: boolean; raw: string[]; grid_files: { file: string; grid: string }[]; notes: string[] }>(`${this.s(id)}/next-quarter-inputs`, form));
+  }
+
+  /** The grids next quarter's files fill, and where that job is (its result or error once it has ended). */
+  nextQuarter(id: string): Promise<NextQuarterStatus> {
+    return firstValueFrom(this.http.get<NextQuarterStatus>(`${this.s(id)}/next-quarter-inputs`));
   }
 
   analyze(id: string, ignoreSheets: string[] = []): Promise<SessionStart> {

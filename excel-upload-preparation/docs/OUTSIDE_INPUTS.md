@@ -17,7 +17,73 @@ uploading the model again.
    model's own import macro on a copy, then makes the Mind inputs. The numbers check then
    compares later steps with this version, because new outside data changes values by design.
 4. Download the model and **Mind inputs.zip** (one CSV per input). Run in Mind uploads both.
-   Each quarter: put the new CSVs in Mind's **Inputs** window, then Run.
+   Each quarter: **Make next quarter's Mind input files** from the new raw files (below), put
+   the files it gives in Mind's **Inputs** window, then Run.
+
+### Each quarter: next quarter's Mind input files (`app/next_quarter_inputs.py`)
+
+**Raw input files cannot go into Mind directly.** Mind's Inputs window takes one file per input
+grid, shaped like the grid: the same name, the same header, the same columns. A raw quarterly file
+(the file the model's import macro opens) holds much more -- all its items and months, its own
+header rows -- so Mind refuses it:
+
+> Failed: Input control error: The file 2026_Q1 - BBA_01.csv doesn't have proper headers, there
+> are 1340 columns while grid 'IN_BBA_01' of instance Original_Instance has 93 columns.
+
+The grid `IN_BBA_01` holds only the 93-column block the macro takes out of that file (turned: items
+across, months down). So, on the Outside files card, once the files are brought in:
+
+1. **Make next quarter's Mind input files**: pick the new quarter's raw files (`.xlsx`, `.xlsm`,
+   `.csv` ... as the client gets them; one, some or all).
+2. The app runs the model's **own import macro** on a copy of the version the outside files were
+   first brought into, with the new files (the same run as the bring-in: an Excel of its own,
+   message boxes answered), then reads each grid's block and writes it under the grid's name with
+   the grid's own header (`IN_BBA_01.csv`; `IN_VFA_01.txt`, TAB-separated, when a value or a header
+   holds a comma -- Mind reads `.txt` as TAB and takes it).
+3. **Download Next quarter Mind inputs.zip**: `README.md` (which file goes into which grid) and the
+   folder `Mind inputs` with the files. Unzip; in Mind click **Inputs**, then **Browse** and pick the
+   folder `Mind inputs` (or drag its files onto the window); wait for SUCCESS on every file; Run.
+   No new model upload, no new version in Mind Ready.
+
+What it says on the way:
+
+- A grid without a new file is not in the zip: Mind keeps the data it has.
+- A file already shaped like a grid (its header is the grid's) goes in as it is, under the grid's name.
+- A raw file named like a grid (`IN_BBA_01.csv` with 1,340 columns) is recognised and read with the
+  macro: "IN_BBA_01.csv has 1,340 columns; the Mind input grid IN_BBA_01 has 93. It looks like a raw
+  input file, so the app reads it with the model's import macro."
+- A new file that fills more than its grid holds is left out, with why (Mind's grid keeps the model's
+  shape); the macro's own message boxes are shown when it refuses a file (too many items).
+- Each file says how many values differ from the files made at the bring-in.
+- A raw `.csv` keeps every digit. Excel opens a CSV keeping 15 significant digits
+  (144686640.71679688 becomes 144686640.716796), so the same quarter as `.csv` and as `.xlsx` would
+  give files that differ in the last digits. The app lets Excel open the CSV (its own reading of
+  dates and text stays), gives each longer number its exact value, saves a `.xlsx` copy and hands
+  that to the macro. The result says how many numbers got their digits back.
+- When Run in Mind (or `scripts/mind_upload.py`) hands Mind a raw file and Mind refuses it for its
+  columns, the result says what to do instead (`mind_client.upload_inputs` -> `advice`).
+
+**Proven in real Mind (10 November 2026, project `zzz_mindready_tokyo_inputs_1`, the anonymized IFRS 17
+tool, through the app's own routes on a dev server):**
+
+- Joseph's raw file, named like the grid (`IN_BBA_01.csv`, 1,340 columns): Mind refused it ("doesn't
+  have proper headers, there are 1340 columns while grid 'IN_BBA_01' of instance Original_Instance
+  has 93 columns"), read from the row's LOG; the app's result said what to do instead.
+- Set A, made from Joseph's six raw `.csv` files: the six files are byte for byte the files the
+  bring-in made from the same quarter's `.xlsx` files (0 values differ). All six SUCCESS in the
+  Inputs window (5 `.csv` + `IN_VFA_01.txt`, TAB). Run consistent with the audit trail. Result_CF:
+  Mind = Excel 120 of 120 numbers (Excel = the model with its own macro run on the same raw files).
+- Set B, the same with BBA_04's numbers x 1.1 (one raw file changed, 62,019 cells): the app's file
+  `IN_BBA_04.csv` differs in 26,456 values, the other five in none. All six SUCCESS; Mind = Excel
+  120 of 120; against set A, 16 numbers changed, all in the BBA_04 row. No model upload.
+- Found on the way, fixed: `mind_client.upload_inputs` read the rows while Mind's "Inputs import"
+  box was still up. Those rows show the last upload's status and file -- the same names when files
+  replace earlier ones -- so a refused file could pass as SUCCESS. It now waits for the box to come
+  and go (or 20 s when it is too quick to see), and reads Mind's reason from the row's LOG ("CSV Logs").
+
+Routes: `POST /api/sessions/{id}/next-quarter-inputs` (the files; 202, background job) and
+`GET /api/sessions/{id}/next-quarter-inputs` (the grids with the file name Mind expects, the job's
+stage, its result: files, grid, source file, values changed, the zip).
 
 ### Without the input files: stand-ins made with the assistant (`app/stand_in_inputs.py`)
 

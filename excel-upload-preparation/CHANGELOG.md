@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased (10 November 2026): next quarter's Mind input files
+
+- **Make next quarter's Mind input files** (Outside files card, once the files are brought in;
+  `app/next_quarter_inputs.py`; `POST` / `GET /api/sessions/{id}/next-quarter-inputs`). Joseph put a
+  raw quarterly file (`2026_Q1 - BBA_01.csv`, 1,340 columns) in Mind's Inputs window and Mind refused
+  it: its grid `IN_BBA_01` has 93 columns. Raw input files cannot go into Mind directly: Mind takes one
+  file per input grid, shaped like the grid. Now the user picks the new quarter's raw files; the app
+  runs the model's own import macro on a copy of the version the files were first brought into, reads
+  each grid's block and writes it under the grid's name with the grid's own header. One zip:
+  `README.md` (which file goes into which grid, and why raw files cannot) and the folder `Mind inputs`.
+  No new model upload, no new version. A grid without a new file is left out (Mind keeps its data); a
+  file already shaped like a grid goes in as it is; a raw file named like a grid is recognised; a file
+  that fills more than its grid is refused with why; the macro's own message boxes are shown.
+- **A raw `.csv` keeps every digit**: Excel opens a CSV keeping 15 significant digits. The app gives
+  longer numbers their exact value in a `.xlsx` copy before the macro reads it. Joseph's six raw CSVs
+  now give files byte for byte equal to the ones the bring-in made from the `.xlsx` files (before
+  this: 15,011 values of IN_BBA_01 differed in the last digits).
+- **Mind's refusal in words**: `mind_client.upload_inputs` reads Mind's reason for a refused file from
+  the row's LOG ("CSV Logs") into `errors`, and for a raw file says what to do instead (`advice`).
+- **Fix: Inputs window read too early.** `upload_inputs` read the rows while Mind's "Inputs import" box
+  was still up; they show the last upload's status and file (the same names when files replace earlier
+  ones), so a refused file could pass as SUCCESS. It now waits for the box to come and go.
+- **Proven in real Mind** (`zzz_mindready_tokyo_inputs_1`, `docs/OUTSIDE_INPUTS.md`): the raw file
+  refused, with the app's advice; set A (Joseph's raw CSVs) all six files SUCCESS (incl.
+  `IN_VFA_01.txt`), Mind = Excel 120/120; set B (BBA_04 x 1.1) all SUCCESS, Mind = Excel 120/120, and
+  16 numbers changed against set A, all in the BBA_04 row.
+
 ## Unreleased (10 November 2026): Mind instances and where instances could help
 
 Built in October on a side branch as 1.13.0 and 1.14.0 and never released; brought onto this branch

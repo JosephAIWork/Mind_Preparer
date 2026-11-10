@@ -889,3 +889,132 @@ def test_stand_ins_only_for_the_missing_files_a_failure_changes_nothing_and_empt
     client.post(f"/api/sessions/{sid}/inputs", files=[_part(INPUTS[5], b"the real VFA_01")])
     assert client.post(f"/api/sessions/{sid}/outside-inputs/run", json={"standIns": True}).status_code == 202
     assert _wait(client, sid)["state"] == "done" and calls == []
+
+
+# --- 6. next quarter's Mind input files (app/next_quarter_inputs.py) -------------------------------
+def _wait_next(client, sid: str, timeout: float = 60) -> dict:
+    deadline = time.time() + timeout
+    while True:
+        st = client.get(f"/api/sessions/{sid}/next-quarter-inputs").json()
+        if not st["running"]:
+            return st
+        assert time.time() < deadline, st
+        time.sleep(0.05)
+
+
+@pytest.fixture
+def next_quarter_export(monkeypatch):
+    """export_grids replaced (no Excel): each grid's new block, under the grid's header."""
+    calls: list = []
+
+    def export_grids(workbook, grids, out_dir, progress=None):
+        calls.append({"workbook": Path(workbook), "grids": [dict(g) for g in grids]})
+        made = []
+        for g in grids:
+            info = outside_inputs.write_input_csv(Path(out_dir) / g["name"], g["header"], [[33], [44], [55]])
+            made.append({"grid": g["name"], "path": info["path"], "rows": info["rows"], "cols": info["cols"], "separator": info["separator"]})
+        return made
+
+    from app import next_quarter_inputs
+
+    monkeypatch.setattr(next_quarter_inputs, "export_grids", export_grids)
+    return calls
+
+
+def test_next_quarter_files_come_from_the_raw_files_through_the_model_s_own_macro(client, macros, excel_steps, next_quarter_export, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    # before the bring-in: no grid to fill, said plainly
+    before = client.get(f"/api/sessions/{sid}/next-quarter-inputs").json()
+    assert before["available"] is False and before["grids"] == [] and before["state"] == "idle"
+    assert before["why_not"] == "Bring in the outside files first: that makes the Mind input grids these files fill."
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")])
+    assert res.status_code == 422 and res.json()["detail"] == before["why_not"]
+    client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert _wait(client, sid)["state"] == "done"
+    versions = [v["id"] for v in s.versions]
+    st = client.get(f"/api/sessions/{sid}/next-quarter-inputs").json()
+    assert st["available"] is True and st["why_not"] is None
+    assert st["grids"] == [{"name": "IN_BBA_01", "sheet": "BBA_01", "ref": "B3:B5", "rows": 3, "cols": 1, "file": "IN_BBA_01.csv"}]
+    # the new quarter's raw file: the model's own macro runs on the version the files were first brought into
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"next quarter's raw file")])
+    assert res.status_code == 202, res.text
+    assert res.json() == {"running": True, "state": "running", "raw": ["2026Q2_2026_BBA_01.xlsm"], "grid_files": [], "notes": [], "unused": []}
+    done = _wait_next(client, sid)
+    assert done["state"] == "done" and done["error"] is None, done
+    nq_import = excel_steps["import"][-1]
+    assert nq_import["workbook"] == s.paths["ver-001"] and nq_import["macro"] == "calcCF"
+    assert {k: p.read_bytes() for k, p in nq_import["files"].items()} == {"Ctrl_01!H35": b"next quarter's raw file"}
+    (exp,) = next_quarter_export
+    assert exp["grids"][0]["name"] == "IN_BBA_01" and exp["grids"][0]["header"] == ["Amount"]  # the header Mind's grid has
+    r = done["result"]
+    assert r["files"] == [{"file": "IN_BBA_01.csv", "grid": "IN_BBA_01", "from": "2026Q2_2026_BBA_01.xlsm", "source": "macro", "rows": 3, "cols": 1,
+                           "separator": "comma", "changed": 3}]
+    assert r["summary"] == "1 Mind input file made (IN_BBA_01.csv): put it in Mind's Inputs window, then Run."
+    assert r["zip"] == "Next quarter Mind inputs.zip" and r["not_in_zip"] == [] and r["import"]["files"][0]["opened"] is True
+    assert "Raw input files cannot go into Mind directly." in r["readme"]
+    # no new version, no change to the session's line or its Mind inputs
+    assert [v["id"] for v in s.versions] == versions and s.current_version_id == versions[-1]
+    assert sorted(p.name for p in Path(s.mind_inputs_dir).iterdir()) == ["IN_BBA_01.csv"]
+    z = client.get(f"/api/sessions/{sid}/files/Next quarter Mind inputs.zip")
+    assert z.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(z.content))
+    assert zf.namelist() == ["README.md", "Mind inputs/IN_BBA_01.csv"]
+    assert zf.read("Mind inputs/IN_BBA_01.csv") == b"Amount\n33\n44\n55\n"
+
+
+def test_next_quarter_takes_grid_files_as_they_are_and_recognises_raw_ones(client, macros, excel_steps, next_quarter_export, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert _wait(client, sid)["state"] == "done"
+    imports = len(excel_steps["import"])
+    # a file already shaped like the grid (its header): into the zip as it is, no macro run
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("IN_BBA_01.csv", b"Amount\n31\n41\n51\n")])
+    assert res.status_code == 202 and res.json()["grid_files"] == [{"file": "IN_BBA_01.csv", "grid": "IN_BBA_01"}] and res.json()["raw"] == []
+    done = _wait_next(client, sid)
+    assert done["state"] == "done" and len(excel_steps["import"]) == imports and next_quarter_export == []
+    assert [(f["file"], f["source"], f["changed"]) for f in done["result"]["files"]] == [("IN_BBA_01.csv", "as_given", 3)]
+    # the raw file renamed after the grid (what Mind refused): recognised, read with the macro, said so
+    wide = ",".join(f"m{i}" for i in range(1340)).encode("utf-8")
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("IN_BBA_01.csv", wide + b"\n1,2\n")])
+    assert res.status_code == 202, res.text
+    assert res.json()["raw"] == ["IN_BBA_01.csv"] and res.json()["notes"] == [
+        "IN_BBA_01.csv has 1,340 columns; the Mind input grid IN_BBA_01 has 1. It looks like a raw input file, so the app reads it with the model's import macro."]
+    done = _wait_next(client, sid)
+    assert done["state"] == "done" and len(excel_steps["import"]) == imports + 1
+    assert done["result"]["files"][0]["source"] == "macro" and done["result"]["notes"][0].startswith("IN_BBA_01.csv has 1,340 columns")
+    # nothing usable: refused at once, in plain words; other kinds of file refused as at the upload
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("notes.csv", b"a,b\n1,2\n")])
+    assert res.status_code == 422 and res.json()["detail"] == (
+        "None of the picked files fills a Mind input grid (notes.csv: no row of the model's import table names it, "
+        "and it is not shaped like a Mind input grid).")
+    assert client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("report.pdf", b"%PDF")]).status_code == 400
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("a.csv", b"Amount\n1\n"), _part("A.CSV", b"Amount\n2\n")])
+    assert res.status_code == 422 and res.json()["detail"] == "Two files are named A.CSV: pick one."
+
+
+def test_next_quarter_waits_for_a_running_job_and_says_a_macro_s_refusal(client, macros, excel_steps, next_quarter_export, monkeypatch, tmp_path):
+    main = _main_book(tmp_path)
+    sid = _upload_picked(client, main, INPUTS)["sessionId"]
+    s = server.SESSIONS[sid]
+    client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert _wait(client, sid)["state"] == "done"
+    s.next_quarter = {"state": "running", "started": time.time()}
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")])
+    assert res.status_code == 409 and res.json()["detail"] == "Wait a moment: next quarter's Mind input files are still being made."
+    s.next_quarter = {}
+    s.outside_run["state"] = "running"
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")])
+    assert res.status_code == 409 and res.json()["detail"] == "Wait a moment: the outside files are still being brought in."
+    s.outside_run["state"] = "done"
+    monkeypatch.setattr(outside_inputs, "run_import", _fake_run_import([], stopped=True))
+    assert client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")]).status_code == 202
+    done = _wait_next(client, sid)
+    assert done["state"] == "error" and done["result"]["files"] == [] and done["result"]["zip"] is None
+    assert done["error"] == ("The model's import macro did not take the new files: \"BBA_01のinput領域には93項目まで入力可能です\". "
+                             "No file was made: check the input files, then try again.")
+    monkeypatch.setattr(server, "com_available", lambda: False)
+    res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")])
+    assert res.status_code == 409 and res.json()["detail"].startswith("Reading raw input files needs Excel on this machine")

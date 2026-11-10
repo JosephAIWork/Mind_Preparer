@@ -1478,3 +1478,78 @@ export function withOutsideStep(e: ChainEstimate | null, include: boolean, stand
     total: { low_s: e.total.low_s + step.low_s, mid_s: e.total.mid_s + step.mid_s, high_s: e.total.high_s + step.high_s },
   };
 }
+
+
+// ---- next quarter's Mind input files (POST / GET .../next-quarter-inputs) ---------------------------
+/** One file of the zip: the grid it fills in Mind and the picked file it came from. */
+export interface NextQuarterFile {
+  /** the name Mind's Inputs window matches: the grid's name (IN_BBA_01.csv, or .txt when TAB-separated) */
+  file: string;
+  grid: string;
+  /** the picked file it was made from */
+  from: string;
+  /** "macro": made from a raw file by the model's own import macro; "as_given": already shaped like the grid */
+  source: "macro" | "as_given";
+  rows: number;
+  cols: number;
+  separator?: string;
+  /** values that differ from the files made when the outside files were brought in (null: nothing to compare with) */
+  changed?: number | null;
+}
+
+export interface NextQuarterResult {
+  ok: boolean;
+  /** one plain line: "6 Mind input files made (IN_BBA_01.csv, ...): put them in Mind's Inputs window, then Run." */
+  summary: string;
+  files: NextQuarterFile[];
+  /** the grids without a new file (Mind keeps the data it has), or whose new file does not fit */
+  not_in_zip: { grid: string; why: string }[];
+  notes: string[];
+  /** picked files nothing takes, with why */
+  unused: { file: string; why: string }[];
+  /** "Next quarter Mind inputs.zip": README.md and the folder "Mind inputs" */
+  zip: string | null;
+  readme?: string | null;
+  error: string | null;
+}
+
+/** GET .../next-quarter-inputs: the grids the files fill and the last job making them. */
+export interface NextQuarterStatus {
+  grids: { name: string; sheet: string; ref: string; rows: number; cols: number; file: string | null }[];
+  /** the outside files were brought in: there are Mind input grids to fill */
+  available: boolean;
+  why_not?: string | null;
+  running: boolean;
+  /** idle | running | done | error */
+  state?: string;
+  stage: string | null;
+  message?: string | null;
+  elapsed_s?: number;
+  result: NextQuarterResult | null;
+  error: string | null;
+}
+
+/** What the Next quarter part of the Outside files card says before anything is picked. */
+export const NEXT_QUARTER_LEAD =
+  "Raw input files cannot go into Mind directly. Mind takes one file per input grid, shaped like the grid. " +
+  "Pick the new quarter's raw files: the app runs the model's own import macro on them and gives you the files for Mind's Inputs window. No new model upload.";
+
+/** One line per file of the zip: which grid it fills and what it was made from. */
+export function nextQuarterLines(r: NextQuarterResult): string[] {
+  const count = (n: number) => n.toLocaleString("en-US");
+  return (r.files ?? []).map((f) => {
+    const from = f.source === "as_given" ? `${f.from} (as it is)` : f.from;
+    const changed = f.changed == null ? "" : f.changed === 0 ? "; same values as before" : `; ${count(f.changed)} value${f.changed === 1 ? "" : "s"} changed`;
+    return `${f.file} → grid ${f.grid}, from ${from}${changed}`;
+  });
+}
+
+/** The outcome in words: the server's summary, and the notes (a raw file recognised, a grid left out). */
+export function nextQuarterOutcome(r: NextQuarterResult): { tone: "ok" | "warn" | "error"; line: string; detail: string } {
+  if (!r.ok) return { tone: "error", line: firstClause(r.error ?? "") || "No Mind input file was made", detail: r.error ?? "" };
+  const left = (r.not_in_zip ?? []).map((x) => `${x.grid}: ${x.why}`);
+  const unused = (r.unused ?? []).map((u) => `${u.file}: ${u.why}`);
+  const detail = [...(r.notes ?? []), ...left, ...unused].filter(Boolean).join(" · ");
+  const tooBig = (r.not_in_zip ?? []).some((x) => !/Mind keeps the data it has/.test(x.why));
+  return { tone: tooBig || unused.length ? "warn" : "ok", line: r.summary, detail };
+}

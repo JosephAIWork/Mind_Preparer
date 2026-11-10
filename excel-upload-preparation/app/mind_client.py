@@ -559,6 +559,48 @@ INPUT_UPLOAD_SUFFIXES = (".csv", ".txt")
 _INPUTS_BUTTON = re.compile(r"^\s*Inputs\s*$")
 _INPUTS_DROP = "Upload inputs or Drag"  # the window's drop zone: present while the window is open
 _UNMATCHED = "Match unmatched"  # Mind's popup for a file no grid name matches
+# Mind's progress box while it takes the files (Upload, Links, Resize: "Uploading files ...", "Resizing
+# Grid 6 on 6 (...)"). Meanwhile the rows still show the LAST upload's status and file -- the same
+# names when the files replace earlier ones -- so no row is read before the box has come and gone.
+_IMPORTING = "Inputs import"
+_IMPORT_START_S = 20  # a box not seen by then: the import was too quick to see (or did not start)
+# the LOG tag in a refused file's ERROR cell: opens "CSV Logs" with Mind's reason ("Failed: Input
+# control error: The file ... doesn't have proper headers, there are 1340 columns while grid ...")
+_CSV_LOG_TAG = ".log-csv"
+_CSV_LOGS_RE = re.compile(r"CSV Logs\s*\n+\s*(?:Close modal\s*\n+\s*)?(.+)", re.I)
+
+
+def _csv_logs(page: Page, most: int = 6) -> list[str]:
+    """Mind's own words for each file it refused: the LOG tag of the row opens "CSV Logs"; its first
+    line is kept and the box closed again (Escape). Never fails: what cannot be read is left out."""
+    out: list[str] = []
+    try:
+        tags = page.locator(_CSV_LOG_TAG)
+        n = tags.count()
+    except Exception:
+        return out
+    for j in range(min(n, most)):
+        try:
+            tag = tags.nth(j)
+            if not tag.is_visible():
+                continue
+            tag.click(timeout=4000)
+        except Exception:
+            continue
+        _wait(page, 2500)
+        m = _CSV_LOGS_RE.search(body_text(page))
+        if m and m.group(1).strip() not in out:
+            out.append(m.group(1).strip()[:600])
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        _wait(page, 1200)
+        if not _has(body_text(page), _INPUTS_DROP):
+            break
+    return out
+
+
 _INPUTS_HEADER = re.compile(r"^\s*Element\b.*\bStatus\b.*\bFile\b")
 _INPUT_FILE_NAME = re.compile(r"\.(?:csv|txt|zip|parquet)$", re.I)
 # a grid row's status while it has no file or Mind is still taking it
@@ -779,13 +821,15 @@ def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | 
     listed, "unmatched": [files no grid took], "failed": {grid: status} for a file Mind did not
     accept, "waiting": [files still not taken at the time limit], "rows": [{model, sheet, grid,
     status, file}], "files": [names uploaded], "reason": one plain sentence when not ok, "text": the
-    window's rows (first 600 characters), "timed_out", "closed", "seconds", "culture", "separator"}."""
+    window's rows (first 600 characters), "timed_out", "closed", "seconds", "culture", "separator",
+    "errors": Mind's own words for each refused file (its LOG: "CSV Logs"), "advice": what to do when Mind
+    refused a file because its columns are not its grid's (a raw input file given in a grid's place), else None}."""
     t0 = time.time()
     folder = Path(folder)
     files = input_files(folder)
     res: dict[str, Any] = {"ok": False, "statuses": {}, "unmatched": [], "failed": {}, "waiting": [], "rows": [],
                            "files": [f.name for f in files], "reason": None, "text": "", "timed_out": False,
-                           "closed": True, "seconds": None, "culture": None, "separator": None}
+                           "closed": True, "seconds": None, "culture": None, "separator": None, "errors": [], "advice": None}
     if not files:
         res.update(reason=f"no .csv or .txt file in {folder}", seconds=0.0)
         return res
@@ -862,10 +906,14 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
     stuck = None  # why the wait ended before Mind had finished
     rows: list[dict[str, Any]] = []
     text = ""
+    handed = time.time()
+    importing_seen = False
     while True:
         _wait(page, 3000)
         kill_tour(page)
         text = body_text(page)
+        importing = _has(text, _IMPORTING)
+        importing_seen = importing_seen or importing
         if _has(text, _UNMATCHED):
             popups += 1
             # the files the popup names (its own text only: the page's text also lists matched files)
@@ -879,6 +927,8 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
             if not closed and popups >= 3:
                 stuck = "Mind's 'Match unmatched inputs' window would not close"
                 break
+        elif importing or (not importing_seen and time.time() - handed < _IMPORT_START_S):
+            pass  # Mind is still taking the files: the rows are the last upload's
         elif not _has(text, _INPUTS_DROP):
             stuck = "the Inputs window closed before Mind had shown every file"
             break
@@ -905,6 +955,9 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
             (res["waiting"] if unfinished else res["unmatched"]).append(n)
         elif r["status"].strip().upper() != "SUCCESS":
             res["failed"][r["grid"]] = r["status"]
+    # what Mind says about each file it refused (the LOG tag of its row)
+    if res["failed"] and _has(body_text(page), _INPUTS_DROP):
+        res["errors"] = _csv_logs(page)
     res["text"] = _inputs_excerpt(text, popup)
     parts = [stuck] if stuck else []
     if res["unmatched"]:
@@ -918,6 +971,13 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
     if not parts and not rows:
         parts.append("the Inputs window's rows could not be read")
     res["reason"] = "; ".join(parts) or None
+    # a raw input file given in a grid's place ("doesn't have proper headers, there are 1340 columns
+    # while grid ... has 93 columns"): say what to do instead
+    from .next_quarter_inputs import explain_mind_input_error
+
+    res["advice"] = explain_mind_input_error("\n".join([text, *res["errors"]]))
+    if res["advice"] and res["reason"]:
+        res["reason"] += ". " + res["advice"]
     res["ok"] = res["reason"] is None and all(
         (r := _row_for(rows, n)) is not None and r["status"].strip().upper() == "SUCCESS" for n in names)
     # 5. close the window: nothing to save, the next run uses the imported values

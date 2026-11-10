@@ -33,6 +33,12 @@ the two honest cases below.
   that do the work on their own, one download; lists and manual work under
   Advanced. See `MindReadyUI/`.
 
+- **Outside input files** (1.12.4, `docs/OUTSIDE_INPUTS.md`): a model whose macro opens other
+  files gets them through Mind input grids (`IN_<sheet> /Input`). Each quarter, **Make next
+  quarter's Mind input files** turns the new raw files into one file per grid (the model's own
+  import macro on a copy; raw files cannot go into Mind's Inputs window as they are). Checked in
+  Mind on 10 November 2026: Mind = Excel, and a changed raw file changes Mind's result.
+
 - **Mind loop** (1.10.0): on the Model map screen, the macro's run loop as
   Mind formulas -- `MM_LOOP` in every driver cell over its column of the
   table (or the list, or the count), `MM_RESULT` row by row in the block the

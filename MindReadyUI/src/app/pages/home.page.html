@@ -182,6 +182,49 @@
             <span class="outside__note">one CSV per Mind input: the Mind team puts new ones in Mind's Inputs window each quarter</span>
           </p>
         }
+        @if (oi.mind_inputs?.length) {
+          <!-- each quarter: the new RAW files through the model's own import macro, one file per Mind input grid -->
+          <div class="outside__quarter">
+            <div class="outside__head">
+              <div>
+                <h3 class="outside__subtitle">Next quarter</h3>
+                <p class="outside__lead">{{ nextQuarterLead }}</p>
+              </div>
+              <div class="outside__buttons">
+                <button cdsButton="secondary" size="md" (click)="quarterPicker.click()" [disabled]="busy()" [title]="busyHint() || 'Pick the raw input files of the new quarter'">Make next quarter's Mind input files</button>
+                <input #quarterPicker type="file" multiple [accept]="pickAccept" (change)="onNextQuarterFiles($event)" hidden />
+              </div>
+            </div>
+            <p class="outside__note">Mind's Inputs window takes <bdi>{{ oi.mind_inputs!.join(", ") }}</bdi>: one file per grid, named like the grid.</p>
+            @if (nextQuarter().running) {
+              <div class="action__progress">
+                <cds-progress-bar [label]="nextQuarter().line" [helperText]="nextQuarter().detail" [max]="100"></cds-progress-bar>
+              </div>
+            } @else if (nextQuarter().line) {
+              <div class="outside__result">
+                <span class="dot" [class.dot--ok]="nextQuarter().tone === 'ok'" [class.dot--warn]="nextQuarter().tone === 'warn'" [class.dot--error]="nextQuarter().tone === 'error'"></span>
+                <span>{{ nextQuarter().line }}</span>
+                @if (nextQuarter().detail) { <button class="link" (click)="toggle('nextQuarter')">{{ nextQuarter().open ? "Hide details" : "View details" }}</button> }
+              </div>
+              @if (nextQuarter().open && nextQuarter().detail) {
+                <div class="action__result" [class.action__result--ok]="nextQuarter().tone === 'ok'" [class.action__result--warn]="nextQuarter().tone === 'warn'" [class.action__result--error]="nextQuarter().tone === 'error'">
+                  <span>{{ nextQuarter().detail }}</span>
+                </div>
+              }
+            }
+            @if (nextQuarterFiles().length) {
+              <ul class="outside__rows">
+                @for (line of nextQuarterFiles(); track line) { <li class="outside__row"><bdi>{{ line }}</bdi></li> }
+              </ul>
+            }
+            @if (nextQuarterZipUrl(); as url) {
+              <p class="outside__download">
+                <a [href]="url" download>Download Next quarter Mind inputs.zip</a>
+                <span class="outside__note">unzip it; in Mind, click Inputs, then Browse and pick the folder "Mind inputs"; wait for SUCCESS on every file, then Run</span>
+              </p>
+            }
+          </div>
+        }
       </section>
     } @else if (pickedInputs().length) {
       <p class="outside__aside">The model's macros open no outside files, so the other {{ pickedInputs().length === 1 ? "file" : pickedInputs().length + " files" }} you picked {{ pickedInputs().length === 1 ? "is" : "are" }} not used.</p>

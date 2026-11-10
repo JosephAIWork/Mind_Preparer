@@ -66,6 +66,7 @@ from app.model_map import build_model_map
 from app import model_map as model_map_module  # noqa: E402  (read_vba through the module: tests replace it)
 from app import outside_inputs  # noqa: E402  (through the module: tests replace run_import / apply_mind_inputs)
 from app import stand_in_inputs  # noqa: E402  (through the module: tests replace make_stand_ins / assistant_ask)
+from app import next_quarter_inputs  # noqa: E402  (through the module: tests replace make_next_quarter)
 from app.loop_builder import _add_repairs, build_loop_plan  # noqa: E402
 from app.instance_builder import build_instance_plan, loop_options_of, pick_loop_plan, write_main_workbook, zip_for_mind  # noqa: E402
 from app.instance_finder import EMPTY_ASSISTANT, find_instances, make_finder_advisor, merge_assistant  # noqa: E402
@@ -202,6 +203,8 @@ class Session:
     outside_vba: dict[str, Any] | None = None  # what the upload's macros open (read once)
     outside_inputs: dict[str, Any] | None = None  # {version_id, vba, table, match}; None: the macros open no outside file
     outside_run: dict[str, Any] = field(default_factory=dict)  # the bring-in job (GET .../outside-inputs)
+    # the last job making next quarter's Mind input files from new raw files (GET .../next-quarter-inputs)
+    next_quarter: dict[str, Any] = field(default_factory=dict)
     mind_inputs_dir: str | None = None  # the CSV folder of the last successful bring-in
     mind_inputs_dirs: dict[str, str] = field(default_factory=dict)  # "mind_inputs" version id -> its CSV folder
     # the bring-ins that FINISHED: the last version each made ("mind_inputs", or "import" when no Mind
@@ -1011,6 +1014,7 @@ _STEPS = {
     "/api/sessions/{session_id}/inputs": "Input files",
     "/api/sessions/{session_id}/outside-inputs": "Bring in the outside files",
     "/api/sessions/{session_id}/outside-inputs/run": "Bring in the outside files",
+    "/api/sessions/{session_id}/next-quarter-inputs": "Make next quarter's Mind input files",
     "/api/assistant-key": "AI key",
 }
 
@@ -2629,6 +2633,169 @@ def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str
     _rematch(s)
     _patch_outside_finding(s, s.result)
     return {"inputs": _inputs_public(s), "outsideInputs": _outside_public(s), "readiness": s.readiness()}
+
+
+# --- next quarter's Mind input files (app/next_quarter_inputs.py) ---------------------------------
+# Each quarter the client gets new RAW input files (the files the model's import macro opens). Mind
+# cannot take them: its Inputs window wants one file per /Input grid, shaped like the grid. The app
+# runs the model's own import macro again on a copy of the version the outside files were first
+# brought into, with the new files, and writes each grid's block out under the grid's name: a zip for
+# Mind's Inputs window. No new model upload, no new version.
+_NEXT_QUARTER_TITLES = {"start": "Starting", "import": "Running the model's import macro with the new files", "files": "Writing the Mind input files", "done": "Done"}
+
+
+def _next_quarter_source(s: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The version the model's import macro runs on (the one the outside files were first brought
+    into: it still has the macro and the model's own areas) and the Mind input grids of the current
+    line (its newest "mind_inputs" version: each grid's sheet, range and header, as Mind has it)."""
+    oi = s.outside_inputs
+    if not oi:
+        raise HTTPException(status_code=422, detail="The model's macros open no outside file, so it has no Mind input grids to fill.")
+    if not oi["vba"].get("import_macro") or not oi["table"]:
+        raise HTTPException(status_code=422, detail="The app cannot run this model's import macro by itself, so it cannot make the Mind input files.")
+    by_id = {v["id"]: v for v in s.versions}
+    made = next((v for v in reversed(_lineage(s, s.current_version_id)) if v.get("source") == "mind_inputs" and s.mind_inputs_dirs.get(v["id"])), None)
+    if made is None:
+        raise HTTPException(status_code=422, detail="Bring in the outside files first: that makes the Mind input grids these files fill.")
+    imported = by_id.get(made.get("parent") or "")
+    base = by_id.get((imported or {}).get("parent") or "") if (imported or {}).get("source") == "import" else None
+    if base is None or not s.paths.get(base["id"]) or not Path(s.paths[base["id"]]).is_file():
+        raise HTTPException(status_code=422, detail="The version the outside files were brought into is gone: bring them in again.")
+    grids = next_quarter_inputs.grids_of(made.get("change_log") or [], s.mind_inputs_dirs[made["id"]])
+    if not grids:
+        raise HTTPException(status_code=422, detail="The Mind input grids of this version could not be read: bring the outside files in again.")
+    return base, grids
+
+
+def _next_quarter_public(res: dict[str, Any]) -> dict[str, Any]:
+    imp = res.get("import") or None
+    return {
+        "ok": bool(res.get("ok")),
+        "summary": res.get("summary") or "",
+        "files": [{k: f.get(k) for k in ("file", "grid", "from", "source", "rows", "cols", "separator", "changed")} for f in res.get("files") or []],
+        "not_in_zip": list(res.get("not_in_zip") or []),
+        "notes": list(res.get("notes") or []),
+        "unused": list(res.get("unused") or []),
+        "import": None if imp is None else {
+            "macro": imp.get("macro"), "seconds": imp.get("seconds"), "stopped_early": bool(imp.get("stopped_early")),
+            "dialogs": [{"message": d.get("message_repaired") or d.get("message"), "pressed": d.get("pressed")} for d in imp.get("dialogs") or []],
+            "files": [{"cell": e.get("cell"), "file": e.get("file"), "opened": bool(e.get("opened"))} for e in imp.get("files") or [] if e.get("file")],
+        },
+        "zip": Path(res["zip"]).name if res.get("zip") else None,
+        "readme": res.get("readme"),
+        "error": res.get("error"),
+    }
+
+
+def _next_quarter_worker(s: Session, base: dict[str, Any], grids: list[dict[str, Any]], paths: list[Path], folder: Path, has_raw: bool) -> None:
+    st = s.next_quarter
+
+    def say(message: Any) -> None:
+        text = str(message)[:300]
+        stage = "files" if "Mind input" in text else "import" if has_raw else st.get("stage")
+        st.update(message=text, stage=stage, title=_NEXT_QUARTER_TITLES.get(stage or "", st.get("title")), updated=time.time())
+
+    end: dict[str, Any] = {}
+    try:
+        oi = s.outside_inputs or {}
+        if has_raw:
+            excel_worker.release(s.id)  # the macro runs in an Excel of its own
+        with perf_stage("next_quarter_inputs", file=Path(s.paths[base["id"]]).name, files=len(paths)):
+            res = next_quarter_inputs.make_next_quarter(
+                s.paths[base["id"]], oi.get("table") or [], paths, grids, oi["vba"]["import_macro"], folder,
+                messages=oi["vba"].get("messages") or [], progress=say, model_name=_main_name(s), made_at=time.strftime("%Y-%m-%d %H:%M"))
+        if res.get("ok") and res.get("zip"):
+            s.files[Path(res["zip"]).name] = Path(res["zip"])  # newest wins: one download name
+        public = _next_quarter_public(res)
+        end = {"state": "done" if res.get("ok") else "error", "stage": "done", "title": "Done", "result": public,
+               "error": None if res.get("ok") else res.get("error"), "message": public["summary"] or res.get("error")}
+    except Exception as exc:  # the thread must never die silently
+        end = {"state": "error", "error": _exc_text(exc)[:400]}
+        with contextlib.suppress(Exception):
+            end.update(_problem_fields(_report_problem(exc, "Make next quarter's Mind input files", s, stage=str(st.get("stage") or ""))))
+    finally:
+        st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
+
+
+@app.post("/api/sessions/{session_id}/next-quarter-inputs", status_code=202)
+def start_next_quarter_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    """Make next quarter's Mind input files, in the background (poll GET .../next-quarter-inputs): the
+    picked files are the new quarter's RAW input files (the files the model's import macro opens --
+    .xlsx, .xlsm, .csv ...); a file already shaped like a Mind input grid goes in as it is. The model's
+    own import macro runs on a copy with the raw files, and each /Input grid's new block is written
+    under the grid's name, with its header: one zip ("Next quarter Mind inputs.zip": README.md and the
+    folder "Mind inputs") for Mind's Inputs window. No version is added; the model is not uploaded again."""
+    s = _session(session_id)
+    picked = [f for f in files if (f.filename or "").strip()]
+    if not picked:
+        raise HTTPException(status_code=422, detail="Pick the new quarter's input files.")
+    _check_input_names([Path(f.filename or "").name for f in picked])
+    base, grids = _next_quarter_source(s)
+    if (s.next_quarter or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="Wait a moment: next quarter's Mind input files are still being made.")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
+    seen: set[str] = set()
+    for f in picked:
+        key = outside_inputs.normalize_name(Path(f.filename or "").name)
+        if key in seen:
+            raise HTTPException(status_code=422, detail=f"Two files are named {Path(f.filename or '').name}: pick one.")
+        seen.add(key)
+    folder = s.work_dir / "next_quarter" / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    paths = [_save_upload(f, folder / "picked" / f"{i + 1:02d}") for i, f in enumerate(picked)]
+    sorted_ = next_quarter_inputs.classify_files(paths, grids, (s.outside_inputs or {}).get("table") or [])
+    if not sorted_["grid_files"] and not sorted_["raw"]:
+        why_not = "; ".join(f"{u['file']}: {u['why']}" for u in sorted_["unused"][:3]) or "they fit no Mind input grid"
+        raise HTTPException(status_code=422, detail=f"None of the picked files fills a Mind input grid ({why_not}).")
+    has_raw = bool(sorted_["raw"])
+    if has_raw and not com_available():
+        raise HTTPException(status_code=409, detail="Reading raw input files needs Excel on this machine: the model's own import macro runs on them.")
+    now = time.time()
+    s.next_quarter = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now,
+                      "finished": None, "result": None, "error": None}
+    try:
+        threading.Thread(target=_next_quarter_worker, args=(s, base, grids, paths, folder, has_raw), name=f"next-quarter-{session_id}", daemon=True).start()
+    except Exception:
+        s.next_quarter.update(state="error", error="the job could not start", finished=time.time())
+        raise
+    return {
+        "running": True, "state": "running",
+        "raw": list(sorted_["raw"]),
+        "grid_files": [{"file": g["file"], "grid": g["grid"]} for g in sorted_["grid_files"]],
+        "notes": [n["why"] for n in sorted_["notes"]],
+        "unused": list(sorted_["unused"]),
+    }
+
+
+@app.get("/api/sessions/{session_id}/next-quarter-inputs")
+def next_quarter_inputs_state(session_id: str) -> dict[str, Any]:
+    """The Mind input grids next quarter's files fill (each with the file name Mind expects) and the
+    last job making them: running, its stage, its result (the files, which grid each fills, the zip)
+    or its error. `grids` is empty until the outside files are brought in (`why_not` says so)."""
+    s = _session(session_id)
+    try:
+        _base, grids = _next_quarter_source(s)
+        why_not = None
+    except HTTPException as exc:
+        grids, why_not = [], str(exc.detail)
+    st = s.next_quarter or {}
+    started = st.get("started")
+    return {
+        "grids": [{"name": g["name"], "sheet": g["sheet"], "ref": g["ref"], "rows": g["rows"], "cols": g["cols"],
+                   "file": Path(g["file"]).name if g.get("file") else None} for g in grids],
+        "available": bool(grids),
+        "why_not": why_not,
+        "running": st.get("state") == "running",
+        "state": st.get("state") or "idle",
+        "stage": st.get("title"),
+        "message": st.get("message"),
+        "elapsed_s": round((st.get("finished") or time.time()) - started, 1) if started else 0.0,
+        "result": st.get("result"),
+        "error": st.get("error"),
+        "incident": st.get("incident"),
+        "problem": st.get("problem"),
+    }
 
 
 # --- fix all automatically ----------------------------------------------------------------

@@ -4,8 +4,8 @@ import { Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
 import {
-  ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus,
-  appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
+  ChainEstimate, ChainStepId, FORMULA_ACTION_IDS, InputFile, LoopPlan, NEXT_QUARTER_LEAD, NextQuarterResult, NextQuarterStatus, Operation, OutsideInputRow, OutsideInputs, OutsideRunResult, OutsideRunStatus, PICK_ACCEPT, PendingUpload, ScanStatus,
+  appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, nextQuarterLines, nextQuarterOutcome, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
   pickedFilesProblem, withOutsideStep,
 } from "../core/models";
 import { PlainCodes, meaningsText } from "../core/plain-codes";
@@ -150,6 +150,22 @@ export class HomePage implements OnDestroy {
   /** the last run brought the files in but could not compare the computed values: amber, and Do everything stops there */
   readonly outsideUnchecked = signal(false);
   readonly pickAccept = PICK_ACCEPT;
+  /** Make next quarter's Mind input files: the new quarter's raw files through the model's own import
+   *  macro, one file per Mind input grid (raw files cannot go into Mind's Inputs window as they are) */
+  readonly nextQuarter = signal<ActionState>(idle());
+  readonly nextQuarterResult = signal<NextQuarterResult | null>(null);
+  readonly nextQuarterLead = NEXT_QUARTER_LEAD;
+  /** "Next quarter Mind inputs.zip" of the last job that made files */
+  readonly nextQuarterZipUrl = computed(() => {
+    const id = this.store.sessionId();
+    const r = this.nextQuarterResult();
+    return id && r?.ok && r.zip ? this.api.downloadUrl(id, r.zip) : null;
+  });
+  /** which file goes into which grid */
+  readonly nextQuarterFiles = computed(() => {
+    const r = this.nextQuarterResult();
+    return r?.ok ? nextQuarterLines(r) : [];
+  });
   readonly loopPlan = signal<LoopPlan | null>(null);
   readonly steps = signal<Step[]>([]);
   /** Ticked: once an uploaded workbook is read, Do everything starts by itself -- and a big workbook is
@@ -220,12 +236,13 @@ export class HomePage implements OnDestroy {
     return `${elapsed} · about ${minutes(left)} left${slow ? " · this step is taking longer than usual" : ""}`;
   });
   readonly busy = computed(
-    () => this.chainRunning() || this.outside().running || this.addingInputs() || this.fixAll().running || this.fixFormulas().running || this.prepare().running || this.loop().running || this.recalc().running,
+    () => this.chainRunning() || this.outside().running || this.nextQuarter().running || this.addingInputs() || this.fixAll().running || this.fixFormulas().running || this.prepare().running || this.loop().running || this.recalc().running,
   );
   /** Which step holds the buttons, for the hint on a disabled button. */
   readonly busyHint = computed(() => {
     if (this.chainRunning()) return "Do everything is running";
     if (this.outside().running) return "Bring in the outside files is running";
+    if (this.nextQuarter().running) return "Next quarter's Mind input files are being made";
     if (this.addingInputs()) return "The input files are being added";
     if (this.fixAll().running) return this.fixAll().stopping ? "Fix all issues is stopping after its round" : "Fix all issues is running";
     if (this.fixFormulas().running) return "Fix the formulas is running";
@@ -1156,8 +1173,70 @@ export class HomePage implements OnDestroy {
     return this[id]();
   }
 
-  toggle(which: StepId | "fixFormulas"): void {
+  toggle(which: StepId | "fixFormulas" | "nextQuarter"): void {
     this[which].update((s) => ({ ...s, open: !s.open }));
+  }
+
+  // ---- next quarter's Mind input files -------------------------------------------------------------
+  onNextQuarterFiles(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    if (files.length) void this.makeNextQuarter(files);
+  }
+
+  /** Make next quarter's Mind input files: the picked raw files go to the server, which runs the model's
+   *  own import macro on a copy with them and writes one file per Mind input grid (a file already shaped
+   *  like a grid goes in as it is). Followed until it ends; the zip is then offered for download. No new
+   *  version: the model in Mind stays as it is. */
+  async makeNextQuarter(files: File[]): Promise<boolean> {
+    const id = this.store.sessionId();
+    if (!id || this.nextQuarter().running) return false;
+    const fail = (line: string, detail = "") => {
+      this.nextQuarter.set({ running: false, fraction: null, line, detail, tone: "error", open: !!detail });
+      return false;
+    };
+    if (this.busy()) return fail(`Wait: ${this.busyHint()}.`);
+    const problem = inputFilesProblem(files.map((f) => f.name));
+    if (problem) return fail(problem);
+    this.nextQuarterResult.set(null);
+    this.nextQuarter.set({ running: true, fraction: null, line: "Starting…", detail: "", tone: "idle" });
+    try {
+      await this.api.startNextQuarter(id, files);
+    } catch (e) {
+      return fail(firstClause(errorText(e)) || "Not started", errorText(e));
+    }
+    const t0 = Date.now();
+    let failures = 0;
+    for (;;) {
+      if (this.destroyed) return false;
+      let st: NextQuarterStatus;
+      try {
+        st = await this.api.nextQuarter(id);
+        failures = 0;
+      } catch (e) {
+        if (++failures < 5) {
+          await this.sleep(1000);
+          continue;
+        }
+        return fail("Lost the job", errorText(e));
+      }
+      if (st.running) {
+        const secs = Math.round(st.elapsed_s ?? (Date.now() - t0) / 1000);
+        const took = secs < 60 ? `${secs} s so far` : `${Math.floor(secs / 60)} min ${secs % 60} s so far`;
+        const said = st.message && st.message !== st.stage ? st.message : "";
+        this.nextQuarter.set({ running: true, fraction: null, line: st.stage || "Working…", detail: [said, took].filter(Boolean).join(" · "), tone: "idle" });
+        await this.sleep(1000);
+        continue;
+      }
+      if (st.result) {
+        this.nextQuarterResult.set(st.result);
+        const out = nextQuarterOutcome(st.result);
+        this.nextQuarter.set({ running: false, fraction: null, line: out.line, detail: out.detail, tone: out.tone, open: out.tone !== "ok" && !!out.detail });
+        return st.result.ok;
+      }
+      return fail(firstClause(st.error ?? "") || "The job ended without a result", st.error ?? "");
+    }
   }
 
   private sleep(ms: number): Promise<void> {
