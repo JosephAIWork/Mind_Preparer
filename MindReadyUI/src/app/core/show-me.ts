@@ -28,6 +28,9 @@ export type ShowMeId =
   | "loop-choices" // Advanced › Mind loop: the answer a loop still needs, else the fold "Change the choices"
   | "loop-build" // Advanced › Mind loop: the Build it button
   | "loop-result" // Advanced › Mind loop: the line that says what the build did
+  | "instances-choice" // Advanced › Instances: the question "Make one copy per…" (the loops to tick, or a column)
+  | "instances-build" // Advanced › Instances: the Build it button
+  | "instances-result" // Advanced › Instances: the line that says what the build did, with the download
   | "outside-card" // main screen: the Outside files card
   | "outside-add" // main screen: the card's Add files
   | "outside-bring-in" // main screen: the card's button that brings the files in
@@ -150,6 +153,10 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   ],
   "loop-build": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-build", text: "Click Build it" }] }],
   "loop-result": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-result", text: "What the build did is here" }] }],
+  // the Instances tab: the question, the Build it button, the line with the download
+  "instances-choice": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-choice", text: "Tick a loop or pick a column here" }] }],
+  "instances-build": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-build", text: "Click Build it" }] }],
+  "instances-result": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-result", text: "What the build did is here, with the download" }] }],
   "outside-card": [{ page: "main", targets: [OUTSIDE_CARD] }],
   "outside-add": [{ page: "main", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "main", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
@@ -192,6 +199,11 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: under("Mind loop"), id: "loop-choices" },
   // "1 loop needs one answer", "2 loops need one answer each"; the older "needs a decision" still read
   { words: /\bloop(?:\(s\)|s)? needs? (?:one answer|a decision)\b/i, id: "loop-choices" },
+  // the Instances tab: "Build it under Advanced › Instances" (the button, named before the tab), "the
+  // copies' result" / "the instances' result" (the line with the download), else the question
+  { words: /\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Instances\b/i, id: "instances-build" },
+  { words: /\bthe (?:copies|instances)' result\b/i, id: "instances-result" },
+  { words: under("Instances"), id: "instances-choice" },
   { words: /\bOutside files card \(Add files\)/i, id: "outside-add" },
   { words: /\bBring (?:them|the outside files) in again\b|\bBring in the outside files\b/i, id: "outside-bring-in" },
   { words: /\bOutside files card\b/i, id: "outside-card" },

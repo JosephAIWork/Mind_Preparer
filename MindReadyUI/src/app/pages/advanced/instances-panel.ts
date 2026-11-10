@@ -5,17 +5,21 @@ import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { FinderDimension, FinderFits, FinderResult, InstanceChoices, InstanceLoopOption, InstancePlan, InstancePlanOperation, InstancePlanSplitGrid, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
+import { ShowMeLink } from "../../core/show-me-link";
 
 /** One word by count: plural(1, "cell") = "cell", plural(3, "cell") = "cells", plural(2, "axis", "axes") = "axes". */
 function plural(n: number, one: string, many = one + "s"): string {
   return n === 1 ? one : many;
 }
 
-/** The macro's run loop as Mind instances: one copy of the model per key value, a loop inside each copy; preview, write, download both files. */
+/** The Instances tab, one thing at a time: (1) one question, "Make one copy per…" (the macro's loops to
+ *  tick, or a column of a table); (2) one line of counts and one button, Build it, the rest behind
+ *  "Details"; (3) after the build, the download and "Next: Run in Mind". "Not sure? Let the app look"
+ *  opens the finder (where instances could help) under the question, top suggestion first. */
 @Component({
   selector: "mr-instances-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule, ShowMeLink],
   templateUrl: "./instances-panel.html",
   styleUrl: "./panels.scss",
   // the key dropdown, styled like the panel's text inputs (panels.scss has no rule for a select)
@@ -36,8 +40,10 @@ export class InstancesPanel implements OnInit, OnDestroy {
   readonly plan = signal<InstancePlan | null>(null);
   readonly loading = signal(false);
   readonly writing = signal(false);
-  /** true after a write, until the next preview: Write stays off, the download link shows */
+  /** true after a write, until the next preview: Build stays off, the download link shows */
   readonly written = signal(false);
+  /** true after a write that wrote at least one change, until the next preview: the "Done. Next" line */
+  readonly built = signal(false);
   readonly downloadUrl = signal<string | null>(null);
   readonly files = signal<string[]>([]);
   readonly fraction = signal<number | null>(null);
@@ -45,7 +51,11 @@ export class InstancesPanel implements OnInit, OnDestroy {
   readonly detail = signal("");
   readonly tone = signal<"idle" | "ok" | "warn" | "error">("idle");
   readonly showOps = signal(false);
-  // ---- Where instances could help (GET .../instance-finder): runs only on its button, never on init ----
+  /** the folds: Details (the cards, the cleared areas, how it runs), the finder, What is this? */
+  readonly detailsOpen = signal(false);
+  readonly finderOpen = signal(false);
+  readonly whatOpen = signal(false);
+  // ---- Where instances could help (GET .../instance-finder): runs only when its fold is opened, never on init ----
   readonly finder = signal<FinderResult | null>(null);
   readonly finding = signal(false);
   /** the error text of the last find */
@@ -54,19 +64,19 @@ export class InstancesPanel implements OnInit, OnDestroy {
   readonly assistantOn = signal(false);
   /** the tick "Explain and rank with the assistant" */
   readonly useAssistant = signal(false);
-  /** every dimension, not only the first three */
+  /** every suggestion, not only the top one */
   readonly showAll = signal(false);
   /** the one card whose "Show why" is open */
   readonly openId = signal<string | null>(null);
   /** beside the key dropdown: the finder's column is not one of its text candidates; the plan uses it anyway */
   readonly keyHint = signal("");
   private stop: (() => void) | null = null;
-  /** the Mind loop panel's choices (each loop's own, and the macro), sent with every plan */
+  /** the Mind loop tab's choices (each loop's own, and the macro), sent with every plan */
   readonly loopChoices = computed(() => this.store.loopChoices?.() ?? null);
   readonly usesLoopChoices = computed(() => Object.keys(this.loopChoices()?.loops ?? {}).length > 0);
 
   constructor() {
-    // the loop panel previewed other choices: the plan here follows them
+    // the loop tab previewed other choices: the plan here follows them
     let first = true;
     effect(() => {
       this.loopChoices();
@@ -95,10 +105,16 @@ export class InstancesPanel implements OnInit, OnDestroy {
     if (!chosen.length) return 0;
     return this.loopOptions().filter((o) => chosen.includes(o.name)).reduce((n, o) => n * (o.count ?? 1), 1);
   });
+  /** the question has an answer: loops ticked, a column picked, or the plan's own pick of a column (the key the macro looks up) */
+  readonly chosen = computed(() => this.loops().length > 0 || !!this.key() || !!this.plan()?.key?.column);
+  /** the question can be answered: the model has a loop to tick or a table column to pick */
+  readonly hasChoices = computed(() => this.loopOptions().length > 0 || this.candidates().length > 0 || !!this.finderColumn());
   readonly canWrite = computed(() => {
     const p = this.plan();
     return !!p && p.found && p.status === "ready" && p.operation_count > 0 && !this.written();
   });
+  /** the finder's top suggestion, the one shown first */
+  readonly topSuggestion = computed<FinderDimension | null>(() => this.finder()?.dimensions[0] ?? null);
 
   ngOnInit(): void {
     void this.preview();
@@ -138,6 +154,25 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return `${o.count ?? "?"} ${plural(o.count ?? 0, "value")}${span}`;
   }
 
+  /** "One copy of the model per combination of CohortRng and Scenario." / "One copy of the model per Product, a loop inside each copy over its rows." */
+  perSentence(): string {
+    const loops = this.loops();
+    if (loops.length) return `One copy of the model per combination of ${loops.join(" and ")}.`;
+    return `One copy of the model per ${this.keyWord()}, a loop inside each copy over its rows.`;
+  }
+
+  /** "24 copies · 522 result cells": the one line of step 2. */
+  summary(p: InstancePlan): string {
+    const copies = p.counts?.key_values ?? 0;
+    const cells = p.counts?.result_cells ?? 0;
+    return `${copies} ${plural(copies, "copy", "copies")} · ${cells} result ${plural(cells, "cell")}`;
+  }
+
+  /** "12 changes" / "1 change" on the Build it button. */
+  changes(n: number): string {
+    return `${n} ${plural(n, "change")}`;
+  }
+
   pickKey(event: Event): void {
     this.setKey((event.target as HTMLSelectElement).value);
   }
@@ -163,6 +198,7 @@ export class InstancesPanel implements OnInit, OnDestroy {
     this.tone.set("idle");
     this.line.set("");
     this.written.set(false);
+    this.built.set(false);
     // a new plan: the zip of an earlier write belongs to other choices
     this.downloadUrl.set(null);
     this.files.set([]);
@@ -185,6 +221,7 @@ export class InstancesPanel implements OnInit, OnDestroy {
     if (!id || this.writing() || !this.canWrite()) return;
     this.writing.set(true);
     this.tone.set("idle");
+    this.built.set(false);
     this.line.set("Writing the instances through Excel…");
     this.detail.set("");
     this.stop = followApply(this.api, id, (t) => {
@@ -209,6 +246,7 @@ export class InstancesPanel implements OnInit, OnDestroy {
       this.tone.set(refused || warnings.length ? "warn" : "ok");
       this.line.set(refused ? `${done} written, ${refused} refused` : `${done} changes written`);
       this.detail.set([out.version?.label ?? "", instancePlan?.how_it_runs ?? "", failedText(r), ...warnings].filter(Boolean).join(" · "));
+      this.built.set(done > 0);
     } catch (e) {
       this.stop?.();
       this.tone.set("error");
@@ -224,8 +262,9 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return status === "ready" ? "chip chip--ok" : status === "needs_decision" ? "chip chip--warn" : status === "nothing_to_do" ? "chip" : "chip chip--error";
   }
 
+  /** The status in plain words: "needs one answer" (not "a decision"), "left as is" (not "not built"). */
   statusText(status: string): string {
-    return status === "ready" ? "ready" : status === "needs_decision" ? "needs a decision" : status === "nothing_to_do" ? "nothing to do" : "not built";
+    return status === "ready" ? "ready" : status === "needs_decision" ? "needs one answer" : status === "nothing_to_do" ? "nothing to do" : "left as is";
   }
 
   chosenByText(by: string | undefined): string {
@@ -249,6 +288,13 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return `${op.sheet}!${op.cell ?? ""} ${op.after ?? "(cleared)"}`;
   }
 
+  /** "Not sure? Let the app look": opens the finder's fold and, the first time, reads the model. */
+  toggleFinder(): void {
+    const open = !this.finderOpen();
+    this.finderOpen.set(open);
+    if (open && !this.finder() && !this.finding()) void this.find();
+  }
+
   /** The finder: where instances or a loop would help. Reads every formula; up to two minutes on a big model. */
   async find(refresh = false): Promise<void> {
     const id = this.store.sessionId();
@@ -267,10 +313,12 @@ export class InstancesPanel implements OnInit, OnDestroy {
     }
   }
 
-  /** "Use as the key": the dimension's column into the builder's key, then the preview (the same path as the dropdown). */
+  /** "Use it": the suggestion's column into the question's dropdown, then the preview (the same path as the dropdown); the finder folds away. */
   useAsKey(d: FinderDimension): void {
     const column = d.key?.column;
-    if (column) this.setKey(column);
+    if (!column) return;
+    this.finderOpen.set(false);
+    this.setKey(column);
   }
 
   toggleWhy(id: string): void {
@@ -281,8 +329,9 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return f === "yes" ? "chip chip--ok" : f === "partly" ? "chip chip--warn" : "chip";
   }
 
+  /** "copies: fits" / "a loop: fits partly" / "leave as is: does not fit". */
   fitWord(o: "instances" | "loop" | "leave", f: FinderFits): string {
-    const w = o === "instances" ? "Instances" : o === "loop" ? "A loop" : "Leave as is";
+    const w = o === "instances" ? "copies" : o === "loop" ? "a loop" : "leave as is";
     return `${w}: ${f === "yes" ? "fits" : f === "partly" ? "fits partly" : "does not fit"}`;
   }
 
@@ -314,6 +363,12 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return parts.length ? `Also seen and left alone: ${parts.join(", ")}.` : "";
   }
 
+  /** "1,200 formulas · 3 places found · 0 set aside · 2.5 s": what the finder read. */
+  finderLine(f: FinderResult): string {
+    const c = f.counts;
+    return `${c.formulas.toLocaleString("en-US")} formulas · ${c.dimensions} ${plural(c.dimensions, "place")} found · ${c.chains} set aside · ${c.seconds.toFixed(1)} s`;
+  }
+
   /** The builder's key next to the finder's top one: "the builder picked the same key" / "… another key: column X"; "" when there is nothing to compare. */
   builderLine(f: FinderResult): string {
     const b = f.builder;
@@ -322,9 +377,9 @@ export class InstancesPanel implements OnInit, OnDestroy {
     return b.matches_top ? `${who} the same key` : `${who} another key: column ${b.column}`;
   }
 
-  /** The first three dimensions, or all of them after "Show all". */
+  /** The top suggestion only, or every one after "Show all". */
   shown(): FinderDimension[] {
     const d = this.finder()?.dimensions ?? [];
-    return this.showAll() ? d : d.slice(0, 3);
+    return this.showAll() ? d : d.slice(0, 1);
   }
 }

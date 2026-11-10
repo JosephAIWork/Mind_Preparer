@@ -31,6 +31,12 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
   { where: "a text that names the Build it button", text: "Build it under Advanced › Mind loop", id: "loop-build" },
   { where: "a text that names the Build it button (click)", text: "Type the answer, then click Build it.", id: "loop-build" },
   { where: "a text that names the loop's result", text: "See the loop's result under Advanced › Mind loop", id: "loop-result" },
+  // the Instances tab's own places: the question, the Build it button, the line with the download
+  { where: "a text that names the Instances tab", text: "One copy of the model per scenario: choose it under Advanced › Instances", id: "instances-choice" },
+  { where: "a text that names the Instances tab (plain >)", text: "Tick the loops under Advanced > Instances", id: "instances-choice" },
+  { where: "a text that names the Instances tab's Build it button", text: "Build it under Advanced › Instances", id: "instances-build" },
+  { where: "a text that names the copies' result", text: "See the copies' result under Advanced › Instances", id: "instances-result" },
+  { where: "a text that names the instances' result", text: "Download the instances' result under Advanced › Instances", id: "instances-result" },
   { where: "Recalculate tile", text: "Recalculated in Excel · 2 new since the original · 3 already in the original · The list is under Advanced › Recalculate.", id: "recalc-errors" },
   { where: "Do everything: the loop step skipped", text: "The loop needs a decision first (Advanced › Mind loop)", id: "loop-choices" },
   {
@@ -256,6 +262,19 @@ describe("Show me: the clicks to a place", () => {
     expect(planShowMe({ id: "loop-build" }, "main").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
     expect(planShowMe({ id: "loop-build" }, "advanced")[1].targets).toEqual([{ el: "loop-build", text: "Click Build it" }]);
     expect(planShowMe({ id: "loop-result" }, "advanced")[1].targets[0].el).toBe("loop-result");
+  });
+
+  it("leads to the Instances tab's places: the question, the Build it button, the result with the download", () => {
+    expect(planShowMe({ id: "instances-choice" }, "advanced")).toEqual([
+      { kind: "tab", tab: "instances", targets: [{ el: "tab-instances", text: "Click Instances" }] },
+      { kind: "place", targets: [{ el: "instances-choice", text: "Tick a loop or pick a column here" }] },
+    ]);
+    expect(planShowMe({ id: "instances-build" }, "main").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
+    expect(planShowMe({ id: "instances-build" }, "advanced")[1].targets).toEqual([{ el: "instances-build", text: "Click Build it" }]);
+    expect(planShowMe({ id: "instances-result" }, "advanced")[1].targets[0].el).toBe("instances-result");
+    // "Advanced › Instances" is not "Advanced › Mind loop": the two tabs are told apart
+    expect(showMeFor("Build it under Advanced › Instances")?.id).toBe("instances-build");
+    expect(showMeFor("Build it under Advanced › Mind loop")?.id).toBe("loop-build");
   });
 
   it("takes the way on the screen the user is on when there are two", () => {

@@ -478,3 +478,15 @@
   color: theme.$text-primary !important;
   font-weight: 600;
 }
+
+// the Instances tab: the one question (the loops to tick, or a column), its answer below it
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+  max-width: 64rem;
+
+  .copies-from {
+    gap: $spacing-04;
+  }
+}

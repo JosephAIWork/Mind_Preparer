@@ -1,256 +1,281 @@
 <div class="panel">
-  <h3 class="panel__h">Mind instances</h3>
-  <p class="hint">
-    @if (loops().length) { One copy of the model per combination of {{ loops().join(" and ") }}. Mind gets two files. }
-    @else { One copy of the model per {{ keyWord() }}, a loop inside each copy over its rows. Mind gets two files. }
-  </p>
-
-  @if (usesLoopChoices()) {
-    <p class="hint loop-choices-used">Uses the choices you made for each loop on the Mind loop panel.</p>
-  }
-  @if (loopOptions().length) {
-    <div class="row copies-from">
-      <span class="hint">Copies from loops:</span>
-      @for (o of loopOptions(); track o.name) {
-        <label class="check" [title]="o.why || ''">
-          <input type="checkbox" [checked]="loops().includes(o.name)" (change)="toggleLoop(o.name)" [disabled]="!o.usable || loading() || writing()" />
-          {{ o.name }} <span class="hint">({{ loopText(o) }})</span>
+  <!-- step 1: one question -->
+  <div class="step" data-show-me="instances-choice">
+    <p class="lead" data-test="inst-question">Make one copy per…</p>
+    @if (usesLoopChoices()) {
+      <p class="hint loop-choices-used">Uses the choices you made for each loop on the Mind loop panel.<mr-show-me to="loop-choices"></mr-show-me></p>
+    }
+    @if (loopOptions().length) {
+      <div class="row copies-from">
+        @for (o of loopOptions(); track o.name) {
+          <label class="check" [title]="o.why || ''">
+            <input type="checkbox" [checked]="loops().includes(o.name)" (change)="toggleLoop(o.name)" [disabled]="!o.usable || loading() || writing()" />
+            {{ o.name }} <span class="hint">({{ loopText(o) }})</span>
+          </label>
+        }
+        @if (loopCopies()) { <span class="hint">= {{ loopCopies() }} copies</span> }
+      </div>
+    }
+    @if ((candidates().length || finderColumn()) && !loops().length) {
+      <div class="row">
+        <label class="field">{{ loopOptions().length ? "or a column of a table" : "a column of a table" }}
+          <select (change)="pickKey($event)" [disabled]="loading() || writing()">
+            @if (!chosenColumn()) { <option value="" selected>choose a column…</option> }
+            @for (c of candidates(); track c.column) {
+              <option [value]="c.column" [selected]="c.column === chosenColumn()">{{ c.header }} ({{ c.distinct }}{{ c.sampled ? "+" : "" }} values, column {{ c.column }})</option>
+            }
+            @if (finderColumn(); as col) {
+              <option [value]="col" [selected]="true">column {{ col }} (from the finder)</option>
+            }
+          </select>
         </label>
-      }
-      @if (loopCopies()) { <span class="hint">= {{ loopCopies() }} copies</span> }
-    </div>
-  }
-
-  <div class="row">
-    @if (candidates().length && !loops().length) {
-      <label class="field">Key column
-        <select (change)="pickKey($event)" [disabled]="loading() || writing()">
-          @for (c of candidates(); track c.column) {
-            <option [value]="c.column" [selected]="c.column === chosenColumn()">{{ c.header }} ({{ c.distinct }}{{ c.sampled ? "+" : "" }} values, column {{ c.column }})</option>
-          }
-          @if (finderColumn(); as col) {
-            <option [value]="col" [selected]="true">column {{ col }} (from the finder)</option>
-          }
-        </select>
-      </label>
+        @if (keyHint()) { <span class="hint">{{ keyHint() }}</span> }
+      </div>
     }
-    @if (keyHint()) { <span class="hint">{{ keyHint() }}</span> }
-    @if (!loops().length) {
-      <label class="check"><input type="checkbox" [checked]="allKeys()" (change)="toggleAllKeys()" [disabled]="loading() || writing()" /> Every key of the list, even without rows</label>
+    @if (plan() && plan()!.found && !hasChoices()) {
+      <p class="hint">No loop and no table to make copies from.</p>
     }
-    <button cdsButton="secondary" size="md" (click)="preview()" [disabled]="loading() || writing()">Preview</button>
   </div>
 
   @if (loading()) {
     <cds-inline-loading [state]="'active'" loadingText="Reading the model and its table…"></cds-inline-loading>
   }
 
+  <!-- not sure? the finder: where instances could help, top suggestion first -->
+  @if (plan()?.found) {
+    <details class="fold fold--quiet" data-test="inst-finder" [open]="finderOpen()">
+      <summary (click)="$event.preventDefault(); toggleFinder()">Not sure? Let the app look</summary>
+      <div class="fold__body">
+        <p class="hint">The app reads the model and points to what repeats: a column the copies could split on, blocks or sheets that compute the same. It writes nothing.</p>
+        <div class="row">
+          @if (assistantOn()) {
+            <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set($any($event.target).checked)" [disabled]="finding()" /> Explain and rank with the assistant</label>
+          }
+          @if (finder()) {
+            <button type="button" cdsButton="ghost" size="sm" (click)="find(true)" [disabled]="finding()">Look again</button>
+          } @else if (!finding()) {
+            <button type="button" cdsButton="secondary" size="sm" (click)="find()" [disabled]="loading()">Look</button>
+          }
+        </div>
+        @if (finding()) {
+          <cds-inline-loading [state]="'active'" loadingText="Reading every formula of the model… up to two minutes on a big model"></cds-inline-loading>
+        }
+        @if (findLine()) {
+          <div class="result result--error"><strong>Could not read the model</strong><span>{{ findLine() }}</span></div>
+        }
+        @if (finder(); as f) {
+          <p class="hint">
+            {{ finderLine(f) }}
+            @if (builderLine(f)) { · <span [class]="f.builder?.matches_top ? '' : 'chip chip--warn'">{{ builderLine(f) }}</span> }
+          </p>
+          @for (s of f.skipped; track $index) { <p class="card__caution">{{ s }}</p> }
+          @if (!f.dimensions.length) { <p class="hint">Nothing repeats enough to split: leave the model as it is.</p> }
+          @for (d of shown(); track d.id) {
+            <div class="card suggestion">
+              <div class="card__head">
+                <span class="card__title">#{{ d.rank }} {{ d.label }}@if (d.assistant_rank) { <span class="chip">assistant: #{{ d.assistant_rank }}</span> }</span>
+                <span class="card__count">{{ d.copies }} copies · biggest {{ d.biggest_copy ?? "–" }}</span>
+              </div>
+              <p>{{ d.headline }}</p>
+              <div class="card__meta">
+                <span [class]="fitClass(d.fit.instances.fits)">{{ fitWord("instances", d.fit.instances.fits) }}</span>
+                <span [class]="fitClass(d.fit.loop.fits)">{{ fitWord("loop", d.fit.loop.fits) }}</span>
+                <span [class]="fitClass(d.fit.leave.fits)">{{ fitWord("leave", d.fit.leave.fits) }}</span>
+              </div>
+              <div class="row">
+                @if (d.key?.column) {
+                  <button type="button" cdsButton="secondary" size="sm" class="use-it" (click)="useAsKey(d)" [disabled]="loading() || writing()">Use it</button>
+                  <span class="hint">one copy per value of column {{ d.key!.column }}: the question above is answered with it</span>
+                }
+                <button type="button" class="link" (click)="toggleWhy(d.id)">{{ openId() === d.id ? "Hide why" : "Show why" }}</button>
+              </div>
+              @if (openId() === d.id) {
+                <p class="hint">Seen: {{ kindWords(d.kinds) }} · saves {{ d.formulas_saved }} formulas · {{ d.cells_changed }} cells would change</p>
+                @for (e of d.evidence; track $index) {
+                  <p class="card__caution">{{ e.text }}@if (e.cells?.length) { <span class="mono"> ({{ e.cells!.join(", ") }})</span> }</p>
+                }
+                @if (d.readers?.all_slots?.count) { <p class="card__caution">{{ d.readers!.all_slots.text }}</p> }
+                @if (d.readers?.computed_slot?.count) { <p class="card__caution">{{ d.readers!.computed_slot.text }}</p> }
+                @if (d.readers?.keyed_slot?.count) { <p class="card__caution">{{ d.readers!.keyed_slot.text }}</p> }
+                @if (d.readers?.fixed_slot?.count) { <p class="card__caution">{{ d.readers!.fixed_slot.text }}</p> }
+                @for (r of d.fit.instances.reasons; track $index) { <p class="card__caution">{{ r }}</p> }
+                @if (unifyLine(d); as u) { <p class="card__caution">{{ u }}</p> }
+                @if (d.edits?.branches?.count) { <p class="card__caution">{{ d.edits!.branches!.count }} formulas choose a value with an IF on the key: {{ d.edits!.branches!.action }}.</p> }
+                @if (d.assistant_text) { <p class="card__caution"><em>Assistant:</em> {{ d.assistant_text }}</p> }
+              }
+            </div>
+          }
+          @if (f.dimensions.length > 1) { <button type="button" class="link" data-test="inst-show-all" (click)="showAll.set(!showAll())">{{ showAll() ? "Show the top one only" : "Show all " + f.dimensions.length }}</button> }
+          @if (f.chains.length) {
+            <p class="hint">Set aside, each copy reads the one before it: @for (c of f.chains; track $index) { <span class="mono">{{ c.label }}</span> ({{ c.copies }} copies) }</p>
+          }
+          @if (f.macro_loops.length) {
+            <p class="hint">The macro's loops the Mind loop tab already handles: @for (l of f.macro_loops; track $index) { <span class="mono">{{ l.name }}</span> ({{ l.status }}) }</p>
+          }
+          @if (ignoredLine(f); as ig) { <p class="hint">{{ ig }}</p> }
+          @if (f.assistant.asked) {
+            <div class="result" [class.result--warn]="!f.assistant.available">
+              <strong>{{ f.assistant.available ? "The assistant's view" : "Without the assistant" }}</strong>
+              <span>{{ f.assistant.text || f.assistant.message || "The assistant ranked the places but gave no explanation." }}</span>
+              @for (x of f.assistant.extra; track $index) { <span>{{ x.headline }} — {{ x.why }} <em>({{ x.flag }})</em></span> }
+            </div>
+          }
+        }
+      </div>
+    </details>
+  }
+
   @if (plan(); as p) {
     @if (!p.found) {
       <p class="hint">No run loop in this workbook: nothing to copy.</p>
       @for (n of p.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
-    } @else {
-      <p class="hint">
+    } @else if (chosen()) {
+      <!-- step 2: one line, one button -->
+      <p class="hint">{{ perSentence() }} Mind gets two files.</p>
+      <p class="lead" data-test="inst-summary">
         <span [class]="chipClass(p.status)">{{ statusText(p.status) }}</span>
-        {{ p.counts?.key_values ?? 0 }} copies · {{ p.counts?.result_cells ?? 0 }} result cells · {{ p.counts?.inserted_rows ?? 0 }} rows inserted · {{ p.counts?.cleared ?? 0 }} cells emptied
+        {{ summary(p) }}
       </p>
       @for (n of p.notes ?? []; track $index) { <p class="card__caution">{{ n }}</p> }
 
-      @if (p.mode === "loops" && p.copies_from?.length) {
-        <div class="card copies-card">
-          <div class="card__head">
-            <span class="card__title">Copies from {{ copiesTitle(p) }}</span>
-            <span class="card__count">{{ p.key?.distinct ?? 0 }} copies</span>
-          </div>
-          <div class="card__meta">
-            @for (c of p.copies_from!; track c.name) { <span class="mono">{{ c.driver }} {{ c.formula }}</span> }
-          </div>
-          @if (p.split_grid; as g) {
-            <p class="card__caution">Each copy's values: the grid <span class="mono">{{ g.title }}</span> at <span class="mono">{{ g.title_cell }}</span>, one row per copy.</p>
-          }
-          @if (p.kept_loops?.length) {
-            <p class="card__caution">Stay loops inside every copy: @for (k of p.kept_loops!; track k.name) { <span class="mono">{{ k.name }}</span> }</p>
-          }
-          @if (p.results; as r) {
-            <p class="card__caution">Each copy's results in the main workbook: <span class="mono">{{ r.block }}</span> ({{ r.rows }} × {{ r.cols }})</p>
+      <div class="row">
+        <button type="button" cdsButton="primary" size="md" data-show-me="instances-build" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Build it ({{ changes(p.operation_count) }})</button>
+      </div>
+
+      @if (writing()) {
+        <div class="bar__progress"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
+      } @else if (line()) {
+        <div class="result" data-show-me="instances-result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
+          <strong>{{ line() }}</strong>
+          @if (detail()) { <span>{{ detail() }}</span> }
+          @if (files().length) { <span class="mono">{{ files().join(" + ") }}</span> }
+          <!-- step 3: the download, then Run in Mind -->
+          @if (built() && downloadUrl()) {
+            <span class="result__next" data-test="inst-next">Done. Download both files (zip). Next: Run in Mind - upload both files as one project<mr-show-me to="download"></mr-show-me></span>
           }
         </div>
       }
+      @if (downloadUrl(); as url) {
+        <div class="row"><a cdsButton="secondary" size="md" data-test="inst-download" [href]="url" download>Download both files (zip)</a></div>
+      }
 
-      @if (p.mode !== "loops" && p.key; as k) {
-        <div class="card">
-          <div class="card__head">
-            <span class="card__title">Key: {{ k.header || k.column || "none yet" }}</span>
-            <span class="card__count">{{ k.distinct ?? 0 }} copies@if (k.column) { · column {{ k.column }} }</span>
-          </div>
-          <div class="card__meta">
-            @if (p.table; as t) { <span class="mono">table {{ t.sheet }}!{{ t.ref }} · {{ t.rows ?? 0 }} rows</span> }
-            @if (k.chosen_by) { <span>{{ chosenByText(k.chosen_by) }}</span> }
-          </div>
-          @if (p.split_grid; as g) {
-            <p class="card__caution">The table becomes the grid <span class="mono">{{ g.title }}</span>@if (g.title_cell) { at <span class="mono">{{ g.title_cell }}</span> }{{ splitText(g) }}</p>
-          }
-          @if (keyCounts().length) {
-            <div class="card__meta">
-              @for (kc of keyCounts().slice(0, 8); track kc[0]) { <span class="mono">{{ kc[0] }}: {{ kc[1] }} rows</span> }
-              @if (keyCounts().length > 8) { <span>… {{ keyCounts().length - 8 }} more</span> }
+      <!-- the details: the cards, the cleared areas, how it runs, the changes -->
+      <details class="fold" data-test="inst-details" [open]="detailsOpen()" (toggle)="detailsOpen.set($any($event.target).open)">
+        <summary>Details</summary>
+        <div class="fold__body">
+          @if (p.mode === "loops" && p.copies_from?.length) {
+            <div class="card copies-card">
+              <div class="card__head">
+                <span class="card__title">Copies from {{ copiesTitle(p) }}</span>
+                <span class="card__count">{{ p.key?.distinct ?? 0 }} copies</span>
+              </div>
+              <div class="card__meta">
+                @for (c of p.copies_from!; track c.name) { <span class="mono">{{ c.driver }} {{ c.formula }}</span> }
+              </div>
+              @if (p.split_grid; as g) {
+                <p class="card__caution">Each copy's values: the grid <span class="mono">{{ g.title }}</span> at <span class="mono">{{ g.title_cell }}</span>, one row per copy.</p>
+              }
+              @if (p.kept_loops?.length) {
+                <p class="card__caution">Loops that stay inside every copy: @for (k of p.kept_loops!; track k.name) { <span class="mono">{{ k.name }}</span> }</p>
+              }
+              @if (p.results; as r) {
+                <p class="card__caution">Each copy's results in the main workbook: <span class="mono">{{ r.block }}</span> ({{ r.rows }} × {{ r.cols }})</p>
+              }
             </div>
           }
-        </div>
-      }
 
-      @if (p.loop; as l) {
-        <div class="card">
-          <div class="card__head">
-            <span class="card__title">Loop {{ l.name || "" }}</span>
-            @if (l.macro) { <span class="card__count">macro {{ l.macro }}</span> }
-          </div>
-          <div class="card__meta">
-            @if (l.driver) { <span class="mono">driver {{ l.driver }}</span> }
-            @if (l.count_cell) { <span class="mono">count {{ l.count_cell }}</span> }
-            @if (l.max_cell) { <span class="mono">loop size {{ l.max_cell }}</span> }
-          </div>
-          @if (l.formula) { <p class="card__caution mono">{{ l.formula }}</p> }
-        </div>
-      }
+          @if (p.mode !== "loops" && p.key; as k) {
+            <div class="card">
+              <div class="card__head">
+                <span class="card__title">One copy per {{ k.header || k.column || "none yet" }}</span>
+                <span class="card__count">{{ k.distinct ?? 0 }} copies@if (k.column) { · column {{ k.column }} }</span>
+              </div>
+              <div class="card__meta">
+                @if (p.table; as t) { <span class="mono">table {{ t.sheet }}!{{ t.ref }} · {{ t.rows ?? 0 }} rows</span> }
+                @if (k.chosen_by) { <span>{{ chosenByText(k.chosen_by) }}</span> }
+              </div>
+              @if (p.split_grid; as g) {
+                <p class="card__caution">The table becomes the grid <span class="mono">{{ g.title }}</span>@if (g.title_cell) { at <span class="mono">{{ g.title_cell }}</span> }{{ splitText(g) }}</p>
+              }
+              @if (keyCounts().length) {
+                <div class="card__meta">
+                  @for (kc of keyCounts().slice(0, 8); track kc[0]) { <span class="mono">{{ kc[0] }}: {{ kc[1] }} rows</span> }
+                  @if (keyCounts().length > 8) { <span>… {{ keyCounts().length - 8 }} more</span> }
+                </div>
+              }
+              <label class="check"><input type="checkbox" [checked]="allKeys()" (change)="toggleAllKeys()" [disabled]="loading() || writing()" /> Also keys with no rows</label>
+            </div>
+          }
 
-      @for (o of p.outputs ?? []; track $index) {
-        <div class="card" [class.card--off]="o.status !== 'ready'">
-          <div class="card__head">
-            <span class="card__title">Output block {{ o.block }} <span [class]="chipClass(o.status)">{{ statusText(o.status) }}</span></span>
-            <span class="card__count">{{ o.cells ?? 0 }} cells</span>
-          </div>
-          <div class="card__meta">
-            @if (o.source_sheet) { <span class="mono">from {{ o.source_sheet }}</span> }
-            @if (o.example) { <span class="mono">{{ o.example }}</span> }
-          </div>
-          @if (o.why) { <p class="card__caution">{{ o.why }}</p> }
-        </div>
-      }
+          @if (p.loop; as l) {
+            <div class="card">
+              <div class="card__head">
+                <span class="card__title">Loop {{ l.name || "" }}</span>
+                @if (l.macro) { <span class="card__count">macro {{ l.macro }}</span> }
+              </div>
+              <div class="card__meta">
+                @if (l.driver) { <span>the cell the macro changes: <span class="mono">{{ l.driver }}</span></span> }
+                @if (l.count_cell) { <span>number of passes: <span class="mono">{{ l.count_cell }}</span></span> }
+                @if (l.max_cell) { <span>loop size: <span class="mono">{{ l.max_cell }}</span></span> }
+              </div>
+              @if (l.formula) { <p class="card__caution mono">{{ l.formula }}</p> }
+            </div>
+          }
 
-      @if (p.main; as m) {
-        <div class="card">
-          <div class="card__head">
-            <span class="card__title">Main workbook {{ m.file }}</span>
-            <span class="card__count">{{ m.keys?.length ?? 0 }} keys</span>
-          </div>
-          <div class="card__meta"><span class="mono">model file {{ m.model_file }}</span></div>
-          @for (g of m.grids ?? []; track $index) {
-            <p class="card__caution"><span class="mono">{{ g.title }}</span> · {{ g.rows ?? 0 }} rows × {{ g.cols ?? 0 }} columns{{ g.what ? " · " + g.what : "" }}</p>
+          @for (o of p.outputs ?? []; track $index) {
+            <div class="card" [class.card--off]="o.status !== 'ready'">
+              <div class="card__head">
+                <span class="card__title">Output block {{ o.block }} <span [class]="chipClass(o.status)">{{ statusText(o.status) }}</span></span>
+                <span class="card__count">{{ o.cells ?? 0 }} cells</span>
+              </div>
+              <div class="card__meta">
+                @if (o.source_sheet) { <span class="mono">from {{ o.source_sheet }}</span> }
+                @if (o.example) { <span class="mono">{{ o.example }}</span> }
+              </div>
+              @if (o.why) { <p class="card__caution">{{ o.why }}</p> }
+            </div>
+          }
+
+          @if (p.main; as m) {
+            <div class="card">
+              <div class="card__head">
+                <span class="card__title">Main workbook {{ m.file }}</span>
+                <span class="card__count">{{ m.keys?.length ?? 0 }} keys</span>
+              </div>
+              <div class="card__meta"><span class="mono">model file {{ m.model_file }}</span></div>
+              @for (g of m.grids ?? []; track $index) {
+                <p class="card__caution"><span class="mono">{{ g.title }}</span> · {{ g.rows ?? 0 }} rows × {{ g.cols ?? 0 }} columns{{ g.what ? " · " + g.what : "" }}</p>
+              }
+            </div>
+          }
+
+          @if (p.clears?.length) {
+            <p class="hint">
+              Emptied (the macro's paste area):
+              @for (c of p.clears; track $index) { {{ c.area }} ({{ c.cells ?? 0 }} filled cells emptied{{ c.over ? ", " + c.over + " more left" : "" }}) }
+            </p>
+          }
+          @if (p.how_it_runs) { <p class="hint">{{ p.how_it_runs }}</p> }
+
+          <button type="button" class="link" (click)="showOps.set(!showOps())">{{ showOps() ? "Hide the changes" : "Show the changes" }}</button>
+          @if (showOps()) {
+            <ul class="ops mono">
+              @for (op of p.operations ?? []; track $index) { <li>{{ opText(op) }}</li> }
+              @if (p.operation_count > (p.operations?.length ?? 0)) { <li>… {{ p.operation_count - (p.operations?.length ?? 0) }} more</li> }
+            </ul>
           }
         </div>
-      }
-
-      @if (p.clears?.length) {
-        <p class="hint">
-          Emptied (the macro's paste area):
-          @for (c of p.clears; track $index) { {{ c.area }} ({{ c.cells ?? 0 }} filled cells emptied{{ c.over ? ", " + c.over + " more left" : "" }}) }
-        </p>
-      }
-      @if (p.how_it_runs) { <p class="hint">{{ p.how_it_runs }}</p> }
-
-      <div class="bar">
-        <div class="row">
-          <button cdsButton="primary" size="md" (click)="write()" [disabled]="writing() || loading() || !canWrite()">Write it into a new version ({{ p.operation_count }} changes)</button>
-          <button class="link" (click)="showOps.set(!showOps())">{{ showOps() ? "Hide the changes" : "Show the changes" }}</button>
-        </div>
-        @if (writing()) {
-          <div class="bar__progress"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
-        } @else if (line()) {
-          <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
-            <strong>{{ line() }}</strong>
-            @if (detail()) { <span>{{ detail() }}</span> }
-            @if (files().length) { <span class="mono">{{ files().join(" + ") }}</span> }
-          </div>
-        }
-        @if (downloadUrl(); as url) {
-          <div class="row"><a cdsButton="secondary" size="md" [href]="url" download>Download both files (zip)</a></div>
-        }
-        @if (showOps()) {
-          <ul class="ops mono">
-            @for (op of p.operations ?? []; track $index) { <li>{{ opText(op) }}</li> }
-            @if (p.operation_count > (p.operations?.length ?? 0)) { <li>… {{ p.operation_count - (p.operations?.length ?? 0) }} more</li> }
-          </ul>
-        }
-      </div>
+      </details>
     }
   } @else if (line()) {
-    <div class="result result--error"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
+    <div class="result result--error" data-show-me="instances-result"><strong>{{ line() }}</strong><span>{{ detail() }}</span></div>
   }
 
-  <h3 class="panel__h">Where instances could help</h3>
-  <p class="hint">The app reads the model and points to what repeats: a column the loop could split on, blocks or sheets that compute the same. It writes nothing.</p>
-  <div class="row">
-    <button cdsButton="secondary" size="md" (click)="find()" [disabled]="finding() || loading()">Find where instances could help</button>
-    @if (assistantOn()) {
-      <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set($any($event.target).checked)" [disabled]="finding()" /> Explain and rank with the assistant</label>
-    }
-    @if (finder()) {
-      <button cdsButton="ghost" size="sm" (click)="find(true)" [disabled]="finding()">Read again</button>
-    }
-  </div>
-  @if (finding()) {
-    <cds-inline-loading [state]="'active'" loadingText="Reading every formula of the model… up to two minutes on a big model"></cds-inline-loading>
-  }
-  @if (findLine()) {
-    <div class="result result--error"><strong>Could not read the model</strong><span>{{ findLine() }}</span></div>
-  }
-  @if (finder(); as f) {
-    <p class="hint">
-      {{ f.counts.formulas | number }} formulas · {{ f.counts.dimensions }} places found · {{ f.counts.chains }} set aside · {{ f.counts.seconds | number: "1.0-1" }} s
-      @if (builderLine(f)) { · <span [class]="f.builder?.matches_top ? '' : 'chip chip--warn'">{{ builderLine(f) }}</span> }
-    </p>
-    @for (s of f.skipped; track $index) { <p class="card__caution">{{ s }}</p> }
-    @if (!f.dimensions.length) { <p class="hint">Nothing repeats enough to split: leave the model as it is.</p> }
-    @for (d of shown(); track d.id) {
-      <div class="card">
-        <div class="card__head">
-          <span class="card__title">#{{ d.rank }} {{ d.label }}@if (d.assistant_rank) { <span class="chip">assistant: #{{ d.assistant_rank }}</span> }</span>
-          <span class="card__count">{{ d.copies }} copies · biggest {{ d.biggest_copy ?? "–" }}</span>
-        </div>
-        <p>{{ d.headline }}</p>
-        <div class="card__meta">
-          <span [class]="fitClass(d.fit.instances.fits)">{{ fitWord("instances", d.fit.instances.fits) }}</span>
-          <span [class]="fitClass(d.fit.loop.fits)">{{ fitWord("loop", d.fit.loop.fits) }}</span>
-          <span [class]="fitClass(d.fit.leave.fits)">{{ fitWord("leave", d.fit.leave.fits) }}</span>
-        </div>
-        <div class="row">
-          @if (d.key?.column) {
-            <button cdsButton="secondary" size="sm" (click)="useAsKey(d)" [disabled]="loading() || writing()">Use as the key</button>
-            <span class="hint">fills the key column above (column {{ d.key!.column }}) and previews the instances</span>
-          }
-          <button class="link" (click)="toggleWhy(d.id)">{{ openId() === d.id ? "Hide why" : "Show why" }}</button>
-        </div>
-        @if (openId() === d.id) {
-          <p class="hint">Seen: {{ kindWords(d.kinds) }} · saves {{ d.formulas_saved }} formulas · {{ d.cells_changed }} cells would change</p>
-          @for (e of d.evidence; track $index) {
-            <p class="card__caution">{{ e.text }}@if (e.cells?.length) { <span class="mono"> ({{ e.cells!.join(", ") }})</span> }</p>
-          }
-          @if (d.readers?.all_slots?.count) { <p class="card__caution">{{ d.readers!.all_slots.text }}</p> }
-          @if (d.readers?.computed_slot?.count) { <p class="card__caution">{{ d.readers!.computed_slot.text }}</p> }
-          @if (d.readers?.keyed_slot?.count) { <p class="card__caution">{{ d.readers!.keyed_slot.text }}</p> }
-          @if (d.readers?.fixed_slot?.count) { <p class="card__caution">{{ d.readers!.fixed_slot.text }}</p> }
-          @for (r of d.fit.instances.reasons; track $index) { <p class="card__caution">{{ r }}</p> }
-          @if (unifyLine(d); as u) { <p class="card__caution">{{ u }}</p> }
-          @if (d.edits?.branches?.count) { <p class="card__caution">{{ d.edits!.branches!.count }} formulas choose a value with an IF on the key: {{ d.edits!.branches!.action }}.</p> }
-          @if (d.assistant_text) { <p class="card__caution"><em>Assistant:</em> {{ d.assistant_text }}</p> }
-        }
-      </div>
-    }
-    @if (f.dimensions.length > 3) { <button class="link" (click)="showAll.set(!showAll())">{{ showAll() ? "Show fewer" : "Show all " + f.dimensions.length }}</button> }
-    @if (f.chains.length) {
-      <p class="hint">Set aside, each copy reads the one before it: @for (c of f.chains; track $index) { <span class="mono">{{ c.label }}</span> ({{ c.copies }} copies) }</p>
-    }
-    @if (f.macro_loops.length) {
-      <p class="hint">The macro's loops the Mind loop step already handles: @for (l of f.macro_loops; track $index) { <span class="mono">{{ l.name }}</span> ({{ l.status }}) }</p>
-    }
-    @if (ignoredLine(f); as ig) { <p class="hint">{{ ig }}</p> }
-    @if (f.assistant.asked) {
-      <div class="result" [class.result--warn]="!f.assistant.available">
-        <strong>{{ f.assistant.available ? "The assistant's view" : "Without the assistant" }}</strong>
-        <span>{{ f.assistant.text || f.assistant.message || "The assistant ranked the places but gave no explanation." }}</span>
-        @for (x of f.assistant.extra; track $index) { <span>{{ x.headline }} — {{ x.why }} <em>({{ x.flag }})</em></span> }
-      </div>
-    }
-  }
+  <!-- what instances are, for whoever asks -->
+  <details class="fold fold--quiet" data-test="inst-what" [open]="whatOpen()" (toggle)="whatOpen.set($any($event.target).open)">
+    <summary>What is this?</summary>
+    <div class="fold__body">
+      <p class="hint">Mind can run several copies of one model at once: one copy per value (a scenario, a cohort, a product). Each copy computes on its own. A second, small workbook (the main workbook) gathers every copy's results with MM_INSTANCE formulas: one per result cell and copy. Mind gets both files as one project. The usual way is one model that loops (the Mind loop tab); copies help when the passes are independent and many.</p>
+    </div>
+  </details>
 </div>
