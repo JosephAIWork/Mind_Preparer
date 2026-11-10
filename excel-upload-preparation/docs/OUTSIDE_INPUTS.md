@@ -134,9 +134,11 @@ macro opens were not picked, it **stops and asks**:
    there for it, and the sheet it fills; `message` is "Waiting for 2 input files: BBA_05, VFA_01".
 2. The main screen shows **one box** under Do everything: "Do everything is waiting for 2 input
    files: BBA_05, VFA_01. Pick them, or let the assistant make stand-ins." with the list, **Pick the
-   files**, **Go on** (greyed out until every file is there), **Make them with AI** (only when an AI
-   key is saved) and **Stop**. The Outside files card says "Waiting for ... · See the box under Do
-   everything" with a Show me. Picking files uses the usual `POST .../inputs`; the list follows.
+   files**, **Go on** (greyed out until every file is there, and while its request is on its way),
+   **Make them with AI** (only when an AI key is saved and a file is still missing) and **Stop**. The
+   Outside files card says "Waiting for ... · See the box under Do everything" with a Show me. Picking
+   files uses the usual `POST .../inputs`; the list follows. The countdown above the steps pauses
+   ("4 min so far · paused: waiting for the input files"): the wait is not the step's time.
 3. **Go on** -> `POST .../outside-inputs/continue` (409 while a file is still missing, naming it):
    the job starts at the import itself -- the stages after the wait, and only those (`stages` in the
    GET answer: `start, import, scan, mind_inputs, numbers, rescan, done`, never `stand_ins`). The chain

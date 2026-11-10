@@ -217,18 +217,23 @@ Mind reads a title from, directly above the grid's top-left cell, or nowhere:
   empty row above it by hand, then name it again.
 - **“the cell above it, A1, holds a formula (…) and the title would replace
   it (the key column A1:A8 and the block B2:CI8 are one table)”** — a key
-  column with a caption on top and the block that reads it are one table; its
+  column with a caption on top and the block beside it are one table; its
   title goes into the caption cell ('#' + the caption's own text). A caption
   that is a formula is left alone: move it somewhere else by hand, then name
   the table again (or name it in the Grid Namer once the formula is gone).
+  Only a text caption counts: a year, a date or TRUE above a key column is a
+  value something may read, so the two stay apart and nothing is written
+  over it.
 - **“a title in B3 would touch B2 ('…') right above it, and Mind would read
   the two as one grid”** — a lone text or a grid ends right above the title
   cell, and Mind reads on from it through the title into the grid. Leave an
   empty row between them by hand. The same beside the title cell, on its
   left (“… would touch B2 ('…') beside it, which is read by … / is part of
   the grid …”): Mind reads left to right and would run from that cell into
-  the title. A lone label there that nothing reads is simply moved into the
-  title (its text names the grid). The old namer wrote such titles: on the
+  the title. A lone label there that nothing reads is moved into the title
+  when the title's name is its own text (the automatic pass naming the grid
+  from it); the Grid Namer's name, or the assistant's, leaves the label where
+  it is and reports the grid ("... which is a label of its own"). The old namer wrote such titles: on the
   anonymized IFRS 17 tool its own re-scan then found 85 grids with a
   `#Title` trapped inside; the 1.14.0 namer's output has none of its own.
 - **“contains a trapped '#Title' (STR-001) — separate the grids first”** — a

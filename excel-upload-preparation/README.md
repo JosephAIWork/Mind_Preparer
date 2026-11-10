@@ -22,12 +22,29 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.13.0)
+## Current status (1.14.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
 
+- **Workbooks are kept between sessions** (1.14.0, `docs/SAVED_WORKBOOKS.md`): every session's
+  files live in the data folder with a small state file (and the check result in a file of its
+  own); the main screen's **Recent workbooks** list reopens one where it was, or removes it. Nothing
+  reopens by itself; two copies of the app on one data folder leave each other's open workbooks alone.
+- **Do everything stops and asks for the input files** (1.14.0, `docs/OUTSIDE_INPUTS.md`): when
+  files the macro opens were not picked, one box under Do everything waits -- Pick the files, Go on,
+  Make them with AI (only with an AI key and a file missing), Stop -- and the chain goes on from the
+  bring-in itself; the countdown pauses while it waits.
+- **A sheet left out of the scan still exists for references** (1.14.0): INDIRECT and 3-D targets on
+  a skipped sheet resolve exactly as without the skip (no more `NA()` for a sheet that is there); the
+  Mind-value rules leave the formulas that read a skipped sheet as they are and say so, with one or
+  many sheets skipped.
+- **Grid titles never move cells** (1.14.0): one title per table, into the cell Mind reads a title
+  from (a text caption on top of a key column, or the empty cell above); what cannot be titled
+  without moving or overwriting a cell is reported with what to do by hand.
+- **Send feedback** (1.14.0): the button, the box and the guide name no team; the reply still comes
+  back to the address in `settings.yaml`.
 - **Plainer screens for the loop and the instances** (1.13.0): Advanced > Mind loop opens with
   one sentence ("The macro runs Scenario 0 to 3 and Cohort 2021 to 2026. Mind can do the same.")
   and one button, **Build it**; the choices and what gets written are folded away, and a loop that
@@ -234,11 +251,13 @@ the two honest cases below.
   Mind reads a title from, directly above the grid's top-left cell: into that
   cell when it is empty, into the caption cell ('#' + its own text) when the
   grid is a key column with a caption plus the block beside it (one table,
-  `grids._merge_key_columns`). **No cell is ever moved for a title** (1.14.0;
+  `grids._merge_key_columns`; the caption must be text -- a year or a date
+  above a key column is never overwritten). **No cell is ever moved for a title** (1.14.0;
   up to 1.13.0 a row was inserted when the cell above was taken, which pushed
   a key column out of line with its rows): a formula in the caption cell, a
   grid on row 1 or a cell above that belongs to another grid is reported under
-  "could not name" with what to do by hand. When the surroundings say nothing
+  "could not name" with what to do by hand; a lone label beside the title cell
+  is moved into the title only when the title was made from its own text. When the surroundings say nothing
   the heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can
   then ask the APIM assistant for a context-aware name instead (one batched
   call, `POST /api/sessions/{id}/grid-names`). Assistant names are advisory:

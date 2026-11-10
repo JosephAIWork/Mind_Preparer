@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased (iteration 1.14.0)
+## 1.14.0 (11 November 2026): saved workbooks, Do everything asks for the input files, skipped sheets, grid titles, Send feedback
+
+The night of 10/11 November: the five items of Joseph's note, in his order, each built generally and
+proven on synthetic workbooks (and on the anonymized IFRS 17 tool where the report came from), then a
+review of the night's changes with every confirmed finding fixed. No Mind run, no exe.
+
+### Saved workbooks
 
 - **Workbooks are kept between sessions.** A session's files now live in the data folder
   (`<data folder>\sessions\<id>\`, the same layout the %TEMP% folder had) next to a state file the app
@@ -21,17 +27,57 @@
   with a Show me to the list. (`GET /api/saved-workbooks`, `POST /api/saved-workbooks/{id}/open`,
   `DELETE /api/saved-workbooks/{id}`; `MindReadyUI` `pages/recent-workbooks.ts`,
   `core/recent-workbooks.spec.ts`, `core/show-me.ts`.)
-- **Send feedback, without a team name.** The box under the header, the dialog and the docs no longer say
-  "to the Tel Aviv team": the button is **Send feedback**, the hint "You can send the details: where it
-  stopped and why, with nothing from your workbook.", the dialog is titled Send feedback and its sent step
-  says "An email to <address> should be open." with the address the backend gives (`feedback.email` in the
-  settings, unchanged: the reply still comes back to Joseph). The assistant's opening lines of the message
-  are told to say what happened in their own words and never to copy the user's note; a sentence that still
-  repeats the note word for word is dropped from the opening (the note has its own part, "The user's
-  note"). The unit tests write their incidents and timings into a folder of their own, never into the
-  user's `%LOCALAPPDATA%\MindReady` (`tests/unit/conftest.py` points `SETTINGS.data_folder` at tmp_path).
-  (`app/feedback.py` `assistant_lines`, `without_note`, `compose`; `MindReadyUI` `app.html`,
-  `core/feedback-dialog.*`; `core/feedback-dialog.spec.ts`.)
+- **Review fixes (saved workbooks).** (1) The check result -- the whole analysis, 87 MB of JSON on the
+  anonymized IFRS 17 tool -- is no longer written into `state.json` after every step: it has a file of
+  its own, `result.json`, written only when a scan replaced it; the state file stays small, is written in
+  one pass (no more dumps-loads-dumps), and the Recent workbooks list reads the small file alone. A
+  state file of the first shape (the result inside) still opens. (2) Two copies of the app on the same
+  data folder (two ports, say 8600 and 8601) no longer list, reopen or remove each other's open
+  workbooks: the copy that holds a workbook keeps its `open.lock` locked (the OS lets go of it when the
+  process ends, however it ends); the other copy's list leaves it out and its Reopen / Remove answer 409
+  "This workbook is open in another copy of the app (port 8600)". (3) Remove is refused while Run in Mind
+  runs on the workbook (it was not in the busy check). (4) A Fix all issues the restart cut shows on the
+  main screen after the reopen: "Stopped: the app was closed while it ran", with the version it had made
+  when it got that far. (5) The sentence "This workbook is not open any more (the app was restarted).
+  Open it again from Recent workbooks on the main screen." is now shown where it can be acted on: any
+  call about such a workbook makes the page let go of it and the main screen shows the sentence above
+  the Recent workbooks list, with its Show me (before, it sat in a tile of the old page where the list
+  is not drawn and the Show me found nothing). (6) A saved workbook that was uploaded but never checked
+  is scanned after Reopen without starting Do everything, whatever the "Do everything right after the
+  upload" box says. (`app/session_store.py`, `app/web/server.py`, `tests/unit/test_session_store.py`;
+  `MindReadyUI` `core/restart.interceptor.ts`, `core/restart.spec.ts`, `core/session.store.ts`,
+  `pages/home.page.*`, `core/recent-workbooks.spec.ts`.)
+
+### Do everything and the input files
+
+- **Do everything stops and asks for the input files, then goes on from where it stopped.** When its
+  first step finds that files the model's macro opens were not picked, it no longer has the assistant
+  make stand-ins quietly: the server's bring-in job waits (`waitForInputs`, state `waiting_for_inputs`;
+  nothing runs, the workbook is unchanged) and the main screen shows one box under Do everything --
+  "Do everything is waiting for 2 input files: BBA_05, VFA_01. Pick them, or let the assistant make
+  stand-ins." with the list (picked / missing, what each fills), **Pick the files**, **Go on** (greyed
+  out until every file is there), **Make them with AI** (only with an AI key saved; the stand-in path
+  with its warning) and **Stop**. Go on (`POST .../outside-inputs/continue`) starts the job at the
+  import itself -- the stages after the wait and only those (`stages` in `GET .../outside-inputs`);
+  the chain was held at this step, so the other steps follow. Stop (`POST .../outside-inputs/stop`)
+  ends the job in plain words and Do everything stops at its first step. A page reloaded while it
+  waited gets the box back; a workbook reopened after a restart shows the job as stopped ("The app
+  was closed while Do everything waited for the input files."). The card's own buttons and the
+  plain run are as before. (`app/web/server.py`, `app/session_store.py` `_stopped`,
+  `docs/OUTSIDE_INPUTS.md`, `tests/unit/test_outside_inputs_api.py` section 8; `MindReadyUI`
+  `pages/home.page.*`, `core/models.ts` `outsideWaitingLine`, `core/api.service.ts`, `core/show-me.ts`
+  `outside-waiting`, `core/outside-inputs.spec.ts`, `core/show-me.spec.ts`.)
+- **Review fixes (Do everything and the input files).** While Do everything waits for the input files the
+  countdown pauses ("4 min so far · paused: waiting for the input files"): the wait is no longer counted
+  as the step's time, so it neither says "this step is taking longer than usual" nor inflates the
+  estimate of the steps after it. Go on is disabled while its request is on its way (a double click sent
+  a second continue that the server refused, and the refusal stayed on the Outside files card for the
+  rest of the run), and the box goes as soon as the server took the Go on. Make them with AI is offered
+  only while a file is missing (with every file there it did nothing of what it said). (`pages/home.page.*`,
+  `core/outside-inputs.spec.ts`.)
+
+### INDIRECT with skipped sheets
+
 - **A sheet left out of the scan still exists for the formulas that point at it.** Joseph ticked the
   six calculation sheets of the Tokyo IFRS 17 tool as "do not check"; the 480 INDIRECT lookups on
   Result_CF that build addresses on them (`INDIRECT($A3&"!A:B")`) were then written as
@@ -51,23 +97,14 @@
   Synthetic proofs in `tests/unit/test_skipped_sheet_references.py`. (`app/inventory.py` `sheet_order`;
   `app/validators/references.py` FRM-006 and FRM-007; `app/validators/mind_values.py` `_Book`;
   `app/prep.py` planner notes; `rules/formula-rules.yaml` FRM-007.)
-- **Do everything stops and asks for the input files, then goes on from where it stopped.** When its
-  first step finds that files the model's macro opens were not picked, it no longer has the assistant
-  make stand-ins quietly: the server's bring-in job waits (`waitForInputs`, state `waiting_for_inputs`;
-  nothing runs, the workbook is unchanged) and the main screen shows one box under Do everything --
-  "Do everything is waiting for 2 input files: BBA_05, VFA_01. Pick them, or let the assistant make
-  stand-ins." with the list (picked / missing, what each fills), **Pick the files**, **Go on** (greyed
-  out until every file is there), **Make them with AI** (only with an AI key saved; the stand-in path
-  with its warning) and **Stop**. Go on (`POST .../outside-inputs/continue`) starts the job at the
-  import itself -- the stages after the wait and only those (`stages` in `GET .../outside-inputs`);
-  the chain was held at this step, so the other steps follow. Stop (`POST .../outside-inputs/stop`)
-  ends the job in plain words and Do everything stops at its first step. A page reloaded while it
-  waited gets the box back; a workbook reopened after a restart shows the job as stopped ("The app
-  was closed while Do everything waited for the input files."). The card's own buttons and the
-  plain run are as before. (`app/web/server.py`, `app/session_store.py` `_stopped`,
-  `docs/OUTSIDE_INPUTS.md`, `tests/unit/test_outside_inputs_api.py` section 8; `MindReadyUI`
-  `pages/home.page.*`, `core/models.ts` `outsideWaitingLine`, `core/api.service.ts`, `core/show-me.ts`
-  `outside-waiting`, `core/outside-inputs.spec.ts`, `core/show-me.spec.ts`.)
+- **Review fix (skipped sheets).** With two or more sheets skipped, the Mind-value rules (FRM-008, 009,
+  010, 013) answered "not checked" with a TypeError (their cache key sorted the skipped sheets as dicts)
+  and the four Prep actions planned nothing -- the very case the skipped-sheet handling was built for.
+  One line; proven with two skipped sheets in `tests/unit/test_skipped_sheet_references.py`.
+  (`app/validators/mind_values.py` `scan`.)
+
+### Grid titles
+
 - **Grid titles never move cells: one title per table, written into the header cell.** Joseph's
   report (the IFRS 17 tool's `Result_CF`): after the automatic grid namer the key column (column A,
   the sheet name each row's lookups use) sat one row below its rows. Reproduced on the anonymized
@@ -101,6 +138,35 @@
   expect the report. (`app/grids.py` `_grid`, `_reads_column`, `_merge_key_columns`; `app/prep.py`
   `_title_site`, `plan_create_grid_titles`, `plan_named_areas`; `README.md`;
   `docs/RUN_IN_MIND_NAMING.md`.)
+- **Review fixes (grid titles).** (1) The caption on top of a key column must be text: a year, a date or
+  TRUE above a key column is a value something may read (a macro, a dropdown, a person) and is never
+  merged as the caption, so no title is written over it (the column is reported as a grid on row 1, as
+  before). (2) A lone label beside the title cell is moved into the title only when the title's name was
+  made from its own text; the Grid Namer (the user's own name) and the assistant's name leave the label
+  where it is and report the grid ("... beside it, which is a label of its own"), instead of clearing
+  the label and losing its words. (3) The merge of a key column and its block looks at the shape alone
+  (one column, directly left, one caption row, same last row): the keys may be formulas the block no
+  longer reads -- on the IFRS 17 tool's `Result_CF`, once FRM-007 has rewritten `INDIRECT($A3&"!A:B")`
+  as `BBA_01!A:B`, the next scan still reads one table, so the table stays nameable after the formula
+  fix. (`app/grids.py`, `app/prep.py`, `tests/unit/test_grid_titles_never_move_cells.py`.)
+
+### Send feedback
+
+- **Send feedback, without a team name.** The box under the header, the dialog and the docs no longer name
+  a team: the button is **Send feedback**, the hint "You can send the details: where it
+  stopped and why, with nothing from your workbook.", the dialog is titled Send feedback and its sent step
+  says "An email to <address> should be open." with the address the backend gives (`feedback.email` in the
+  settings, unchanged: the reply still comes back to Joseph). The assistant's opening lines of the message
+  are told to say what happened in their own words and never to copy the user's note; a sentence that still
+  repeats the note word for word is dropped from the opening (the note has its own part, "The user's
+  note"). The unit tests write their incidents and timings into a folder of their own, never into the
+  user's `%LOCALAPPDATA%\MindReady` (`tests/unit/conftest.py` points `SETTINGS.data_folder` at tmp_path).
+  (`app/feedback.py` `assistant_lines`, `without_note`, `compose`; `MindReadyUI` `app.html`,
+  `core/feedback-dialog.*`; `core/feedback-dialog.spec.ts`.)
+- **Review fix (feedback).** The remaining "Tel Aviv team" mentions are gone from what ships: the user
+  guide (`tools/package/guide/guide.html`: the byline says "from Milliman", the button is "Send
+  feedback"; `render_guide.py` falls back to "the Mind Ready feedback address"), the server's docstrings
+  and the screens' code comments. The SharePoint paths in `internal-notes/` are folder names and stay.
 
 ## 1.13.0 (10 November 2026): Mind loop and Mind instances, with plainer screens
 
