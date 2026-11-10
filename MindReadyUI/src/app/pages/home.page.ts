@@ -154,12 +154,16 @@ export class HomePage implements OnDestroy {
    *  macro, one file per Mind input grid (raw files cannot go into Mind's Inputs window as they are) */
   readonly nextQuarter = signal<ActionState>(idle());
   readonly nextQuarterResult = signal<NextQuarterResult | null>(null);
+  /** the session the result belongs to: never offered for another workbook */
+  private readonly nextQuarterSession = signal<string | null>(null);
+  /** bumped when the card is reset (another workbook, Load another): an older job's polling stops */
+  private nextQuarterSeq = 0;
   readonly nextQuarterLead = NEXT_QUARTER_LEAD;
-  /** "Next quarter Mind inputs.zip" of the last job that made files */
+  /** "Next quarter Mind inputs.zip" of the last job that made files, in this session */
   readonly nextQuarterZipUrl = computed(() => {
     const id = this.store.sessionId();
     const r = this.nextQuarterResult();
-    return id && r?.ok && r.zip ? this.api.downloadUrl(id, r.zip) : null;
+    return id && r?.ok && r.zip && this.nextQuarterSession() === id ? this.api.downloadUrl(id, r.zip) : null;
   });
   /** which file goes into which grid */
   readonly nextQuarterFiles = computed(() => {
@@ -339,9 +343,11 @@ export class HomePage implements OnDestroy {
         void this.loadLoopPlan();
         void this.resumeFixer();
         void this.resumeOutside();
+        void this.resumeNextQuarter();
       } else if (!loaded && phase === "loaded") {
         this.phase.set("idle");
         this.loopPlan.set(null);
+        this.resetNextQuarter();
       }
     });
     // the estimate follows the analysed version and the loop plan (refreshed once a step is done)
@@ -517,6 +523,15 @@ export class HomePage implements OnDestroy {
     this.cardDragOver.set(false);
     this.outsideFailed.set(false);
     this.outsideUnchecked.set(false);
+    this.resetNextQuarter();
+  }
+
+  /** Another workbook (or none): the last next-quarter job's line, files and zip go, and its polling stops. */
+  private resetNextQuarter(): void {
+    this.nextQuarterSeq++;
+    this.nextQuarter.set(idle());
+    this.nextQuarterResult.set(null);
+    this.nextQuarterSession.set(null);
   }
 
   rowLabel(r: OutsideInputRow): string {
@@ -1199,44 +1214,91 @@ export class HomePage implements OnDestroy {
     if (this.busy()) return fail(`Wait: ${this.busyHint()}.`);
     const problem = inputFilesProblem(files.map((f) => f.name));
     if (problem) return fail(problem);
+    const seq = ++this.nextQuarterSeq;
     this.nextQuarterResult.set(null);
+    this.nextQuarterSession.set(null);
     this.nextQuarter.set({ running: true, fraction: null, line: "Starting…", detail: "", tone: "idle" });
     try {
       await this.api.startNextQuarter(id, files);
     } catch (e) {
+      if (seq !== this.nextQuarterSeq) return false;
       return fail(firstClause(errorText(e)) || "Not started", errorText(e));
     }
-    const t0 = Date.now();
+    return this.followNextQuarter(id, seq, Date.now());
+  }
+
+  /** A next-quarter job may still run from before a reload or a visit to Advanced (follow it), or its
+   *  result is there to show (the zip is offered again). */
+  private async resumeNextQuarter(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id || !this.store.outsideInputs() || this.nextQuarter().running) return;
+    const seq = ++this.nextQuarterSeq;
+    let st: NextQuarterStatus;
+    try {
+      st = await this.api.nextQuarter(id);
+    } catch {
+      return; // nothing to pick up
+    }
+    if (this.destroyed || seq !== this.nextQuarterSeq || this.store.sessionId() !== id) return;
+    if (st.running) {
+      this.showNextQuarterRunning(st, Date.now());
+      await this.followNextQuarter(id, seq, Date.now());
+    } else if (st.result || st.error) this.showNextQuarterEnd(id, st);
+  }
+
+  /** Follow the job until it ends. Stops quietly when the page is left, the card is reset or the
+   *  session changes: an old job's result never lands on another workbook's card. */
+  private async followNextQuarter(id: string, seq: number, t0: number): Promise<boolean> {
+    const stale = () => {
+      if (this.destroyed || seq !== this.nextQuarterSeq) return true;
+      if (this.store.sessionId() === id) return false;
+      this.resetNextQuarter(); // another session without a reset: the card must not stay "running"
+      return true;
+    };
     let failures = 0;
     for (;;) {
-      if (this.destroyed) return false;
+      if (stale()) return false;
       let st: NextQuarterStatus;
       try {
         st = await this.api.nextQuarter(id);
         failures = 0;
       } catch (e) {
+        if (stale()) return false;
         if (++failures < 5) {
           await this.sleep(1000);
           continue;
         }
-        return fail("Lost the job", errorText(e));
+        this.nextQuarter.set({ running: false, fraction: null, line: "Lost the job", detail: errorText(e), tone: "error", open: true });
+        return false;
       }
+      if (stale()) return false;
       if (st.running) {
-        const secs = Math.round(st.elapsed_s ?? (Date.now() - t0) / 1000);
-        const took = secs < 60 ? `${secs} s so far` : `${Math.floor(secs / 60)} min ${secs % 60} s so far`;
-        const said = st.message && st.message !== st.stage ? st.message : "";
-        this.nextQuarter.set({ running: true, fraction: null, line: st.stage || "Working…", detail: [said, took].filter(Boolean).join(" · "), tone: "idle" });
+        this.showNextQuarterRunning(st, t0);
         await this.sleep(1000);
         continue;
       }
-      if (st.result) {
-        this.nextQuarterResult.set(st.result);
-        const out = nextQuarterOutcome(st.result);
-        this.nextQuarter.set({ running: false, fraction: null, line: out.line, detail: out.detail, tone: out.tone, open: out.tone !== "ok" && !!out.detail });
-        return st.result.ok;
-      }
-      return fail(firstClause(st.error ?? "") || "The job ended without a result", st.error ?? "");
+      return this.showNextQuarterEnd(id, st);
     }
+  }
+
+  private showNextQuarterRunning(st: NextQuarterStatus, t0: number): void {
+    const secs = Math.round(st.elapsed_s ?? (Date.now() - t0) / 1000);
+    const took = secs < 60 ? `${secs} s so far` : `${Math.floor(secs / 60)} min ${secs % 60} s so far`;
+    const said = st.message && st.message !== st.stage ? st.message : "";
+    this.nextQuarter.set({ running: true, fraction: null, line: st.stage || "Working…", detail: [said, took].filter(Boolean).join(" · "), tone: "idle" });
+  }
+
+  private showNextQuarterEnd(id: string, st: NextQuarterStatus): boolean {
+    if (st.result) {
+      this.nextQuarterResult.set(st.result);
+      this.nextQuarterSession.set(id);
+      const out = nextQuarterOutcome(st.result);
+      this.nextQuarter.set({ running: false, fraction: null, line: out.line, detail: out.detail, tone: out.tone, open: out.tone !== "ok" && !!out.detail });
+      return st.result.ok;
+    }
+    const error = st.error ?? "";
+    this.nextQuarter.set({ running: false, fraction: null, line: firstClause(error) || "The job ended without a result", detail: error, tone: "error", open: !!error });
+    return false;
   }
 
   private sleep(ms: number): Promise<void> {

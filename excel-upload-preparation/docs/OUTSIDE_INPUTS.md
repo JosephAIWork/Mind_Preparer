@@ -49,17 +49,27 @@ What it says on the way:
 
 - A grid without a new file is not in the zip: Mind keeps the data it has.
 - A file already shaped like a grid (its header is the grid's) goes in as it is, under the grid's name.
+  It must be UTF-8 text: one saved in another encoding (a CSV saved on a Japanese PC as "CSV (comma
+  delimited)") is refused with what to do; the other files are still made. A `.txt` is read as
+  TAB-separated, as Mind reads it: a comma-separated `.txt` shaped like a grid goes in as
+  `<grid>.csv` (refused when it holds quotes or TABs).
 - A raw file named like a grid (`IN_BBA_01.csv` with 1,340 columns) is recognised and read with the
   macro: "IN_BBA_01.csv has 1,340 columns; the Mind input grid IN_BBA_01 has 93. It looks like a raw
   input file, so the app reads it with the model's import macro."
 - A new file that fills more than its grid holds is left out, with why (Mind's grid keeps the model's
   shape); the macro's own message boxes are shown when it refuses a file (too many items).
 - Each file says how many values differ from the files made at the bring-in.
-- A raw `.csv` keeps every digit. Excel opens a CSV keeping 15 significant digits
-  (144686640.71679688 becomes 144686640.716796), so the same quarter as `.csv` and as `.xlsx` would
-  give files that differ in the last digits. The app lets Excel open the CSV (its own reading of
-  dates and text stays), gives each longer number its exact value, saves a `.xlsx` copy and hands
-  that to the macro. The result says how many numbers got their digits back.
+- The macro gets the raw files exactly as picked and opens each its own way (OpenText settings,
+  `Local:=True`, line-by-line reads such as the Tokyo tool's `CountCSVRow`, checks of the name), as
+  at the bring-in and in the client's tool. Excel keeps 15 significant digits when it opens a CSV
+  (144686640.71679688 becomes 144686640.716796): the result says how many numbers of a CSV have
+  more, and "values changed" does not count a number that differs only past its 15th digit
+  (Joseph's raw CSVs against the bring-in's `.xlsx` files: 0 changed). A first version handed the
+  macro a full-digit `.xlsx` copy of each CSV; the review of 10 November 2026 removed it, because it
+  skipped the macro's own way of opening the file.
+- While the files are being made, the bring-in, Run in Mind, the fixer, a recalculation and other
+  workbook changes wait (one Excel job at a time). The card follows a running job again after a
+  reload, and forgets the last job when another workbook is loaded.
 - When Run in Mind (or `scripts/mind_upload.py`) hands Mind a raw file and Mind refuses it for its
   columns, the result says what to do instead (`mind_client.upload_inputs` -> `advice`).
 
@@ -69,8 +79,9 @@ tool, through the app's own routes on a dev server):**
 - Joseph's raw file, named like the grid (`IN_BBA_01.csv`, 1,340 columns): Mind refused it ("doesn't
   have proper headers, there are 1340 columns while grid 'IN_BBA_01' of instance Original_Instance
   has 93 columns"), read from the row's LOG; the app's result said what to do instead.
-- Set A, made from Joseph's six raw `.csv` files: the six files are byte for byte the files the
-  bring-in made from the same quarter's `.xlsx` files (0 values differ). All six SUCCESS in the
+- Set A, made from Joseph's six raw `.csv` files (with the full-digit copy then in use): the six
+  files are byte for byte the files the bring-in made from the same quarter's `.xlsx` files (0
+  values differ). Without the copy (now), they differ only past the 15th digit: 0 values changed. All six SUCCESS in the
   Inputs window (5 `.csv` + `IN_VFA_01.txt`, TAB). Run consistent with the audit trail. Result_CF:
   Mind = Excel 120 of 120 numbers (Excel = the model with its own macro run on the same raw files).
 - Set B, the same with BBA_04's numbers x 1.1 (one raw file changed, 62,019 cells): the app's file

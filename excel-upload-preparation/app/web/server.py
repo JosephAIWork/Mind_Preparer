@@ -1497,6 +1497,9 @@ def _busy_with(s: Session) -> str | None:
     wait for it, or it would upload the version before that change."""
     if (s.outside_run or {}).get("state") == "running":
         return "the outside files are still being brought in"
+    if (s.next_quarter or {}).get("state") == "running":
+        # its import macro runs in an Excel of its own, from the grids of the line as they were at its start
+        return "next quarter's Mind input files are still being made"
     if (AUTOFIX.get(s.id) or {}).get("state") == "running":
         return "Fix all issues is still running"
     if s.id in RECALCULATING:
@@ -2816,9 +2819,13 @@ def _refuse_while_fixing(session_id: str) -> None:
 
 def _refuse_while_bringing_in(s: Session | None) -> None:
     """The bring-in job adds its versions and scans at the end of a long Excel run: a change landing
-    in the middle would be attached to the wrong version."""
+    in the middle would be attached to the wrong version. The next-quarter job runs the model's
+    import macro in an Excel of its own, from the grids of the line at its start: one macro, one
+    Excel job at a time."""
     if s is not None and (s.outside_run or {}).get("state") == "running":
         raise HTTPException(status_code=409, detail="the outside files are being brought in on this workbook: wait for it to finish")
+    if s is not None and (s.next_quarter or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="next quarter's Mind input files are being made: wait for it to finish")
 
 _AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values", "incident", "problem")
 _AUTOFIX_TITLES = {

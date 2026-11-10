@@ -1004,6 +1004,15 @@ def test_next_quarter_waits_for_a_running_job_and_says_a_macro_s_refusal(client,
     s.next_quarter = {"state": "running", "started": time.time()}
     res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")])
     assert res.status_code == 409 and res.json()["detail"] == "Wait a moment: next quarter's Mind input files are still being made."
+    # and the other way round: while its import macro runs, no second bring-in, Run in Mind, fixer or recalculation
+    res = client.post(f"/api/sessions/{sid}/outside-inputs/run", json={})
+    assert res.status_code == 409 and res.json()["detail"] == "Wait a moment: next quarter's Mind input files are still being made."
+    res = client.post(f"/api/sessions/{sid}/mind-loop", json={})
+    assert res.status_code == 409 and res.json()["detail"].startswith("Wait a moment: next quarter's Mind input files are still being made.")
+    assert client.get(f"/api/sessions/{sid}/mind-loop/options").json()["busy"] == "next quarter's Mind input files are still being made"
+    for route in ("recalculate", "auto-fix"):
+        res = client.post(f"/api/sessions/{sid}/{route}", json={})
+        assert res.status_code == 409 and res.json()["detail"] == "next quarter's Mind input files are being made: wait for it to finish", route
     s.next_quarter = {}
     s.outside_run["state"] = "running"
     res = client.post(f"/api/sessions/{sid}/next-quarter-inputs", files=[_part("2026Q2_2026_BBA_01.xlsm", b"raw")])

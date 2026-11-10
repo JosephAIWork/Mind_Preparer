@@ -15,10 +15,14 @@ So the app does what the client's tool does, then writes the grids out:
 1. the picked files are sorted (`classify_files`): a file already shaped like a grid (its header is
    the grid's header) goes into the zip as it is, under the grid's name; any other file is a raw
    input file, matched to the model's import table like the files picked with the model (a file
-   named like a grid but shaped otherwise is read as a raw file, and said so);
+   named like a grid but shaped otherwise is read as a raw file, and said so). A grid file must be
+   UTF-8 text; a comma-separated `.txt` goes in as `<grid>.csv` (Mind reads a `.txt` as TAB-separated);
 2. the model's OWN import macro runs on a copy of the version the outside files were first brought
-   into, with the new raw files (`outside_inputs.run_import`: an Excel of the app's own, message boxes
-   answered, values exactly as the client's tool puts them);
+   into, with the new raw files exactly as picked (`outside_inputs.run_import`: an Excel of the app's
+   own, message boxes answered). The macro opens each file its own way, as at the bring-in (its
+   OpenText settings, its checks of the name): the values are exactly as the client's tool puts them.
+   A raw .csv is not touched first: Excel keeps 15 significant digits of its numbers, as in the
+   client's tool, and the bring-in from the same file gives the same values;
 3. each grid's block is read from that copy (Excel, values only) and written with the grid's own
    header, under the grid's own name (`IN_BBA_01.csv`; TAB `.txt` when a value holds a comma, as at
    the bring-in);
@@ -29,8 +33,10 @@ So the app does what the client's tool does, then writes the grids out:
 """
 from __future__ import annotations
 
+import codecs
 import csv
 import io
+import math
 import re
 import shutil
 import zipfile
@@ -60,19 +66,48 @@ def grid_name_of(title: Any) -> str | None:
 
 def read_first_row(path: Path, max_bytes: int = 16 << 20) -> dict[str, Any]:
     """The first line of a text file as cells, the way Mind counts a file's columns: TAB-separated in a
-    `.txt` that holds a TAB, else comma-separated (quotes as in any CSV). UTF-8 (a BOM is dropped); a
-    file that is not UTF-8 is read as well as it can be. -> {"cells": [...], "separator": "TAB" | "comma"}"""
+    `.txt` (Mind reads a .txt as TAB-separated, even one with commas), comma-separated in any other
+    file (quotes as in any CSV). UTF-8 (a BOM is dropped); a file that is not UTF-8 is read as well as
+    it can be. -> {"cells": [...], "separator": "TAB" | "comma"}"""
     path = Path(path)
     with open(path, "rb") as fh:
         line = fh.readline(max_bytes).rstrip(b"\r\n")
     text = line.decode("utf-8-sig", errors="replace")
-    if path.suffix.lower() == ".txt" and "\t" in text:
+    if path.suffix.lower() == ".txt":
         return {"cells": text.split("\t"), "separator": "TAB"}
+    return {"cells": _comma_cells(text), "separator": "comma"}
+
+
+def _comma_cells(text: str) -> list[str]:
     try:
-        cells = next(csv.reader(io.StringIO(text)), [])
+        return next(csv.reader(io.StringIO(text)), [])
     except csv.Error:
-        cells = text.split(",")
-    return {"cells": cells, "separator": "comma"}
+        return text.split(",")
+
+
+def is_utf8(path: Path, chunk: int = 1 << 20) -> bool:
+    """Whether the whole file is UTF-8 text (the files Mind's Inputs window gets from the app are)."""
+    dec = codecs.getincrementaldecoder("utf-8")()
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                block = fh.read(chunk)
+                if not block:
+                    dec.decode(b"", final=True)
+                    return True
+                dec.decode(block)
+    except UnicodeDecodeError:
+        return False
+
+
+def _holds_any(path: Path, needles: tuple[bytes, ...], chunk: int = 1 << 20) -> bool:
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(chunk)
+            if not block:
+                return False
+            if any(n in block for n in needles):
+                return True
 
 
 def grids_of(change_log: Iterable[dict[str, Any]], csv_dir: Path | str | None) -> list[dict[str, Any]]:
@@ -107,7 +142,8 @@ def _same_header(a: list[str], b: list[str] | None) -> bool:
 def classify_files(paths: Iterable[Path], grids: list[dict[str, Any]], table: list[dict[str, Any]]) -> dict[str, Any]:
     """Sort the picked files.
 
-    -> {"grid_files": [{file, path, grid, renamed}]  files already shaped like a grid (its header),
+    -> {"grid_files": [{file, path, grid, renamed, as_csv?}]  files already shaped like a grid (its
+        header; as_csv: a comma-separated .txt, which goes into the zip as <grid>.csv),
         "rows": match_files rows for the raw files (the import table, each row with its file or None),
         "raw": [names of the raw files given to the import table],
         "notes": [{file, why}]  a file named like a grid but shaped otherwise (read as a raw file),
@@ -127,12 +163,36 @@ def classify_files(paths: Iterable[Path], grids: list[dict[str, Any]], table: li
                 unused.append({"file": p.name, "why": f"it could not be read ({exc.strerror or exc})"})
                 continue
             fits = [g for g in grids if _same_header(first, g.get("header"))]
+            as_csv = False
+            if not fits and p.suffix.lower() == ".txt" and len(first) == 1 and "," in first[0]:
+                # a .txt separated by commas: Mind would read one column (it reads a .txt as TAB-separated)
+                commas = _comma_cells(first[0])
+                by_comma = [g for g in grids if _same_header(commas, g.get("header"))]
+                if by_comma:
+                    fits, first, as_csv = by_comma, commas, True
             named = by_name.get(normalize_name(p.stem))
             if named is not None and named in fits:
                 fits = [named]
-            if len(fits) == 1:
-                g = fits[0]
-                grid_files.append({"file": p.name, "path": str(p), "grid": g["name"], "renamed": normalize_name(p.stem) != normalize_name(g["name"])})
+            try:
+                if len(fits) == 1:
+                    g = fits[0]
+                    if not is_utf8(p):
+                        unused.append({"file": p.name, "why": not_utf8_line(p.name, g["name"])})
+                    elif as_csv and _holds_any(p, (b'"', b"\t")):
+                        unused.append({"file": p.name, "why": (f"{p.name} is separated by commas, but Mind reads a .txt file as TAB-separated, "
+                                                                "and this one holds quotes or TABs. Save it as .csv, or with TABs, and pick it again.")})
+                    else:
+                        gf = {"file": p.name, "path": str(p), "grid": g["name"], "renamed": normalize_name(p.stem) != normalize_name(g["name"])}
+                        if as_csv:
+                            gf["as_csv"] = True
+                        grid_files.append(gf)
+                    continue
+                if named is not None and len(first) == named["cols"] and not is_utf8(p):
+                    # its header did not read as UTF-8: shaped like the grid, saved in another encoding
+                    unused.append({"file": p.name, "why": not_utf8_line(p.name, named["name"])})
+                    continue
+            except OSError as exc:
+                unused.append({"file": p.name, "why": f"it could not be read ({exc.strerror or exc})"})
                 continue
             if named is not None:
                 notes.append({"file": p.name, "why": raw_file_line(p.name, len(first), named["name"], named["cols"])})
@@ -152,6 +212,12 @@ def classify_files(paths: Iterable[Path], grids: list[dict[str, Any]], table: li
         seen.add(gf["grid"])
     return {"grid_files": grid_files, "rows": match["rows"], "raw": [r["file"] for r in match["rows"] if r.get("file")],
             "notes": notes, "unused": unused, "ambiguous": list(match.get("ambiguous") or [])}
+
+
+def not_utf8_line(file: str, grid: str) -> str:
+    """One plain sentence for a grid's file saved in another encoding than UTF-8."""
+    return (f"{file} is shaped like the Mind input grid {grid}, but it is not UTF-8 text, so the app cannot be sure Mind reads it right. "
+            "Save it again as UTF-8 (in Excel: \"CSV UTF-8\") and pick it again.")
 
 
 def raw_file_line(file: str, cols: int, grid: str, grid_cols: int) -> str:
@@ -261,7 +327,7 @@ def export_grids(workbook: Path, grids: list[dict[str, Any]], out_dir: Path, pro
             pass
 
 
-# --- a raw CSV, every digit kept ---------------------------------------------------------------------
+# --- numbers past Excel's 15 digits in a raw CSV ------------------------------------------------------
 _DECIMAL_RE = re.compile(r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?\s*")
 
 
@@ -270,100 +336,28 @@ def _significant_digits(text: str) -> int:
     return len(mant)
 
 
-def exact_csv_workbook(csv_path: Path, out_dir: Path, progress: ProgressFn | None = None) -> dict[str, Any]:
-    """A raw .csv as a workbook the import macro opens, with every digit of its numbers.
-
-    Excel opens a CSV keeping 15 significant digits: 144686640.71679688 comes in as 144686640.716796,
-    so the same quarter as .csv and as .xlsx gives values that differ in the last digits. Here Excel
-    opens the CSV (its own reading of dates, text and layout stays), then each number written with
-    more than 15 digits gets its exact value (the double the text names), and the copy is saved as
-    .xlsx under the same name. -> {"path", "fixed": cells given back their full digits}"""
-    import pythoncom
-
-    say = progress or (lambda _m: None)
-    csv_path, out_dir = Path(csv_path), Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def long_numbers(csv_path: Path) -> int:
+    """How many numbers of a CSV are written with more than 15 significant digits. Excel keeps 15 when
+    it opens a CSV (144686640.71679688 comes in as 144686640.716796), in the client's tool as here: the
+    app says so, it does not change what the macro reads."""
+    n = 0
     with open(csv_path, encoding="utf-8-sig", errors="replace", newline="") as fh:
-        texts = list(csv.reader(fh))
-    long_numbers = {(i, j): t for i, row in enumerate(texts) for j, t in enumerate(row)
-                    if t and _DECIMAL_RE.fullmatch(t) and _significant_digits(t) > 15}
-    out = out_dir / (csv_path.stem + ".xlsx")
-    pythoncom.CoInitialize()
-    xl = wb = None
-    pid = None
-    fixed = 0
-    try:
-        xl, pid = outside_inputs._new_excel(macros=False)
-        try:
-            xl.EnableEvents = False
-        except Exception:
-            pass
-        say(f"Reading {csv_path.name} with every digit")
-        wb = xl.Workbooks.Open(str(csv_path), UpdateLinks=0)
-        ws = wb.Worksheets(1)
-        if long_numbers:
-            last_r = max(i for i, _j in long_numbers) + 1
-            last_c = max(j for _i, j in long_numbers) + 1
-            got = ws.Range(ws.Cells(1, 1), ws.Cells(last_r, last_c)).Value2
-            got = got if isinstance(got, tuple) else ((got,),)
-            runs: dict[int, list[tuple[int, float]]] = {}
-            for (i, j), t in sorted(long_numbers.items()):
-                v = got[i][j] if i < len(got) and j < len(got[i]) else None
-                exact = float(t)
-                if isinstance(v, float) and v != exact and abs(v - exact) <= abs(exact) * 1e-14:
-                    runs.setdefault(i, []).append((j, exact))
-            for i, cells in runs.items():
-                # a row whose span holds numbers and blanks only: one write (the other numbers go back
-                # as they are); else each run of neighbouring cells on its own (text is never rewritten)
-                j0, j1 = cells[0][0], cells[-1][0]
-                span = list(got[i][j0:j1 + 1])
-                if all(x is None or (isinstance(x, (int, float)) and not isinstance(x, bool)) for x in span):
-                    for j, exact in cells:
-                        span[j - j0] = exact
-                    ws.Range(ws.Cells(i + 1, j0 + 1), ws.Cells(i + 1, j1 + 1)).Value2 = [span]
-                    fixed += len(cells)
-                    continue
-                start = 0
-                while start < len(cells):
-                    end = start
-                    while end + 1 < len(cells) and cells[end + 1][0] == cells[end][0] + 1:
-                        end += 1
-                    j0, j1 = cells[start][0], cells[end][0]
-                    rng = ws.Range(ws.Cells(i + 1, j0 + 1), ws.Cells(i + 1, j1 + 1))
-                    vals = [c[1] for c in cells[start:end + 1]]
-                    rng.Value2 = vals[0] if len(vals) == 1 else [vals]
-                    fixed += len(vals)
-                    start = end + 1
-        if out.exists():
-            out.unlink()
-        wb.SaveAs(str(out), FileFormat=51)
-        wb.Close(SaveChanges=False)
-        wb = None
-        return {"path": str(out), "fixed": fixed}
-    finally:
-        try:
-            if wb is not None:
-                wb.Close(SaveChanges=False)
-        except Exception:
-            pass
-        wb = None
-        outside_inputs._close_excel(xl, None, pid)
-        xl = None
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
+        for row in csv.reader(fh):
+            n += sum(1 for t in row if t and len(t) > 15 and _DECIMAL_RE.fullmatch(t) and _significant_digits(t) > 15)
+    return n
 
 
 def _read_rows(path: Path) -> list[list[str]]:
     sep = "\t" if Path(path).suffix.lower() == ".txt" else ","
-    with open(path, encoding="utf-8-sig", newline="") as fh:
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
         return [ln.rstrip("\r\n").split(sep) for ln in fh]
 
 
 def changed_cells(old: Path | str | None, new: Path | str) -> int | None:
     """How many data cells differ between two files of the same grid (the header is not counted; a
-    number written two ways counts as the same). None when there is no old file to compare with."""
+    number written two ways counts as the same, and so does a number that differs only past its 15th
+    significant digit: Excel keeps 15 digits of a number when it opens a CSV, so the same data as .csv
+    and as .xlsx can differ there). None when there is no old file to compare with."""
     if not old or not Path(old).is_file():
         return None
     a, b = _read_rows(Path(old))[1:], _read_rows(Path(new))[1:]
@@ -377,7 +371,8 @@ def changed_cells(old: Path | str | None, new: Path | str) -> int | None:
             if x == y:
                 continue
             try:
-                if float(x) == float(y):
+                fx, fy = float(x), float(y)
+                if fx == fy or math.isclose(fx, fy, rel_tol=2e-14):
                     continue
             except ValueError:
                 pass
@@ -462,23 +457,17 @@ def make_next_quarter(base_workbook: Path, table: list[dict[str, Any]], picked: 
     raw_rows = [r for r in sorted_["rows"] if r.get("file")]
     if raw_rows:
         paths = {p.name: Path(p) for p in picked}
+        # the files exactly as picked: the macro opens each its own way (as at the bring-in)
         chosen = {f"{r['sheet']}!{r['cell']}": paths[r["file"]] for r in raw_rows}
-        # a raw .csv: Excel would keep 15 digits of its numbers; the macro gets a copy with all of them
-        given_as: dict[str, str] = {}
-        for key, p in list(chosen.items()):
+        for p in chosen.values():
             if p.suffix.lower() == ".csv":
-                exact = exact_csv_workbook(p, work_dir / "exact_csv" / f"{len(given_as) + 1:02d}", progress=say)
-                chosen[key] = Path(exact["path"])
-                given_as[Path(exact["path"]).name] = p.name
-                if exact["fixed"]:
-                    result["notes"].append(f"{p.name}: Excel keeps 15 digits of a number when it opens a CSV; "
-                                           f"the app gave {exact['fixed']:,} numbers back their full digits.")
+                n = long_numbers(p)
+                if n:
+                    result["notes"].append(f"{p.name} has {n:,} number{'' if n == 1 else 's'} with more than 15 digits. Excel keeps 15 when it opens "
+                                           "a CSV, as in the client's tool, so the Mind input files hold them that way.")
         say(f"Running the model's import macro {macro} with {len(chosen)} new file{'' if len(chosen) == 1 else 's'}")
         out_wb = work_dir / "import" / Path(base_workbook).name
         report = outside_inputs.run_import(Path(base_workbook), sorted_["rows"], chosen, macro, out_wb, work_dir, progress=say, messages=messages or [])
-        for e in report.get("files") or []:  # the names the user picked
-            if e.get("file") in given_as:
-                e["file"] = given_as[e["file"]]
         result["import"] = report
         ok = report.get("ok") if "ok" in report else (report.get("saved") and not report.get("stopped_early"))
         if not ok or not out_wb.is_file():
@@ -510,12 +499,14 @@ def make_next_quarter(base_workbook: Path, table: list[dict[str, Any]], picked: 
             result["notes"].append(f"{gf['file']} was left out: {files[gf['grid']]['from']} fills the same grid {gf['grid']}.")
             continue
         src = Path(gf["path"])
-        dest = out_dir / (gf["grid"] + src.suffix.lower())
+        dest = out_dir / (gf["grid"] + (".csv" if gf.get("as_csv") else src.suffix.lower()))
         shutil.copyfile(src, dest)
         g = by_grid[gf["grid"]]
         files[gf["grid"]] = {"file": dest.name, "grid": gf["grid"], "from": gf["file"], "source": "as_given", "rows": max(0, len(_read_rows(dest)) - 1),
                              "cols": g["cols"], "separator": read_first_row(dest)["separator"], "path": str(dest)}
-        if gf["renamed"]:
+        if gf.get("as_csv"):
+            result["notes"].append(f"{gf['file']} is separated by commas, and Mind reads a .txt file as TAB-separated: it goes into the zip as {dest.name}.")
+        elif gf["renamed"]:
             result["notes"].append(f"{gf['file']} is shaped like the grid {gf['grid']}: it goes into the zip as {dest.name}.")
     for g in grids:
         f = files.get(g["name"])

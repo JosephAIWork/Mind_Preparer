@@ -191,6 +191,69 @@ describe("the Next quarter part of the Outside files card", () => {
     expect(page.nextQuarterZipUrl()).toBeNull();
   });
 
+  it("forgets the last job's files and zip when another workbook comes", async () => {
+    const f = fake([status({ state: "done", result: result() })]);
+    open(f);
+    expect(await page.makeNextQuarter([new File(["x"], "2026_Q2 - BBA_01.csv")])).toBe(true);
+    expect(page.nextQuarterZipUrl()).not.toBeNull();
+    page.loadAnother();
+    store.sessionId.set("s2");
+    store.outsideInputs.set(broughtIn);
+    expect(page.nextQuarter()).toMatchObject({ running: false, line: "" });
+    expect(page.nextQuarterFiles()).toEqual([]);
+    expect(page.nextQuarterZipUrl()).toBeNull();
+    // a zip is only ever offered in the session that made it
+    page.nextQuarterResult.set(result());
+    expect(page.nextQuarterZipUrl()).toBeNull();
+  });
+
+  it("stops following an old job when the session changes, so its result never lands on the new card", async () => {
+    const f = fake([status({ running: true, state: "running", stage: "Starting" }), status({ running: true, state: "running", stage: "Starting" }),
+      status({ state: "done", result: result() })]);
+    open(f);
+    let rounds = 0;
+    (page as unknown as { sleep: () => Promise<void> }).sleep = () => {
+      if (++rounds === 1) store.sessionId.set("s2"); // another workbook opened while the job runs
+      return Promise.resolve();
+    };
+    expect(await page.makeNextQuarter([new File(["x"], "2026_Q2 - BBA_01.csv")])).toBe(false);
+    expect(page.nextQuarter().running).toBe(false);
+    expect(page.nextQuarterResult()).toBeNull();
+    expect(page.nextQuarterZipUrl()).toBeNull();
+    expect(page.busy()).toBe(false);
+  });
+
+  it("picks a running job back up after a reload and offers its zip when it ends", async () => {
+    const f = fake([status({ running: true, state: "running", stage: "Running the model's import macro with the new files", elapsed_s: 95 }),
+      status({ running: true, state: "running", stage: "Writing the Mind input files", elapsed_s: 96 }), status({ state: "done", result: result() })]);
+    open(f);
+    const seen: string[] = [];
+    (page as unknown as { sleep: () => Promise<void> }).sleep = () => {
+      seen.push(`${page.nextQuarter().line} | ${page.nextQuarter().detail} | busy=${page.busy()}`);
+      return Promise.resolve();
+    };
+    await (page as unknown as { resumeNextQuarter: () => Promise<void> }).resumeNextQuarter();
+    // the first answer shows the job at once; the follow goes on from the next one
+    expect(seen).toEqual(["Writing the Mind input files | 1 min 36 s so far | busy=true"]);
+    expect(f.sent).toEqual([]); // nothing sent again: the same job, followed
+    expect(page.nextQuarter()).toMatchObject({ running: false, tone: "ok", line: result().summary });
+    expect(page.nextQuarterZipUrl()).toBe("/api/sessions/s1/files/Next%20quarter%20Mind%20inputs.zip");
+  });
+
+  it("shows the last job's result after a reload, and nothing when there was none", async () => {
+    open(fake([status({ state: "done", result: result() })]));
+    await (page as unknown as { resumeNextQuarter: () => Promise<void> }).resumeNextQuarter();
+    expect(page.nextQuarter()).toMatchObject({ running: false, tone: "ok" });
+    expect(page.nextQuarterFiles()).toEqual(nextQuarterLines(result()));
+    expect(page.nextQuarterZipUrl()).not.toBeNull();
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    open(fake([status()]));
+    await (page as unknown as { resumeNextQuarter: () => Promise<void> }).resumeNextQuarter();
+    expect(page.nextQuarter()).toMatchObject({ running: false, line: "" });
+    expect(page.nextQuarterZipUrl()).toBeNull();
+  });
+
   it("checks the picked files first and waits while another step runs", async () => {
     const f = fake([status({ state: "done", result: result() })]);
     open(f);

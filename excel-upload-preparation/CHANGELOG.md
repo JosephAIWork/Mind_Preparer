@@ -13,10 +13,29 @@
   No new model upload, no new version. A grid without a new file is left out (Mind keeps its data); a
   file already shaped like a grid goes in as it is; a raw file named like a grid is recognised; a file
   that fills more than its grid is refused with why; the macro's own message boxes are shown.
-- **A raw `.csv` keeps every digit**: Excel opens a CSV keeping 15 significant digits. The app gives
-  longer numbers their exact value in a `.xlsx` copy before the macro reads it. Joseph's six raw CSVs
-  now give files byte for byte equal to the ones the bring-in made from the `.xlsx` files (before
-  this: 15,011 values of IN_BBA_01 differed in the last digits).
+- **The macro gets the raw files exactly as picked** (review of 10 November 2026). A first version
+  gave the macro a `.xlsx` copy of each raw `.csv` with every digit (Excel keeps 15 significant
+  digits when it opens a CSV). That skipped the macro's own way of opening the file (OpenText
+  settings, `Local:=True`, reading it line by line -- the Tokyo tool's `CountCSVRow` does
+  `Open ... For Input` -- or checks of the extension), and the bring-in from the same CSVs gave
+  other values. Now the macro opens each file itself, as at the bring-in and in the client's tool;
+  a CSV with numbers past 15 digits is said ("Excel keeps 15 when it opens a CSV, as in the
+  client's tool"). "Values changed" no longer counts a number that differs only past its 15th digit:
+  Joseph's raw CSVs against the bring-in's `.xlsx` files give 0 changed (15,011 such cells in
+  IN_BBA_01 before). Also gone with the copy: a raw `X.csv` and `X.xlsx` picked together no longer
+  reach Excel under the same name.
+- **Grid files checked before they go in**: a file shaped like a grid but not UTF-8 (a CSV saved on a
+  Japanese PC as "CSV (comma delimited)", cp932) is refused with what to do, and no longer stops
+  the whole job. A `.txt` is read as TAB-separated, as Mind reads it: a comma-separated `.txt`
+  shaped like a grid goes into the zip as `<grid>.csv` (refused, with why, when it holds quotes or
+  TABs).
+- **One Excel job at a time**: while next quarter's files are being made, the bring-in, Run in Mind,
+  the fixer, a recalculation, Apply and the other workbook changes wait (409, in words), as the
+  job already waited for them. A second bring-in could have changed the grids the job writes for.
+- **Screens**: the card picks a running job back up after a reload or a visit to Advanced (and shows
+  the last result and its zip); a new workbook clears the last job's line, files and zip, and an
+  old job's polling stops, so its result never lands on another workbook's card. The zip link is
+  only offered in the session that made it.
 - **Mind's refusal in words**: `mind_client.upload_inputs` reads Mind's reason for a refused file from
   the row's LOG ("CSV Logs") into `errors`, and for a raw file says what to do instead (`advice`).
 - **Fix: Inputs window read too early.** `upload_inputs` read the rows while Mind's "Inputs import" box

@@ -75,6 +75,10 @@ def test_the_first_row_is_read_as_mind_counts_columns(tmp_path):
     tab = tmp_path / "t.txt"
     tab.write_text("x, y\tz\n", encoding="utf-8")
     assert nq.read_first_row(tab) == {"cells": ["x, y", "z"], "separator": "TAB"}
+    # Mind reads a .txt as TAB-separated, even one separated by commas: one column
+    commas = tmp_path / "c.txt"
+    commas.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
+    assert nq.read_first_row(commas) == {"cells": ["a,b,c"], "separator": "TAB"}
 
 
 # --- sorting the picked files ------------------------------------------------------------------------
@@ -109,6 +113,39 @@ def test_two_files_shaped_like_the_same_grid_are_both_refused(grids, tmp_path):
     assert out["grid_files"] == [] and out["raw"] == []
     assert [u["file"] for u in out["unused"]] == ["a.csv", "IN_BBA_01.csv"]
     assert all(u["why"] == "2 files are shaped like the grid IN_BBA_01: pick one" for u in out["unused"])
+
+
+def test_a_comma_txt_shaped_like_a_grid_goes_in_as_csv_and_one_with_quotes_is_refused(grids, tmp_path):
+    plain = tmp_path / "IN_BBA_01.txt"  # saved from a text editor with commas
+    plain.write_text("Lapse,Death,Surrender\n1,2,3\n", encoding="utf-8")
+    out = nq.classify_files([plain], grids, TABLE)
+    assert out["grid_files"] == [{"file": "IN_BBA_01.txt", "path": str(plain), "grid": "IN_BBA_01", "renamed": False, "as_csv": True}]
+    quoted = tmp_path / "q" / "IN_BBA_01.txt"
+    quoted.parent.mkdir()
+    quoted.write_text('Lapse,Death,Surrender\n"1,5",2,3\n', encoding="utf-8")
+    out = nq.classify_files([quoted], grids, TABLE)
+    assert out["grid_files"] == [] and out["raw"] == []
+    assert out["unused"] == [{"file": "IN_BBA_01.txt", "why": (
+        "IN_BBA_01.txt is separated by commas, but Mind reads a .txt file as TAB-separated, and this one holds quotes or TABs. "
+        "Save it as .csv, or with TABs, and pick it again.")}]
+
+
+def test_a_grid_file_that_is_not_utf8_is_refused_with_why(grids, tmp_path):
+    """Saved as "CSV (comma delimited)" on a Japanese PC: cp932, a Japanese data cell."""
+    cp = tmp_path / "IN_BBA_01.csv"
+    cp.write_bytes("Lapse,Death,Surrender\n1,解約,3\n".encode("cp932"))
+    why = ("IN_BBA_01.csv is shaped like the Mind input grid IN_BBA_01, but it is not UTF-8 text, so the app cannot be sure Mind reads it right. "
+           "Save it again as UTF-8 (in Excel: \"CSV UTF-8\") and pick it again.")
+    out = nq.classify_files([cp], grids, TABLE)
+    assert out["grid_files"] == [] and out["raw"] == [] and out["unused"] == [{"file": "IN_BBA_01.csv", "why": why}]
+    # a Japanese header: it does not read as the grid's, but it is named like the grid with its columns
+    hdr = tmp_path / "h" / "IN_BBA_01.csv"
+    hdr.parent.mkdir()
+    hdr.write_bytes("解約,死亡,満期\n1,2,3\n".encode("cp932"))
+    out = nq.classify_files([hdr], grids, TABLE)
+    assert out["grid_files"] == [] and out["notes"] == [] and out["unused"] == [{"file": "IN_BBA_01.csv", "why": why}]
+    # never a crash: the rows of a file that is not UTF-8 are read as well as they can be
+    assert nq.changed_cells(cp, cp) == 0
 
 
 def test_mind_refusing_a_raw_file_is_said_with_what_to_do():
@@ -146,6 +183,18 @@ def test_changed_cells_counts_data_cells_only_and_numbers_by_value(tmp_path):
     new.write_text("A2,B\n1.0,2\n3,5\n6,\n", encoding="utf-8")
     assert nq.changed_cells(old, new) == 2  # 4 -> 5, and the new row's 6 (the header and 1 vs 1.0 do not count)
     assert nq.changed_cells(None, new) is None and nq.changed_cells(tmp_path / "gone.csv", new) is None
+    # the same data as .xlsx and as .csv: Excel keeps 15 digits of a CSV's numbers, which is not a change
+    full, csv15 = tmp_path / "full.csv", tmp_path / "csv15.csv"
+    full.write_text("A,B\n144686640.71679688,0.30000000000000004\n1.0000000000000009,2\n", encoding="utf-8")
+    csv15.write_text("A,B\n144686640.716796,0.3\n1,2.000000000001\n", encoding="utf-8")
+    assert nq.changed_cells(full, csv15) == 1  # only 2 -> 2.000000000001 (the 13th digit)
+
+
+def test_numbers_past_15_digits_in_a_raw_csv_are_counted(tmp_path):
+    src = tmp_path / "2026_Q1 - BBA_01.csv"
+    src.write_bytes("\ufeff,VariableName,2026-06-30 00:00:00\r\n,s2IRLapseRisk,144686640.71679688\r\n,x,0.1\r\n"
+                    ",z,-1.2345678901234567e-05,1234567890123456789012,000000000000000001\r\n".encode("utf-8"))
+    assert nq.long_numbers(src) == 3  # 17, 17 and 22 significant digits; leading zeros do not count
 
 
 # --- the whole job, Excel replaced -------------------------------------------------------------------
@@ -154,7 +203,8 @@ def fake_excel(monkeypatch):
     calls: dict[str, list] = {"import": [], "export": []}
 
     def run_import(workbook, rows, files, macro, out_path, work_dir, timeout_s=900, progress=None, messages=None, restore_rows=None):
-        calls["import"].append({"workbook": Path(workbook), "files": {k: Path(v).name for k, v in files.items()}, "macro": macro, "messages": messages})
+        calls["import"].append({"workbook": Path(workbook), "files": {k: Path(v).name for k, v in files.items()}, "paths": {k: Path(v) for k, v in files.items()},
+                                "macro": macro, "messages": messages})
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(workbook, out_path)
         entries = []
@@ -173,16 +223,8 @@ def fake_excel(monkeypatch):
             made.append({"grid": g["name"], "path": info["path"], "rows": info["rows"], "cols": info["cols"], "separator": info["separator"]})
         return made
 
-    def exact_csv_workbook(csv_path, out_dir, progress=None):
-        calls.setdefault("exact", []).append(Path(csv_path).name)
-        out = Path(out_dir) / (Path(csv_path).stem + ".xlsx")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(csv_path, out)
-        return {"path": str(out), "fixed": 7}
-
     monkeypatch.setattr(outside_inputs, "run_import", run_import)
     monkeypatch.setattr(nq, "export_grids", export_grids)
-    monkeypatch.setattr(nq, "exact_csv_workbook", exact_csv_workbook)
     return calls
 
 
@@ -198,10 +240,10 @@ def test_raw_files_become_grid_files_in_a_zip_with_a_readme(grids, fake_excel, t
                                model_name="model.xlsm", made_at="2026-11-10 23:00")
     assert res["ok"] is True and res["error"] is None
     (imp,) = fake_excel["import"]
-    # the raw .csv goes to the macro as a copy with every digit of its numbers (Excel keeps 15 in a CSV)
-    assert fake_excel["exact"] == ["2026_Q2 - BBA_01.csv"]
-    assert imp["macro"] == "calcCF" and imp["files"] == {"Ctrl_01!H35": "2026_Q2 - BBA_01.xlsx"} and imp["messages"] == [{"line": 1}]
-    assert res["notes"] == ["2026_Q2 - BBA_01.csv: Excel keeps 15 digits of a number when it opens a CSV; the app gave 7 numbers back their full digits."]
+    # the raw .csv goes to the macro exactly as picked: the macro opens it its own way, as at the bring-in
+    assert imp["macro"] == "calcCF" and imp["files"] == {"Ctrl_01!H35": "2026_Q2 - BBA_01.csv"} and imp["messages"] == [{"line": 1}]
+    assert imp["paths"] == {"Ctrl_01!H35": raw} and not (tmp_path / "work" / "exact_csv").exists()
+    assert res["notes"] == []
     assert fake_excel["export"] == [{"workbook": tmp_path / "work" / "import" / "model.xlsm", "grids": ["IN_BBA_01"]}]
     (f,) = res["files"]
     assert {k: f[k] for k in ("file", "grid", "from", "source", "rows", "cols", "separator", "changed")} == {
@@ -217,6 +259,41 @@ def test_raw_files_become_grid_files_in_a_zip_with_a_readme(grids, fake_excel, t
     assert "pick the folder `Mind inputs`" in text and "Raw input files cannot go into Mind directly." in text
     assert "- IN_VFA_01: no new file for it: Mind keeps the data it has" in text
     assert "model.xlsm on 2026-11-10 23:00" in text
+
+
+def test_a_raw_csv_with_long_numbers_is_given_as_it_is_and_said(grids, fake_excel, tmp_path):
+    raw = tmp_path / "in" / "2026_Q2 - BBA_01.csv"
+    raw.parent.mkdir(parents=True)
+    raw.write_text(",VariableName,x\n,s2IRLapseRisk,144686640.71679688\n,y,0.1\n", encoding="utf-8")
+    other = tmp_path / "in" / "2026_Q2 - BBA_01.xlsx"  # same stem, another kind of file: not mixed up with it
+    res = nq.make_next_quarter(_model(tmp_path), TABLE, [raw], grids, "calcCF", tmp_path / "work")
+    assert res["ok"] and fake_excel["import"][0]["paths"] == {"Ctrl_01!H35": raw} and not other.exists()
+    assert res["notes"] == ["2026_Q2 - BBA_01.csv has 1 number with more than 15 digits. Excel keeps 15 when it opens a CSV, "
+                            "as in the client's tool, so the Mind input files hold them that way."]
+
+
+def test_a_comma_txt_goes_into_the_zip_as_csv(grids, fake_excel, tmp_path):
+    given = tmp_path / "in" / "IN_BBA_01.txt"
+    given.parent.mkdir(parents=True)
+    given.write_text("Lapse,Death,Surrender\n1,2,3\n4,5,6\n7,8,10\n", encoding="utf-8")
+    res = nq.make_next_quarter(_model(tmp_path), TABLE, [given], grids, "calcCF", tmp_path / "work")
+    assert res["ok"] and fake_excel["import"] == []
+    (f,) = res["files"]
+    assert (f["file"], f["grid"], f["source"], f["rows"], f["separator"], f["changed"]) == ("IN_BBA_01.csv", "IN_BBA_01", "as_given", 3, "comma", 1)
+    assert res["notes"] == ["IN_BBA_01.txt is separated by commas, and Mind reads a .txt file as TAB-separated: it goes into the zip as IN_BBA_01.csv."]
+    with zipfile.ZipFile(res["zip"]) as zf:
+        assert zf.namelist() == ["README.md", "Mind inputs/IN_BBA_01.csv"]
+
+
+def test_a_grid_file_not_utf8_does_not_stop_the_other_files(grids, fake_excel, tmp_path):
+    bad = tmp_path / "in" / "IN_BBA_01.csv"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes("Lapse,Death,Surrender\n1,解約,3\n".encode("cp932"))
+    good = tmp_path / "in" / "IN_VFA_01.txt"
+    good.write_text("Accrued interest, end\tFund\n10\t20\n30\t41\n", encoding="utf-8")
+    res = nq.make_next_quarter(_model(tmp_path), TABLE, [bad, good], grids, "calcCF", tmp_path / "work")
+    assert res["ok"] and [f["file"] for f in res["files"]] == ["IN_VFA_01.txt"]
+    assert [u["file"] for u in res["unused"]] == ["IN_BBA_01.csv"] and "not UTF-8 text" in res["unused"][0]["why"]
 
 
 def test_a_grid_file_goes_in_as_it_is_without_running_the_macro(grids, fake_excel, tmp_path):
@@ -280,18 +357,3 @@ def test_export_writes_each_grid_block_exactly_as_excel_holds_it(tmp_path):
     assert lines == ["Lapse,Death,Surrender", "0.1,0.0000152587890625,0", "1234567.875,,-2", "text,3,10000000000000000"]
 
 
-@needs_excel
-def test_a_raw_csv_reaches_the_macro_with_every_digit(tmp_path):
-    """Excel opens a CSV keeping 15 significant digits (144686640.71679688 -> 144686640.716796): the copy
-    the macro opens has the exact numbers; dates and text stay as Excel reads them."""
-    src = tmp_path / "2026_Q1 - BBA_01.csv"
-    src.write_bytes("\ufeff,VariableName,Description,2026-06-30 00:00:00\r\n,s2IRLapseRisk,Lapse,144686640.71679688\r\n,x,y,0.1\r\n"
-                    ",z,w,144686640.71679688,txt,1.2345678901234567\r\n".encode("utf-8"))
-    out = nq.exact_csv_workbook(src, tmp_path / "exact")
-    assert Path(out["path"]).name == "2026_Q1 - BBA_01.xlsx" and out["fixed"] == 3
-    wb = openpyxl.load_workbook(out["path"])
-    ws = wb.worksheets[0]
-    assert ws["D2"].value == 144686640.71679688 and ws["D3"].value == 0.1 and ws["C2"].value == "Lapse"
-    # a row with text between its long numbers: the numbers are written one by one, the text stays
-    assert ws["D4"].value == 144686640.71679688 and ws["E4"].value == "txt" and ws["F4"].value == 1.2345678901234567
-    assert ws["D1"].is_date  # Excel's own reading of a date stays
