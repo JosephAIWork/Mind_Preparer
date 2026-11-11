@@ -11,8 +11,8 @@ import type { SessionStore } from "./session.store";
 
 const message: FeedbackMessage = {
   ref: "ABCD-1234",
-  text: "Mind Ready 1.14.0 (source) · ref ABCD-1234\n\nFeedback (no step failed)\n",
-  subject: "Mind Ready 1.14.0 feedback · ref ABCD-1234",
+  text: "Mind Ready 1.14.1 (source) · ref ABCD-1234\n\nFeedback (no step failed)\n",
+  subject: "Mind Ready 1.14.1 feedback · ref ABCD-1234",
   email: "someone@example.com",
   file_name: "MindReady-feedback-ABCD-1234.txt",
   assistant: false,
@@ -105,29 +105,25 @@ describe("the Send feedback dialog", () => {
     expect(page.textContent).not.toContain("Tel Aviv");
   });
 
-  it("shows what the assistant used on the open workbook under the message (1.14.1), nothing without a workbook", async () => {
-    // the backend's answer carries the open workbook's count; the message text holds the same line
+  it("shows what the assistant used on the open workbook once, inside the message (1.14.1)", async () => {
+    // the backend puts "AI used: ..." into the message's log part (app/feedback.py compose); the dialog
+    // repeats nothing under the box (12 November 2026 review: the line showed twice in a row)
+    const original = message.text;
     message.aiUsage = { calls: 7, input_tokens: 12000, output_tokens: 340, cache_read_tokens: 0, cache_write_tokens: 0 };
+    message.text = original + "  Workbook: 3 sheets\n  AI used: 12,340 tokens in 7 calls\n";
     try {
       const { page, dialog, detect } = await draw(null);
       dialog.note.set("Works well");
       await dialog.prepare();
       await detect();
-      const line = page.querySelector('[data-test="fb-ai-usage"]');
-      expect(line?.textContent?.trim()).toBe("AI used: 12,340 tokens in 7 calls");
-      expect(line?.previousElementSibling?.className).toBe("fb__message");
-      message.aiUsage = { calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
-      dialog.back();
-      await dialog.prepare();
-      await detect();
-      expect(page.querySelector('[data-test="fb-ai-usage"]')?.textContent?.trim()).toBe("AI not used yet on this workbook");
+      const text = page.textContent ?? "";
+      expect(text.split("AI used: 12,340 tokens in 7 calls").length - 1).toBe(1);
+      expect(page.querySelector(".fb__message")?.textContent).toContain("AI used: 12,340 tokens in 7 calls");
+      expect(page.querySelector('[data-test="fb-ai-usage"]')).toBeNull();
+      expect(page.querySelector(".fb__ai")).toBeNull();
     } finally {
       message.aiUsage = null;
+      message.text = original;
     }
-    const { page, dialog, detect } = await draw(null);
-    dialog.note.set("Works well");
-    await dialog.prepare();
-    await detect();
-    expect(page.querySelector('[data-test="fb-ai-usage"]')).toBeNull();
   });
 });

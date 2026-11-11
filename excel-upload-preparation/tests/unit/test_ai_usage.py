@@ -152,6 +152,24 @@ def test_a_thread_runs_under_the_scope_it_was_given(gateway):
     assert llm._USAGE_SINK.get() is None  # the scope stayed in the thread
 
 
+def test_fix_all_issues_advisor_counts_its_batched_calls_made_from_a_thread_pool(gateway):
+    """The advisor (app/autofix_advisor.py) asks the gateway from a thread pool, up to four batches at
+    once; a pool's threads start with no context, so each batch must carry the caller's usage sink
+    (12 November 2026 review: Fix all issues' calls -- the heaviest spender -- counted nothing)."""
+    from app import autofix_advisor
+
+    gateway.say('[{"id": 1, "fallback": "0", "reason": "An amount."}]')
+    advise = autofix_advisor.make_advisor()
+    assert advise is not None
+    groups = [{"key": f"g{i}", "sheet": "S", "cell": f"A{i}", "count": 1, "error": "#DIV/0!", "formula": "=1/0"} for i in range(autofix_advisor.BATCH * 2 + 1)]
+    got: list[dict[str, int]] = []
+    with llm.usage_scope(got.append):
+        answers = advise(groups)
+    assert answers["g0"]["fallback"] == "0"
+    assert len(gateway.calls) == 3 and got == [llm.usage_of(USAGE)] * 3
+    assert llm._USAGE_SINK.get() is None  # the copies of the context stayed in the pool's threads
+
+
 # --- per workbook, through the app (app/web/server.py) ------------------------------------------
 def test_a_chat_a_suggestion_and_the_grid_namer_all_add_to_the_workbooks_count(client, flagged_model_broken_xlsx, gateway):
     body = _upload(client, flagged_model_broken_xlsx)

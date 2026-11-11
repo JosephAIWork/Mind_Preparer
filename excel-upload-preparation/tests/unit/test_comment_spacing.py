@@ -1,7 +1,8 @@
 """Comment spacing (tools/comment_spacing.py): the spacing between the words of comments and
 docstrings follows a list of gaps given to the tool (never the user's own rule file); stamp touches
 only comment text, is idempotent, keeps line endings, a byte order mark, tabs and trailing spaces;
-unstamp restores single spaces; check reports the run; the pre-commit hook stamps staged files."""
+the run starts again at every top-level block, so an edit stays local; unstamp restores single
+spaces; check reports the run, also when it moved; the pre-commit hook stamps the staged copies only."""
 from __future__ import annotations
 
 import importlib.util
@@ -31,7 +32,7 @@ def _load(path: Path, name: str):
 
 cs = _load(TOOL, "mind_ready_comment_spacing")
 
-GAPS = [1, 2, 3]  # marks at gaps 0, 2, 5, 9, 11, 14, 18, ...
+GAPS = [1, 2, 3]  # marks at gaps 0, 2, 5, 9, 11, 14, 18, ... of each part
 
 PY_SOURCE = '''"""A module docstring with several words on this line.
 And a second line with more words in it here.
@@ -91,26 +92,35 @@ def _gap_widths(text: str, suffix: str) -> list[int]:
     return [g.width for g in cs.find_gaps(lines, cs.regions_for(text, suffix))]
 
 
+def _marks(text: str, suffix: str) -> set[int]:
+    _lines, _gaps, parts = cs._gaps_and_parts(text, suffix)
+    return cs.marks_for(GAPS, parts)
+
+
 # ----------------------------------------------------------------------------------------------
 # stamp
 
 
-def test_stamp_writes_the_marks_at_the_right_gaps_across_comment_lines_python(tmp_path):
+def test_stamp_writes_the_marks_at_the_right_gaps_of_each_part_python(tmp_path):
     path = tmp_path / "m.py"
     path.write_bytes(PY_SOURCE.encode("utf-8"))
     assert cs.stamp_file(path, GAPS) == "stamped"
     text = path.read_text(encoding="utf-8")
     widths = _gap_widths(text, ".py")
-    marks = set(cs.mark_positions(GAPS, len(widths)))
-    assert len(widths) > 30 and sorted(marks)[:8] == [0, 2, 5, 9, 11, 14, 18, 20]
+    marks = _marks(text, ".py")
+    assert len(widths) > 30
     assert all(width == (2 if i in marks else 1) for i, width in enumerate(widths))
     assert widths.count(2) == len(marks)
-    # the marks cross the comment lines: gaps 0, 2, 5 on the first docstring line, 9, 11, 14 on the second...
+    # the parts: the module docstring, then each line that begins with code at column 0 (import, TEXT,
+    # OTHER, def f, class K, def g); a comment line at column 0 does not start a part
+    assert cs.python_part_starts(text) == [3, 5, 6, 9, 18, 25]
+    # the first part: marks at gaps 0, 2, 5 on the first docstring line, 9, 11, 14 on the second
     assert text.startswith('"""A  module docstring  with several words  on this line.\n'
                            'And a  second line  with more words  in it here.\n"""\n')
-    assert "import os  # a trailing  comment with  some words\n" in text
-    assert "# a plain comment with  several words  inside it\n" in text
-    assert "    More words  on another  line of the  docstring.\n" in text
+    # the next part starts again at its first gap
+    assert "import os  # a  trailing comment  with some words\n" in text
+    assert '    """The  function docstring  has words.\n' in text
+    assert "    More words  on another line of  the docstring.\n" in text
     # code and strings untouched
     assert 'TEXT = "a string with  two spaces and words that must not change"' in text
     assert 'OTHER = """not a docstring: this string has words too"""' in text
@@ -126,7 +136,7 @@ def test_stamp_skips_code_strings_templates_and_regexes_typescript(tmp_path):
     assert cs.stamp_file(path, GAPS) == "stamped"
     text = path.read_text(encoding="utf-8")
     widths = _gap_widths(text, ".ts")
-    marks = set(cs.mark_positions(GAPS, len(widths)))
+    marks = _marks(text, ".ts")
     assert widths and all(width == (2 if i in marks else 1) for i, width in enumerate(widths))
     assert 'const s = "a string with words that must not change";' in text
     assert "const t = `a template with // not a comment and ${a} words`;" in text
@@ -136,6 +146,9 @@ def test_stamp_skips_code_strings_templates_and_regexes_typescript(tmp_path):
     assert '/// <reference types="node" /> a directive comment stays' in text
     assert "// A  line comment" in text  # the first gap of the file is a mark
     assert text.count("  ") - TS_SOURCE.count("  ") == len(marks)
+    # the parts: `export function` and the closing brace begin with code at column 0; the comment
+    # lines and the JSDoc do not
+    assert cs.typescript_part_starts(text, cs._split_lines(text)) == [4, 13]
 
 
 def test_typescript_comment_spans_see_through_strings_templates_and_regexes():
@@ -149,19 +162,42 @@ def test_typescript_comment_spans_see_through_strings_templates_and_regexes():
     assert len(texts) == 7
 
 
-def test_stamp_is_idempotent_and_restamps_an_edited_file_from_its_start(tmp_path):
+def test_a_line_at_column_zero_inside_a_template_or_a_string_does_not_start_a_part():
+    text = ('const tpl = `first line\n'
+            'second line at column zero ${x} more\n'
+            '`;\n'
+            'const s = "one";\n'
+            '/* a block comment\n'
+            'with a line at column zero */\n'
+            'let y = 1;\n')
+    # the line that holds only the closing backtick is the tail of the template: not a part of its own
+    assert cs.typescript_part_starts(text, cs._split_lines(text)) == [0, 3, 6]
+    py = ('X = """a string\n'
+          'that goes on at column zero\n'
+          '"""\n'
+          '# a comment at column zero\n'
+          'y = 1\n')
+    assert cs.python_part_starts(py) == [0, 4]
+
+
+def test_stamp_is_idempotent_and_an_edit_changes_its_own_part_only(tmp_path):
     path = tmp_path / "m.py"
     path.write_bytes(PY_SOURCE.encode("utf-8"))
     cs.stamp_file(path, GAPS)
-    once = path.read_bytes()
+    once = path.read_text(encoding="utf-8")
     assert cs.stamp_file(path, GAPS) == "unchanged"
-    assert path.read_bytes() == once
-    # a comment added at the top shifts every gap: the file is stamped again from its start
-    path.write_bytes(b"# a new comment with some words at the top of the file\n" + once)
+    assert path.read_text(encoding="utf-8") == once
+    # a comment added at the top shifts the gaps of the first part: that part is stamped again, and
+    # the parts after it (import os, def f, ...) keep every byte
+    path.write_text("# a new comment with some words at the top of the file\n" + once, encoding="utf-8")
     assert not cs.check_file(path, GAPS).intact
     assert cs.stamp_file(path, GAPS) == "stamped"
+    again = path.read_text(encoding="utf-8")
     report = cs.check_file(path, GAPS)
     assert report.intact and report.extra == 0
+    cut = once.index("import os")
+    assert again.endswith(once[cut:])
+    assert again != "# a new comment with some words at the top of the file\n" + once
 
 
 # ----------------------------------------------------------------------------------------------
@@ -193,14 +229,13 @@ def test_check_finds_the_sequence_and_reports_zero_when_absent(tmp_path):
     path = tmp_path / "long.py"
     path.write_text(_long_python(), encoding="utf-8")
     before = cs.check_file(path, GAPS)
-    assert before.gaps == 60 * 9 and before.doubles == 0 and before.matched == 0
-    assert before.repetitions == 0 and not before.intact and before.chance == 1.0
+    assert before.gaps == 60 * 9 and before.doubles == 0 and before.matched == 0 and before.parts == 1
+    assert before.repetitions == 0 and not before.intact and not before.moved
     cs.stamp_file(path, GAPS)
     after = cs.check_file(path, GAPS)
-    assert after.intact and not after.partial and after.extra == 0
+    assert after.intact and not after.partial and after.extra == 0 and after.parts_intact == 1
     assert after.matched == after.expected == len(cs.mark_positions(GAPS, after.gaps))
     assert after.repetitions == (after.matched - 1) // len(GAPS) >= 1
-    assert 0 < after.chance < 1e-30 and after.chance_text.startswith("1 in ")
     # a stray double space in the middle breaks the run
     text = path.read_text(encoding="utf-8")
     broken = text.replace("w3 w4", "w3  w4", 1) if "w3 w4" in text else text.replace("w3  w4", "w3 w4", 1)
@@ -208,6 +243,38 @@ def test_check_finds_the_sequence_and_reports_zero_when_absent(tmp_path):
     damaged = cs.check_file(path, GAPS)
     assert not damaged.intact
     assert damaged.matched < after.matched or damaged.extra > 0
+
+
+def test_check_finds_a_run_that_moved(tmp_path):
+    """A word added before the marks, or the head of the file cut off, shifts every double space:
+    check still finds the run, says where it starts now, and counts its marks."""
+    path = tmp_path / "long.py"
+    path.write_text(_long_python(), encoding="utf-8")
+    cs.stamp_file(path, GAPS)
+    stamped = path.read_text(encoding="utf-8")
+    whole = cs.check_file(path, GAPS)
+    # one word added at the start of the first comment: every mark is one gap further on
+    path.write_text(stamped.replace("# w0 ", "# new w0 ", 1), encoding="utf-8")
+    report = cs.check_file(path, GAPS)
+    assert not report.intact and report.moved and report.extra == 0
+    assert report.matched == whole.matched and report.moved_at == [(1, 0)] and report.parts_moved == 1
+    # the first two comment lines removed (8 gaps each, so 16 gaps: the marks 0, 2, 5, 9, 11, 14 are
+    # gone and the one at 18 now sits at gap 2): the run that is left is found where it starts
+    path.write_text(_long_python(words_per_line=7), encoding="utf-8")
+    cs.stamp_file(path, GAPS)
+    whole = cs.check_file(path, GAPS)
+    lines = path.read_text(encoding="utf-8").split("\n")
+    path.write_text("\n".join(lines[:1] + lines[3:]), encoding="utf-8")
+    report = cs.check_file(path, GAPS)
+    assert report.moved and report.extra == 0 and report.matched == whole.matched - 6
+    assert report.moved_at == [(2, 0)]
+    out = subprocess.run([sys.executable, str(TOOL), "check", "--pattern", "1,2,3", str(path)],
+                         capture_output=True, text=True, check=True).stdout
+    assert "intact, moved in 1 part" in out and "moved runs start at gap 2 (entry 0)" in out
+    # a file without the marks is 'absent', not 'moved'
+    path.write_text(_long_python(), encoding="utf-8")
+    report = cs.check_file(path, GAPS)
+    assert not report.moved and report.matched == 0
 
 
 def test_a_short_file_gets_a_partial_run_and_check_says_so(tmp_path):
@@ -220,12 +287,14 @@ def test_a_short_file_gets_a_partial_run_and_check_says_so(tmp_path):
     assert report.matched == report.expected == 2
     out = subprocess.run([sys.executable, str(TOOL), "check", "--pattern", "1,2,3", str(path)],
                          capture_output=True, text=True, check=True).stdout
-    assert "partial" in out and "0 full repetitions" in out and "chance by accident 1 in 3" in out
+    assert "partial" in out and "0 full repetitions" in out and "marks 2 of 2 expected over 3 gaps in 1 parts" in out
 
 
 def test_mark_positions_follow_the_gaps_and_repeat():
     assert cs.mark_positions([1, 30, 10], 100) == [0, 2, 33, 44, 46, 77, 88, 90]
+    assert cs.mark_positions([1, 30, 10], 100, phase=1) == [0, 31, 42, 44, 75, 86, 88]
     assert cs.mark_positions([1, 2, 3], 0) == []
+    assert cs.parts_of([cs.Gap(0, 1, 1), cs.Gap(0, 5, 1), cs.Gap(4, 1, 1), cs.Gap(9, 1, 1)], [2, 4, 7]) == [(0, 2), (2, 1), (3, 1)]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -309,10 +378,10 @@ def _git(*args: str, cwd: Path, env: dict) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not on the path")
-def test_the_pre_commit_hook_stamps_staged_sources_and_the_installer_switches_it_on(tmp_path):
+def test_the_pre_commit_hook_stamps_the_staged_copies_only_and_the_installer_switches_it_on(tmp_path):
     clone = tmp_path / "clone"
     (clone / ".githooks").mkdir(parents=True)
-    shutil.copy(HOOK, clone / ".githooks" / "pre-commit")
+    (clone / ".githooks" / "pre-commit").write_bytes(HOOK.read_bytes().replace(b"\r\n", b"\n"))
     tool_home = clone / "excel-upload-preparation" / "tools"
     tool_home.mkdir(parents=True)
     shutil.copy(TOOL, tool_home / "comment_spacing.py")
@@ -346,9 +415,41 @@ def test_the_pre_commit_hook_stamps_staged_sources_and_the_installer_switches_it
     assert test_file.read_text(encoding="utf-8") == "# words in a test file stay as they are\n"
     assert _git("status", "--porcelain", cwd=clone, env=env).stdout.strip() == ""
 
-    # a second commit of an unchanged file: the hook finds nothing to do and the commit goes through
+    # what is not staged stays out of the commit: a line added after `git add` (to a source and to a
+    # test file alike) is neither committed nor staged; the staged part is stamped all the same
     source.write_text(source.read_text(encoding="utf-8") + "\n# one more comment with words\n", encoding="utf-8")
-    _git("add", "excel-upload-preparation/app/m.py", cwd=clone, env=env)
+    test_file.write_text("# words in a test file stay as they are\n# a staged line\n", encoding="utf-8")
+    _git("add", "excel-upload-preparation/app/m.py", "excel-upload-preparation/tests/unit/test_m.py", cwd=clone, env=env)
+    with source.open("a", encoding="utf-8") as f:
+        f.write("z = 3  # NOT staged\n")
+    with test_file.open("a", encoding="utf-8") as f:
+        f.write("# NOT staged either\n")
     second = _git("commit", "-q", "-m", "second", cwd=clone, env=env)
     assert second.returncode == 0, second.stderr
+    committed = _git("show", "HEAD:excel-upload-preparation/app/m.py", cwd=clone, env=env).stdout
+    assert "NOT staged" not in committed and "# one more comment  with words" in committed  # stamped on in def g's part
+    assert "NOT staged" not in _git("show", "HEAD:excel-upload-preparation/tests/unit/test_m.py", cwd=clone, env=env).stdout
+    assert "NOT staged" in source.read_text(encoding="utf-8")  # the working tree keeps the unstaged edit, unstamped
+    assert "# one more comment with words" in source.read_text(encoding="utf-8")
+    status = _git("status", "--porcelain", cwd=clone, env=env).stdout
+    assert " M excel-upload-preparation/app/m.py" in status and " M excel-upload-preparation/tests/unit/test_m.py" in status
+    assert cs.check_text(committed, GAPS, ".py").intact
+
+    # a partial commit (paths given) runs on a temporary index: the hook leaves it alone and says so
+    third = _git("commit", "-q", "-m", "third", "--", "excel-upload-preparation/app/m.py", cwd=clone, env=env)
+    assert third.returncode == 0, third.stderr
+    assert "partial commit" in third.stdout + third.stderr
+    committed = _git("show", "HEAD:excel-upload-preparation/app/m.py", cwd=clone, env=env).stdout
+    assert committed == source.read_text(encoding="utf-8")
+    assert "excel-upload-preparation/app/m.py" not in _git("status", "--porcelain", cwd=clone, env=env).stdout
+
+    # the next full commit stamps that file again, in the index and in the working tree
+    with source.open("a", encoding="utf-8") as f:
+        f.write("# and a last comment with words\n")
+    _git("add", "excel-upload-preparation/app/m.py", cwd=clone, env=env)
+    fourth = _git("commit", "-q", "-m", "fourth", cwd=clone, env=env)
+    assert fourth.returncode == 0, fourth.stderr
+    assert "1 stamped" in fourth.stdout + fourth.stderr
     assert cs.check_file(source, GAPS).intact
+    assert source.read_text(encoding="utf-8") == _git("show", "HEAD:excel-upload-preparation/app/m.py", cwd=clone, env=env).stdout
+    assert "excel-upload-preparation/app/m.py" not in _git("status", "--porcelain", cwd=clone, env=env).stdout

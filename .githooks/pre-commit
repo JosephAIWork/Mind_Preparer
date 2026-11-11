@@ -1,14 +1,14 @@
 #!/bin/sh
-# Comment spacing: every staged Python / TypeScript source gets the spacing between the words of its
-# comments made consistent before the commit (excel-upload-preparation/tools/comment_spacing.py), then
-# is staged again. Never blocks a commit; prints one line. Switched on per clone by
+# Comment spacing: the staged copy of every Python / TypeScript source the rule applies to gets the
+# spacing between the words of its comments made consistent before the commit
+# (excel-upload-preparation/tools/comment_spacing.py stamp-staged). It works on the index: what is
+# not staged stays out of the commit, and a partial commit (git commit -- <paths>) is left alone.
+# Never blocks a commit; prints one line. Switched on per clone by
 # excel-upload-preparation/tools/install_hooks.py (git config core.hooksPath .githooks).
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$root" || exit 0
 tool="excel-upload-preparation/tools/comment_spacing.py"
 [ -f "$tool" ] || exit 0
-files="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep -E '\.(py|ts)$')"
-[ -n "$files" ] || exit 0
 py=""
 for candidate in python python3; do
     if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import sys" >/dev/null 2>&1; then
@@ -20,11 +20,7 @@ if [ -z "$py" ]; then
     echo "comment spacing: python not found, nothing done"
     exit 0
 fi
-if ! printf '%s\n' "$files" | "$py" "$tool" stamp --repo-rules --quiet --files-from -; then
+if ! "$py" "$tool" stamp-staged; then
     echo "comment spacing: the tool failed, the commit goes on"
-    exit 0
 fi
-printf '%s\n' "$files" | while IFS= read -r file; do
-    [ -n "$file" ] && [ -f "$file" ] && git add -- "$file"
-done
 exit 0

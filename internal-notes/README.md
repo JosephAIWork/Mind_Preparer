@@ -11,4 +11,5 @@ team. They name client models, sheets and cells.
 | `AUTOFIX_USE_CASES.md` | What the auto-fix did on each test model. |
 | `CHANGES_2026-09-27_to_2026-09-30.md` | Change notes for those days. |
 | `PLAN_EXCEL_SESSION.md` | The plan for one Excel per session (1.11.9). |
+| `WATERMARK.md` | How Joseph's work is marked (the shipped tool is called "comment spacing"); the pattern itself is outside the repository. |
 | `PLAN_SHARE_MIND_TEAM.md` | The first plan for sharing the app with the Mind team (a compiled package; replaced by a clean repository). |

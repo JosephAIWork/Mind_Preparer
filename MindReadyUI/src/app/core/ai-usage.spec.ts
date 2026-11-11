@@ -10,6 +10,9 @@ import { SessionStore } from "./session.store";
 // the feedback dialog (core/feedback-dialog.spec.ts). "AI used: 12,340 tokens in 7 calls": input and
 // output tokens together; before the first call, "AI not used yet on this workbook".
 
+// the plain sentence beside the count (12 November 2026 review: "tokens" and "calls" explained, not repeated)
+const EXPLAIN = "Counted since the workbook was uploaded. A token is a piece of a word, about three quarters of a word on average: it is what the AI service counts and bills. A call is one question to the assistant.";
+
 const usage = (calls: number, input: number, output: number): AiUsage => ({ calls, input_tokens: input, output_tokens: output, cache_read_tokens: 0, cache_write_tokens: 0 });
 
 describe("the token line", () => {
@@ -65,11 +68,11 @@ describe("the Assistant tab's token line", () => {
 
   const line = (page: HTMLElement) => page.querySelector('[data-test="ai-usage"]')?.textContent?.replace(/\s+/g, " ").trim();
 
-  it("sits by the AI key box, says what it counts, and reads the count when the tab opens", async () => {
+  it("sits by the AI key box, says what a token and a call are, and reads the count when the tab opens", async () => {
     served = usage(7, 12000, 340);
     const { page } = await draw();
     expect(fetches).toBe(1);
-    expect(line(page)).toBe("AI used: 12,340 tokens in 7 calls Tokens the assistant used on this workbook since it was uploaded.");
+    expect(line(page)).toBe("AI used: 12,340 tokens in 7 calls " + EXPLAIN);
     expect(page.querySelector('[data-test="ai-usage"] strong')?.textContent).toBe("AI used: 12,340 tokens in 7 calls");
     const key = page.querySelector('[data-show-me="assistant-key"]');
     expect(key?.nextElementSibling?.getAttribute("data-test")).toBe("ai-usage");
@@ -78,7 +81,7 @@ describe("the Assistant tab's token line", () => {
   it("says the assistant was not used yet on a fresh workbook, and asks nothing without a workbook", async () => {
     served = usage(0, 0, 0);
     const { page } = await draw();
-    expect(line(page)).toBe("AI not used yet on this workbook Tokens the assistant used on this workbook since it was uploaded.");
+    expect(line(page)).toBe("AI not used yet on this workbook " + EXPLAIN);
     const none = await draw(null);
     expect(fetches).toBe(0);
     expect(line(none.page)).toContain("AI not used yet on this workbook");

@@ -35,9 +35,9 @@ from typing import Any
 from .formula_utils import num_to_col, ref_text
 
 TITLE_PREFIX = "#"
-# Excel error *values*  are stored as text that also begins with '#'. They are
-# results,  not grid titles: reading '#N/A' in  a data table as a title makes  the
-# app believe a title is trapped inside the grid (STR-001) and,  worse, offer to
+# Excel  error *values*  are stored as text that also begins with '#'. They are
+# results, not grid titles: reading '#N/A' in a data table as a title makes the
+# app believe a title is trapped inside  the grid (STR-001) and, worse, offer to
 # insert a row through a  real data table to "free" it.
 ERROR_LITERALS = frozenset(
     {
@@ -50,7 +50,7 @@ FLAG_RE = re.compile(r"/([A-Za-z][A-Za-z0-9_]*)((?:\.(?:\([^)]*\)|[^\s./]+))*)")
 
 
 class MergedInto:
-    """A cell of a merged range other than its first cell: it takes its place
+    """A  cell of  a merged range other than its first cell: it takes its place
     in a grid like any occupied cell and shows the first cell's value."""
 
     __slots__ = ("anchor", "value")
@@ -63,7 +63,7 @@ class MergedInto:
 
 
 def looks_like_title(value: Any) -> bool:
-    """A '#...' text cell that is a grid title -- not an Excel error value."""
+    """A  '#...' text  cell that is a grid title -- not an Excel error value."""
     if not isinstance(value, str):
         return False
     text = value.strip()
@@ -75,7 +75,7 @@ MAX_STORED_CELLS = 20000
 
 
 def json_safe(value: Any) -> Any:
-    """openpyxl cell values -> something json.dumps can serialize (formulas as text)."""
+    """openpyxl  cell values  -> something json.dumps can serialize (formulas as text)."""
     if isinstance(value, MergedInto):
         value = value.value
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -99,7 +99,7 @@ def is_occupied(value: Any) -> bool:
 
 
 def parse_flags(text: str) -> list[dict[str, Any]]:
-    """'/Group.(My group).0.1 /Input' ->  [{'name': 'group', 'raw': ..., 'args': ['My group','0','1']}, {'name': 'input', ...}]"""
+    """'/Group.(My  group).0.1 /Input'  -> [{'name': 'group', 'raw': ..., 'args': ['My group','0','1']}, {'name': 'input', ...}]"""
     flags = []
     for m in FLAG_RE.finditer(text or ""):
         args: list[str] = []
@@ -126,7 +126,7 @@ def parse_flags(text: str) -> list[dict[str, Any]]:
 
 
 def parse_title(text: str) -> tuple[str, list[dict[str, Any]]]:
-    """'#Grid name /Input /Resize.A' -> ('Grid name', [flags...])."""
+    """'#Grid  name /Input  /Resize.A' -> ('Grid name', [flags...])."""
     body = text[1:] if text.startswith(TITLE_PREFIX) else text
     flags = parse_flags(body)
     first_flag = FLAG_RE.search(body)
@@ -135,7 +135,7 @@ def parse_title(text: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 def header_markers(header_values: list[Any]) -> list[dict[str, Any]]:
-    """Documented header-cell flags/markers: /HideRows, /InstanceSelect, &&HideColumn, &hide."""
+    """Documented  header-cell flags/markers:  /HideRows, /InstanceSelect, &&HideColumn, &hide."""
     found = []
     for idx, v in enumerate(header_values):
         if not isinstance(v, str):
@@ -151,7 +151,7 @@ def header_markers(header_values: list[Any]) -> list[dict[str, Any]]:
 
 
 def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Run the documented detection over an occupancy map {(row, col): value}.
+    """Run  the documented  detection over an occupancy map {(row, col): value}.
     Returns (grids, standalone_text_cells)."""
     assigned: set[tuple[int, int]] = set()
     grids: list[dict[str, Any]] = []
@@ -163,7 +163,7 @@ def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple
         value = occupied[(r, c)]
         if isinstance(value, MergedInto):
             # its first cell came earlier in reading order: a title cell, or a block this
-            # cell was not reached from (merged downwards past the block) -- never a new grid
+            # cell was not reached from (merged downwards past  the block) -- never a new grid
             assigned.add((r, c))
             continue
         title_cell: tuple[int, int] | None = None
@@ -203,7 +203,7 @@ def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple
 
 
 def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: int, width: int, height: int, title_cell: tuple[int, int] | None) -> dict[str, Any]:
-    """The grid record for the block `ar, ac` of `width` x `height` cells (with its  title cell, if any)."""
+    """The  grid record  for the block `ar, ac` of `width` x `height` cells (with its title cell, if any)."""
     header_values = [json_safe(occupied.get((ar, ac + i))) for i in range(width)]
     header_is_all_text = all(isinstance(v, str) and not v.startswith("=") for v in header_values)
     inner_titles = [
@@ -259,23 +259,23 @@ def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: in
 
 
 def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], grids: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A key  column and the block beside it are  one table.
+    """A  key column  and the block beside it are one table.
 
-    The shape  (the IFRS  17 tool's Result_CF, 2026-11-10): a caption in A1, the keys of each row in
-    A2:A8 (the sheet names its lookups use) and the block B2:CI8 that reads them. Mind, and the
-    detection above,  read two untitled grids: the column A1:A8 (the caption on top,  nothing to its
-    right) and B2:CI8. A  title written for one of them moved  its cells and left the keys out of line
-    with their rows.  With a title in the caption cell  Mind reads one grid, A2:CI8, so the app reads
+    The shape (the IFRS 17 tool's Result_CF, 2026-11-10): a caption in A1, the keys of each row in
+    A2:A8 (the sheet names its lookups use)  and the block B2:CI8 that reads them. Mind, and the
+    detection above,  read two untitled grids: the column  A1:A8 (the caption on top, nothing to  its
+    right) and B2:CI8. A title written for one of them moved  its cells and left the keys out  of line
+    with their rows. With a title in the caption cell Mind reads one grid, A2:CI8, so the app reads
     them as one table from the start: the key column's cells on the block's rows plus the block, the
     caption cell kept apart as `caption_cell` / `caption_value` (the place for the title).
 
-    Tight, so two lists that only touch are never joined: both grids untitled; the column one cell
-    wide, directly left of the block; the  column starts exactly one row above the block (the caption)
+    Tight, so two lists that only touch are never joined: both grids  untitled; the column one cell
+    wide, directly left of the block; the column starts exactly one row above the block (the caption)
     and ends on the block's last row; and the caption is text (a formula counts: the title replaces it
-    with the text it last showed, prep._caption_shown) -- never a number, a date or a switch that a
+    with the text it last showed, prep._caption_shown; no text known -> the table is reported) -- never a number, a date or a switch that a
     title would overwrite. What the column's
-    cells hold is not looked at: once the caption cell holds a title Mind reads one grid whatever they
-    are, and the keys may be formulas the block no longer reads (after FRM-007  rewrote its INDIRECT,
+    cells hold is not looked at: once the caption cell holds a title  Mind reads one grid whatever  they
+    are, and the keys may be formulas  the block no  longer reads  (after FRM-007 rewrote its INDIRECT,
     say)."""
     out: list[dict[str, Any]] = []
     taken: set[int] = set()
@@ -297,7 +297,7 @@ def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], gr
             continue
         col, r1 = k["first_col"], g["first_row"]
         caption = occupied.get((k["first_row"], col))
-        if not (isinstance(caption, str) and caption.strip()):  # a year, a  date, TRUE: not a caption, and a  title would destroy  it
+        if not (isinstance(caption, str) and caption.strip()):  # a year, a date, TRUE: not a caption, and a title would destroy it
             out.append(k)
             continue
         table = _grid(sheet_name, occupied, r1, col, g["n_cols"] + 1, g["n_rows"], None)

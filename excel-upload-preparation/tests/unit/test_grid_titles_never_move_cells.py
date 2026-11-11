@@ -9,8 +9,9 @@ needs a row insert; a grid starting on row 1 and a taken cell above are reported
 name" with what to do by hand. A formula caption (Result_CF's A1 on the IFRS 17 tool) is replaced by
 the title since 1.14.1 (Joseph, 11 November 2026): the cell loses its formula and gets '#' + the text
 the formula last showed (the workbook's cached value), the action's note says so and calls it an open
-issue; an empty or error cached value falls back to the made-up title. The apply path still carries
-out an old plan's insert_row."""
+issue; an empty, error or non-text cached value (a workbook never calculated, a year) leaves the table
+reported instead, and so does an INDIRECT or a 3-D reference on the sheet (the reader cannot be pinned
+to a cell). The apply path still carries out an old plan's insert_row."""
 from __future__ import annotations
 
 import html
@@ -212,23 +213,51 @@ def test_a_formula_caption_is_replaced_by_the_title_made_from_the_text_it_showed
     assert any(s.startswith("R!A2:C5: the caption above it (A1) is read by T!A1") for s in skipped), skipped
 
 
-def test_a_formula_caption_whose_last_value_is_empty_or_an_error_gets_the_made_up_title(tmp_path):
+def test_a_formula_caption_whose_last_value_is_empty_an_error_or_not_text_is_reported(tmp_path):
+    """12 November 2026 review: a literal year above a key column is protected (not a caption), so a
+    formula showing a year, an error or nothing must not lose its formula to a made-up name either."""
+    reason = "R!A2:C5: the caption above it (A1) is a formula whose last computed value is not text (or the workbook holds no computed value for it) -- recalculate the workbook and name it again, or leave an empty row above the table by hand"
     # no cached value at all (a workbook never calculated)
     analysis = _analysis(tmp_path, {"R": FORMULA_CAPTION})
     assert prep.values_cell(analysis, "R", 1, 1) in (None, "")
     ops, skipped = _titles(analysis)
-    mine = [o for o in ops if o["sheet"] == "R"]
-    assert [(o["op"], o["cell"], o["before"]) for o in mine] == [("set_value", "A1", CAPTION_FORMULA)]
-    made_up = mine[0]["after"]
-    assert made_up.startswith("#") and made_up != "#Running scenario [Base]" and "Running scenario" not in made_up, made_up
-    assert "name from" in mine[0]["note"] and "the caption above" not in mine[0]["note"] and "this cell held a formula" in mine[0]["note"], mine[0]["note"]
-    assert not any(o["op"] == "insert_row" for o in ops) and not [s for s in skipped if s.startswith("R!A2:C5")]
+    assert not [o for o in ops if o["sheet"] == "R"], ops
+    assert reason in skipped, skipped
     # the last value was an error
     analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION}, "R", "A1", "#N/A", kind="e")
     assert prep.values_cell(analysis, "R", 1, 1) == "#N/A"
-    ops, _ = _titles(analysis)
-    mine = [o for o in ops if o["sheet"] == "R"]
-    assert [(o["cell"], o["after"]) for o in mine] == [("A1", made_up)]
+    ops, skipped = _titles(analysis)
+    assert not [o for o in ops if o["sheet"] == "R"] and reason in skipped, skipped
+    # the last value was a number (the run year)
+    analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION}, "R", "A1", "2026", kind="n")
+    assert prep.values_cell(analysis, "R", 1, 1) == 2026
+    ops, skipped = _titles(analysis)
+    assert not [o for o in ops if o["sheet"] == "R"] and reason in skipped, skipped
+    assert not any(o["op"] == "insert_row" for o in ops)
+    # the Grid Namer refuses the same way
+    out = prep.plan_named_areas(analysis, [{"sheet": "R", "ref": "B3", "name": "Result Cashflows", "flags": []}])
+    assert out["ops"] == [] and reason in out["skipped"], out["skipped"]
+
+
+def test_a_caption_on_a_sheet_an_indirect_or_a_3d_reference_reads_is_refused(tmp_path):
+    """12 November 2026 review: `referenced_by` sees direct references only; a reader through an address
+    built as text, or a 3-D reference across the sheet, may read the caption cell too, so the title
+    would change its value. Named as the reader, as _move_to_free_column does."""
+    analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION, "T": {"A1": '=INDIRECT("R!A"&1)'}}, "R", "A1", "Running scenario [Base]")
+    assert "R" in prep.reference_index(analysis)["text_addressed"]
+    ops, skipped = _titles(analysis)
+    assert not [o for o in ops if o["sheet"] == "R"], ops
+    assert any(s.startswith("R!A2:C5: the caption above it (A1) may be read by T!A1 through an address built as text (INDIRECT)") for s in skipped), skipped
+    # a text caption on such a sheet is refused the same way
+    analysis = _analysis(tmp_path, {"R": RESULT_CF, "T": {"A1": '=INDIRECT("R!A"&1)'}})
+    ops, skipped = _titles(analysis)
+    assert not [o for o in ops if o["sheet"] == "R"] and any("may be read by T!A1 through an address built as text" in s for s in skipped), skipped
+    # a 3-D reference across the sheet
+    analysis = _analysis(tmp_path, {"Q": {"A1": 1}, "R": RESULT_CF, "S": {"A1": 2}, "T": {"A1": "=SUM(Q:S!A1)"}})
+    index = prep.reference_index(analysis)
+    assert "R" in index["positional"], index["positional"]
+    ops, skipped = _titles(analysis)
+    assert not [o for o in ops if o["sheet"] == "R"] and any("may be read by the 3-D reference in T!A1" in s for s in skipped), skipped
 
 
 def test_nothing_is_ever_inserted_for_a_title(tmp_path):

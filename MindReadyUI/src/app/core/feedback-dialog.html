@@ -12,9 +12,6 @@
         </ol>
       }
       <pre class="fb__message">{{ m.text }}</pre>
-      @if (m.aiUsage) {
-        <p class="fb__ai" data-test="fb-ai-usage">{{ aiLine(m.aiUsage) }}</p>
-      }
       <div class="fb__actions">
         @if (!sent()) {
           <button cdsButton="primary" size="md" (click)="send()">Copy and open email</button>

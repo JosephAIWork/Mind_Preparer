@@ -1,6 +1,6 @@
 <div class="panel chat">
   <div data-show-me="assistant-key"><mr-key-box></mr-key-box></div>
-  <p class="hint" data-test="ai-usage"><strong>{{ usageLine() }}</strong> Tokens the assistant used on this workbook since it was uploaded.</p>
+  <p class="hint" data-test="ai-usage"><strong>{{ usageLine() }}</strong> Counted since the workbook was uploaded. A token is a piece of a word, about three quarters of a word on average: it is what the AI service counts and bills. A call is one question to the assistant.</p>
   @if (target(); as t) {
     <div class="chat__target">
       @if (t.kind === "recalc" || t.kind === "recalc-group") {

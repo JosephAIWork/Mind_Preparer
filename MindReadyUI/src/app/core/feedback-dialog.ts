@@ -2,7 +2,7 @@ import { Component, OnInit, inject, signal } from "@angular/core";
 import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "./api.service";
 import { FeedbackService } from "./feedback.service";
-import { AiUsage, FeedbackMessage, aiUsageLine } from "./models";
+import { FeedbackMessage } from "./models";
 import { SessionStore } from "./session.store";
 
 /** The  dialog behind  "Send feedback": an optional note, the message prepared and shown (codes only,
@@ -40,12 +40,7 @@ export class FeedbackDialog implements OnInit {
     return (event.target as HTMLTextAreaElement).value;
   }
 
-  /** 1.14.1: under the message,  what the assistant used on the open  workbook (the message holds the same line). */
-  aiLine(u: AiUsage): string {
-    return aiUsageLine(u);
-  }
-
-  /** Step 1: the message from  the backend (the assistant may take a  few seconds), shown to be read. */
+  /** Step  1: the  message from the backend (the assistant may take a few seconds), shown to be read. */
   async prepare(): Promise<void> {
     if (this.busy()) return;
     this.busy.set(true);
@@ -66,7 +61,7 @@ export class FeedbackDialog implements OnInit {
     }
   }
 
-  /** Step 2, on its own click: the browser lets a page copy and open an email only right after a click. */
+  /** Step 2, on its own click: the browser lets a page copy and open an email only  right after a click. */
   async send(): Promise<void> {
     const m = this.message();
     if (!m) return;
@@ -77,7 +72,7 @@ export class FeedbackDialog implements OnInit {
     if (ref && this.feedback.incident()?.ref === ref) this.feedback.dismiss();
   }
 
-  /** Only when asked: the message as a .txt in the Downloads folder (to attach). */
+  /** Only when  asked: the message as a .txt  in the Downloads folder (to attach). */
   saveAsFile(): void {
     const m = this.message();
     if (m) saveFile(m.file_name, m.text);
@@ -106,7 +101,7 @@ async function copyText(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // older ways, for a browser that refuses the clipboard API
+    // older  ways, for  a browser that refuses the clipboard API
     const area = document.createElement("textarea");
     area.value = text;
     area.style.position = "fixed";

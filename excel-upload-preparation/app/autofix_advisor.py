@@ -1,11 +1,11 @@
-"""The assistant's part in the automatic fixer (app/autofix.py).
+"""The  assistant's part  in the automatic fixer (app/autofix.py).
 
 The fixer keeps an error formula and gives it a value to return when it
 fails: =IFERROR(<formula>, <fallback>). Which fallback fits -- 0, empty text
-or FALSE -- depends on what the cell *is* (an amount that is summed, a label,
-a rate that is averaged, a check), and that is a judgement about meaning: the
-assistant reads the cell's labels, its formula and what it reads, and says
-which value fits and why, in one plain sentence shown to the user.
+or FALSE -- depends  on what the cell *is* (an amount that is summed, a  label,
+a rate that is averaged, a  check), and that is a judgement about  meaning: the
+assistant reads the cell's labels, its formula and what it  reads, and says
+which value fits and why,  in one plain sentence shown to the user.
 
 It only orders the ladder. Whatever it says, the numbers gate has the last
 word: a fallback that changes a value that was good is rolled back and the
@@ -14,6 +14,7 @@ that is not the JSON asked for) means the built-in order -- never an error.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +24,7 @@ from .llm import DEFAULT_MODEL_ID, chat_completion, llm_available
 
 ALLOWED_FALLBACKS = {"0": "0", '""': '""', "''": '""', "": '""', "EMPTY": '""', "FALSE": "FALSE"}
 BATCH = 10
-MAX_GROUPS = 80  # the biggest groups get an opinion; the long tail keeps the built-in order
+MAX_GROUPS = 80  # the  biggest groups  get an opinion; the long tail keeps the built-in order
 
 SYSTEM_PROMPT = """You help repair an Excel model (usually an actuarial or financial model) so that every formula recalculates without an error.
 
@@ -60,7 +61,7 @@ def _prompt(batch: list[tuple[int, dict[str, Any]]]) -> str:
 
 
 def parse_answer(text: str | None) -> dict[int, dict[str, str]]:
-    """{group id: {"fallback", "reason"}} out of the model's reply; anything
+    """{group  id: {"fallback",  "reason"}} out of the model's reply; anything
     that is not the JSON asked for is dropped, never guessed."""
     if not text:
         return {}
@@ -93,7 +94,7 @@ def parse_answer(text: str | None) -> dict[int, dict[str, str]]:
 
 
 def make_advisor(model_id: str | None = None, complete: Callable[..., dict[str, Any]] | None = None) -> Callable[[list[dict[str, Any]]], dict[str, dict[str, Any]]] | None:
-    """An advisor for AutoFixConfig, or None when no assistant is configured.
+    """An  advisor for  AutoFixConfig, or None when no assistant is configured.
     `complete` replaces app.llm.chat_completion in tests."""
     if complete is None:
         if not llm_available():
@@ -113,8 +114,11 @@ def make_advisor(model_id: str | None = None, complete: Callable[..., dict[str, 
             return parse_answer(res.get("text") if isinstance(res, dict) else None)
 
         answers: dict[int, dict[str, str]] = {}
+        # each batch runs in a copy of this thread's context: a pool's threads start with none, and the
+        # usage sink that  counts the assistant's tokens for the workbook (app/llm.py) is a context  variable
+        jobs = [(contextvars.copy_context(), batch) for batch in batches]
         with ThreadPoolExecutor(max_workers=min(4, len(batches) or 1)) as pool:
-            for got in pool.map(ask, batches):
+            for got in pool.map(lambda job: job[0].run(ask, job[1]), jobs):
                 answers.update(got)
         return {g["key"]: answers[n] for n, g in numbered if n in answers}
 
