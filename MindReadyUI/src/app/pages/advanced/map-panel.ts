@@ -7,7 +7,7 @@ import { CellWindow, MapCell, ModelMap, WindowCell } from "../../core/models";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
-/** Where the model's inputs, loop driver, run settings and outputs are, read from the VBA, names and formulas. */
+/** Where  the model's  inputs, loop driver, run settings and outputs are, read from the VBA, names and formulas. */
 @Component({
   selector: "mr-map-panel",
   standalone: true,
@@ -24,8 +24,8 @@ export class MapPanel implements OnInit {
   readonly error = signal("");
   readonly peek = signal<{ key: string; window: CellWindow | null; error: string } | null>(null);
   readonly showAll = signal<Set<string>>(new Set());
-  /** What each error value in the open cell window means, once each, under the window -- as the
-   *  Recalculate list does. A cell marked as an error that is no error value (a '#Title') has none. */
+  /** What  each error  value in the open cell window means, once each, under the window -- as the
+   *  Recalculate list does. A cell marked as an error that is no error value (a '#Title') has  none. */
   readonly peekLegend = computed(() => {
     const w = this.peek()?.window;
     return w ? this.codes.cellsLegend(w.rows.flatMap((r) => r.cells)) : [];
@@ -61,7 +61,7 @@ export class MapPanel implements OnInit {
     return typeof v === "object" ? JSON.stringify(v) : String(v);
   }
 
-  /** A window cell's tooltip: its formula, and for an error value what it means. */
+  /** A window cell's tooltip: its formula, and for an error value  what it means. */
   tip(c: WindowCell): string {
     return this.codes.cellTip(c.formula, c.error ? c.value : null);
   }

@@ -1,1 +1,1 @@
-"""FastAPI backend of the Mind Ready web app."""
+"""FastAPI  backend of  the Mind Ready web app."""

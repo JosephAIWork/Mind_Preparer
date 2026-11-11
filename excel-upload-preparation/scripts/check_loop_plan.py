@@ -1,14 +1,14 @@
-"""Does the Mind loop plan give what the macro gives? Checked in Excel, pass by pass.
+"""Does  the Mind  loop plan give what the macro gives? Checked in Excel, pass by pass.
 
     python scripts/check_loop_plan.py <workbook.xlsm> [--macro Name] [--first a] [--last b] [--name N] [--work dir]
 
-1. The plan is built (app.loop_builder) on a copy of the workbook and written into a second copy
-   through the app's own Apply (Excel COM), as the "Write it into a new version" button does.
-2. With --macro, the macro is run in Excel on the first copy (macros allowed for this one
+1. The plan is built (app.loop_builder) on  a copy of the workbook and written into a second copy
+   through  the app's own Apply (Excel COM),  as the "Write it into a new  version" button does.
+2. With --macro, the macro is run in Excel  on the first copy (macros allowed for  this one
    workbook, nothing else) and the block it writes per pass is read back: the expected values.
 3. Each pass is then played in Excel on the loop version: the driver cells get the k-th value of
    their MM_LOOP range (what MM_LOOP returns for loop value k), Excel recalculates, and the source
-   cells of every MM_RESULT block are read. They must equal the macro's k-th block.
+   cells of every MM_RESULT block are read. They must equal the macro's  k-th block.
 
 Excel here has no Mind add-in, so MM_LOOP itself cannot be evaluated; this checks that the plan
 points every driver cell at the right column, every result cell at the right source for the
@@ -73,7 +73,7 @@ def _show(v: Any) -> str:
 
 
 def run_macro(path: Path, macro: str, targets: list[tuple[str, str]]) -> dict[str, list[Any]]:
-    """Run `macro` in Excel on `path` (macros allowed for this workbook only) and read back the blocks."""
+    """Run  `macro` in  Excel on `path` (macros allowed for this workbook only) and read back the blocks."""
     import pythoncom
     import win32com.client
 
@@ -105,7 +105,7 @@ def run_macro(path: Path, macro: str, targets: list[tuple[str, str]]) -> dict[st
 
 
 def play_passes(path: Path, plan: dict[str, Any]) -> dict[int, dict[str, list[Any]]]:
-    """For every loop value k: give each driver cell the k-th value of its MM_LOOP range, recalculate,
+    """For  every loop  value k: give each driver cell the k-th value of its MM_LOOP range, recalculate,
     read the source blocks of the MM_RESULT outputs. {k: {"Sheet!From": [values]}}"""
     loops = [l for l in plan["loops"] if l["status"] == "ready"]
     outs = [o for o in plan["outputs"] if o["status"] == "ready"]
@@ -182,7 +182,7 @@ def main() -> int:
     loop_version = Path(res["output_path"])
     print("  ->", loop_version)
 
-    # the blocks the macro writes, pass by pass (target with the loop value substituted)
+    # the  blocks the  macro writes, pass by pass (target with the loop value substituted)
     def _targets(o: dict[str, Any]) -> list[tuple[str, str]]:
         t = []
         for k in range(1, lp["count"] + 1):

@@ -1,12 +1,12 @@
-"""External links: what a workbook reads from another workbook, and the
+"""External  links: what  a workbook reads from another workbook, and the
 values Excel keeps for it.
 
 A formula such as ='[1]Other sheet'!$D$13*H21 reads a cell of another
-file. Excel stores a copy of every external cell it has read
+file. Excel stores a copy of every external cell it  has read
 (xl/externalLinks/externalLinkN.xml) and shows those copies when the file
-cannot be reached -- a link to a file on a colleague's machine can leave
-tens of thousands of formulas living on that cache. Mind cannot follow an
-external link at all: every such formula is an error there, and the package
+cannot be reached  -- a link to a file  on a colleague's machine can leave
+tens of  thousands of formulas living on that cache. Mind cannot follow an
+external  link at all: every such formula is  an error there, and the package
 part makes the converter report "external links".
 
 `read_external_links` reads the links and their caches; `freeze_formula`
@@ -28,12 +28,12 @@ from .formula_utils import mask_strings
 
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main", "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-# '[1]Sheet name'!$D$13  or  [1]Sheet!D13  -- the reference may be a range
+# '[1]Sheet  name'!$D$13 or  [1]Sheet!D13 -- the reference may be a range
 EXT_REF_RE = re.compile(r"(?:'\[(\d+)\]((?:[^']|'')+)'|\[(\d+)\]([\w.]+))!(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)")
 
 
 def _target_path(target: str, workbook: Path) -> tuple[str, bool]:
-    """The file a link points to, as a path, and whether it can be reached from here."""
+    """The  file a  link points to, as a path, and whether it can be reached from here."""
     t = urllib.parse.unquote(target)
     if t.lower().startswith("file:///"):
         t = t[8:]
@@ -66,7 +66,7 @@ def _cell_value(cell: ET.Element) -> Any:
 
 
 def read_external_links(path: str | Path) -> list[dict[str, Any]]:
-    """Every external link of the workbook, in the [1], [2], ... order formulas use:
+    """Every  external link  of the workbook, in the [1], [2], ... order formulas use:
     {index, part, target, file_name, reachable, sheets, cache: {(sheet, "D13"): value}, cached_cells}."""
     path = Path(path)
     out: list[dict[str, Any]] = []
@@ -123,7 +123,7 @@ def _literal(value: Any) -> str:
 
 
 def external_references(formula: str) -> list[dict[str, Any]]:
-    """Every external reference in a formula: {start, end, index, sheet, ref, range}."""
+    """Every  external reference  in a formula: {start, end, index, sheet, ref, range}."""
     if not formula or not formula.startswith("="):
         return []
     masked = mask_strings(formula, mask_sheet_quotes=False)
@@ -137,7 +137,7 @@ def external_references(formula: str) -> list[dict[str, Any]]:
 
 
 def freeze_formula(formula: str, links: list[dict[str, Any]]) -> tuple[str | None, list[str], str | None]:
-    """The formula with each external reference replaced by Excel's cached value
+    """The  formula with  each external reference replaced by Excel's cached value
     -> (rewritten formula or None, what was written, why not)."""
     refs = external_references(formula)
     if not refs:

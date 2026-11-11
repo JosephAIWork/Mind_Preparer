@@ -1,21 +1,21 @@
-"""Pivot tables, through Excel: turn one into plain cells, or into formulas over its source.
+"""Pivot  tables, through  Excel: turn one into plain cells, or into formulas over its source.
 
 Mind's converter stops on a workbook with pivot tables ("The method or operation is not implemented");
-with its pivot tables turned into values the same file is accepted. Mind imports values only, so a pivot table as
-plain cells is what Mind reads -- but frozen: it does not follow its source in a Mind loop. As formulas
-it does: every value, subtotal and grand-total cell becomes SUMIFS / COUNTIFS / AVERAGEIFS / MAXIFS /
+with its pivot tables turned  into values the same file is accepted. Mind imports values only,  so a pivot table as
+plain cells  is what Mind reads -- but frozen:  it does not follow its source in a Mind loop. As  formulas
+it does: every value, subtotal and grand-total  cell becomes SUMIFS / COUNTIFS / AVERAGEIFS / MAXIFS /
 MINIFS over the pivot's source range, with the cell's row and column items (and the report filters)
 as the conditions -- what Excel's own PivotCell says the cell adds up.
 
 The formulas are written only where they give back exactly what the pivot showed: after writing, Excel
-recalculates and every cell is compared with the pivot's value. A single difference (a grouped field, a
+recalculates and every cell is compared with the  pivot's value. A single difference (a grouped field, a
 hidden item, a value filter, a calculated field, "show values as" ...) puts the whole pivot back as
 values, and the reason is reported. Labels are always plain cells.
 
 GETPIVOTDATA that reads the pivot would give #REF! once the pivot is cells: first, each such call
 becomes a reference to the cell it returns today (that cell keeps its value, as a formula or a value).
-A pivot with a custom style ("Results") stopped Mind too, with "Requested value 'Results' was not
-found" (2026-10-26): the style goes once no pivot or table uses it.
+A pivot with a custom style ("Results") stopped Mind too, with  "Requested value 'Results' was not
+found"  (2026-10-26): the style goes once no pivot  or table uses  it.
 """
 from __future__ import annotations
 
@@ -28,20 +28,20 @@ XL_PASTE_FORMATS = -4122
 XL_PASTE_COMMENTS = -4144
 XL_PASTE_VALIDATION = 6
 XL_CELL_TYPE_FORMULAS = -4123  # Range.SpecialCells
-XL_DATABASE = 1  # PivotCache.SourceType: a worksheet range
+XL_DATABASE = 1  # PivotCache.SourceType:  a worksheet  range
 XL_NO_ADDITIONAL_CALCULATION = -4143
 # PivotCell.PivotCellType
 XL_CELL_VALUE, XL_CELL_SUBTOTAL, XL_CELL_GRAND_TOTAL = 0, 2, 3
-# PivotField.Function -> the conditional function, and whether it needs the value column first
+# PivotField.Function  -> the  conditional function, and whether it needs the value column first
 FUNCTIONS = {-4157: "SUMIFS", -4112: "COUNTIFS", -4106: "AVERAGEIFS", -4136: "MAXIFS", -4139: "MINIFS"}
 PLAIN = {"SUMIFS": "SUM", "COUNTIFS": "COUNTA", "AVERAGEIFS": "AVERAGE", "MAXIFS": "MAX", "MINIFS": "MIN"}
-MAX_FORMULA_CELLS = 20_000  # above this a pivot becomes values: that many SUMIFS slow Excel and Mind down
+MAX_FORMULA_CELLS = 20_000  # above  this a  pivot becomes values: that many SUMIFS slow Excel and Mind down
 TOLERANCE = 1e-9
-# Value2 gives an error cell as this number (pywin32): written back as the error, not as the number
+# Value2  gives an  error cell as this number (pywin32): written back as the error, not as the number
 ERRORS = {-2146826281: "#DIV/0!", -2146826246: "#N/A", -2146826259: "#NAME?", -2146826288: "#NULL!",
           -2146826252: "#NUM!", -2146826265: "#REF!", -2146826273: "#VALUE!"}
 
-XL_FORMULAS, XL_PART = -4123, 2  # Range.Find: look in formulas, part of the text
+XL_FORMULAS, XL_PART = -4123, 2  # Range.Find:  look in  formulas, part of the text
 
 _NUMBER_RE = re.compile(r"[+-]?\d+(\.\d+)?([eE][+-]?\d+)?")
 _GETPIVOTDATA_RE = re.compile(r"GETPIVOTDATA\(", re.I)
@@ -61,7 +61,7 @@ def _quote_sheet(name: str) -> str:
 
 
 def _criterion(value: Any) -> str:
-    """A SUMIFS condition matching exactly `value`: numbers as numbers, text as "=text" with the
+    """A  SUMIFS condition  matching exactly `value`: numbers as numbers, text as "=text" with the
     wildcards escaped, an empty item as "" (empty cells)."""
     if value is None or value == "" or value == "(blank)":
         return '""'
@@ -71,13 +71,13 @@ def _criterion(value: Any) -> str:
         return repr(float(value)).rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
     text = str(value)
     if _NUMBER_RE.fullmatch(text):
-        return text  # a number Excel gave as text: compared as a number (not '1_000', 'nan', 'inf' ...)
+        return text  # a number Excel gave as text: compared as a number (not '1_000', 'nan',  'inf' ...)
     text = text.replace("~", "~~").replace("*", "~*").replace("?", "~?").replace('"', '""')
     return f'"={text}"'
 
 
 def _items(collection: Any) -> list[tuple[str, Any]]:
-    """(source field name, item value) of every item of a PivotCell's RowItems / ColumnItems."""
+    """(source  field name,  item value) of every item of a PivotCell's RowItems / ColumnItems."""
     out = []
     for k in range(1, int(collection.Count) + 1):
         item = collection.Item(k)
@@ -87,7 +87,7 @@ def _items(collection: Any) -> list[tuple[str, Any]]:
 
 
 def formula_plan(pt: Any, excel_ws: Any) -> tuple[list[tuple[int, int, str]] | None, str | None]:
-    """[(row, col, formula)] for every value cell of the pivot, or (None, why not)."""
+    """[(row,  col, formula)]  for every value cell of the pivot, or (None, why not)."""
     cache = pt.PivotCache()
     if int(cache.SourceType) != XL_DATABASE:
         return None, "its source is not a worksheet range (an external source or the data model)"
@@ -99,9 +99,9 @@ def formula_plan(pt: Any, excel_ws: Any) -> tuple[list[tuple[int, int, str]] | N
     if int(pt.CalculatedFields().Count):
         return None, "it has a calculated field"
     # Hidden items, label / value filters and slicers leave rows out of the pivot that the
-    # formulas would still add up; today's numbers can match by chance (a hidden item adding 0).
-    # A slicer on a field left out of the layout hides that field's items: HiddenFields covers it.
-    # (Not the report filters: picking one item hides the others; CurrentPage handles those below.)
+    # formulas would still add up; today's  numbers can match by chance (a hidden item adding 0).
+    # A slicer  on a field left out of  the layout hides that field's items: HiddenFields  covers it.
+    # (Not the report filters: picking one item hides the others;  CurrentPage handles those below.)
     try:
         values_field = str(pt.DataPivotField.Name)
     except Exception:
@@ -110,7 +110,7 @@ def formula_plan(pt: Any, excel_ws: Any) -> tuple[list[tuple[int, int, str]] | N
         for k in range(1, int(fields.Count) + 1):
             pf = fields.Item(k)
             name = str(pf.Name)
-            if name == values_field:  # the "Values" field of a pivot with several values: no items of its own
+            if name == values_field:  # the "Values" field of  a pivot with several values: no items of its own
                 continue
             try:
                 hidden = int(pf.HiddenItems.Count) or int(pf.PivotFilters.Count)
@@ -183,7 +183,7 @@ def _same(a: Any, b: Any) -> bool:
 
 
 def _restore(ws: Any, cells: list[tuple[int, int]], shown: dict[tuple[int, int], Any]) -> None:
-    """Put back what the pivot showed, an error cell as its error (#N/A ...), not as Value2's number.
+    """Put  back what  the pivot showed, an error cell as its error (#N/A ...), not as Value2's number.
     Excel busy for an instant (RPC_E_CALL_REJECTED) gets the same cell again."""
     for r, c in cells:
         v = shown[(r, c)]
@@ -191,7 +191,7 @@ def _restore(ws: Any, cells: list[tuple[int, int]], shown: dict[tuple[int, int],
             try:
                 cell = ws.Cells(r, c)
                 if type(v) is int and v in ERRORS:
-                    cell.Formula = ERRORS[v]  # typed error text is stored as the error constant
+                    cell.Formula = ERRORS[v]  # typed error text is stored as the  error constant
                 else:
                     cell.Value2 = v
                 break
@@ -203,7 +203,7 @@ def _restore(ws: Any, cells: list[tuple[int, int]], shown: dict[tuple[int, int],
 
 def _formula_of(cell: Any) -> str:
     try:
-        return str(cell.Formula2)  # keeps a dynamic-array formula as it is
+        return str(cell.Formula2)  # keeps  a dynamic-array  formula as it is
     except Exception:
         return str(cell.Formula)
 
@@ -216,7 +216,7 @@ def _set_formula(cell: Any, formula: str) -> None:
 
 
 def getpivotdata_calls(formula: str) -> list[tuple[int, int, list[str]]]:
-    """(start, end, arguments as written) of every GETPIVOTDATA(...) in `formula`; commas inside
+    """(start,  end, arguments  as written) of every GETPIVOTDATA(...) in `formula`; commas inside
     quotes or inner brackets do not split an argument."""
     out = []
     for m in _GETPIVOTDATA_RE.finditer(formula):
@@ -248,7 +248,7 @@ def getpivotdata_calls(formula: str) -> list[tuple[int, int, list[str]]]:
 
 
 def _pivot_of(value: Any) -> Any:
-    """The pivot table a GETPIVOTDATA argument (a Range from Evaluate) lies in, or None."""
+    """The  pivot table  a GETPIVOTDATA argument (a Range from Evaluate) lies in, or None."""
     if isinstance(value, (str, int, float, bool, tuple)) or value is None:
         return None
     try:
@@ -268,16 +268,16 @@ def _plain(value: Any) -> Any:
 
 def _shows_same(a: Any, b: Any) -> bool:
     if type(a) is int and type(b) is int and a in ERRORS and b in ERRORS:
-        return True  # an error before and after (#REF! becomes #N/A)
+        return True  # an  error before  and after (#REF! becomes #N/A)
     return _same(a, b)
 
 
 def point_getpivotdata_at_cells(wb: Any, pt: Any, pivot_sheet: Any) -> list[dict[str, Any]]:
-    """Every GETPIVOTDATA in `wb` that reads the pivot `pt` becomes a reference to the cell it returns
+    """Every  GETPIVOTDATA in  `wb` that reads the pivot `pt` becomes a reference to the cell it returns
     today, before the pivot becomes cells (it would give #REF! after). A call that gives an error today
-    (an item the pivot does not have, or a second argument that is no pivot table) becomes NA(): an
-    error still. Calls reading another pivot are left for that pivot's turn. Each changed cell must
-    show what it showed; otherwise every cell goes back and ValueError leaves the pivot as it is.
+    (an  item the pivot does not have, or a second argument that  is no pivot table) becomes NA():  an
+    error still. Calls reading another pivot are  left for that pivot's turn. Each changed cell must
+    show what it  showed; otherwise every cell goes back and  ValueError leaves the pivot as it is.
     -> [{sheet, cell, before, after, calls: [[call as written, what replaced it]]}]"""
     key = (str(pt.Name), str(pivot_sheet.Name))
     changed: list[tuple[Any, Any, str, str, Any, list[list[str]]]] = []
@@ -330,8 +330,8 @@ def _style_name(style: Any) -> str:
 
 
 def drop_unused_styles(wb: Any, name: str) -> list[str]:
-    """Delete the custom table / pivot style `name` when no pivot table or Excel table uses it any more;
-    once no pivot table is left, every custom style no Excel table uses. -> the styles deleted."""
+    """Delete  the custom  table / pivot style `name` when no pivot table or Excel table uses it any more;
+    once no pivot table is left, every custom style no Excel table uses. -> the styles  deleted."""
     try:
         used, pivots = set(), 0
         for ws in wb.Worksheets:
@@ -357,9 +357,9 @@ def drop_unused_styles(wb: Any, name: str) -> list[str]:
 
 
 def convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str, Any]:
-    """Turn the pivot `pivot_name` of `ws` into plain cells (to="values") or formulas (to="formulas",
+    """Turn  the pivot  `pivot_name` of `ws` into plain cells (to="values") or formulas (to="formulas",
     falling back to values when the formulas would not give the same numbers), the GETPIVOTDATA that
-    read it pointed at its cells first, its custom style deleted after. -> what was done."""
+    read it pointed at its cells first,  its custom style deleted after. -> what was done."""
     pt = ws.PivotTables(pivot_name)
     style = _style_name(pt.TableStyle2)
     linked = point_getpivotdata_at_cells(wb, pt, ws)
@@ -379,21 +379,21 @@ def _convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str
     if to == "formulas":
         try:
             plan, why = formula_plan(pt, ws)
-        except Exception as exc:  # an answer Excel gives for a layout this module does not know
+        except Exception as exc:  # an  answer Excel  gives for a layout this module does not know
             plan, why = None, f"Excel could not describe its cells ({str(exc)[:120]})"
     shown = None
     if plan:
         shown = {(r, c): ws.Cells(r, c).Value2 for r, c, _ in plan}
     # TableRange2 is the rectangle around the report filters and the body: the cells beside the
-    # filters and the row between are the user's own (a pivot cell never holds a formula). Their
-    # formulas are written back after the copy, so they keep following their inputs.
+    # filters and the row between are the user's own  (a pivot cell never holds a formula). Their
+    # formulas are written back  after the copy, so they keep  following their inputs.
     extra: list[tuple[int, int, str]] = []
-    if rows * cols > 1:  # SpecialCells on one cell would search the whole sheet
+    if rows * cols > 1:  # SpecialCells on one cell would  search the whole sheet
         try:
             extra = [(int(x.Row), int(x.Column), _formula_of(x)) for x in rng.SpecialCells(XL_CELL_TYPE_FORMULAS)]
         except Exception:  # "no cells were found"
             extra = []
-    # values and formats (and comments and validation), through a scratch sheet: a pivot cannot be pasted over
+    # values and formats (and comments  and validation), through a scratch sheet: a  pivot cannot be pasted over
     scratch = wb.Worksheets.Add()
     try:
         rng.Copy()
@@ -430,7 +430,7 @@ def _convert(excel: Any, wb: Any, ws: Any, pivot_name: str, to: str) -> dict[str
             out["why_values"] = why
         return out
     # A cell the pivot showed empty (a combination with no data) stays empty: its formula
-    # would give 0, and AVERAGE, COUNT, ="" and Mind's comparisons treat 0 and empty differently.
+    # would give 0,  and AVERAGE, COUNT, ="" and Mind's comparisons treat 0 and empty differently.
     plan = [(r, c, f) for r, c, f in plan if shown[(r, c)] not in (None, "")]
     if not plan:
         out["why_values"] = "it shows no values"

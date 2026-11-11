@@ -2,11 +2,11 @@ import { Component, computed, inject, input } from "@angular/core";
 import { ShowMeId, ShowMeNextStep, ShowMeRequest, showMeFor, showMeForStep } from "./show-me";
 import { ShowMeService } from "./show-me.service";
 
-/** The quiet "Show me" link next to an instruction. It appears only when there is a place to show:
- *  - `[text]`: a text the app shows (a result, an error, the server's words): when it names a place;
- *  - `to`: a place named in the template itself ("Change it in Advanced › Prep actions");
- *  - `[step]`: the readiness verdict's next step (by its screen).
- *  `[rule]`: the rule the text is about (a finding's message): the pointer goes to that rule's own row or
+/** The  quiet "Show  me" link next to an instruction. It appears only when there is a place to show:
+ *  - `[text]`: a text the app shows (a result, an error, the server's words): when it  names a place;
+ *  - `to`: a place named in the template itself  ("Change it in Advanced › Prep  actions");
+ *  - `[step]`: the readiness verdict's next step  (by its screen).
+ *  `[rule]`: the rule the text is about (a finding's  message): the pointer goes to that rule's  own row or
  *  Prep action. `except`: a place already next to the text (a Findings row's own "Ask the assistant"):
  *  no link to it, the next place the text names counts. `[unless]`: another text shown next to this
  *  one; when it leads to the same place, its own link is enough (one link per place). The click starts

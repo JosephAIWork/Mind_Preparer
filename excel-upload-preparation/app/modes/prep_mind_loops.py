@@ -1,7 +1,7 @@
-"""PREP_MIND_LOOPS: focuses on loop/result/resize rules (modes/prep-mind-loops.md).
+"""PREP_MIND_LOOPS:  focuses on  loop/result/resize rules (modes/prep-mind-loops.md).
 This mode analyzes, validates and asks only: it applies nothing, so `output` stays null and the
 status is capped by the NOT_SUPPORTED / REQUIRES_USER_INPUT findings that would block a
-correction. Changes are made through Prep, the automatic fixer and the Mind loop builder."""
+correction. Changes  are made through Prep, the automatic fixer and the Mind loop  builder."""
 from __future__ import annotations
 
 from pathlib import Path

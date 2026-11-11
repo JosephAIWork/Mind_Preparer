@@ -1,22 +1,22 @@
-"""Instance finder (1.12.5): where Mind instances or a Mind loop would help a model, read blind.
+"""Instance  finder (1.12.5):  where Mind instances or a Mind loop would help a model, read blind.
 
-A model that repeats itself -- one block per product, one sheet per year, one pass of a macro per
-group -- can run in Mind as one copy per value of a key (instances) or as one block in a loop. The
-finder reads the workbook's analysis and points to where that would remove repetition or compute
-every choice in one run. It reports and ranks; it writes nothing. No hint is taken from a name.
+A model that repeats itself -- one block per product, one sheet per year, one pass of a macro  per
+group -- can run in Mind as one copy per value  of a key (instances) or as  one block in a loop. The
+finder reads  the workbook's analysis and points to where that would remove repetition  or compute
+every choice in one run. It  reports and ranks; it writes nothing. No hint is taken from a name.
 
 Four patterns, merged into dimensions by the input the copies step through (never by labels):
 - P1 a column of the table the macro's loop steps through splits its rows into copies (the macro's
   own key chain, lookups keyed by the current row's value, formulas that branch on it, the counts);
-- P2 the same formulas side by side in one sheet (bands of columns or rows);
+-  P2 the same formulas side by side in one sheet (bands of columns or rows);
 - P3 sheets with the same layout and formulas;
 - P4 near copies: what differs (typed-in numbers, numbers inside formulas, logic) and the edits
   that would unify them.
 Cells that read the macro's paste area are sorted by what each needs in Mind (app.finder_grouping).
 Chains (each copy reads the one before it), time axes and plain filled areas are set aside and said.
 
-Deterministic: pure Python, no Excel, no numpy; the same workbook gives the same answer. An
-optional assistant pass explains and ranks on top; any failure of it leaves the deterministic result.
+Deterministic: pure Python, no Excel, no numpy; the same  workbook gives the same answer.  An
+optional assistant pass explains and ranks on  top; any failure  of it  leaves the deterministic result.
 
     python -m app.instance_finder <workbook> [--json] [--assistant]
 """
@@ -46,12 +46,12 @@ MAX_DIMENSIONS = 12
 MAX_EVIDENCE = 8
 MAX_CELLS = 6
 MAX_CHAINS = 10
-MAX_FINDINGS = 60  # bands + sheet groups kept before the merge
+MAX_FINDINGS = 60  # bands  + sheet  groups kept before the merge
 MAX_FILLED_DETAIL = 12
 MAX_VBA = 6
 MAX_SWITCHES = 8
-MANY_COPIES = 50  # above this, instances fit "partly": a run slows down
-LIST_COVER = 0.90  # share of a key column's values a list must hold to be "the same values"
+MANY_COPIES = 50  # above  this, instances  fit "partly": a run slows down
+LIST_COVER = 0.90  # share  of a  key column's values a list must hold to be "the same values"
 RELOAD_NOTE_S = 2.0
 DIMENSION_KINDS = ("col", "band", "sheets", "fill", "stepping", "keyed")
 JOINED_KINDS = ("stepping", "keyed", "list", "bands", "sheets")
@@ -66,9 +66,9 @@ def _version() -> str:
         return "dev"
 
 
-# --- small helpers ------------------------------------------------------------------------------------
+# ---  small helpers  ------------------------------------------------------------------------------------
 def _jsonable(x: Any) -> Any:
-    """Only str keys, lists, ints, floats, bools, None and str: json.dumps(result) needs no default."""
+    """Only  str keys,  lists, ints, floats, bools, None and str: json.dumps(result) needs no default."""
     if isinstance(x, dict):
         return {str(k): _jsonable(v) for k, v in x.items()}
     if isinstance(x, (list, tuple, set, frozenset)):
@@ -90,7 +90,7 @@ def _intersects(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> b
 
 
 def _range_id(text: str | None, own_sheet: str, names: Any) -> str | None:
-    """'Sheet'!A1:B2 for a range written any way (a defined name, with or without '$'), else None."""
+    """'Sheet'!A1:B2  for a  range written any way (a defined name, with or without '$'), else None."""
     if not text:
         return None
     got = _resolve_range(str(text), own_sheet, names)
@@ -105,7 +105,7 @@ def _log2(n: float) -> float:
 
 
 class _Union:
-    """A union-find over anchor ids; the smallest id of a set is its root (deterministic)."""
+    """A  union-find over  anchor ids; the smallest id of a set is its root (deterministic)."""
 
     def __init__(self) -> None:
         self.parent: dict[str, str] = {}
@@ -134,7 +134,7 @@ class _Union:
 
 
 class _Found:
-    """Everything the detectors found, as anchors joined by edges; built by find_instances."""
+    """Everything  the detectors  found, as anchors joined by edges; built by find_instances."""
 
     def __init__(self, names: Any) -> None:
         self.names = names
@@ -142,19 +142,19 @@ class _Found:
         self.findings: dict[str, dict[str, Any]] = {}  # anchor id -> {"kind", ...}
         self.lists: dict[str, dict[str, Any]] = {}  # list anchor id -> {"ref", "name", "texts"}
         self.slots: dict[str, tuple[str, tuple[int, int, int, int], int, str]] = {}  # slots id -> (sheet, rect, w, axis)
-        self.cleared: list[dict[str, Any]] = []  # the macro's cleared areas, each with the slot width when known
-        self.key_cols: dict[str, str] = {}  # upper token of a key cell (address or name) -> the col: anchor id
+        self.cleared: list[dict[str, Any]] = []  # the macro's cleared areas, each with the  slot width when known
+        self.key_cols: dict[str, str] = {}  # upper token of a key cell (address or  name) -> the col: anchor id
         self.chains: list[dict[str, Any]] = []
         self.ignored = {"time_axes": 0, "filled_areas": 0, "small_fills": 0, "label_columns": 0}
         self.filled_detail: list[dict[str, Any]] = []
         self.readers: dict[str, Any] | None = None
-        self.slots_area: str | None = None  # the slots: id of the cleared area the readers were classified on
+        self.slots_area: str | None = None  # the  slots: id of the cleared area the  readers were classified on
         self.truncated: dict[str, bool] = {}
         self.table: dict[str, Any] | None = None
-        self.notes: list[str] = []  # plain notes for `skipped`, written while the anchors and edges are built
+        self.notes: list[str] = []  # plain notes for `skipped`, written while the anchors  and edges are built
 
     def slots_id(self, sheet: str, rect: tuple[int, int, int, int], w: int, axis: str) -> str:
-        """The anchor of an area cut into slots: the macro's cleared area it lies in (same width) when
+        """The anchor of an  area cut into slots: the macro's cleared area it lies in (same width) when
         there is one, else its own address."""
         for a in self.cleared:
             if a["sheet"] == sheet and a.get("w") in (None, w) and _intersects(rect, (a["r1"], a["r2"], a["c1"], a["c2"])):
@@ -191,9 +191,9 @@ class _Found:
 
 # --- the detectors, as anchors joined by edges ----------------------------------------------------------
 def _p1_anchors(found: _Found, grouping: dict[str, Any], names: Any) -> None:
-    """Every P1 candidate is a col: anchor; the macro chain joins it to the list it matches into, the
-    slots it pastes into and the tables keyed by the value. Every key cell (current row, alias, mapped
-    key) is remembered by address and name so a MATCH on it joins its column."""
+    """Every  P1 candidate  is a col: anchor; the macro chain joins it to the list it matches into, the
+    slots it pastes into and the tables keyed by the value. Every key cell (current row,  alias, mapped
+    key) is remembered by address and name so a MATCH  on it joins its column."""
     table = grouping.get("table") or {}
     sheet = table.get("sheet") or ""
     rev = reverse_names(names)
@@ -226,7 +226,7 @@ def _p1_anchors(found: _Found, grouping: dict[str, Any], names: Any) -> None:
 
 
 def _cleared_areas(found: _Found, loop_plan: dict[str, Any], chain: dict[str, Any] | None) -> None:
-    """The areas the macro empties before a run, with the slot width of the one its paste anchor lies in."""
+    """The  areas the  macro empties before a run, with the slot width of the one its paste anchor lies in."""
     for c in loop_plan.get("clears") or []:
         if c.get("status") == "ready" and c.get("sheet") and c.get("r1") and c.get("c1"):
             found.cleared.append({"sheet": c["sheet"], "r1": c["r1"], "r2": c["r2"], "c1": c["c1"], "c2": c["c2"], "w": None, "axis": None})
@@ -238,8 +238,8 @@ def _cleared_areas(found: _Found, loop_plan: dict[str, Any], chain: dict[str, An
 
 
 def _step_edges(found: _Found, fid: str, st: dict[str, Any], own_sheet: str) -> None:
-    """Join a band / fill to what it steps through: slots of width w (the macro's cleared area when it lies
-    there), an area read row by row, or -- for a MATCH on a key -- the list and the key's column."""
+    """Join  a band  / fill to what it steps through: slots of width w (the macro's cleared area when it lies
+    there), an area read row by row, or -- for a MATCH on a  key -- the list and the key's column."""
     rect = (st["r1"], st["r2"], st["c1"], st["c2"])
     c = st.get("computed") or {}
     if c.get("form") == "match":
@@ -264,7 +264,7 @@ def _example_cell(finding: dict[str, Any], copy: int = 1) -> list[str]:
 
 
 def _covering_groups(found: _Found, finding: dict[str, Any]) -> tuple[list[str], bool]:
-    """(the reader-group anchors whose cells the finding overlaps, does it overlap the adders' block?): a
+    """(the  reader-group anchors  whose cells the finding overlaps, does it overlap the adders' block?): a
     fill or band at the place of cells the readers pass already classified belongs to them."""
     sheet = finding["sheet"]
     sample = [rc for lst in (finding.get("cells") or {}).values() for rc in lst[:40]]
@@ -275,14 +275,14 @@ def _covering_groups(found: _Found, finding: dict[str, Any]) -> tuple[list[str],
             if own and any(own[0] <= r <= own[1] and own[2] <= c <= own[3] for r, c in sample):
                 hits.append(fid)
     adders = False
-    for key in ("adders_hull", "followers_hull"):  # the adding block, and the cells that read it: both already in the reader lines
+    for key in ("adders_hull", "followers_hull"):  # the adding block, and the  cells that read it: both already in the reader lines
         hull = ((found.readers or {}).get(key) or {}).get(sheet)
         adders = adders or (bool(hull) and any(hull[0] <= r <= hull[1] and hull[2] <= c <= hull[3] for r, c in sample))
     return hits, adders
 
 
 def _repetitions(found: _Found, book: Any, names: Any, budget: Budget) -> None:
-    """P2 bands and fills, P3 sheet copies: chains are set aside, the rest become anchors with their step edges."""
+    """P2  bands and  fills, P3 sheet copies: chains are set aside, the rest become anchors with their step edges."""
     bands_all: list[dict[str, Any]] = []
     fills: list[dict[str, Any]] = []
     order = list(book.sheet_order) + [n for n in book.sheets if n not in book.sheet_order]
@@ -338,7 +338,7 @@ def _repetitions(found: _Found, book: Any, names: Any, budget: Budget) -> None:
         time_axes = fill.get("time_axes") or {fill["axis"]: bool(fill.get("time_axis"))}
         hits, adders = _covering_groups(found, fill)
         if hits or adders:
-            # the cells the readers pass classified: the fill belongs to that dimension, said by the reader lines
+            # the cells the readers pass classified: the fill belongs to that dimension, said by the reader  lines
             fid = f"fill:{_qs(fill['sheet'])} {fill['where']}"
             found.findings[fid] = {"kind": "fill", "f": fill, "step": None, "covered": bool(hits), "adders": adders}
             found.uf.add(fid)
@@ -376,7 +376,7 @@ def _repetitions(found: _Found, book: Any, names: Any, budget: Budget) -> None:
 
 
 def _reader_anchors(found: _Found, analysis: dict[str, Any], book: Any, names: Any, grouping: dict[str, Any], budget: Budget) -> None:
-    """The cells that read the macro's paste area, classified; the stepping and keyed groups become
+    """The  cells that  read the macro's paste area, classified; the stepping and keyed groups become
     anchors joined to the area's slots, to their list and key column, and to a fill at the same place."""
     area = next((a for a in found.cleared if a.get("w")), None)
     if area is None:
@@ -387,7 +387,7 @@ def _reader_anchors(found: _Found, analysis: dict[str, Any], book: Any, names: A
         budget.skip("the cells that read the macro's paste area were not sorted by class: the time budget ran out")
         return
     rd = paste_area_readers(analysis, book, names, area, area["w"], grouping.get("key_set") or set(), area["axis"])
-    if rd is None:  # the width is known, so the only other way out: the area is cut into more slots than the pass reads
+    if rd is None:  # the  width is known, so the only other way out: the area  is cut into more slots than  the pass reads
         budget.skip(f"the macro's paste area is cut into more than {MAX_SLOTS:,} slots: the cells that read it were not sorted by class")
         return
     found.readers = rd
@@ -418,7 +418,7 @@ def _reader_anchors(found: _Found, analysis: dict[str, Any], book: Any, names: A
 
 
 def _value_edges(found: _Found, analysis: dict[str, Any]) -> None:
-    """Equality edges: two lists with the same set of texts; a list holding a key column's values (or
+    """Equality  edges: two  lists with the same set of texts; a list holding a key column's values (or
     90 % of them); two slot anchors of the same width on one sheet whose areas overlap."""
     for lid in sorted(found.lists):
         entry = found.lists[lid]
@@ -449,9 +449,9 @@ def _value_edges(found: _Found, analysis: dict[str, Any]) -> None:
                 found.uf.union(a, b)
 
 
-# --- one dimension out of one component ---------------------------------------------------------------
+# ---  one dimension out of one component ---------------------------------------------------------------
 def _fill_copies(f: dict[str, Any]) -> tuple[int, int, str]:
-    """(copies, per copy, the stepping axis) of a fill, along the axis its computed index steps through."""
+    """(copies,  per copy,  the stepping axis) of a fill, along the axis its computed index steps through."""
     fill, st = f["f"], f.get("step") or {}
     c = st.get("computed") or {}
     axis = c.get("step_axis") or fill["axis"]
@@ -465,7 +465,7 @@ _EDIT_FIELDS = {"numbers": ("cell", "values_per_copy", "action"), "formula_numbe
 
 
 def _merge_edits(parts: list[dict[str, Any]]) -> dict[str, Any]:
-    """The edits of several blocks as one list per kind (each capped at 40, the counts complete)."""
+    """The  edits of  several blocks as one list per kind (each capped at 40, the counts complete)."""
     out: dict[str, Any] = {"numbers": [], "formula_numbers": [], "logic": [], "size": [], "numbers_count": 0, "formula_numbers_count": 0, "logic_count": 0, "size_count": 0, "branches": None}
     for e in parts:
         for k, fields in _EDIT_FIELDS.items():
@@ -505,8 +505,8 @@ def _score(key: dict[str, Any] | None, kinds: list[str], blocks: list[dict[str, 
 
 def _fit(key: dict[str, Any] | None, lists: list[dict[str, Any]], rd: dict[str, Any] | None, copies: int, biggest: int | None, saved: int,
          edits: dict[str, Any], cross_reads: list[dict[str, Any]], has_blocks: bool) -> dict[str, Any]:
-    """How each option fits, in plain words. Mind facts: a plain link from another workbook to the copied
-    model is the sum over the copies; MM_LOOPINSTANCE runs a loop of its own size inside each copy."""
+    """How  each option  fits, in plain words. Mind facts: a plain link from another workbook to the copied
+    model is the sum over the copies; MM_LOOPINSTANCE runs a loop of its own size inside each  copy."""
     inst: list[str] = []
     loop: list[str] = []
     leave: list[str] = []
@@ -616,7 +616,7 @@ def _dimension(found: _Found, members: list[str], book: Any, wb: Any) -> dict[st
     bands = [b for b in bands if not b.get("covered") and not b.get("adders")]
     lists = sorted((found.lists[m] for m in members if m in found.lists), key=lambda x: (not x.get("name"), x["ref"]))
     if not (cands or bands or sheets_g or steps or keyeds or fills):
-        return None  # only the slots area and fills the reader lines already cover: nothing of its own (find_instances notes the readers)
+        return None  # only  the slots  area and fills the reader lines already cover: nothing of its own (find_instances notes the readers)
     key = max(cands, key=lambda c: (bool(c.get("macro")), c.get("keyed_formulas", 0), c.get("branch_formulas", 0), -c["col"])) if cands else None
     rd = found.readers if (found.slots_area in members and found.readers) else None
     computed_fills = [f for f in fills if ((f.get("step") or {}).get("computed") or {}).get("form") != "match"]
@@ -663,7 +663,7 @@ def _dimension(found: _Found, members: list[str], book: Any, wb: Any) -> dict[st
     edits = _merge_edits(edit_parts)
     if key and key.get("branch_formulas", 0) >= MIN_BRANCHES:
         edits["branches"] = {"count": key["branch_formulas"], "action": "move the values chosen by these IFs into a table with one row per copy"}
-    # copies, biggest copy, what is saved and what changes
+    # copies, biggest copy, what  is saved and what changes
     if key:
         copies = int(key.get("distinct") or 0)
         biggest = int(key["biggest"]["rows"]) if key.get("biggest") else None
@@ -687,10 +687,10 @@ def _dimension(found: _Found, members: list[str], book: Any, wb: Any) -> dict[st
         cross.extend({"from": c.get("from"), "to": c.get("to"), "cells": c.get("cells")} for c in g["g"].get("cross_reads") or [])
     # evidence, in a fixed order
     evidence: list[dict[str, Any]] = []
-    counts_lines: list[dict[str, Any]] = []  # the weakest lines go last, so the cap cuts them first
+    counts_lines: list[dict[str, Any]] = []  # the weakest lines  go last, so the cap cuts  them first
     if key:
         cid = f"col:{_qs(key['sheet'])}!{key['column']}"
-        # the block that reads its own key's slot (OFFSET + MATCH on this key) is a keyed lookup by the rule and already a reader line: said, not counted twice
+        # the block that reads its own  key's slot (OFFSET + MATCH on this key) is a keyed  lookup by the rule and already a  reader line: said, not counted twice
         own_block = sum(int(g.get("cells") or 0) for g in (rd or {}).get("groups") or [] if g.get("kind") == "keyed" and found.col_of(g.get("key"), g["sheet"]) == cid)
         for e in key.get("evidence") or []:
             if e["kind"] == "header":
@@ -789,8 +789,8 @@ def _dimension(found: _Found, members: list[str], book: Any, wb: Any) -> dict[st
 
 # --- the entry point -----------------------------------------------------------------------------------
 def _switches(model_map: dict[str, Any], wb0: dict[str, Any]) -> list[dict[str, Any]]:
-    """The run switches the model map found, with how many formulas read each: by its defined name, or
-    by its address written whole (B3, $B$3, B$3 -- never B30 or AB3) on the switch's own sheet, or with
+    """The  run switches  the model map found, with how many formulas read each: by its defined name, or
+    by its address written whole (B3, $B$3, B$3 -- never B30 or AB3) on the switch's own  sheet, or with
     the sheet in front from any sheet."""
     out: list[dict[str, Any]] = []
     sws = ((model_map.get("run_settings") or {}).get("switches") or [])[:MAX_SWITCHES]
@@ -801,8 +801,8 @@ def _switches(model_map: dict[str, Any], wb0: dict[str, Any]) -> list[dict[str, 
         name = str(sw.get("name") or "").strip()
         sheet, ref = _split(str(sw.get("cell") or ""))
         r = parse_ref(ref) if ref else None
-        quick: list[str] = []  # cheap substring tests first; the exact word tests only on the formulas that pass
-        exact: list[tuple[re.Pattern, bool]] = []  # (pattern, own sheet only)
+        quick: list[str] = []  # cheap substring tests  first; the exact word tests only  on the formulas that pass
+        exact: list[tuple[re.Pattern, bool]] = []  # (pattern, own sheet  only)
         if name:
             quick.append(name.upper())
             exact.append((re.compile(rf"(?<![A-Za-z0-9_.])(?:{re.escape(name)})(?![A-Za-z0-9_(])", re.I), False))
@@ -833,15 +833,15 @@ def _file_name(wb0: dict[str, Any]) -> str:
 
 def find_instances(analysis: dict[str, Any], model_map: dict[str, Any] | None, *, loop_plan: dict[str, Any] | None = None, assistant: bool = False,
                    complete: Callable[..., Any] | None = None, budget_s: float = 120) -> dict[str, Any]:
-    """Where Mind instances or a loop would help, ranked, with evidence; nothing written (section 7 of
+    """Where  Mind instances  or a loop would help, ranked, with evidence; nothing written (section 7 of
     the design is the result's shape). The time budget starts after the workbook is open: a reload of a
-    dropped workbook is reported in `counts.reload_seconds`, not charged. `assistant=True` adds the
-    assistant's explanation and order on top; `complete` replaces the gateway call in tests."""
+    dropped  workbook is reported in `counts.reload_seconds`, not charged. `assistant=True` adds the
+    assistant's explanation  and order on top; `complete` replaces  the gateway call in tests."""
     t_load = time.monotonic()
     wb_note = None
     try:
         wb = open_cached(analysis)
-    except Exception as exc:  # no copy, a deleted copy, a file openpyxl cannot read: the detectors that need only the analysis still run
+    except Exception as exc:  # no copy, a  deleted copy, a file openpyxl cannot read: the detectors that need  only the analysis still run
         wb, wb_note = None, f"the workbook copy could not be opened ({type(exc).__name__}): typed-in numbers and the key column's values were not read"
     reload_s = round(time.monotonic() - t_load, 1)
     budget = Budget(budget_s)
@@ -898,7 +898,7 @@ def find_instances(analysis: dict[str, Any], model_map: dict[str, Any] | None, *
                     "handled_by": "the Mind loop step"} for le in loop_plan.get("loops") or []]
     builder = dict(grouping.get("builder") or {"column": None, "header": None, "chosen_by": None, "candidates": [], "matches_top": None, "source": "rule"})
     top = next((d for d in dims if d.get("key")), None)
-    builder["matches_top"] = (top["key"]["column"] == builder["column"]) if (top and builder.get("column")) else None  # None: nothing to compare
+    builder["matches_top"] = (top["key"]["column"] == builder["column"]) if (top and builder.get("column")) else None  # None: nothing to  compare
     skipped += list(grouping.get("notes") or [])
     skipped += list(budget.skipped)
     skipped += list(found.notes)
@@ -955,7 +955,7 @@ def describe(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# --- the assistant pass --------------------------------------------------------------------------------
+# ---  the assistant  pass --------------------------------------------------------------------------------
 EMPTY_ASSISTANT: dict[str, Any] = {"asked": False, "available": False, "text": None, "ranking": None, "explanations": {}, "edits": {}, "extra": [], "message": None}
 NO_KEY_MESSAGE = "No AI key is saved yet: paste one under Advanced > Assistant."
 NOT_JSON_MESSAGE = "The assistant's answer was not the JSON asked for"
@@ -974,7 +974,7 @@ def _clip(text: Any, n: int = 600) -> str:
 
 
 def _prompt(result: dict[str, Any]) -> str:
-    """What the assistant sees: the dimensions (at most 8) with their evidence, the reader classes, the key's
+    """What  the assistant  sees: the dimensions (at most 8) with their evidence, the reader classes, the key's
     top counts and branch literals, the VBA lines; then the chains and the builder's choice. Clipped."""
     parts: list[str] = []
     for d in (result.get("dimensions") or [])[:8]:
@@ -1014,7 +1014,7 @@ def _prompt(result: dict[str, Any]) -> str:
 
 
 def _first_json_object(text: str) -> str | None:
-    """The first balanced {...} of a text, braces inside string literals ignored."""
+    """The  first balanced  {...} of a text, braces inside string literals ignored."""
     start = text.find("{")
     while start != -1:
         depth, in_str, esc = 0, False, False
@@ -1041,7 +1041,7 @@ def _first_json_object(text: str) -> str | None:
 
 
 def parse_assistant(text: str | None, result: dict[str, Any], available: bool = True, message: str | None = None) -> dict[str, Any]:
-    """The assistant block out of the model's reply: the first JSON object, validated against the result's
+    """The  assistant block  out of the model's reply: the first JSON object, validated against the result's
     dimensions; anything else is dropped, never guessed."""
     block = {**EMPTY_ASSISTANT, "asked": True, "available": available, "message": message}
     if not available or not text:
@@ -1082,12 +1082,12 @@ def parse_assistant(text: str | None, result: dict[str, Any], available: bool = 
     if block["explanations"]:
         block["text"] = " ".join(block["explanations"][k] for k in sorted(block["explanations"], key=int))
     if not (block["ranking"] or block["explanations"] or block["edits"] or block["extra"]):
-        block["message"] = NO_ANSWER_MESSAGE  # JSON, but none of the four fields holds anything: a failed answer, asked again next time
+        block["message"] = NO_ANSWER_MESSAGE  # JSON, but none of the  four fields holds anything: a failed answer, asked again next time
     return block
 
 
 def make_finder_advisor(model_id: str | None = None, complete: Callable[..., Any] | None = None) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
-    """The assistant's pass over a finder result, or None when no assistant is configured. `complete`
+    """The  assistant's pass  over a finder result, or None when no assistant is configured. `complete`
     replaces app.llm.chat_completion in tests. The returned function never raises."""
     if complete is None:
         if not llm_available():
@@ -1108,7 +1108,7 @@ def make_finder_advisor(model_id: str | None = None, complete: Callable[..., Any
 
 
 def merge_assistant(result: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
-    """A deep copy of the result with the assistant block and the per-dimension assistant_* fields set.
+    """A  deep copy  of the result with the assistant block and the per-dimension assistant_* fields set.
     The deterministic dimensions, ranks, scores, evidence and fits are never changed."""
     out = deepcopy(result)
     out["assistant"] = {**EMPTY_ASSISTANT, **(block or {})}
@@ -1146,7 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
     text = json.dumps(result, indent=1, ensure_ascii=False) if a.json else describe(result)
     try:
         out.write(text + "\n")
-    except UnicodeEncodeError:  # a console that cannot show every character of the sheet names
+    except UnicodeEncodeError:  # a  console that  cannot show every character of the sheet names
         out.write(text.encode("ascii", "replace").decode("ascii") + "\n")
     out.flush()
     return 0

@@ -1,4 +1,4 @@
-"""The guide that goes with the app (guide.html -> PDF, through Edge).
+"""The  guide that  goes with the app (guide.html -> PDF, through Edge).
 
     python tools/package/guide/render_guide.py [<out.pdf>]
 

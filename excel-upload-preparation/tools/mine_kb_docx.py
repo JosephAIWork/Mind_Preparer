@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Deterministic extraction from CompleteMindDocn.docx (a page-by-page scrape
+"""Deterministic  extraction from  CompleteMindDocn.docx (a page-by-page scrape
 of the Milliman Mind knowledge base, kb.milliman-mind.com) into three
 reference files consumed by the validators:
 
   references/mm-function-registry-kb.yaml   every MM_ function the KB documents
                                             (dedicated article: syntax + category)
                                             or merely mentions (changelogs etc.)
-  references/supported-excel-functions.yaml  the KB's "Supported Excel formulas"
+  references/supported-excel-functions.yaml the  KB's "Supported Excel formulas"
                                             list (basic-model-design page)
   references/mind-flags.yaml                 documented grid-title / header flags
-                                            and sheet/header markers, each one
-                                            checked to actually occur in the KB text
+                                            and sheet/header  markers, each one
+                                            checked to actually occur  in the KB text
 
-Like tools/mine_function_registry.py this is a parser, not an editor: re-run
-it against an updated .docx instead of hand-editing the outputs. It reads the
-.docx with zipfile + regex only (no python-docx dependency).
+Like tools/mine_function_registry.py this is  a parser, not an editor: re-run
+it against an updated .docx instead  of hand-editing the outputs. It reads the
+.docx  with zipfile + regex only (no python-docx dependency).
 
 Usage:
     python tools/mine_kb_docx.py [--docx PATH] [--out-dir references]
@@ -37,15 +37,15 @@ PAGE_MARKER_RE = re.compile(r"^>>>>>Page>>>> (\d+)$")
 FUNC_SLUG_RE = re.compile(r"mm_([a-z0-9_]+)")
 MM_TOKEN_RE = re.compile(r"\bMM_[A-Z][A-Z0-9_]*\b")
 SYNTAX_RE = re.compile(r"=\s*(MM_[A-Z0-9_]+)\s*\(")
-HYPHEN_BREAK_RE = re.compile(r"(MM_[A-Z0-9_]+)- ([A-Z0-9_]+)")  # scrape artifact: 'MM_HP- CLOOP'
+HYPHEN_BREAK_RE = re.compile(r"(MM_[A-Z0-9_]+)- ([A-Z0-9_]+)")  # scrape  artifact: 'MM_HP-  CLOOP'
 HOST_PARTS = {"kb.milliman-mind.com", "www.kb.milliman-mind.com"}
 
-# Grid-title flags (and a few header/sheet markers) the KB documents. `where`
+# Grid-title  flags (and  a few header/sheet markers) the KB documents. `where`
 # says where Mind reads the flag from; `syntax` is the documented shape. Every
 # `kb_term` MUST occur (case-insensitively) in the KB text or the script fails,
-# so this table can't silently drift away from the source document.
+# so  this table can't silently drift away from the source document.
 DOCUMENTED_FLAGS: list[dict] = [
-    # --- inputs / exports -------------------------------------------------
+    # ---  inputs /  exports -------------------------------------------------
     {"name": "Input", "where": "title", "kb_term": "/Input", "topic": "input-manager",
      "meaning": "Grid is an assumptions-only input grid, importable through the Input Manager (CSV named like the grid)."},
     {"name": "InputSettings", "where": "title", "kb_term": "/InputSettings", "topic": "input-manager-automatch", "unique": True,
@@ -163,7 +163,7 @@ DOCUMENTED_FLAGS: list[dict] = [
      "meaning": "Header of an extra right-hand column whose TRUE/1 values hide the matching row."},
 ]
 
-# Non-flag markers the KB documents (used by validators alongside the flags).
+# Non-flag  markers the  KB documents (used by validators alongside the flags).
 DOCUMENTED_MARKERS: list[dict] = [
     {"marker": "#", "where": "title", "kb_term": "preceded by", "meaning": "A cell whose text starts with '#' directly above a grid names it: '#GridName /Flag1 /Flag2'."},
     {"marker": "&&Hide", "where": "sheet_name", "kb_term": "&&Hide", "meaning": "Hides an entire sheet in Mind."},
@@ -215,7 +215,7 @@ def _slug_parts(url: str) -> tuple[str, str]:
 def mine_functions(pages: list[dict]) -> list[dict]:
     by_name: "OrderedDict[str, dict]" = OrderedDict()
 
-    # Pass 1: dedicated function articles (url slug contains mm_<name>).
+    # Pass  1: dedicated  function articles (url slug contains mm_<name>).
     for page in pages:
         category, slug = _slug_parts(page["url"])
         if "mm_" not in slug:
@@ -265,18 +265,18 @@ def mine_functions(pages: list[dict]) -> list[dict]:
                     if entry["syntax"]:
                         break
             # Functions named in the syntax line but documented on a shared page
-            # (e.g. MM_LEFTOUTERJOIN / MM_RIGHTOUTERJOIN) all get the page.
+            # (e.g. MM_LEFTOUTERJOIN / MM_RIGHTOUTERJOIN)  all get the page.
 
-    # Pass 2: every MM_ token anywhere in the KB (changelogs, guides, ...).
+    # Pass 2: every MM_ token anywhere in the  KB (changelogs, guides, ...).
     for page in pages:
         for line in page["lines"]:
             line = HYPHEN_BREAK_RE.sub(lambda m: m.group(1) + m.group(2), line)
             for raw_tok in MM_TOKEN_RE.findall(line):
-                # 'MM_SETSIZEMM_VUNION' (scrape lost the separators) -> two tokens
+                # 'MM_SETSIZEMM_VUNION' (scrape lost  the separators) -> two tokens
                 for tok in [t for t in re.split(r"(?=MM_)", raw_tok) if t]:
                     _note_mention(by_name, tok, page)
-    # Drop scrape fragments: a mentioned-only token that is a strict prefix of a
-    # documented one ('MM_HYPERLI' from a hyphenated 'MM_HYPERLI-NK') is noise.
+    # Drop scrape fragments:  a mentioned-only token that is a strict prefix of a
+    # documented one  ('MM_HYPERLI' from a hyphenated 'MM_HYPERLI-NK') is noise.
     for tok in list(by_name):
         e = by_name[tok]
         if e["documented"]:

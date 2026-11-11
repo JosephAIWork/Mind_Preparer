@@ -1,9 +1,9 @@
-"""STR-*/GRID-* validators: structure/grid checks from
+"""STR-*/GRID-*  validators: structure/grid  checks from
 01_Mind_Readiness_Standard.md section 3, backed by the KB's
 documented grid-detection algorithm (app/grids.py, "General structure and
 guidelines"): grids are blocks of non-empty cells, an alone text cell is
-ignored, a text-only first row is the header row, '#Name' above a grid names
-it, sheet/workbook names become navigation folders."""
+ignored, a text-only first row is the  header row, '#Name' above a grid names
+it, sheet/workbook names become navigation  folders."""
 from __future__ import annotations
 
 import re
@@ -15,13 +15,13 @@ from ._common import DEFAULT_SHEET_NAME_RE, DEFAULT_WORKBOOK_NAME_RE, finding, f
 HIDE_MARKER = "&&Hide"
 STEP_LABELS_MARKER = "steplabels"
 
-# Flags whose grid the KB documents as header-based (columns are matched by
+# Flags  whose grid  the KB documents as header-based (columns are matched by
 # header name), so a non-text header row is an error rather than a style issue.
 HEADER_REQUIRED_FLAGS = {"input", "reorder", "parameters", "projectsettings", "exportsettings", "inputsettings", "instancekeys", "aocorder", "translations", "calculationsteps"}
 
 
 def hidden_sheets(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-007: hidden sheets should carry the '&&Hide' naming marker."""
+    """STR-007:  hidden sheets  should carry the '&&Hide' naming marker."""
     unmarked = []
     marked_but_visible = []
     for wb in analysis["workbooks"]:
@@ -43,7 +43,7 @@ def hidden_sheets(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dic
 
 
 def grid_detection_heuristic(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-001: grids as Mind would detect them. A '#Title' cell *inside* a
+    """STR-001:  grids as  Mind would detect them. A '#Title' cell *inside* a
     detected block is the deterministic signature of two logical grids that
     were merged (no empty row between the first grid and the next title)."""
     per_sheet = {}
@@ -72,7 +72,7 @@ def grid_detection_heuristic(rule, analysis: dict[str, Any], config: dict[str, A
 
 
 def grid_naming_heuristic(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-004: grids without a '#Name' title become 'untitled <cell>' in Mind."""
+    """STR-004:  grids without  a '#Name' title become 'untitled <cell>' in Mind."""
     grids = all_grids(analysis)
     untitled = [g for g in grids if not g.get("name")]
     named = len(grids) - len(untitled)
@@ -88,7 +88,7 @@ def grid_naming_heuristic(rule, analysis: dict[str, Any], config: dict[str, Any]
 
 
 def inventory_hierarchy(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """GRID-001: workbook/sheet/grid inventory -- always satisfiable from the analysis itself."""
+    """GRID-001:  workbook/sheet/grid inventory  -- always satisfiable from the analysis itself."""
     sheet_count = sum(len(wb["sheets"]) for wb in analysis["workbooks"])
     grids = all_grids(analysis)
     flagged = [g for g in grids if g["flags"]]
@@ -110,7 +110,7 @@ def inventory_hierarchy(rule, analysis: dict[str, Any], config: dict[str, Any]) 
 
 
 def step_labels_isolated(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """GRID-004: a /StepLabels grid must be alone on its own sheet (KB: 'this
+    """GRID-004:  a /StepLabels  grid must be alone on its own sheet (KB: 'this
     grid must be alone in a separate spreadsheet or an error will be thrown at import')."""
     violations = []
     found = []
@@ -138,7 +138,7 @@ def step_labels_isolated(rule, analysis: dict[str, Any], config: dict[str, Any])
 
 
 def str_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-002: alone text cells are ignored by Mind -- surface them so the user
+    """STR-002:  alone text  cells are ignored by Mind -- surface them so the user
     can confirm they are not expected to become grids/navigation items."""
     cells = []
     orphan_titles = []
@@ -164,7 +164,7 @@ def str_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def str_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-003: a header row is recognized only if it is text-only; a mixed
+    """STR-003:  a header  row is recognized only if it is text-only; a mixed
     first row (text + numbers/formulas) is the failure the doc describes."""
     mixed = []
     required_broken = []
@@ -205,7 +205,7 @@ def str_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def str_005(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-005: sheet names are folder names in Mind -- flag Excel defaults."""
+    """STR-005:  sheet names  are folder names in Mind -- flag Excel defaults."""
     defaults = [s["name"] for wb in analysis["workbooks"] for s in wb["sheets"] if DEFAULT_SHEET_NAME_RE.match(s["name"].strip())]
     if defaults:
         return finding("WARNING", f"Default sheet name(s) will become navigation folders in Mind: {defaults}", {"default_sheet_names": defaults})
@@ -213,7 +213,7 @@ def str_005(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def str_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-006: the workbook name is a navigation folder and an instance-key header."""
+    """STR-006:  the workbook  name is a navigation folder and an instance-key header."""
     problems = []
     for wb in analysis["workbooks"]:
         name = wb.get("file_name") or ""
@@ -230,12 +230,12 @@ def str_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def broken_defined_name_refs(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """REF-001: defined names that resolve to #REF! are broken, and a name no
+    """REF-001:  defined names  that resolve to #REF! are broken, and a name no
     definition exists for (a misspelt name, a name deleted from the workbook)
-    is broken too -- Excel shows #NAME?. A formula that references either
+    is broken too -- Excel shows #NAME?. A formula that references  either
     cannot convert in Milliman Mind (the converter reports 'No function found
     ... (not a function : <name>)'). Flag every referencing cell (a hard
-    conversion blocker); if broken names exist but nothing references them, warn."""
+    conversion  blocker); if broken names exist but  nothing references them, warn."""
     import difflib
 
     from ..formula_utils import mask_strings, undefined_names
@@ -267,7 +267,7 @@ def broken_defined_name_refs(rule, analysis: dict[str, Any], config: dict[str, A
             if unknown:
                 site["undefined_names"] = unknown
             sites.append(site)
-    # the closest existing name, for a misspelt one
+    # the closest existing name,  for a misspelt one
     closest = {n: (difflib.get_close_matches(n, defined + tables, n=1, cutoff=0.75) or [None])[0] for n in missing}
     if sites:
         parts = []
@@ -302,7 +302,7 @@ _CHAIN_RE = re.compile(r"^=(" + _REF_TOK + r"(?:\+" + _REF_TOK + r")+)$")
 
 
 def _parse_total(formula: str):
-    """A pure total formula -> ('sum', 'A1:A10') or ('chain', ['A1','A2',...]) else None.
+    """A  pure total  formula -> ('sum', 'A1:A10') or ('chain', ['A1','A2',...]) else None.
     Cross-sheet / mixed / partial expressions are intentionally not treated as totals."""
     f = (formula or "").replace(" ", "")
     m = _SUM_RE.match(f)
@@ -317,9 +317,9 @@ def _parse_total(formula: str):
 
 
 def totals_reconcile(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """REP-001: a total cell (=SUM(range) or =a+b+c) whose cached value does not equal
+    """REP-001:  a total  cell (=SUM(range) or =a+b+c) whose cached value does not equal
     the sum of its addends' cached values -- the numbers do not reconcile (a stale value
-    or a total overridden by a hard-coded number). Report-only; never changes numbers."""
+    or a total overridden by a hard-coded  number). Report-only; never changes numbers."""
     from ..formula_utils import parse_ref
     from ..inventory import _values_workbook, ignored_sheet_names
 
@@ -389,7 +389,7 @@ _NAME_CHARS = r"\w.\\"
 
 
 def _names_in_use(analysis: dict[str, Any]) -> Any:
-    """name -> whether some formula reads that defined name, directly or through another name a
+    """name  -> whether  some formula reads that defined name, directly or through another name a
     formula reads (lower case; a name written inside a text counts too: INDIRECT("LH2_calc") reads it)."""
     wb = analysis["workbooks"][0]
     blob = "\n".join(str(f.get("formula") or "") for f in wb.get("formulas", [])).lower()
@@ -414,7 +414,7 @@ def _names_in_use(analysis: dict[str, Any]) -> Any:
 
 
 def _reader_in_use(index: dict[str, Any], used: Any, sheet: str, row: int, col: int) -> str | None:
-    """referenced_by, with the defined names no formula reads left out."""
+    """referenced_by,  with the  defined names no formula reads left out."""
     def counts(owner: str | None) -> bool:
         return bool(owner) and (not owner.startswith("name ") or used(owner[5:]))
 
@@ -428,11 +428,11 @@ def _reader_in_use(index: dict[str, Any], used: Any, sheet: str, row: int, col: 
 
 
 def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
-    """STR-008: a text cell with nothing around it (no grid, no title above, no label beside it)
+    """STR-008:  a text  cell with nothing around it (no grid, no title above, no label beside it)
     that a formula reads. Mind imports grids; a text cell standing alone is not in the model,
-    and the formula gets nothing (seen in a real Mind conversion: a lone text cell G2 that
-    Prep had separated from its label; "Name#"&$G$2 came back as "Name#" and 20,000 cells
-    followed). A number standing alone is imported; so is a text under a '#' title, next to
+    and the  formula gets nothing (seen in a real Mind conversion: a lone  text cell G2 that
+    Prep had separated  from its label; "Name#"&$G$2 came back as  "Name#" and 20,000 cells
+    followed). A number standing alone is imported; so  is a text under a '#' title,  next to
     or under a label, or inside a grid (test workbook, 2026-10-08).
     A defined name counts as a reader only when some formula reads it: a name over a whole
     sheet ('LH2'!A1:OW909) that no formula uses -- a macro's -- flagged 9 labels of one model
@@ -448,7 +448,7 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     for lab in standalone_labels(analysis):
         owner = referenced_by(index, lab["sheet"], lab["row"], lab["col"])
         if owner and owner in (index["whole_cols"].get(lab["sheet"], {}).get(lab["col"]), index["whole_rows"].get(lab["sheet"], {}).get(lab["row"])):
-            # read only as part of a whole column / row: the formula reads the sheet's table there, not this
+            # read only as part of a whole column / row: the formula reads  the sheet's table there, not this
             # cell (VLOOKUP(x, BBA_04!$A:$B, 2, FALSE) gave Excel's values in Mind with a lone 'Result' in A1,
             # the Tokyo IFRS 17 tool, 2026-11-08); a range over the cell itself still counts
             owner = next((o for r1, r2, c1, c2, o in index["rects"].get(lab["sheet"], ()) if r1 <= lab["row"] <= r2 and c1 <= lab["col"] <= c2), None)
@@ -476,17 +476,17 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
 
 
 def blocking_pivot(p: dict[str, Any]) -> str | None:
-    """Why Mind's converter cannot take this pivot table. A client model was rejected ("The method or
+    """Why  Mind's converter  cannot take this pivot table. A client model was rejected ("The method or
     operation is not implemented") with its pivot tables, one of them with a grouped field, and
-    accepted with all of them as values (2026-10-18); with only the grouped one as values and the
-    plain ones kept, it was rejected again (2026-10-25). So every pivot table blocks."""
+    accepted with all of  them as values (2026-10-18); with only the grouped one as values  and the
+    plain ones kept, it was  rejected again (2026-10-25). So every pivot table  blocks."""
     if p.get("grouped_fields"):
         return f"its field {', '.join(p['grouped_fields'][:3])} is grouped"
     return "Mind's converter stops on a pivot table"
 
 
 def pivot_tables(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """STR-009: the workbook's pivot tables, every one blocking (blocking_pivot). The Prep action turns
+    """STR-009:  the workbook's  pivot tables, every one blocking (blocking_pivot). The Prep action turns
     them into formulas or values."""
     pivots = []
     for s in analysis["workbooks"][0].get("sheets", []):

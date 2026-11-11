@@ -1,9 +1,9 @@
-"""DBG-* validators: KB 'Performance tips' ("calculation engine's speed
+"""DBG-*  validators: KB  'Performance tips' ("calculation engine's speed
 depends on how many cells it needs to evaluate"; "VLOOKUP() will evaluate
 every cell while OFFSET() will only offset to a specific cell"; built-in
-performance profiler), 'Enabling debug mode', and the formula-field FAQ
-(partial evaluation with F9). The recommendation rules always PASS with
-RECOMMENDATION evidence; the two measurable ones (large ranges, lookups)
+performance profiler), 'Enabling debug mode',  and the formula-field FAQ
+(partial evaluation with F9). The recommendation rules always  PASS with
+RECOMMENDATION evidence; the two measurable  ones (large ranges, lookups)
 report what they found."""
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def dbg_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def dbg_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """DBG-003: whole-column/row and very large range references."""
+    """DBG-003:  whole-column/row and  very large range references."""
     threshold = int(config.get("large_range_cells", DEFAULT_LARGE_RANGE_CELLS))
     hits = []
     for wb in analysis["workbooks"]:
@@ -55,7 +55,7 @@ def dbg_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def dbg_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """DBG-004: lookup-function usage review."""
+    """DBG-004:  lookup-function usage  review."""
     usage = analysis["features"].get("function_usage", {})
     counts = {fn: usage[fn] for fn in sorted(LOOKUP_FUNCTIONS & set(usage))}
     if not counts:

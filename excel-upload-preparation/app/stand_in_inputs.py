@@ -1,13 +1,13 @@
-"""Stand-in input files, made with the assistant, for a model whose input files the user does not have.
+"""Stand-in  input files,  made with the assistant, for a model whose input files the user does not have.
 
 The model's import macro opens outside files and pastes their data in (app/outside_inputs.py). When
-the user has only the model, the assistant reads that macro (its VBA), the import table and the
-shape of the sheets the files fill, and describes each file the macro expects as a small recipe:
-fixed cells (the words the macro searches for) and blocks copied from the model's own cells. The app
+the user has only  the model, the assistant reads that macro (its VBA), the import  table and the
+shape of the sheets  the files fill, and describes each file  the macro expects as a small recipe:
+fixed cells (the words the  macro searches for) and blocks copied from  the model's own cells. The app
 builds the files in an Excel of its own from the numbers the model ALREADY holds, so bringing them in
 changes nothing, and proves it before anything is kept: the model's macro runs on a copy with the
 files (outside_inputs.run_import) and every cell of every area it writes must equal the model's own.
-When not, the assistant is shown what happened -- the macro's message boxes, the cells that differ --
+When not, the assistant is shown  what happened -- the macro's message boxes, the cells that differ --
 and tries again (MAX_ATTEMPTS).
 
 The stand-ins only reproduce what the model holds: best results come with the actual input files
@@ -25,16 +25,16 @@ from . import outside_inputs as core
 from .formula_utils import num_to_col, parse_ref
 
 ProgressFn = Callable[[str], None]
-AskFn = Callable[[str, str], "str | None"]  # (system prompt, user prompt) -> the assistant's text (None: no answer)
+AskFn = Callable[[str, str], "str | None"]  # (system  prompt, user  prompt) -> the assistant's text (None: no answer)
 
 MAX_ATTEMPTS = 4
 MAX_CELLS_PER_FILE = 3_000_000
 PREVIEW_ROWS = 6
 MAX_AREAS_LISTED = 25
-ASSISTANT_EFFORT = "low"  # measured 2026-11-09 on the Tokyo tool: "low" answers in ~1 min; "medium" thought past 8 min and the gateway returned nothing (each try is proven, and the next one is told what went wrong)
+ASSISTANT_EFFORT = "low"  # measured  2026-11-09 on  the Tokyo tool: "low" answers in ~1 min; "medium" thought past 8 min and the gateway returned nothing (each try is proven, and the next one is told what went wrong)
 ASSISTANT_TIMEOUT_S = 600
 
-# Excel's SaveAs formats by extension (the macro opens the file as the real one would be)
+# Excel's  SaveAs formats  by extension (the macro opens the file as the real one would be)
 _FORMATS = {".xlsx": 51, ".xlsm": 52, ".xlsb": 50, ".xls": 56, ".csv": 6, ".txt": 42}
 _BAD_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
 _NUMBER_LIKE = re.compile(r"^\s*[-+]?(\d[\d,]*\.?\d*|\.\d+)([eE][-+]?\d+)?\s*%?\s*$")
@@ -82,9 +82,9 @@ Rules:
   checks that no computed value changes. Copy labels and numbers as separate blocks."""
 
 
-# --- 1. what the assistant reads -------------------------------------------------------------------
+# ---  1. what  the assistant reads -------------------------------------------------------------------
 def chain_code(modules: list[tuple[str, str]], scan: dict[str, Any]) -> str:
-    """The VBA of the import chain (the import macro down to the procedure that opens the files) and
+    """The  VBA of  the import chain (the import macro down to the procedure that opens the files) and
     of every procedure those call, comments left out, as one text."""
     procs = core.vba_procedures(modules)
     info = scan.get("procedures") or {}
@@ -107,7 +107,7 @@ def _row_key(r: dict[str, Any]) -> str:
 
 
 def _norm_key(text: Any) -> str:
-    """'Ctrl_01'!$H$35 / ctrl_01!h35 / My Sheet!H35 -> ctrl_01!H35 (the rows' keys compare like this)."""
+    """'Ctrl_01'!$H$35  / ctrl_01!h35  / My Sheet!H35 -> ctrl_01!H35 (the rows' keys compare like this)."""
     s = str(text or "").strip()
     if "!" not in s:
         return s.casefold()
@@ -130,8 +130,8 @@ def _short(v: Any, n: int = 40) -> str:
 
 
 def compress_row(row: int, first_col: int, values: list[Any]) -> str:
-    """The non-empty cells of one row, runs of the same kind summed up:
-    'A1="csv file"  AB1:DP1 = 93 texts ("Premium", "Claims", …, "Expense")  DQ1 = 4'."""
+    """The  non-empty cells  of one row, runs of the same kind summed up:
+    'A1="csv file" AB1:DP1 = 93 texts ("Premium", "Claims", …, "Expense") DQ1 = 4'."""
     parts: list[str] = []
     i, n = 0, len(values)
     while i < n:
@@ -158,21 +158,21 @@ def compress_row(row: int, first_col: int, values: list[Any]) -> str:
 def _areas(rng: Any, kind: int, value: int | None) -> tuple[list[str], int]:
     try:
         found = rng.SpecialCells(kind, value) if value is not None else rng.SpecialCells(kind)
-    except Exception:  # Excel raises when there is no such cell
+    except Exception:  # Excel  raises when  there is no such cell
         return [], 0
     count = int(found.Areas.Count)
     return [str(found.Areas(i).Address).replace("$", "") for i in range(1, min(count, MAX_AREAS_LISTED) + 1)], count
 
 
 def _matrix(v: Any) -> list[list[Any]]:
-    """Value2 of a range as a list of rows (one cell: [[v]])."""
+    """Value2  of a  range as a list of rows (one cell: [[v]])."""
     if isinstance(v, tuple):
         return [list(r) if isinstance(r, tuple) else [r] for r in v]
     return [[v]]
 
 
 def sheet_shape(ws: Any) -> dict[str, Any]:
-    """Where a sheet holds what: its used range, its first rows (the labels) and where its constant
+    """Where  a sheet  holds what: its used range, its first rows (the labels) and where its constant
     numbers, constant texts and formulas are -- a few lines however big the sheet."""
     ur = ws.UsedRange
     r0, c0 = int(ur.Row), int(ur.Column)
@@ -190,9 +190,9 @@ def sheet_shape(ws: Any) -> dict[str, Any]:
 
 
 def describe_model(model: Path, rows: list[dict[str, Any]], vba: str) -> dict[str, Any]:
-    """What the assistant reads of the model, from an Excel of our own (read only, macros off): each
+    """What  the assistant  reads of the model, from an Excel of our own (read only, macros off): each
     import-table row (its cells and the path formula), the defined names the macro uses, and the
-    shape of every sheet the files fill."""
+    shape of  every sheet the files fill."""
     import pythoncom
 
     pythoncom.CoInitialize()
@@ -240,7 +240,7 @@ def describe_model(model: Path, rows: list[dict[str, Any]], vba: str) -> dict[st
 
 
 def build_prompt(vba: str, macro: str, model: dict[str, Any], need: list[str], history: list[dict[str, Any]]) -> str:
-    """The user prompt: the macro, the names it uses, the import table, the shape of the sheets the
+    """The  user prompt:  the macro, the names it uses, the import table, the shape of the sheets the
     files fill, the rows that need a file -- and what happened to the earlier attempts."""
     out = [f"## The import macro\nThe model runs `{macro}` to bring the files in (the app writes each file's full path into its "
            "import-table cell first).\n```vba\n" + vba + "\n```"]
@@ -268,7 +268,7 @@ def build_prompt(vba: str, macro: str, model: dict[str, Any], need: list[str], h
     return "\n\n".join(out)
 
 
-# --- 2. the recipe ---------------------------------------------------------------------------------
+# --- 2.  the recipe ---------------------------------------------------------------------------------
 def _json_object(text: str) -> dict[str, Any]:
     m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     raw = m.group(1) if m else text[text.find("{"): text.rfind("}") + 1]
@@ -291,7 +291,7 @@ def _cell(text: Any) -> tuple[int, int]:
 
 
 def parse_recipe(text: str, rows: list[dict[str, Any]], need: list[str], sheets: list[str]) -> dict[str, Any]:
-    """The assistant's answer as a checked recipe: {files: [{key, name, sheet, cells: [(r, c, value)],
+    """The  assistant's answer  as a checked recipe: {files: [{key, name, sheet, cells: [(r, c, value)],
     copies: [{to: (r, c), sheet, rect, transpose, rows, cols}]}], explain}. ValueError says what is wrong."""
     obj = _json_object(text)
     by_key = {_norm_key(_row_key(r)): r for r in rows}
@@ -362,22 +362,22 @@ def parse_recipe(text: str, rows: list[dict[str, Any]], need: list[str], sheets:
 
 # --- 3. the files ----------------------------------------------------------------------------------
 def _writable(v: Any) -> Any:
-    """A text Excel would read as a formula keeps its first character as text."""
+    """A  text Excel  would read as a formula keeps its first character as text."""
     return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@") and not _NUMBER_LIKE.match(v) else v
 
 
 def zero_fill(data: list[list[Any]]) -> list[list[Any]]:
-    """A block of numbers (no text in it) gets 0 in its empty cells: a macro walks the data with
-    End(xlDown) / End(xlToRight), which stop at the first empty cell (an area that was empty in the
-    model -- its file was missing -- would otherwise make it read to the end of the sheet). A block
-    with text (labels) is left as it is. The proof accepts 0 where the model is empty."""
+    """A  block of  numbers (no text in it) gets 0 in its empty cells: a macro walks the data with
+    End(xlDown) / End(xlToRight), which stop at the first empty cell (an area that was empty  in the
+    model -- its file was missing -- would otherwise make  it read to the end of  the sheet). A block
+    with text (labels) is  left as it is. The proof accepts 0 where the model  is empty."""
     if any(isinstance(v, str) and v != "" for row in data for v in row):
         return data
     return [[0 if v is None or v == "" else v for v in row] for row in data]
 
 
 def build_files(model: Path, recipe: dict[str, Any], folder: Path) -> dict[str, Path]:
-    """The stand-in files of `recipe`, built in an Excel of our own from the model's own cells (Value2:
+    """The  stand-in files  of `recipe`, built in an Excel of our own from the model's own cells (Value2:
     the numbers exactly as the model holds them). {row key: path}."""
     import pythoncom
 
@@ -406,7 +406,7 @@ def build_files(model: Path, recipe: dict[str, Any], folder: Path) -> dict[str, 
                 for r, c, v in f["cells"]:
                     cell = ws.Cells(r, c)
                     if isinstance(v, str) and _NUMBER_LIKE.match(v):
-                        cell.NumberFormat = "@"  # a label that looks like a number stays the text it is
+                        cell.NumberFormat = "@"  # a label that looks like a number  stays the text it is
                     cell.Value2 = _writable(v)
                 for cp in f["copies"]:
                     if cp.get("zeros"):
@@ -426,7 +426,7 @@ def build_files(model: Path, recipe: dict[str, Any], folder: Path) -> dict[str, 
                     tr, tc = cp["to"]
                     target = ws.Range(ws.Cells(tr, tc), ws.Cells(tr + len(data) - 1, tc + len(data[0]) - 1))
                     if texts:
-                        target.NumberFormat = "@"  # numbers written below stay numbers; number-like texts stay texts
+                        target.NumberFormat = "@"  # numbers written below stay numbers; number-like texts  stay texts
                     target.Value2 = tuple(tuple(_writable(v) for v in row) for row in data)
                 path = folder / f["name"]
                 fmt = _FORMATS[Path(f["name"]).suffix.lower()]
@@ -453,7 +453,7 @@ def build_files(model: Path, recipe: dict[str, Any], folder: Path) -> dict[str, 
 # --- 4. the proof ----------------------------------------------------------------------------------
 def compare_matrices(sheet: str, rect: tuple[int, int, int, int], model: list[list[Any]], got: list[list[Any]],
                      samples: int = 5) -> dict[str, Any]:
-    """Cell by cell, exactly: {sheet, ref, cells, differ, samples: [{cell, model, got}]}."""
+    """Cell  by cell,  exactly: {sheet, ref, cells, differ, samples: [{cell, model, got}]}."""
     r1, c1, r2, c2 = rect
     differ, zero_for_empty, held, shown = 0, 0, 0, []
     for i in range(r2 - r1 + 1):
@@ -480,7 +480,7 @@ def compare_matrices(sheet: str, rect: tuple[int, int, int, int], model: list[li
 
 
 def compare_areas(model: Path, imported: Path, areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every area the macro wrote, in the imported copy against the model, cell by cell."""
+    """Every  area the  macro wrote, in the imported copy against the model, cell by cell."""
     import pythoncom
 
     pythoncom.CoInitialize()
@@ -523,7 +523,7 @@ def _fmt_value(v: Any) -> str:
 
 
 def judge(report: dict[str, Any], need: list[str], compared: list[dict[str, Any]] | None) -> tuple[str | None, list[str]]:
-    """(None, details) when every stand-in was opened, written and reproduced the model exactly;
+    """(None,  details) when  every stand-in was opened, written and reproduced the model exactly;
     else (the problem in one line, the details for the assistant)."""
     by_key = {e["cell"]: e for e in report.get("files") or []}
     details: list[str] = []
@@ -561,7 +561,7 @@ def judge(report: dict[str, Any], need: list[str], compared: list[dict[str, Any]
 
 
 def numbers_changed(numbers: dict[str, Any]) -> tuple[int, str]:
-    """How many computed values a numbers check found changed, and the first one in words."""
+    """How  many computed  values a numbers check found changed, and the first one in words."""
     c = numbers.get("counts") or {}
     n = int(c.get("good_to_error", 0)) + int(c.get("good_to_other", 0)) + int(c.get("missing_good", 0))
     samples = numbers.get("samples") or {}
@@ -574,7 +574,7 @@ def numbers_changed(numbers: dict[str, Any]) -> tuple[int, str]:
 
 
 def check_numbers(model: Path, imported: Path) -> dict[str, Any]:
-    """Every computed value of the imported copy against the model's (app/numbers_check.py)."""
+    """Every  computed value  of the imported copy against the model's (app/numbers_check.py)."""
     from .numbers_check import Moves, compare_workbooks
 
     return compare_workbooks(model, imported, Moves([]))
@@ -582,7 +582,7 @@ def check_numbers(model: Path, imported: Path) -> dict[str, Any]:
 
 # --- 5. the whole job ------------------------------------------------------------------------------
 def assistant_ask(model_id: str | None = None, effort: str = ASSISTANT_EFFORT, timeout: int = ASSISTANT_TIMEOUT_S) -> AskFn | None:
-    """The app's assistant (app/llm.py) as an AskFn; None when no AI key is saved."""
+    """The  app's assistant  (app/llm.py) as an AskFn; None when no AI key is saved."""
     from .llm import DEFAULT_MODEL_ID, chat_completion, llm_available
 
     if not llm_available():
@@ -605,11 +605,11 @@ def make_stand_ins(model: Path, rows: list[dict[str, Any]], need: list[str], mac
                    describe: Callable[..., dict[str, Any]] | None = None, build: Callable[..., dict[str, Path]] | None = None,
                    compare: Callable[..., list[dict[str, Any]]] | None = None,
                    numbers: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Stand-in files for the import-table rows `need` ("sheet!cell" keys), proven before they are
+    """Stand-in  files for  the import-table rows `need` ("sheet!cell" keys), proven before they are
     returned: the model's macro runs on a copy with them (and with `real_files`, the files the user
-    did pick) and every area each stand-in fills must equal the model's own cell for cell (a 0 where
-    the model is empty counts as equal: its file was missing when the model last ran); then no
-    computed value of the model may change. When the zeros of empty areas are what changes a value,
+    did pick) and every area each  stand-in fills must equal the model's own cell for cell (a  0 where
+    the model is empty counts  as equal: its file was missing when  the model last ran); then no
+    computed value of the model may  change. When the zeros of empty areas  are what changes a value,
     those rows get no stand-in (`left_out`: their blocks stay as the model holds them).
 
     {ok, files: {key: path}, left_out: [key], explain, problem, numbers, attempts: [{n, problem, details, recipe}]}.
@@ -649,7 +649,7 @@ def make_stand_ins(model: Path, rows: list[dict[str, Any]], need: list[str], mac
             history.append({"n": n, "problem": f"the files could not be built: {str(exc)[:200]}", "details": [], "recipe": recipe["raw"]})
             continue
         say(f"Running the model's import macro {macro} with the stand-in files")
-        # the stand-ins alone (the rows of real files keep the model's data, as missing ones): what
+        # the stand-ins alone  (the rows of real files keep the model's data, as missing ones): what
         # they do is all that changes; their import-table rows keep the model's own status
         report = run_import(model, rows, files, macro, folder / "check" / Path(model).name, folder,
                             messages=messages or [], restore_rows=set(files))
@@ -705,7 +705,7 @@ def make_stand_ins(model: Path, rows: list[dict[str, Any]], need: list[str], mac
 
 
 def _keep_record(work_dir: Path, attempts: list[dict[str, Any]]) -> None:
-    """Every try, its recipe and what happened, beside the files (attempts.json): to see later why."""
+    """Every  try, its  recipe and what happened, beside the files (attempts.json): to see later why."""
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
         (work_dir / "attempts.json").write_text(json.dumps(attempts, ensure_ascii=False, indent=1, default=str), encoding="utf-8")

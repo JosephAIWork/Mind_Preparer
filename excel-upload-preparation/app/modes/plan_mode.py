@@ -1,4 +1,4 @@
-"""PLAN_MODE: analyze and report only, across every active rule (modes/plan-mode.md). It never
+"""PLAN_MODE:  analyze and  report only, across every active rule (modes/plan-mode.md). It never
 applies changes, so it needs no TRANSFORM step."""
 from __future__ import annotations
 

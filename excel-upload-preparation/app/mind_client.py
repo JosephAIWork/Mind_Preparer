@@ -1,15 +1,15 @@
-"""Drive the real Milliman Mind web app in a dedicated, Claude-controlled Edge
+"""Drive  the real  Milliman Mind web app in a dedicated, Claude-controlled Edge
 browser so the app's outputs can be uploaded and their results read back
 automatically.
 
 Design notes
 ------------
 - A *separate* persistent Edge profile under <data folder>\\edge-profile (settings.yaml)
-  (never OneDrive-synced, never committed) keeps the login session. This is
-  distinct from the user's normal Edge profile, so the user's own Edge does not
-  need to be closed.
-- The user logs in **once** (interactively, in a headed window). Cookies persist
-  in the profile, so later runs can be headless.
+  (never  OneDrive-synced, never committed) keeps the login session. This is
+  distinct from the  user's normal Edge profile, so the  user's own Edge does not
+  need to be  closed.
+- The user logs in **once** (interactively, in a headed window).  Cookies persist
+  in the profile, so later runs  can be headless.
 - The shared ``/init/...`` link is treated as one-time: after the first login we
   save the *resolved* project URL to ``mind_session.json`` and reuse that.
 
@@ -17,7 +17,7 @@ This module is deliberately small and dependency-light (only Playwright).
 
 Project operations -- the selectors below were mapped on the live site and
 proven by a full closed loop on a real model; every one takes the Playwright ``page``
-from ``mind_session`` and returns plain dicts so ``app/mind_loop.py`` can run
+from ``mind_session``  and returns plain dicts so ``app/mind_loop.py`` can run
 unattended:
 
   open_manager -> ensure_folder -> create_blank_project -> open_project
@@ -41,16 +41,16 @@ from playwright.sync_api import Page, sync_playwright
 
 from .settings import SETTINGS
 
-# --- stable, non-synced locations --------------------------------------------
+# ---  stable, non-synced  locations --------------------------------------------
 _ROOT = SETTINGS.data_folder
 PROFILE_DIR = _ROOT / "edge-profile"
 DOWNLOAD_DIR = _ROOT / "downloads"
 RECON_DIR = _ROOT / "recon"
 SESSION_FILE = _ROOT / "mind_session.json"
-SIGNAL_FILE = _ROOT / "login_done.signal"  # optional manual "I'm logged in" marker
+SIGNAL_FILE = _ROOT / "login_done.signal"  # optional  manual "I'm  logged in" marker
 
 APP_HOST_SUFFIX = SETTINGS.mind_host_suffix
-# URL fragments that mean "still on an identity-provider / login page"
+# URL  fragments that  mean "still on an identity-provider / login page"
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "/auth", "oauth", "adfs",
                 "microsoftonline", "okta", "b2clogin", "authorize", "logon", "idp")
 _LAUNCH_ARGS = ["--no-first-run", "--no-default-browser-check", "--start-maximized"]
@@ -63,7 +63,7 @@ def _ensure_dirs() -> None:
 
 @contextmanager
 def mind_session(headed: bool = False) -> Iterator[tuple[Any, Page]]:
-    """Open the persistent Edge context and hand back (context, page).
+    """Open  the persistent  Edge context and hand back (context, page).
 
     Everything Playwright is scoped here so the browser always closes cleanly.
     """
@@ -117,7 +117,7 @@ def _on_app(url: str) -> bool:
 
 
 def _looks_authenticated(page: Page, init_url: str | None) -> bool:
-    """On the Mind app host, not an identity-provider page, and not still sitting
+    """On  the Mind  app host, not an identity-provider page, and not still sitting
     on the one-time init link."""
     url = page.url
     if not _on_app(url) or _is_login_url(url):
@@ -163,7 +163,7 @@ _INVENTORY_JS = r"""
 
 
 def capture(page: Page, tag: str) -> dict[str, Any]:
-    """Full-page screenshot + a JSON inventory of the interactive elements on the
+    """Full-page  screenshot +  a JSON inventory of the interactive elements on the
     current page, written under RECON_DIR. Returns the inventory dict."""
     _ensure_dirs()
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", tag)[:60]
@@ -188,10 +188,10 @@ def capture(page: Page, tag: str) -> dict[str, Any]:
 
 # --- interactive login + tour -------------------------------------------------
 def login(init_url: str, timeout_s: int = 900, poll_s: float = 3.0) -> dict[str, Any]:
-    """Open a headed Edge window at ``init_url`` and wait for the user to finish
+    """Open  a headed  Edge window at ``init_url`` and wait for the user to finish
     logging in. Success = the browser lands on a Mind app page that is neither an
-    identity-provider page nor the one-time init link (or the SIGNAL_FILE
-    appears). Saves the resolved project URL and captures the landing page.
+    identity-provider page nor the one-time init  link (or the SIGNAL_FILE
+    appears). Saves the resolved project URL and captures  the landing page.
     """
     _ensure_dirs()
     if SIGNAL_FILE.exists():
@@ -215,7 +215,7 @@ def login(init_url: str, timeout_s: int = 900, poll_s: float = 3.0) -> dict[str,
                 print("[login] signal file seen — treating as logged in", flush=True)
                 break
             if authed:
-                # require the app URL to hold steady briefly so we don't catch a redirect hop
+                # require the app URL  to hold steady briefly so we don't  catch a redirect hop
                 stable_since = stable_since or time.time()
                 if time.time() - stable_since >= 8:
                     print("[login] authenticated app page is stable", flush=True)
@@ -249,11 +249,11 @@ def login(init_url: str, timeout_s: int = 900, poll_s: float = 3.0) -> dict[str,
 
 
 def sign_in(timeout_s: int = 600, progress: Any = None, should_stop: Any = None) -> dict[str, Any]:
-    """The app's own "Sign in to Mind" (1.12.1; before, only `login <init link>` from a command line,
+    """The  app's own  "Sign in to Mind" (1.12.1; before, only `login <init link>` from a command line,
     which the packaged program does not have). Opens Edge, visible, with the app's profile at Mind's
-    main page and waits until the user has signed in: the page is on the Mind host, not an
-    identity-provider page, for 8 s in a row. Saves the main page as the URL later checks load, then
-    closes the window. -> {"ok", "reason", "url"}. `progress(message)` hears what happens;
+    main page and  waits until the user has signed in: the page is on  the Mind host, not an
+    identity-provider page,  for 8 s in a row. Saves  the main page as the URL later checks load, then
+    closes the  window. -> {"ok", "reason", "url"}. `progress(message)` hears  what happens;
     `should_stop()` ends the wait early (the window is closed either way)."""
     tell = progress or (lambda _m: None)
     stop = should_stop or (lambda: False)
@@ -287,7 +287,7 @@ def sign_in(timeout_s: int = 600, progress: Any = None, should_stop: Any = None)
 
 
 def is_authenticated() -> dict[str, Any]:
-    """Headless check that the saved project URL (Mind's main page when none was saved) loads
+    """Headless  check that  the saved project URL (Mind's main page when none was saved) loads
     without bouncing to a sign-in page."""
     sess = load_session()
     url = sess.get("project_url") or MAIN_URL
@@ -307,18 +307,18 @@ def is_authenticated() -> dict[str, Any]:
 # --- project operations (mapped on the live site) -----------------------------
 MAIN_URL = SETTINGS.mind_main_url
 MANAGER_HOST = "prod01"
-# the sandbox folder the app creates its projects in, and the only place it deletes from
+# the  sandbox folder  the app creates its projects in, and the only place it deletes from
 SANDBOX_FOLDER = SETTINGS.mind_sandbox_folder
 PROJECT_PREFIX = SETTINGS.mind_project_prefix
-# Angular ngx-guided-tour: a full-screen mask that intercepts every click and
+# Angular  ngx-guided-tour: a  full-screen mask that intercepts every click and
 # re-arms on each page load. Removed before any interaction.
 _TOUR_MASK = "ngx-guided-tour,.guided-tour-user-input-mask,.guided-tour-spotlight-overlay"
 _UNTITLED = re.compile(r"^Untitled\((\d+),(\d+)\)$")
 _STEP_STATUS_JS = r"""()=>{const o={};[...document.querySelectorAll('[class*=progress-step]')].forEach(b=>{const t=(b.innerText||'').split('\n').map(s=>s.trim()).filter(Boolean);if(t.length>=2)o[t[1]]=t[0];});return o;}"""
 _PROJECT_HREF_JS = "(nm)=>{const a=[...document.querySelectorAll('a.holder')].find(a=>{const p=(a.innerText||'').trim().split(String.fromCharCode(10));return p[p.length-1].trim()===nm;});return a?a.getAttribute('href'):null;}"
-# The tile's own '...' menu: a descendant of the matched tile, or of a wrapper
+# The  tile's own  '...' menu: a descendant of the matched tile, or of a wrapper
 # that holds exactly that one tile. Never the nearest button on the page -- a
-# neighbour's menu must not be opened on this project's behalf.
+# neighbour's menu must not be opened  on this project's behalf.
 _MARK_MENU_JS = r"""(nm)=>{
   const a=[...document.querySelectorAll('a.holder')].find(h=>{const p=(h.innerText||'').trim().split(String.fromCharCode(10));return p[p.length-1].trim()===nm;});
   if(!a) return 'nf';
@@ -373,7 +373,7 @@ def screenshot(page: Page, path: Path) -> None:
 
 
 def open_manager(page: Page) -> bool:
-    """shared.milliman-mind.com -> 'Access the Project manager' -> the production
+    """shared.milliman-mind.com  -> 'Access  the Project manager' -> the production
     Project Manager (prod01). Lands on the workspace root ('Projects')."""
     page.goto(MAIN_URL, wait_until="domcontentloaded")
     _wait(page, 1200)
@@ -394,7 +394,7 @@ def open_manager(page: Page) -> bool:
 
 
 def ensure_folder(page: Page, folder: str = SANDBOX_FOLDER) -> bool:
-    """Open `folder` in the manager, creating it when it does not exist."""
+    """Open  `folder` in  the manager, creating it when it does not exist."""
     exists = False
     for _ in range(6):  # the manager's list may still be loading right after a run; look again before creating anything
         exists = page.evaluate("(f)=>[...document.querySelectorAll('a')].some(e=>((e.innerText||'').trim().startsWith(f)))", folder)
@@ -422,7 +422,7 @@ def ensure_folder(page: Page, folder: str = SANDBOX_FOLDER) -> bool:
 
 
 def create_blank_project(page: Page, name: str) -> str | None:
-    """New project -> name -> Create project. Returns the project's /init link
+    """New  project ->  name -> Create project. Returns the project's /init link
     (the tile is target=_blank, so it is opened by goto, never by click)."""
     existing = page.evaluate(_PROJECT_HREF_JS, name)
     if existing:
@@ -430,7 +430,7 @@ def create_blank_project(page: Page, name: str) -> str | None:
     page.get_by_role("button", name=re.compile(r"^\s*New project\s*$", re.I)).first.click(timeout=6000)
     _wait(page, 1200)
     kill_tour(page)
-    # since November 2026 Mind asks first for the type of project (Milliman Mind / Milliman OpS)
+    # since November 2026 Mind asks first for the type of project  (Milliman Mind / Milliman OpS)
     name_box = page.locator('input[placeholder="Choose a project name"]').first
     if not name_box.is_visible():
         kind = page.get_by_text(re.compile(r"Milliman Mind blank project", re.I)).first
@@ -439,7 +439,7 @@ def create_blank_project(page: Page, name: str) -> str | None:
             _wait(page, 1500)
             kill_tour(page)
         except Exception:
-            pass  # no type picker: the name box is just slow to appear
+            pass  # no type picker: the name box is  just slow to appear
     name_box.fill(name, timeout=15000)
     page.get_by_role("button", name=re.compile(r"^\s*Create project\s*$", re.I)).first.click(timeout=5000)
     _wait(page, 4000)
@@ -448,7 +448,7 @@ def create_blank_project(page: Page, name: str) -> str | None:
 
 
 def open_project(page: Page, init_url: str, timeout_s: int = 90) -> str:
-    """Load a project and wait until it is usable. Returns 'empty' (drop zone
+    """Load  a project  and wait until it is usable. Returns 'empty' (drop zone
     present), 'model' (Run button present) or 'unknown'."""
     page.goto(init_url, wait_until="domcontentloaded")
     end = time.time() + timeout_s
@@ -467,7 +467,7 @@ def open_project(page: Page, init_url: str, timeout_s: int = 90) -> str:
 
 
 def step_status(page: Page) -> dict[str, str]:
-    """{'Upload': 'Complete', 'Convert': 'Invalid', 'Test': 'Incomplete'} from the wizard."""
+    """{'Upload':  'Complete', 'Convert':  'Invalid', 'Test': 'Incomplete'} from the wizard."""
     try:
         return page.evaluate(_STEP_STATUS_JS)
     except Exception:
@@ -475,9 +475,9 @@ def step_status(page: Page) -> dict[str, str]:
 
 
 def read_error_logs(page: Page) -> list[str]:
-    """Click 'Display Error Logs' / 'View logs' and return the errors, each as one line:
+    """Click  'Display Error  Logs' / 'View logs' and return the errors, each as one line:
     '<kind>: <message lines> | MODEL ... | <model> > <instance> > <sheet>!<cell> | <mind ref>'
-    (the whole block of each error, not just its first line)."""
+    (the whole block of each error,  not just its first line)."""
     btn = page.get_by_role("button", name=re.compile(r"Display Error Logs|View logs", re.I))
     if not btn.count():
         return []
@@ -503,7 +503,7 @@ def read_error_logs(page: Page) -> list[str]:
 
 
 def upload_and_convert(page: Page, workbook: Path, timeout_s: int = 420, shots: Path | None = None) -> dict[str, Any]:
-    """Drop `workbook` on the empty project and wait for the Upload -> Convert
+    """Drop  `workbook` on  the empty project and wait for the Upload -> Convert
     -> Test wizard. {'success', 'steps', 'errors', 'text'}."""
     page.set_input_files("input#file", str(workbook))
     end = time.time() + timeout_s
@@ -529,11 +529,11 @@ def upload_and_convert(page: Page, workbook: Path, timeout_s: int = 420, shots: 
     return {"success": success, "steps": steps, "errors": errors, "timed_out": time.time() >= end, "text": text[:600]}
 
 
-_ADD_TEMPLATE = re.compile(r"Add templates? to Milliman Mind", re.I)  # plural when several workbooks went up
+_ADD_TEMPLATE = re.compile(r"Add templates? to Milliman Mind", re.I)  # plural  when several  workbooks went up
 
 
 def add_template(page: Page, timeout_s: int = 150) -> bool:
-    """'Add template to Milliman Mind' ('Add templates ...' after several workbooks) once the
+    """'Add  template to  Milliman Mind' ('Add templates ...' after several workbooks) once the
     conversion succeeded; True once the project shows its Run button."""
     try:
         page.get_by_role("button", name=_ADD_TEMPLATE).first.click(timeout=8000)
@@ -550,44 +550,44 @@ def add_template(page: Page, timeout_s: int = 150) -> bool:
 
 
 # --- the Input Manager: Mind input files (outside files made Mind inputs) ----------------------
-# Mapped on the live site 2026-11-08: a model with /Input grids has an "Inputs" button left of Run;
-# it opens a window "Inputs" listing model > sheet > grid with Status and File columns, Culture and
-# CSV Separator boxes and a drop zone whose <input type=file webkitdirectory> takes a FOLDER. Mind
+# Mapped  on the live site 2026-11-08: a model with /Input grids has  an "Inputs" button left of Run;
+# it  opens a window "Inputs" listing model >  sheet > grid with Status and File columns, Culture and
+# CSV Separator  boxes and a drop zone whose <input  type=file webkitdirectory> takes a FOLDER. Mind
 # matches each file to the grid of the same name (grid IN_X <- IN_X.csv), the row then shows
 # SUCCESS and the file name; nothing to save, the next run uses the imported values.
 INPUT_UPLOAD_SUFFIXES = (".csv", ".txt")
 _INPUTS_BUTTON = re.compile(r"^\s*Inputs\s*$")
-_INPUTS_DROP = "Upload inputs or Drag"  # the window's drop zone: present while the window is open
+_INPUTS_DROP = "Upload inputs or Drag"  # the  window's drop  zone: present while the window is open
 # Mind's window for a file no grid name matches. Until autumn 2026 "Match unmatched inputs" (Cancel /
-# Confirm); since November 2026 "Some of your imported files have not been automatically matched.
-# Please select a corresponding grid for each file ..." with a "Do not match" list, Close and
-# "Match selection" (a Bootstrap modal-container, not a Carbon modal). Either one is closed with its
-# own Close / Cancel button: the app never picks a grid for a file.
+# Confirm); since November 2026 "Some of your imported files  have not been automatically matched.
+# Please select a corresponding grid for each  file ..." with a "Do not  match" list, Close and
+# "Match selection" (a Bootstrap  modal-container, not a Carbon modal). Either one is closed with its
+# own  Close / Cancel button: the app never  picks a grid for a file.
 _UNMATCHED_MARKERS = ("Match unmatched", "not been automatically matched")
 _UNMATCHED = _UNMATCHED_MARKERS[0]
-# a grid of a copied workbook (Mind instances) is listed once, collapsed: "Rates (3 instances)"; its
+# a  grid of  a copied workbook (Mind instances) is listed once, collapsed: "Rates (3 instances)"; its
 # caret (fa-caret-up) opens one row per copy (K1, K2 ... with their own Status and File)
 _COLLAPSED_ROW = "i.fa-caret-up"
 _INSTANCES_RE = re.compile(r"^(?P<grid>.+?)\s*\((?P<n>\d+)\s+instances?\)$", re.I)
 
 
 def _unmatched_marker(text: str) -> str | None:
-    """The marker of Mind's unmatched-files window that is on the page, else None."""
+    """The  marker of  Mind's unmatched-files window that is on the page, else None."""
     return next((m for m in _UNMATCHED_MARKERS if _has(text, m)), None)
 # Mind's progress box while it takes the files (Upload, Links, Resize: "Uploading files ...", "Resizing
-# Grid 6 on 6 (...)"). Meanwhile the rows still show the LAST upload's status and file -- the same
-# names when the files replace earlier ones -- so no row is read before the box has come and gone.
+# Grid 6 on 6 (...)"). Meanwhile the rows  still show the LAST upload's status and file -- the same
+# names  when the files replace earlier ones  -- so no row is read before  the box has come and gone.
 _IMPORTING = "Inputs import"
-_IMPORT_START_S = 20  # a box not seen by then: the import was too quick to see (or did not start)
+_IMPORT_START_S = 20  # a  box not  seen by then: the import was too quick to see (or did not start)
 # the LOG tag in a refused file's ERROR cell: opens "CSV Logs" with Mind's reason ("Failed: Input
-# control error: The file ... doesn't have proper headers, there are 1340 columns while grid ...")
+# control error:  The file ... doesn't have proper headers, there are 1340 columns  while grid ...")
 _CSV_LOG_TAG = ".log-csv"
 _CSV_LOGS_RE = re.compile(r"CSV Logs\s*\n+\s*(?:Close modal\s*\n+\s*)?(.+)", re.I)
 
 
 def _csv_logs(page: Page, most: int = 6) -> list[str]:
-    """Mind's own words for each file it refused: the LOG tag of the row opens "CSV Logs"; its first
-    line is kept and the box closed again (Escape). Never fails: what cannot be read is left out."""
+    """Mind's  own words  for each file it refused: the LOG tag of the row opens "CSV Logs"; its first
+    line is kept and the box closed again (Escape). Never fails: what cannot be read is  left out."""
     out: list[str] = []
     try:
         tags = page.locator(_CSV_LOG_TAG)
@@ -618,21 +618,21 @@ def _csv_logs(page: Page, most: int = 6) -> list[str]:
 
 _INPUTS_HEADER = re.compile(r"^\s*Element\b.*\bStatus\b.*\bFile\b")
 _INPUT_FILE_NAME = re.compile(r"\.(?:csv|txt|zip|parquet)$", re.I)
-# a grid row's status while it has no file or Mind is still taking it
+# a  grid row's  status while it has no file or Mind is still taking it
 INPUT_PENDING_STATUSES = frozenset({"", "-", "NO FILE", "PENDING", "UPLOADING", "IN PROGRESS", "PROCESSING", "LOADING",
                                     "QUEUED", "WAITING", "VALIDATING", "IMPORTING", "RUNNING", "STARTED"})
 _INPUT_STATUS_WORDS = INPUT_PENDING_STATUSES | {"SUCCESS", "ERROR", "WARNING", "FAILED", "FAILURE", "INVALID",
                                                 "CANCELLED", "CANCELED", "DONE", "COMPLETE", "COMPLETED"}
-# cultures that read numbers as the input files write them (a decimal point, no thousands mark;
+# cultures  that read  numbers as the input files write them (a decimal point, no thousands mark;
 # proven with English - United Kingdom). Under another one (German: '.' groups thousands) 1000.5
-# could silently become 10005, so the files are not uploaded at all.
+# could silently become 10005, so the  files are not uploaded at all.
 _POINT_CULTURE = re.compile(r"^\s*(?:English(?!.*South Africa)|Japanese|Chinese|Korean|Hebrew)\b", re.I)
 _VIS_JS = "const vis=(e)=>{const r=e.getBoundingClientRect();const s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};"
-# the smallest visible window (modal / dialog) whose text holds `marker`
+# the  smallest visible  window (modal / dialog) whose text holds `marker`
 _BOX_FIND_JS = ("const boxes=[...document.querySelectorAll('.cds--modal,[role=dialog],[role=alertdialog]')].filter(vis)"
                 ".filter(b=>(b.innerText||'').toLowerCase().includes(marker.toLowerCase()));"
                 "boxes.sort((a,b)=>(a.innerText||'').length-(b.innerText||'').length);const box=boxes[0]||null;")
-# its text, and (mark=true) its Cancel / Close button tagged for a click -- never any other button
+# its  text, and  (mark=true) its Cancel / Close button tagged for a click -- never any other button
 _BOX_JS = ("([marker,mark])=>{" + _VIS_JS + _BOX_FIND_JS +
            "if(!box) return {text:null,marked:'nf'};let marked='no';"
            "if(mark){const bs=[...box.querySelectorAll('button')].filter(vis);"
@@ -641,7 +641,7 @@ _BOX_JS = ("([marker,mark])=>{" + _VIS_JS + _BOX_FIND_JS +
            "document.querySelectorAll('[data-mr-close]').forEach(e=>e.removeAttribute('data-mr-close'));"
            "if(pick){pick.setAttribute('data-mr-close','1');marked='ok';}}"
            "return {text:box.innerText||'',marked};}")
-# the Inputs window's table: one list of cell texts per visible row (the header row included)
+# the  Inputs window's  table: one list of cell texts per visible row (the header row included)
 _INPUT_ROWS_JS = ("()=>{" + _VIS_JS + "const marker='" + _INPUTS_DROP + "';" + _BOX_FIND_JS +
                   "const root=box||document.body;let rows=[...root.querySelectorAll('tr,[role=row]')];"
                   "if(!rows.length) rows=[...root.querySelectorAll('*')].filter(e=>getComputedStyle(e).display==='table-row');"
@@ -662,7 +662,7 @@ def _has(text: str, marker: str) -> bool:
 
 
 def input_files(folder: Path | str | None) -> list[Path]:
-    """The Mind input files of `folder`: its .csv / .txt files (not in subfolders, no lock or
+    """The  Mind input  files of `folder`: its .csv / .txt files (not in subfolders, no lock or
     hidden files), by name."""
     if not folder:
         return []
@@ -682,18 +682,18 @@ def _grid_row(model: Any, sheet: Any, grid: str, status: str, file: str | None, 
               copies: int | None = None) -> dict[str, Any]:
     row: dict[str, Any] = {"model": model, "sheet": sheet, "grid": grid, "status": status,
                            "file": None if (file or "").casefold() in ("", "-", "no file") else file}
-    if copies:  # a grid of a copied workbook: `copies` on every row of it, `key` on a copy's own row
+    if copies:  # a  grid of  a copied workbook: `copies` on every row of it, `key` on a copy's own row
         row["copies"] = copies
         row["key"] = key
     return row
 
 
 def parse_input_rows(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
-    """The Inputs window's table (cell texts per row, header first) -> one dict per grid row:
+    """The  Inputs window's  table (cell texts per row, header first) -> one dict per grid row:
     {model, sheet, grid, status, file, key, copies}. The header names the columns (Element, Status,
-    File); a row with neither a status nor a file is a model or sheet heading (the first one the
-    model). A grid of a copied workbook is listed as "Rates (3 instances)" (`copies` 3) with one row
-    per copy under it, once expanded: those rows carry the copy's `key` (K1, K2 ...) and `grid` Rates."""
+    File); a row with neither a  status nor a file is a model or sheet heading (the  first one the
+    model). A grid of  a copied workbook is listed as "Rates  (3 instances)" (`copies` 3) with one row
+    per copy under it, once  expanded: those rows carry the copy's `key`  (K1, K2 ...) and `grid` Rates."""
     out: list[dict[str, Any]] = []
     cols: tuple[int, int, int] | None = None
     model = sheet = None
@@ -733,8 +733,8 @@ def parse_input_rows(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
 
 
 def parse_inputs_text(text: str) -> list[dict[str, Any]]:
-    """The same rows read from the page text (when the table cannot be read): after the
-    'Element  DL  Status  File ...' header, a grid name is followed by its status (SUCCESS, -,
+    """The  same rows  read from the page text (when the table cannot be read): after the
+    'Element DL Status File ...' header, a grid name is followed by its status (SUCCESS, -,
     ...) and its file ('No file' or a name); the other names are the model and sheet headings."""
     lines = (text or "").splitlines()
     start = next((i for i, ln in enumerate(lines) if _INPUTS_HEADER.match(ln)), None)
@@ -751,7 +751,7 @@ def parse_inputs_text(text: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     model = sheet = None
-    group: tuple[str, int] | None = None  # the "(N instances)" grid whose copies follow
+    group: tuple[str, int] | None = None  # the "(N instances)" grid  whose copies follow
     i = 0
     while i < len(tokens):
         inst = _INSTANCES_RE.match(tokens[i])
@@ -782,9 +782,9 @@ def parse_inputs_text(text: str) -> list[dict[str, Any]]:
 
 
 def _expand_input_rows(page: Page, most: int = 40) -> int:
-    """Open every collapsed row of the Inputs window (a grid of a copied workbook, "Rates (3
+    """Open  every collapsed  row of the Inputs window (a grid of a copied workbook, "Rates (3
     instances)", starts collapsed and hides its copies' Status and File): one click on each caret,
-    until none is left. Returns how many were opened; never fails."""
+    until none is left. Returns  how many were opened; never fails."""
     opened = 0
     for _ in range(most):
         try:
@@ -812,7 +812,7 @@ def _expand_input_rows(page: Page, most: int = 40) -> int:
 
 def _read_input_rows(page: Page, text: str | None = None, expand: bool = True) -> list[dict[str, Any]]:
     if expand and _expand_input_rows(page):
-        text = None  # the page text has changed: read it again
+        text = None  # the  page text  has changed: read it again
     try:
         rows = parse_input_rows(page.evaluate(_INPUT_ROWS_JS))
     except Exception:
@@ -821,9 +821,9 @@ def _read_input_rows(page: Page, text: str | None = None, expand: bool = True) -
 
 
 def _row_for(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
-    """The grid row that took the file `name`: by the name in its File column (with or without
-    the extension), else the grid of the same name (Mind matches a file to the grid it is named
-    after) unless that grid shows another file. `<key>-<grid>.csv` goes to that copy's row."""
+    """The  grid row  that took the file `name`: by the name in its File column (with or without
+    the extension), else the grid of the same name (Mind matches a file to the grid it  is named
+    after) unless that grid shows another file. `<key>-<grid>.csv` goes to  that copy's row."""
     full, stem = _norm(name), _norm(Path(name).stem)
     for r in rows:
         f = re.split(r"[\\/]", str(r.get("file") or ""))[-1]
@@ -842,9 +842,9 @@ def _row_for(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
 
 
 def unmatched_advice(name: str, rows: list[dict[str, Any]]) -> str:
-    """Plain words for a file Mind could not match to a grid, from the rows the window shows.
+    """Plain  words for  a file Mind could not match to a grid, from the rows the window shows.
     A grid with copies takes `<key>-<grid>.csv` for one copy; a plain `<grid>.csv` is not matched
-    unless Mind's "Split between instances" switch is on."""
+    unless Mind's "Split  between instances" switch is on."""
     suffix = Path(name).suffix or ".csv"
     stem = _norm(Path(name).stem)
     grids: dict[str, dict[str, Any]] = {}
@@ -869,9 +869,9 @@ def unmatched_advice(name: str, rows: list[dict[str, Any]]) -> str:
 
 
 def _inputs_settled(rows: list[dict[str, Any]], expect: list[str]) -> bool:
-    """Mind has finished with the files: each one that has a row (a row showing its name, or the
-    grid named after it -- listed from the moment the window opens) shows a final status. A file
-    with no row has no grid to go to: waiting longer changes nothing."""
+    """Mind  has finished  with the files: each one that has a row (a row showing its name, or the
+    grid named after it -- listed from the moment the window opens) shows a final status.  A file
+    with no row has no grid to go to: waiting  longer changes nothing."""
     return bool(rows) and all((r := _row_for(rows, n)) is None or _settled(r["status"]) for n in expect)
 
 
@@ -883,7 +883,7 @@ def _inputs_box(page: Page, marker: str, mark: bool = False) -> dict[str, Any]:
 
 
 def _close_box(page: Page, marker: str, tries: int = 3) -> bool:
-    """Close the window whose text holds `marker` with its own Cancel / Close button (Escape
+    """Close  the window  whose text holds `marker` with its own Cancel / Close button (Escape
     when it has none). True once that text has left the page."""
     for _ in range(tries):
         if not _has(body_text(page), marker):
@@ -906,7 +906,7 @@ def _close_box(page: Page, marker: str, tries: int = 3) -> bool:
 
 
 def _inputs_excerpt(text: str, popup: str = "") -> str:
-    """The window's rows as one line (the Culture list left out), the popup's text first."""
+    """The  window's rows  as one line (the Culture list left out), the popup's text first."""
     lines = (text or "").splitlines()
     start = next((i for i, ln in enumerate(lines) if _INPUTS_HEADER.match(ln)), 0)
     keep = []
@@ -925,29 +925,29 @@ def _inputs_excerpt(text: str, popup: str = "") -> str:
 
 def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | None = None,
                   project_url: str | None = None) -> dict[str, Any]:
-    """Upload the Mind input files of `folder` (.csv / .txt) through the project's Inputs window
+    """Upload  the Mind  input files of `folder` (.csv / .txt) through the project's Inputs window
     (the Input Manager), once the model has been added. Culture and CSV Separator are never
-    changed; when they would not read the files as written (a decimal point; Default separator)
-    nothing is uploaded. Mind matches each file to the /Input grid of the same name (a copied
-    workbook's grid is listed once, collapsed, as "Rates (3 instances)": its rows are opened first,
-    and `<key>-<grid>.csv` goes to one copy); a file it cannot match opens Mind's unmatched-files
+    changed; when they would not read  the files as written (a decimal point; Default separator)
+    nothing is uploaded.  Mind matches each file to the  /Input grid of the same name (a  copied
+    workbook's grid is listed once, collapsed, as "Rates (3 instances)": its  rows are opened first,
+    and `<key>-<grid>.csv` goes to  one copy); a file it cannot match opens Mind's unmatched-files
     window: the file is reported, in plain words, and the window closed with its own button --
     never a guessed match. The window is closed at the end (nothing to save).
 
     `project_url`: the project's link. When given and a file went into a grid with copies, the
-    project is opened again before returning: seen in real Mind on 10 November 2026, the run right
+    project is opened again before returning: seen in  real Mind on 10 November 2026, the run right
     after such an import still used the copies as loaded before it (every copy with every row,
     K2 915 shown as 120); after a reload the run was right. `reloaded` says when that happened.
 
     -> {"ok": every file is on its grid with SUCCESS, "statuses": {grid: status} for every grid
     listed (a copy's row as "<grid> [<key>]"), "unmatched": [files no grid took], "failed": {grid:
-    status} for a file Mind did not accept, "waiting": [files still not taken at the time limit],
-    "rows": [{model, sheet, grid, status, file, (copies, key)}], "files": [names uploaded], "reason":
-    plain words when not ok, "text": the window's rows (first 600 characters), "timed_out", "closed",
+    status} for a file Mind did not accept, "waiting": [files still not taken  at the time limit],
+    "rows": [{model,  sheet, grid, status, file, (copies, key)}], "files":  [names uploaded], "reason":
+    plain  words when  not ok, "text": the window's rows (first 600 characters), "timed_out", "closed",
     "seconds", "culture", "separator", "errors": Mind's own words for each refused file (its LOG: "CSV
-    Logs"), "advice": what to do when Mind refused a file because its columns are not its grid's (a raw
-    input file given in a grid's place) or could not tell which grid or copy a file is for, else None,
-    "reloaded": the project was opened again after an import into a grid with copies}."""
+    Logs"), "advice": what to do when Mind refused  a file because its columns are not its grid's (a raw
+    input  file given in a grid's place)  or could not tell which grid or  copy a file is for, else None,
+    "reloaded": the project was opened  again after an import into a grid  with copies}."""
     t0 = time.time()
     folder = Path(folder)
     files = input_files(folder)
@@ -973,7 +973,7 @@ def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | 
         if project_url and any(r.get("copies") and r.get("file") and _row_for(res["rows"], n) is r
                                for r in res["rows"] for n in res["files"]):
             # a file went into a grid with copies: the page's copies are the ones loaded before the
-            # import until the project is opened again (the run would compute with the old ones)
+            # import until the project is opened again (the run  would compute with the old ones)
             open_project(page, project_url)
             res["reloaded"] = True
     finally:
@@ -985,7 +985,7 @@ def upload_inputs(page: Page, folder: Path, timeout_s: int = 300, shots: Path | 
 
 def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: float, timeout_s: int, shots: Path | None) -> None:
     names: list[str] = res["files"]
-    # 1. open the window: the Inputs button (only a model with /Input grids has one)
+    # 1.  open the  window: the Inputs button (only a model with /Input grids has one)
     open_by = min(deadline, time.time() + 30)
     seen_button = False
     last_click = None
@@ -1015,7 +1015,7 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
     if shots:
         screenshot(page, shots / "inputs_before.png")
     # Culture and CSV Separator stay as Mind shows them; the files are only handed over when those
-    # read them as written (one header row, a decimal point, commas -- TAB in a .txt)
+    # read them as written  (one header row, a decimal point, commas -- TAB in a  .txt)
     culture, separator = res["culture"], res["separator"]
     if (culture and not _POINT_CULTURE.match(culture)) or (separator and separator.strip().casefold() != "default"):
         res["reason"] = (f"Mind's Inputs window would read the files with Culture '{culture or '?'}' and CSV Separator "
@@ -1023,18 +1023,18 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
                          "so they were not uploaded (their values could change)")
         res["closed"] = _close_box(page, _INPUTS_DROP)
         return
-    # 2. hand Mind the folder (the input has webkitdirectory: it must be a folder, not files)
+    # 2. hand Mind the folder (the  input has webkitdirectory: it must be a  folder, not files)
     try:
         page.set_input_files("input[type=file][webkitdirectory]", str(upload_dir))
     except Exception as exc:
         res["reason"] = f"could not hand the folder of input files to Mind: {exc}"[:300]
         res["closed"] = _close_box(page, _INPUTS_DROP)
         return
-    # 3. wait until Mind has taken every file (or says it cannot match one)
+    # 3. wait until Mind has taken every file (or  says it cannot match one)
     expect = list(names)
     popup = ""
     popups = 0
-    stuck = None  # why the wait ended before Mind had finished
+    stuck = None  # why the wait  ended before Mind had finished
     rows: list[dict[str, Any]] = []
     text = ""
     handed = time.time()
@@ -1086,7 +1086,7 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
     for n in names:
         r = _row_for(rows, n)
         if n not in expect:
-            res["unmatched"].append(n)  # named by the popup
+            res["unmatched"].append(n)  # named  by the popup
         elif r is None or not _settled(r["status"]):
             (res["waiting"] if unfinished else res["unmatched"]).append(n)
         elif r["status"].strip().upper() != "SUCCESS":
@@ -1127,9 +1127,9 @@ def _upload_inputs(page: Page, upload_dir: Path, res: dict[str, Any], deadline: 
 
 
 def close_open_windows(page: Page, tries: int = 4) -> bool:
-    """Close any window still covering the project (the Inputs window can stay open: its header
+    """Close  any window  still covering the project (the Inputs window can stay open: its header
     then takes the click meant for Run). Clicks the VISIBLE "Close modal" button -- a hidden modal
-    of the page has one too -- else presses Escape. True once no full-screen window is left."""
+    of the page has  one too -- else presses Escape. True once no full-screen window  is left."""
     for _ in range(tries):
         if not page.locator(".cds--modal.is-visible, cds-modal.full-screen-cds-modal .cds--modal-header, modal-container.modal.in").count():
             return True
@@ -1152,11 +1152,11 @@ def close_open_windows(page: Page, tries: int = 4) -> bool:
     return not page.locator(".cds--modal.is-visible").count()
 
 
-# What Mind's project page says about a run (mapped on the live site, 10 November 2026). While a run
-# goes: "Run in Progress"; the "Last run in N seconds." line of the run before is taken down. When it
+# What Mind's project page says  about a run (mapped on the live  site, 10 November 2026). While a run
+# goes: "Run in Progress"; the  "Last run in N seconds." line of  the run before is taken down. When it
 # ends: "Last run in N seconds." with this run's time, "Consistent with the audit trail." and, for a few
 # seconds, the notes "Calculations completed" / "Run completed in N seconds". The audit line of the run
-# before STAYS on the page the whole time, so it is no sign that this run has finished. A run of a
+# before STAYS on the page the whole time, so it is no sign that this run has finished. A run  of a
 # minute or more is written as a clock time: "Last run in 00:03:01." / "Run completed in 00:03:01"
 # (the anonymized IFRS 17 tool, 10 November 2026: 3 min 06 s), so both forms are read.
 _RUN_PROGRESS = re.compile(r"Run in Progress", re.I)
@@ -1167,7 +1167,7 @@ _RUN_FAILED_RE = re.compile(r"\bfailed\b|\berror\b", re.I)
 
 
 def run_seconds(shown: str) -> float | None:
-    """The seconds of a run time as Mind writes it: "0.694 seconds" -> 0.694, "00:03:01" -> 181.0,
+    """The  seconds of  a run time as Mind writes it: "0.694 seconds" -> 0.694, "00:03:01" -> 181.0,
     "03:01.5" -> 181.5; None for anything else."""
     s = (shown or "").strip().rstrip(".")
     try:
@@ -1183,27 +1183,27 @@ def run_seconds(shown: str) -> float | None:
 
 
 def run_marker(text: str) -> tuple[str | None, int]:
-    """What the page shows of the last run: the "Last run in N seconds" line and how many "Run
-    completed" notes are up. A new run changes it (the line goes while the run is in progress and
-    comes back with its own time; a note is added), so a second run in the same browser session is
-    never taken for the one before it."""
+    """What  the page  shows of the last run: the "Last run in N seconds" line and how many "Run
+    completed" notes are up. A new run changes it (the line goes while the run is  in progress and
+    comes back with its own time; a note is  added), so a second run in  the same browser session is
+    never taken for  the one before it."""
     m = _LAST_RUN_RE.search(text or "")
     return (m.group(0) if m else None, len(_RUN_NOTE_RE.findall(text or "")))
 
 
 def _new_failure(text: str, before: str) -> bool:
-    """A line with 'failed' / 'error' that was not on the page before the Run click (the log
+    """A  line with  'failed' / 'error' that was not on the page before the Run click (the log
     buttons 'Display Error Logs' do not count)."""
     old = {ln.strip() for ln in (before or "").splitlines()}
     return any(_RUN_FAILED_RE.search(ln) and "Display" not in ln and ln.strip() not in old for ln in (text or "").splitlines())
 
 
 def run_model(page: Page, timeout_s: int = 300, shots: Path | None = None) -> dict[str, Any]:
-    """Click Run and wait for THIS run's result. Before the click the page's run marker is noted
+    """Click  Run and  wait for THIS run's result. Before the click the page's run marker is noted
     (`run_marker`); the wait ends only once a new run was seen -- "Run in Progress", or the marker
-    changed -- and the page shows a finished run (its "Last run in N seconds" line) or a new failure.
-    A second run in the same browser session therefore waits for its own numbers: the "Consistent
-    with the audit trail" line of the run before is never taken as this run's.
+    changed  -- and the page shows a finished run (its "Last run  in N seconds" line) or a  new failure.
+    A second run in the same  browser session therefore waits for its own numbers: the "Consistent
+    with the  audit trail" line of the run before  is never taken as this run's.
 
     -> {'completed', 'audit_consistent' (of this run), 'seconds' (this run's), 'started' (a new run
     was seen), 'timed_out', 'reason' (one sentence when not completed), 'text'}."""
@@ -1277,7 +1277,7 @@ def run_model(page: Page, timeout_s: int = 300, shots: Path | None = None) -> di
 
 
 def template_names(page: Page, stem: str) -> list[str]:
-    """Every entry of the template selector (the `<stem> ▾` button in the top
+    """Every  entry of  the template selector (the `<stem> ▾` button in the top
     bar): templates and their grids by name -- 'Untitled(row,col)' for a grid
     with no title. Empty list when the selector cannot be opened."""
     opened = False
@@ -1321,7 +1321,7 @@ def template_names(page: Page, stem: str) -> list[str]:
 
 
 def untitled_entries(names: list[str]) -> list[dict[str, Any]]:
-    """The 'Untitled(row,col)' entries of a template list, decoded to a cell ref."""
+    """The  'Untitled(row,col)' entries  of a template list, decoded to a cell ref."""
     out = []
     for n in names:
         m = _UNTITLED.match(n.strip())
@@ -1337,7 +1337,7 @@ def untitled_entries(names: list[str]) -> list[dict[str, Any]]:
 
 
 def export_summary(page: Page) -> dict[str, Any]:
-    """Open the Export manager (top-right 'Exports' after a run) and count the
+    """Open  the Export  manager (top-right 'Exports' after a run) and count the
     exportable elements. {'opened', 'elements', 'tabs'}."""
     exp = page.get_by_role("button", name=re.compile(r"^\s*Exports?\s*$", re.I))
     if not exp.count():
@@ -1378,9 +1378,9 @@ def project_exists(page: Page, name: str) -> bool:
 
 
 def delete_project(page: Page, name: str, folder: str = SANDBOX_FOLDER, attempts: int = 2) -> str:
-    """Best-effort delete of a sandbox project through the tile menu and the
+    """Best-effort  delete of  a sandbox project through the tile menu and the
     type-'delete'-to-confirm modal. Refuses any name without the sandbox
-    project prefix the app is allowed to create and delete. Returns 'deleted' | 'still present' | 'not found' | 'refused'."""
+    project prefix the app is allowed to create and delete. Returns 'deleted' | 'still present' |  'not found' | 'refused'."""
     if not name.startswith(PROJECT_PREFIX):
         return "refused"
     result = "not found"
@@ -1398,8 +1398,8 @@ def delete_project(page: Page, name: str, folder: str = SANDBOX_FOLDER, attempts
             _wait(page, 1000)
             page.get_by_text(re.compile(r"^\s*Delete( project)?\s*$", re.I)).first.click(timeout=3000)
             _wait(page, 1200)
-            # the confirmation modal names its target ('Delete "<name>"'); only
-            # that modal, and only with this exact name, gets the word 'delete'
+            # the confirmation modal names its target ('Delete "<name>"');  only
+            # that modal, and only with this  exact name, gets the word 'delete'
             modal = page.locator(".cds--modal.is-visible")
             try:
                 modal_text = modal.first.inner_text(timeout=3000) if modal.count() else ""

@@ -1,12 +1,12 @@
 import { AdvancedTab } from "./session.store";
 
-/** "Show me" pointers. Where the app tells the user to go somewhere ("Check them under Advanced ›
+/** "Show  me" pointers.  Where the app tells the user to go somewhere ("Check them under Advanced ›
  *  Deliver", "Apply the blocking repairs in Prep", "on the Outside files card"), a quiet "Show me" link
- *  starts a pointer: one arrow with a short bubble at the next thing to click, until the place itself
- *  (ShowMeService moves it, ShowMeOverlay draws it). This file is the map: the places, the words that
- *  name them, and the clicks that lead there.
+ *  starts a  pointer: one arrow with a short bubble at the next thing  to click, until the place itself
+ *  (ShowMeService  moves it, ShowMeOverlay draws it). This file  is the map: the places, the words that
+ *  name them, and the  clicks that lead there.
  *
- *  Elements are found by their `data-show-me` words, never by their text: the header's links
+ *  Elements are found by  their `data-show-me` words, never by their text: the header's links
  *  (`nav-main`, `nav-advanced`), the links on the pages themselves (`link-main`, `link-advanced`), each
  *  Advanced tab (`tab-<tab>`) and each place below. One element may carry several words, space
  *  separated ("ask ask-FRM-009"). See excel-upload-preparation/docs/SHOW_ME.md. */
@@ -14,21 +14,21 @@ import { AdvancedTab } from "./session.store";
 /** The two screens: the main screen (route "") and Advanced (route "advanced"). */
 export type ShowMePage = "main" | "advanced";
 
-/** The places a "Show me" leads to. */
+/** The  places a  "Show me" leads to. */
 export type ShowMeId =
-  | "prep-apply" // Advanced › Prep actions: the Apply button
+  | "prep-apply" // Advanced  › Prep  actions: the Apply button
   | "prep-action" // Advanced › Prep actions: the action that repairs a rule ("The Prep action '…'" in a finding)
   | "prep-pivots" // Advanced › Prep actions: what happens to the pivot tables
-  | "stack-apply" // Advanced, above the tabs: the list of changes waiting to be applied, its Apply all
+  | "stack-apply" // Advanced, above the  tabs: the list of changes waiting to be applied, its Apply  all
   | "deliver-numbers" // Advanced › Deliver: Check the numbers
-  | "assistant-key" // Advanced › Assistant: the AI key box
-  | "assistant-ask" // Advanced › Findings: "Ask the assistant" on the rule's row, else the list
-  | "recalc-run" // Recalculate: the main screen's button, or the one under Advanced
+  | "assistant-key" // Advanced  › Assistant: the AI key box
+  | "assistant-ask" // Advanced ›  Findings: "Ask the assistant" on the rule's row, else the list
+  | "recalc-run" // Recalculate:  the main screen's button, or the one  under Advanced
   | "recalc-errors" // Advanced › Recalculate: the list of formula errors, else the button that makes it
   | "loop-choices" // Advanced › Mind loop: the answer a loop still needs, else the fold "Change the choices"
   | "loop-build" // Advanced › Mind loop: the Build it button
   | "loop-result" // Advanced › Mind loop: the line that says what the build did
-  | "instances-choice" // Advanced › Instances: the question "Make one copy per…" (the loops to tick, or a column)
+  | "instances-choice" // Advanced › Instances: the question "Make one copy per…" (the loops to tick, or  a column)
   | "instances-build" // Advanced › Instances: the Build it button
   | "instances-result" // Advanced › Instances: the line that says what the build did, with the download
   | "outside-card" // main screen: the Outside files card
@@ -39,28 +39,28 @@ export type ShowMeId =
   | "recent-workbooks" // main screen: the Recent workbooks list (a saved workbook to open again)
   | "download"; // main screen: Download this version; on Advanced: Run in Mind (send it to Mind)
 
-/** A pointer to start: the place, and the rule whose Findings row to point at ("Fix FRM-009 with the assistant"). */
+/** A  pointer to start: the place,  and the rule whose Findings row to  point at ("Fix  FRM-009 with  the assistant"). */
 export interface ShowMeRequest {
   id: ShowMeId;
   ruleId?: string;
 }
 
-/** What to point at: an element's `data-show-me` word, and the bubble's words there. */
+/** What  to point  at: an element's `data-show-me` word, and the bubble's words there. */
 export interface ShowMeTarget {
   el: string;
   text: string;
 }
 
-/** One way to a place: its screen, the Advanced tab to open there, and what to point at, best first
- *  (the first one on the screen is used: the list of formula errors, else the button that makes it). */
+/** One  way to  a place: its screen, the Advanced tab to open there, and what to point at, best first
+ *  (the first one on the screen is used: the list of formula errors, else the  button that makes it). */
 export interface ShowMeWay {
   page: ShowMePage;
   tab?: AdvancedTab;
   targets: ShowMeTarget[];
 }
 
-/** One step of a pointer: a click to another screen ("page"), to an Advanced tab ("tab"), or the place
- *  itself ("place", outlined, with "Got it"). A page or tab step is skipped once the user is there. */
+/** One  step of  a pointer: a click to another screen ("page"), to an Advanced tab ("tab"), or the place
+ *  itself ("place", outlined, with "Got it"). A page or tab step is skipped once the user  is there. */
 export interface ShowMeStep {
   kind: "page" | "tab" | "place";
   page?: ShowMePage;
@@ -68,14 +68,14 @@ export interface ShowMeStep {
   targets: ShowMeTarget[];
 }
 
-/** The readiness verdict's next step, as app/readiness.py sends it. */
+/** The  readiness verdict's  next step, as app/readiness.py sends it. */
 export interface ShowMeNextStep {
   screen?: string | null;
   label?: string | null;
   rule_id?: string | null;
 }
 
-/** The Advanced tabs by the names on their buttons. */
+/** The  Advanced tabs  by the names on their buttons. */
 export const TAB_NAMES: Record<AdvancedTab, string> = {
   findings: "Findings",
   prep: "Prep actions",
@@ -90,12 +90,12 @@ export const TAB_NAMES: Record<AdvancedTab, string> = {
   versions: "Versions",
 };
 
-/** Stands for the rule id in a target ("ask-{rule}"); a target with it is left out when no rule is given. */
+/** Stands  for the  rule id in a target ("ask-{rule}"); a target with it is left out when no rule is given. */
 const RULE = "{rule}";
 
 const OUTSIDE_CARD: ShowMeTarget = { el: "outside-card", text: "The Outside files card is here" };
 
-/** Every place and the ways to it. With several ways, the one on the screen the user is on wins (no
+/** Every  place and  the ways to it. With several ways, the one on the screen the user is on wins (no
  *  click to another screen), else the first. */
 export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "prep-apply": [{ page: "advanced", tab: "prep", targets: [{ el: "prep-apply", text: "Apply the blocking repairs here" }] }],
@@ -103,7 +103,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
     {
       page: "advanced",
       tab: "prep",
-      // the card of the action that repairs the finding's rule; an action with nothing left to change
+      // the  card of  the action that repairs the finding's rule; an action with nothing left to change
       // is not drawn, and then the list of actions is shown
       targets: [
         { el: `prep-for-${RULE}`, text: "Tick this action, then click Apply" },
@@ -141,7 +141,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
       ],
     },
   ],
-  // the box of the one answer a loop still needs (drawn above the fold only while it is needed), else
+  // the  box of the one answer a loop still needs (drawn above  the fold only while it is  needed), else
   // the fold that holds every choice
   "loop-choices": [
     {
@@ -155,7 +155,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   ],
   "loop-build": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-build", text: "Click Build it" }] }],
   "loop-result": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-result", text: "What the build did is here" }] }],
-  // the Instances tab: the question, the Build it button, the line with the download
+  // the  Instances tab: the question, the Build it button, the line with  the download
   "instances-choice": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-choice", text: "Tick a loop or pick a column here" }] }],
   "instances-build": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-build", text: "Click Build it" }] }],
   "instances-result": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-result", text: "What the build did is here, with the download" }] }],
@@ -163,7 +163,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "outside-add": [{ page: "main", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "main", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
   "do-everything": [{ page: "main", targets: [{ el: "do-everything", text: "Click Do everything" }] }],
-  // the box is drawn only while Do everything waits for the input files: the picker first, else the box
+  // the box is drawn only while  Do everything waits for the input files: the picker first, else the box
   "outside-waiting": [{ page: "main", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "Do everything waits here for the input files" }] }],
   // the list is drawn only while a saved workbook exists and no workbook is open (the idle main screen)
   "recent-workbooks": [{ page: "main", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
@@ -173,23 +173,23 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   ],
 };
 
-/** "Advanced › Deliver" as the app writes it, also "Advanced > Deliver" (the backend's plain texts). */
+/** "Advanced  › Deliver"  as the app writes it, also "Advanced > Deliver" (the backend's plain texts). */
 const UNDER = String.raw`Advanced\s*(?:›|>|&gt;)\s*`;
 const under = (tab: string) => new RegExp(UNDER + tab, "i");
 
-/** The words in the app's texts (and the backend's) that send the user somewhere, and the place each
+/** The  words in  the app's texts (and the backend's) that send the user somewhere, and the place each
  *  one names. Found with grep for "Advanced ›", "in Prep", "Prep action", "Assistant", "Deliver",
- *  "Recalculate", "Mind loop", "card", "Use ", "press", "top of" in MindReadyUI/src and in
- *  excel-upload-preparation/app -- the findings' own messages included (app/validators) -- see
- *  show-me.spec.ts for every text. When a text names several places, the one it names first counts:
- *  the first thing to do. */
+ *  "Recalculate", "Mind loop", "card",  "Use ", "press", "top of" in MindReadyUI/src and in
+ *  excel-upload-preparation/app -- the  findings' own messages included (app/validators) --  see
+ *  show-me.spec.ts for every text. When a text  names several places, the one it names first counts:
+ *  the first thing  to do. */
 export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: /pivot tables?\b[^]*?Advanced\s*(?:›|>|&gt;)\s*Prep actions/i, id: "prep-pivots" },
   { words: under("Deliver"), id: "deliver-numbers" },
   { words: /\bCheck the numbers\b/i, id: "deliver-numbers" },
   { words: under("Prep actions"), id: "prep-apply" },
   { words: /\bblocking repairs in Prep\b|\bin Prep\b|\bPrep has a repair\b|\badded to the Prep plan\b/i, id: "prep-apply" },
-  // a finding's message: "The Prep action 'Freeze external links' removes them"
+  // a  finding's message:  "The Prep action 'Freeze external links' removes them"
   { words: /\bthe Prep action\b/i, id: "prep-action" },
   // "Apply them with the others from the list at the top of this page" (Prep, the assistant)
   { words: /\b(?:the list at|from) the top of (?:this|the) page\b/i, id: "stack-apply" },
@@ -199,14 +199,14 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: under("Recalculate"), id: "recalc-errors" },
   { words: /\bReview the new formula errors\b/i, id: "recalc-errors" },
   { words: /\bRecalculate in Excel\b/i, id: "recalc-run" },
-  // "Build it under Advanced › Mind loop": the button, named before the tab; "click Build it" is the loop's
-  // unless the same sentence names the Instances tab ("click Build it under Advanced › Instances")
+  // "Build it under Advanced › Mind loop": the  button, named before the tab; "click Build it" is the loop's
+  // unless  the same sentence names the Instances  tab ("click Build it under Advanced ›  Instances")
   { words: /\b(?:press|click) Build it\b(?![^.!?]*\bInstances\b)|\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Mind loop\b/i, id: "loop-build" },
   { words: /\bthe loop's result\b/i, id: "loop-result" },
   { words: under("Mind loop"), id: "loop-choices" },
-  // "1 loop needs one answer", "2 loops need one answer each"; the older "needs a decision" still read
+  // "1 loop needs one answer", "2 loops need one answer each";  the older "needs a decision" still read
   { words: /\bloop(?:\(s\)|s)? needs? (?:one answer|a decision)\b/i, id: "loop-choices" },
-  // the Instances tab: "Build it under Advanced › Instances" or "click Build it (Advanced › Instances)" (the
+  // the  Instances tab: "Build it under Advanced › Instances" or "click Build it (Advanced › Instances)" (the
   // button, with the tab named in the same sentence), "the copies' result" / "the instances' result" (the
   // line with the download), else the question
   { words: /\bBuild it under Advanced\s*(?:›|>|&gt;)\s*Instances\b|\b(?:press|click) Build it\b(?=[^.!?]*\bInstances\b)/i, id: "instances-build" },
@@ -219,14 +219,14 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: /\bthe box under Do everything\b/i, id: "outside-waiting" },
   { words: /\bpress Do everything\b/i, id: "do-everything" },
   { words: /\bDownload or send to Mind\b/i, id: "download" },
-  // "Open it again from Recent workbooks on the main screen" (the server, for a session the restart closed)
+  // "Open it again from Recent workbooks on  the main screen" (the server, for a session the restart closed)
   { words: /\bRecent workbooks\b/i, id: "recent-workbooks" },
 ];
 
-/** The place a text sends the user to, or null when it names none (most texts: a "Show me" appears
- *  only next to an instruction). A quoted name ('Stopped at "Bring in the outside files": …', 'press
- *  "Make them with AI"') names a step or a button, not a place, so it is not read. `except`: a place
- *  already next to the text (a Findings row's own "Ask the assistant"): the next place it names counts. */
+/** The  place a  text sends the user to, or null when it names none (most texts: a "Show me" appears
+ *  only next to an instruction). A quoted name ('Stopped at "Bring in the outside files":  …', 'press
+ *  "Make them with AI"') names a step or a button,  not a place, so it is  not read. `except`: a place
+ *  already next to  the text (a Findings row's own "Ask the assistant"): the next  place it names counts. */
 export function showMeFor(text: string | null | undefined, except?: ShowMeId | null): ShowMeRequest | null {
   const plain = (text ?? "").replace(/"[^"]*"|“[^”]*”/g, '""');
   if (!plain.trim()) return null;
@@ -237,21 +237,21 @@ export function showMeFor(text: string | null | undefined, except?: ShowMeId | n
     if (m && (!best || m.index < best.at)) best = { at: m.index, id: p.id };
   }
   if (!best) return null;
-  // "Fix FRM-009 with the assistant": point at that rule's row
+  // "Fix  FRM-009 with  the assistant": point at that rule's row
   const rule = best.id === "assistant-ask" ? /\b[Ff]ix ([A-Z]{2,5}-\d{3}) with the assistant/.exec(plain)?.[1] : undefined;
   return rule ? { id: best.id, ruleId: rule } : { id: best.id };
 }
 
-/** A chat message the app wrote itself: its notes ("12 changes added to the list …") and the server's
+/** A  chat message  the app wrote itself: its notes ("12 changes added to the list …") and the server's
  *  "(no answer: …)" when the assistant could not answer (app/web/server.py, `_chat_payload`). Only these
- *  get a "Show me". The assistant's own words may name a place only to say there is nothing to do
- *  there ("There is no repair in Prep for FRM-009: change the formula by hand"): a link would lead the
+ *  get a "Show me".  The assistant's own words may name a place only to say  there is nothing to do
+ *  there ("There  is no repair in Prep for FRM-009:  change the formula by hand"): a link would lead the
  *  other way. */
 export function chatIsAppWords(m: { role: string; content: string; note?: boolean }): boolean {
   return m.role !== "user" && (!!m.note || m.content.startsWith("(no answer:"));
 }
 
-/** The place the readiness verdict's next step names, by its stable `screen` (app/readiness.py
+/** The  place the  readiness verdict's next step names, by its stable `screen` (app/readiness.py
  *  `_next_step`): outside-inputs, prep, findings (with the rule), recalculate, reports. */
 export function showMeForStep(step: ShowMeNextStep | null | undefined): ShowMeRequest | null {
   if (!step) return null;
@@ -263,7 +263,7 @@ export function showMeForStep(step: ShowMeNextStep | null | undefined): ShowMeRe
     case "findings":
       return step.rule_id ? { id: "assistant-ask", ruleId: step.rule_id } : { id: "assistant-ask" };
     case "recalculate":
-      // "Review the new formula errors" (the list) or "Recalculate in Excel" (the button)
+      // "Review  the new  formula errors" (the list) or "Recalculate in Excel" (the button)
       return { id: /error/i.test(step.label ?? "") ? "recalc-errors" : "recalc-run" };
     case "reports":
       return { id: "download" };
@@ -272,10 +272,10 @@ export function showMeForStep(step: ShowMeNextStep | null | undefined): ShowMeRe
   }
 }
 
-/** The links to each screen: the header's, else the one on the page itself. Below 66rem (a window
- *  snapped to half a screen, a laptop at 125 %) Carbon hides the header's links and the app has no side
- *  menu, so the page's own link is the way: "Advanced" at the foot of the main screen, "Back to the
- *  main screen" at the top of Advanced. */
+/** The  links to  each screen: the header's, else the one on the page itself. Below 66rem (a window
+ *  snapped to half a screen, a laptop at 125 %) Carbon hides the header's links and the  app has no side
+ *  menu, so the page's own link is the  way: "Advanced" at the foot of  the main screen, "Back to the
+ *  main screen"  at the top of Advanced. */
 export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
   advanced: [
     { el: "nav-advanced", text: "Click Advanced" },
@@ -287,9 +287,9 @@ export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
   ],
 };
 
-/** The steps from the screen the user is on (`here`) to the place: a click on Advanced or Main when the
- *  place is on the other screen, a click on the Advanced tab, then the place itself. Whether the user is
- *  already on that screen or tab is checked again as each step comes up (ShowMeService). */
+/** The  steps from  the screen the user is on (`here`) to the place: a click on Advanced or Main when the
+ *  place is on the other screen, a click on the Advanced tab, then the  place itself. Whether the user is
+ *  already on that screen or tab  is checked again as each step  comes up (ShowMeService). */
 export function planShowMe(request: ShowMeRequest, here: ShowMePage): ShowMeStep[] {
   const ways = SHOW_ME_PLACES[request.id];
   if (!ways?.length) return [];
@@ -306,7 +306,7 @@ export function planShowMe(request: ShowMeRequest, here: ShowMePage): ShowMeStep
   return steps;
 }
 
-/** The size and place of an element, as getBoundingClientRect gives them. */
+/** The  size and  place of an element, as getBoundingClientRect gives them. */
 export interface ShowMeBox {
   top: number;
   left: number;
@@ -314,11 +314,11 @@ export interface ShowMeBox {
   height: number;
 }
 
-/** Which side of the element the bubble sits on ("inside": a card or list taller than the window, the
+/** Which  side of  the element the bubble sits on ("inside": a card or list taller than the window, the
  *  bubble just inside its top edge). The arrow points from the bubble at the element. */
 export type ShowMeSide = "below" | "right" | "above" | "left";
 
-/** Where the overlay draws: the arrow's box, the bubble, and the soft outline around the place itself. */
+/** Where  the overlay  draws: the arrow's box, the bubble, and the soft outline around the place itself. */
 export interface ShowMeLayout {
   side: ShowMeSide | "inside";
   arrow: ShowMeBox;
@@ -326,7 +326,7 @@ export interface ShowMeLayout {
   ring: ShowMeBox;
 }
 
-/** The arrow's length and width, the gap between it and the element, the margin kept from the window's
+/** The  arrow's length  and width, the gap between it and the element, the margin kept from the window's
  *  edges, and Carbon's fixed header (3rem): nothing is put under it. */
 export const ARROW_LONG = 26;
 export const ARROW_WIDE = 20;
@@ -334,15 +334,15 @@ const GAP = 6;
 const EDGE = 8;
 const HEADER = 48;
 
-/** A click on the way (a header link, a tab): the bubble always under it, the same place each time. */
+/** A  click on  the way (a header link, a tab): the bubble always under it, the same place each time. */
 export const STEP_SIDES: ShowMeSide[] = ["below", "above"];
-/** The place itself, where the user acts: under it, else beside it, else above it -- the first side
+/** The  place itself,  where the user acts: under it, else beside it, else above it -- the first side
  *  that covers no other button (the user may want the one next to it). */
 export const PLACE_SIDES: ShowMeSide[] = ["below", "right", "above", "left"];
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
 
-/** The arrow and the bubble on one side of the element, and whether they fit in the window. */
+/** The  arrow and  the bubble on one side of the element, and whether they fit in the window. */
 function sideLayout(side: ShowMeSide, el: ShowMeBox, bubble: { width: number; height: number }, view: { width: number; height: number }): { arrow: ShowMeBox; bubble: { x: number; y: number }; fits: boolean } {
   const right = el.left + el.width;
   const bottom = el.top + el.height;
@@ -370,11 +370,11 @@ function sideLayout(side: ShowMeSide, el: ShowMeBox, bubble: { width: number; he
   }
 }
 
-/** Where the arrow and the bubble go: the first of `sides` that fits in the window and, when `free` is
- *  given, covers nothing to click (`free` asks the page about the bubble's and the arrow's boxes);
- *  `keep`, the side used a moment ago, is tried first so the bubble does not jump while the page
- *  scrolls. When none is free, the first that fits; when none fits (a card or list taller than the
- *  window), just inside the element's top edge. */
+/** Where  the arrow  and the bubble go: the first of `sides` that fits in the window and, when `free` is
+ *  given, covers nothing to click (`free` asks the page about the bubble's and the arrow's  boxes);
+ *  `keep`, the side used a moment ago, is tried first so  the bubble does not jump while  the page
+ *  scrolls. When none is free, the  first that fits; when none fits (a card or list taller  than the
+ *  window), just inside the element's top  edge. */
 export function placeShowMe(
   el: ShowMeBox,
   bubble: { width: number; height: number },

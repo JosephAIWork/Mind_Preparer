@@ -1,20 +1,20 @@
-"""Did the preparation change what the model computes?
+"""Did  the preparation  change what the model computes?
 
 Prep inserts rows, writes titles and renames sheets. Excel moves ordinary
 references along, but not everything a model reads is an ordinary reference:
-a 3-D reference (=SUM('Line 1:>>'!K65)) keeps its row when a row is inserted on
-one of its sheets, and INDIRECT("'"&$E$2&"'!H"&n) is text. On one real model
-the standard Prep changed 2,462 computed values that way -- 1,781 of them into
-errors -- and nothing said so.
+a 3-D reference (=SUM('Line 1:>>'!K65)) keeps  its row when a row is inserted on
+one of its sheets,  and INDIRECT("'"&$E$2&"'!H"&n) is text. On one  real model
+the standard Prep changed 2,462 computed  values that way -- 1,781 of them into
+errors -- and nothing  said so.
 
-This module recalculates the ORIGINAL workbook and a PREPARED version of it in
+This module recalculates the ORIGINAL workbook  and a PREPARED version of it in
 one Excel session and compares every formula cell, following each cell through
 the rows / columns that were inserted and the sheets that were renamed (the
 change log of every Apply says which). It reports:
 
   good -> error     a value the original computed is an error now
   good -> another   a value the original computed is a different value now
-  error -> good     an error of the original that is a value now
+  error ->  good     an error of the original that is a value now
 
 A formula Prep rewrote on purpose (REF-001: #REF! -> NA()) is an error before
 and after. Cells that change by themselves (NOW, TODAY, RAND) are left out.
@@ -34,12 +34,12 @@ from .formula_utils import col_to_num
 from .plain_codes import plain_error
 from .recalc import XL_ERROR_CODES
 
-MAX_REGRESSIONS = 300_000  # good -> error cells handed to the fixer (the count is always complete)
+MAX_REGRESSIONS = 300_000  # good  -> error  cells handed to the fixer (the count is always complete)
 MAX_SAMPLES = 60
 
 
 class Moves:
-    """Where a cell of the original sits in the prepared version: the sheet's
+    """Where  a cell  of the original sits in the prepared version: the sheet's
     new name, and the rows / columns inserted before it, Apply after Apply."""
 
     def __init__(self, batches: Iterable[Iterable[dict[str, Any]]] = ()):
@@ -66,10 +66,10 @@ class Moves:
                 self.batches.append({"rows": rows, "banded": banded, "cols": cols, "renames": renames})
 
     def forward(self, sheet: str, row: int, col: int) -> tuple[str, int, int]:
-        """An original cell -> the same cell in the prepared version. Inside one
-        Apply the rows are inserted bottom-up at the coordinates of the version
-        it started from, so a row moves down by one for every insert at or above it (an insert that
-        shifts only some columns: when the cell's column is one of them)."""
+        """An original cell ->  the same cell in the prepared version. Inside one
+        Apply the rows  are inserted bottom-up at the coordinates  of the version
+        it started from, so a  row moves down by one for every insert at or above  it (an insert that
+        shifts only some columns:  when the cell's column is one of them)."""
         for b in self.batches:
             row += bisect.bisect_right(b["rows"].get(sheet, ()), row) + sum(1 for k, c1, c2 in b.get("banded", {}).get(sheet, ()) if k <= row and c1 <= col <= c2)
             col += bisect.bisect_right(b["cols"].get(sheet, ()), col)
@@ -85,7 +85,7 @@ class Moves:
 
 
 def _read_formula_cells(wb: Any, tell: Callable[[str], None]) -> dict[str, dict[tuple[int, int], tuple[Any, bool]]]:
-    """{sheet: {(row, col): (value, volatile)}} for every formula cell. Constants
+    """{sheet:  {(row, col):  (value, volatile)}} for every formula cell. Constants
     do not compute: what Prep writes as text (titles) is not a model value."""
     out: dict[str, dict[tuple[int, int], tuple[Any, bool]]] = {}
     volatile: dict[str, bool] = {}
@@ -129,7 +129,7 @@ def _is_error(v: Any) -> bool:
 
 
 def _without_location(v: Any, path: Path) -> Any:
-    """A text value with the workbook's own folder and file name taken out:
+    """A  text value  with the workbook's own folder and file name taken out:
     =CELL("filename") and what is built on it differ between two copies of the
     same workbook only because the copies sit in different folders."""
     if not isinstance(v, str) or len(v) < 3:
@@ -144,7 +144,7 @@ def _without_location(v: Any, path: Path) -> Any:
 
 
 def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Callable[..., None] | None = None) -> dict[str, Any]:
-    """Recalculate both and compare every formula cell of the original with the
+    """Recalculate  both and  compare every formula cell of the original with the
     cell it became.
 
     -> {ran, verdict, clean, counts, by_sheet, samples, moves, seconds,
@@ -164,8 +164,8 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
     try:
         with excel_session() as excel:
             def one(path: Path, what: str) -> Any:
-                # one after the other: the two usually carry the same file name, and Excel
-                # cannot hold two workbooks of the same name open at once
+                # one after the  other: the two usually carry the same file name, and Excel
+                # cannot  hold two workbooks of the same  name open at once
                 wb = None
                 try:
                     tell(f"Opening {what} in Excel")
@@ -173,7 +173,7 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
                     if wb is None:
                         raise RuntimeError(f"Excel could not open {path.name}")
                     try:
-                        excel.Calculation = -4135  # manual: one explicit full rebuild
+                        excel.Calculation = -4135  # manual: one explicit full  rebuild
                     except Exception:
                         pass
                     tell(f"Recalculating {what}")
@@ -186,8 +186,8 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
             before = one(original, "the original")
             after = one(prepared, "the current version")
     except Exception as exc:
-        # Excel's error in plain words, never pywin32's tuple: the screens show the verdict as it is.
-        # Any other error keeps its type in front: its text alone may say nothing.
+        # Excel's error in plain words, never pywin32's tuple: the screens show  the verdict as it is.
+        # Any other error  keeps its type in front: its text alone may say nothing.
         said = plain_error(exc, with_type=True)
         return {"ran": False, "clean": None, "verdict": f"The numbers could not be compared: {said[:300]}", "counts": {}, "regressions": []}
 

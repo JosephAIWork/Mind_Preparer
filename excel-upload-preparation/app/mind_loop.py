@@ -1,14 +1,14 @@
-"""The app runs itself against real Milliman Mind.
+"""The  app runs  itself against real Milliman Mind.
 
 One call -- ``run_loop(LoopConfig(...))`` -- takes a raw model workbook and,
 with nobody watching, repeats:
 
-    prepare a fresh copy  ->  local gates  ->  upload to Mind  ->  convert
-    ->  add template  ->  run  ->  read what Mind shows  ->  decide
+    prepare a fresh copy -> local gates -> upload to Mind -> convert
+    -> add  template -> run -> read what Mind shows -> decide
 
-until everything looks good and the numbers match, or until it can say
-precisely why it cannot get there. Every decision is a rule in this file;
-no model, no person and no assistant is consulted while it runs (the
+until everything  looks good and the numbers match,  or until it can say
+precisely why it  cannot get there. Every decision is a rule in this file;
+no  model, no person and no assistant is  consulted while it runs (the
 assistant is used exactly once, before the first iteration, to name grids
 -- and only if it is reachable).
 
@@ -16,7 +16,7 @@ assistant is used exactly once, before the first iteration, to name grids
   prepared        the prep plan applied through Excel and the copy opens
   numbers         a full Excel recalculation of the prepared copy matches a
                   full recalculation of the source cell for cell. Cells the
-                  plan wrote as *content* (titles, moved labels) are the
+                  plan wrote as *content* (titles, moved labels) are  the
                   plan's intent and are not compared; cells whose *formula*
                   the plan rewrote are compared under the conservative rule:
                   the value is unchanged, or an error became another error
@@ -26,25 +26,25 @@ assistant is used exactly once, before the first iteration, to name grids
                   the failure mode of a bad row insert)
   names           every grid the plan could title is titled; what is left is
                   the list of grids the app cannot title, with reasons
-  convert         Mind's Upload / Convert / Test wizard all Complete
-  inputs          (a model whose outside files became Mind inputs) Mind's
-                  Inputs window took every input file: each one shows
+  convert         Mind's Upload /  Convert / Test wizard all  Complete
+  inputs          (a model whose outside files became Mind  inputs) Mind's
+                  Inputs window  took every  input file: each one shows
                   SUCCESS on the /Input grid of its name
   run             Mind ran the model and reports it consistent with the
                   audit trail
   counts          the number of 'Untitled(r,c)' entries Mind lists equals
-                  the number of untitled grids the app predicted
+                  the number of  untitled grids the app predicted
 
-A gate that could not be checked is a failure, never a pass. When a gate
-fails the loop changes *one* thing about the next iteration -- enable an
-opt-in fix Mind's error log asks for, disable the action whose edits moved
+A gate that could not be checked  is a failure, never a pass.  When a gate
+fails the loop changes *one*  thing about the next iteration -- enable an
+opt-in fix Mind's error  log asks for, disable the action whose  edits moved
 a number (found by walking the changed cell's precedents back to the cell
 an action wrote) -- and starts again from the ORIGINAL source. It never
 re-preps its own output (that grows a workbook for ever fewer names). When
 no rule applies it stops and says so: that report is the developer's cue.
 
 Guardrails: the source is never modified (immutable copies everywhere);
-only sandbox projects (the project prefix and sandbox folder in LoopConfig /
+only sandbox projects  (the project prefix and sandbox folder in LoopConfig /
 mind_client) are created or deleted; a project that has been run cannot be deleted by
 automation and is listed for manual cleanup.
 """
@@ -76,14 +76,14 @@ Progress = Callable[[dict[str, Any]], None]
 
 VOLATILE = re.compile(r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY)\s*\(", re.I)
 NUMERIC_TOL = 1e-9
-FRAGMENTATION_SLACK = 0.10  # grids may grow by this share (+5) before it counts as shattering
-RELAXED_OPS = {"set_formula", "set_array_formula"}  # a rewrite may keep the value or turn an error into an error
-PRECEDENT_WALK_LIMIT = 500  # cells visited when tracing a changed value back to what the plan wrote
+FRAGMENTATION_SLACK = 0.10  # grids  may grow  by this share (+5) before it counts as shattering
+RELAXED_OPS = {"set_formula", "set_array_formula"}  # a  rewrite may  keep the value or turn an error into an error
+PRECEDENT_WALK_LIMIT = 500  # cells  visited when  tracing a changed value back to what the plan wrote
 
 # What Mind's Convert error log asks for, mapped to the prep action that answers it.
 MIND_ERROR_TO_ACTION: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"#REF!|formula compilation|not a function|could not compile|cannot compile", re.I), "fix_broken_refs"),
-    (re.compile(r"setting does not exist", re.I), "project_settings"),  # no action: PRJ-006 finding; needs a human
+    (re.compile(r"setting does not exist", re.I), "project_settings"),  # no  action: PRJ-006  finding; needs a human
 ]
 
 
@@ -102,16 +102,16 @@ class LoopConfig:
     use_assistant: bool = True
     run_model: bool = True
     check_numbers: bool = True
-    enable: list[str] = field(default_factory=list)  # opt-in actions forced on from iteration 1
+    enable: list[str] = field(default_factory=list)  # opt-in  actions forced  on from iteration 1
     disable: list[str] = field(default_factory=list)  # actions never used
     delete_projects: bool = True
     skip_mind: bool = False  # local gates only (tests, dry runs)
     # the Mind input files (one .csv / .txt per /Input grid, made from the outside files): every
-    # iteration uploads them through Mind's Inputs window after adding the model, before the run
+    # iteration uploads them through Mind's  Inputs window after adding the model, before the run
     inputs_dir: Path | None = None
 
 
-# --- numbers: does the prepared workbook compute the same values? -----------------
+# --- numbers: does  the prepared workbook compute the same  values? -----------------
 def _is_error(v: Any) -> bool:
     return isinstance(v, str) and v.strip().upper() in ERROR_LITERALS
 
@@ -124,23 +124,23 @@ def _same(a: Any, b: Any) -> bool:
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         return abs(a - b) <= NUMERIC_TOL * max(1.0, abs(a), abs(b))
     if _is_error(a) and _is_error(b):
-        return True  # an error may become another error; no valid value is involved
+        return True  # an  error may  become another error; no valid value is involved
     if isinstance(a, _dt.datetime) and isinstance(b, _dt.datetime):
         return a == b
     return a == b
 
 
 def _rewrite_ok(a: Any, b: Any) -> bool:
-    """A cell whose formula the plan rewrote passes only if its value is
+    """A  cell whose  formula the plan rewrote passes only if its value is
     unchanged, or an error became another error (or nothing)."""
     return _same(a, b) or (_is_error(a) and (_is_error(b) or b is None))
 
 
 def row_map(inserts: list[Any]) -> Callable[..., int]:
-    """Source row -> prepared row after the row inserts `inserts` (source coordinates): inserting
+    """Source  row ->  prepared row after the row inserts `inserts` (source coordinates): inserting
     at k pushes rows >= k down by one. An insert is a row number (a whole row) or (row, first
-    column, last column) for one that shifts only those columns: then f(row, column) moves the
-    cell only when its column is one of them (f(row) alone counts whole rows only)."""
+    column, last  column) for one that shifts only those columns: then f(row, column)  moves the
+    cell only when its column  is one of them (f(row) alone counts  whole rows only)."""
     whole = sorted(int(k) for k in inserts if not isinstance(k, (tuple, list)))
     banded = [(int(k[0]), int(k[1]), int(k[2])) for k in inserts if isinstance(k, (tuple, list))]
 
@@ -160,7 +160,7 @@ def _name_targets(defined_names: list[dict[str, Any]]) -> dict[str, tuple[str, s
 
 
 def volatile_cells(formulas: list[dict[str, Any]], defined_names: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """Cells whose value legitimately differs between two recalculations:
+    """Cells  whose value  legitimately differs between two recalculations:
     NOW()/TODAY()/RAND() and, transitively, every cell whose formula reads one
     of them (directly, or through a defined name)."""
     by_cell = {(f["sheet"], f["cell"].replace("$", "").upper()): f["formula"] for f in formulas}
@@ -169,7 +169,7 @@ def volatile_cells(formulas: list[dict[str, Any]], defined_names: list[dict[str,
     if not vol:
         return vol
 
-    # a reference -- even a whole column like A:A -- is tested against the
+    # a reference -- even a whole column like A:A -- is tested  against the
     # small volatile set instead of being expanded cell by cell
     def coords(key: tuple[str, str]) -> tuple[str, int, int]:
         r = parse_ref(key[1])
@@ -205,10 +205,10 @@ def volatile_cells(formulas: list[dict[str, Any]], defined_names: list[dict[str,
 
 
 def _allowed_cells(applied: list[dict[str, Any]]) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], str], dict[str, list[int]], dict[str, str]]:
-    """What the plan wrote, keyed by the plan's (source) sheet name:
+    """What  the plan  wrote, keyed by the plan's (source) sheet name:
     (source-coordinate cells -> mode, prepared-coordinate cells written after
     inserts -> mode, row inserts per sheet, sheet renames).
-    mode 'skip'    set_value / clear_cell -- the new content IS the intent
+    mode 'skip'    set_value / clear_cell -- the new content IS  the intent
     mode 'relaxed' set_formula / set_array_formula -- compared, error->error allowed"""
     src: dict[tuple[str, str], str] = {}
     prepared: dict[tuple[str, str], str] = {}
@@ -227,13 +227,13 @@ def _allowed_cells(applied: list[dict[str, Any]]) -> tuple[dict[tuple[str, str],
         target = prepared if o.get("after_inserts") else src
         for c in prep._cells_of(o.get("range") or o.get("cell")):
             key = (o["sheet"], c)
-            if target.get(key) != "skip":  # a deliberate content write on the same cell wins
+            if target.get(key) != "skip":  # a deliberate  content write on the same cell  wins
                 target[key] = mode
     return src, prepared, inserts, renames
 
 
 def compare_values(source_path: Path, prepared_path: Path, applied: list[dict[str, Any]], formulas: list[dict[str, Any]], defined_names: list[dict[str, Any]], max_report: int = 40) -> dict[str, Any]:
-    """Cell-for-cell comparison of two workbooks' stored values, mapping the
+    """Cell-for-cell  comparison of  two workbooks' stored values, mapping the
     prepared workbook's coordinates back through the plan's row inserts.
     Both files should have been recalculated by Excel first."""
     src_allowed, prep_allowed, inserts, renames = _allowed_cells(applied)
@@ -259,8 +259,8 @@ def compare_values(source_path: Path, prepared_path: Path, applied: list[dict[st
                 continue
             ws_p = wb_p[p_name]
             rmap = row_map(inserts.get(sheet, []))
-            # read-only sheets yield EmptyCell objects without coordinates, so
-            # coordinates come from the position in the (1-based) iteration
+            # read-only sheets yield EmptyCell  objects without coordinates, so
+            # coordinates come from the position in the (1-based)  iteration
             p_values: dict[tuple[int, int], Any] = {}
             for pr_, row in enumerate(ws_p.iter_rows(min_row=1, min_col=1, values_only=True), start=1):
                 for pc_, v in enumerate(row, start=1):
@@ -285,7 +285,7 @@ def compare_values(source_path: Path, prepared_path: Path, applied: list[dict[st
                     ok = _rewrite_ok(a, b) if mode == "relaxed" else _same(a, b)
                     if not ok:
                         record({"sheet": sheet, "cell": ref_s, "prepared_cell": ref_p, "source": _short(a), "prepared": _short(b), "rewritten": mode == "relaxed"})
-            # anything in the prepared sheet that maps to no source cell must be a title the plan wrote
+            # anything in the prepared sheet that  maps to no source cell must be  a title the plan wrote
             for (pr, col), val in p_values.items():
                 if (pr, col) in seen_p:
                     continue
@@ -315,7 +315,7 @@ def _short(v: Any) -> Any:
 
 
 def numbers_gate(source: Path, prepared: Path, applied: list[dict[str, Any]], analysis: dict[str, Any], work: Path) -> dict[str, Any]:
-    """Recalculate fresh copies of both workbooks in Excel, then compare.
+    """Recalculate  fresh copies  of both workbooks in Excel, then compare.
     Always returns a complete shape: ran=False means the gate could not be
     checked (which the loop treats as a failure, never a pass)."""
     wb0 = analysis["workbooks"][0]
@@ -336,7 +336,7 @@ def numbers_gate(source: Path, prepared: Path, applied: list[dict[str, Any]], an
         out.update(cmp)
         out["ran"] = True
         out["match"] = bool(cmp["match"])
-    except Exception as exc:  # the gate must report, never crash the loop
+    except Exception as exc:  # the gate must report,  never crash the loop
         out["ran"] = False
         out["message"] = f"numbers gate failed: {exc}"[:300]
         out.setdefault("match", False)
@@ -349,7 +349,7 @@ def numbers_gate(source: Path, prepared: Path, applied: list[dict[str, Any]], an
 def names_gate(after_analysis: dict[str, Any], after_report: dict[str, Any], baseline_grid_count: int) -> dict[str, Any]:
     grids = all_grids(after_analysis)
     unnamed = [f"{g['sheet']}!{g['ref']}" for g in grids if not g.get("name")]
-    unnamed_anchors = [g["anchor"] for g in grids if not g.get("name")]  # what Mind will show as Untitled(row,col)
+    unnamed_anchors = [g["anchor"] for g in grids if not g.get("name")]  # what  Mind will  show as Untitled(row,col)
     plan = {a["id"]: a for a in prep.plan_actions(after_analysis, after_report)}
     titles = plan["create_grid_titles"]
     blocked = [s for s in titles["skipped"] if "standalone text" not in s]
@@ -369,21 +369,21 @@ def names_gate(after_analysis: dict[str, Any], after_report: dict[str, Any], bas
 
 # --- deciding ----------------------------------------------------------------------
 def active_actions(plan: list[dict[str, Any]], enabled: set[str], disabled: set[str]) -> set[str]:
-    """The actions an iteration actually applies: default-on ones plus enabled
+    """The  actions an  iteration actually applies: default-on ones plus enabled
     opt-ins, minus disabled, with something to do. One definition, used both
     to build the iteration and to judge it."""
     return {a["id"] for a in plan if (a["default_on"] or a["id"] in enabled) and a["id"] not in disabled and a["count"] > 0}
 
 
 def auto_enable(plan: list[dict[str, Any]], report: dict[str, Any]) -> list[str]:
-    """Opt-in actions the loop switches on by itself: those whose rule is an
+    """Opt-in  actions the  loop switches on by itself: those whose rule is an
     ERROR finding (a blocker) and that have something to do."""
     errors = {f["rule_id"] for f in report["findings"] if f["status"] == "ERROR"}
     return sorted(a["id"] for a in plan if not a["default_on"] and a["count"] > 0 and set(a["rule_ids"]) & errors)
 
 
 def _writers(plan: list[dict[str, Any]]) -> dict[tuple[str, str], set[str]]:
-    """(sheet, cell) in source coordinates -> actions whose operations write it."""
+    """(sheet,  cell) in  source coordinates -> actions whose operations write it."""
     out: dict[tuple[str, str], set[str]] = {}
     for a in plan:
         for o in a["operations"]:
@@ -405,11 +405,11 @@ def _rect_writers(writers: dict[tuple[str, str], set[str]], sheet: str, r1: int,
 
 
 def actions_touching(plan: list[dict[str, Any]], diffs: list[dict[str, Any]], formulas: list[dict[str, Any]] | None = None, defined_names: list[dict[str, Any]] | None = None) -> list[str]:
-    """Actions to blame for changed cells. A cell an action wrote is blamed
+    """Actions  to blame  for changed cells. A cell an action wrote is blamed
     directly; otherwise the changed cell's precedents are walked (bounded)
-    back to a cell an action wrote -- so a formula rewrite that moved a value
-    downstream is blamed before any row insert on the same sheet. Only when
-    no writer is reachable does an insert on the sheet take the blame."""
+    back to a cell an action wrote -- so a formula rewrite that moved  a value
+    downstream is blamed before any row insert on the same  sheet. Only when
+    no writer is reachable  does an insert on the sheet take  the blame."""
     writers = _writers(plan)
     by_cell = {(f["sheet"], f["cell"].replace("$", "").upper()): f["formula"] for f in (formulas or [])}
     names = _name_targets(defined_names or [])
@@ -473,7 +473,7 @@ def _stuck(reason: str) -> dict[str, Any]:
 
 
 def decide(iteration: dict[str, Any], plan: list[dict[str, Any]], enabled: set[str], disabled: set[str], formulas: list[dict[str, Any]] | None = None, defined_names: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """The one rule that fires for an iteration -> {'verdict', 'reason',
+    """The  one rule  that fires for an iteration -> {'verdict', 'reason',
     'enable', 'disable'}. verdict: 'converged' | 'retry' | 'stuck'.
     A gate that could not be checked is never treated as passed."""
     apply = iteration.get("apply") or {}
@@ -524,20 +524,20 @@ def decide(iteration: dict[str, Any], plan: list[dict[str, Any]], enabled: set[s
         return _stuck("Mind ran the model but does not report it consistent with the audit trail")
     counts = mind.get("counts") or {}
     if counts.get("mind_untitled") is not None and (counts.get("unexplained") or counts.get("app_only")):
-        # Mind reads some blocks differently from the app (a detection gap, not
-        # something any prep action can change) -- reported, never a block
+        # Mind reads some blocks differently from  the app (a detection gap, not
+        # something any prep action can change)  -- reported, never a block
         gap = f"Mind lists {counts['mind_untitled']} Untitled grid(s), the app predicted {counts['app_untitled']}: {len(counts.get('unexplained') or [])} Mind-only, {len(counts.get('app_only') or [])} app-only (see detection_gaps)"
         return {"verdict": "converged", "reason": "every gate passed; " + gap, "enable": [], "disable": []}
     return {"verdict": "converged", "reason": "every gate passed", "enable": [], "disable": []}
 
 
 def untitled_counts(mind_cells: list[str], app_anchors: list[str]) -> dict[str, Any]:
-    """Mind's 'Untitled(row,col)' entries against the app's untitled anchors,
+    """Mind's  'Untitled(row,col)' entries  against the app's untitled anchors,
     as multisets of cell references (the selector does not say which sheet).
     'unexplained' = Mind shows an untitled grid the app did not know about --
-    a detection gap and a failure. 'app_only' = the app split a block Mind
-    reads as part of a larger grid -- reported, not a failure: nothing is
-    shown untitled that the app could have titled."""
+    a detection gap  and a failure. 'app_only' = the app split a block Mind
+    reads  as part of a larger grid  -- reported, not a failure: nothing is
+    shown  untitled that the app could have titled."""
     from collections import Counter
 
     mind = Counter(c.upper() for c in mind_cells)
@@ -601,7 +601,7 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         return report
 
     if source.suffix.lower() == ".xlsb":
-        # Mind accepts .xlsx/.xlsm only; the same Excel Save-As the upload endpoint uses.
+        # Mind  accepts .xlsx/.xlsm  only; the same Excel Save-As the upload endpoint uses.
         target = "xlsm" if has_vba_project(source) else "xlsx"
         progress({"event": "log", "message": f"converting {source.name} to .{target} through Excel (Mind does not accept .xlsb)"})
         conv = convert_output_format(source, cfg.work_dir / "source", target)
@@ -707,7 +707,7 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
 
 
 def _inputs_stage() -> dict[str, Any]:
-    """The progress stage of the input upload: its own ('inputs') once app/estimate.py lists it,
+    """The  progress stage  of the input upload: its own ('inputs') once app/estimate.py lists it,
     else none -- the upload then counts as part of 'template' (an unknown stage would show the
     wrong time left)."""
     from .estimate import MIND_STAGE_TITLES
@@ -762,11 +762,11 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                 return out
             record["status"] = "model added"
             if inputs:
-                # every iteration uploads a new model into a new project, so its inputs go up again too
+                # every  iteration uploads  a new model into a new project, so its inputs go up again too
                 progress({"event": "mind", **_inputs_stage(), "message": f"iteration {n}: uploading {len(inputs)} input file(s) through Mind's Inputs window"})
                 mb = sum(f.stat().st_size for f in inputs) / 2**20  # Tokyo's inputs: about 1.4 M cells
-                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened again before
-                # the run, else the run still uses the copies as loaded before the import (K2 showed 120 for 915)
+                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened  again before
+                # the run, else the run still uses the copies as  loaded before the import (K2 showed  120 for 915)
                 up = out["inputs_upload"] = mc.upload_inputs(page, Path(cfg.inputs_dir), timeout_s=int(300 + 30 * mb), shots=shots, project_url=init)
                 if not up.get("ok"):
                     out["error"] = f"Mind did not take the input files: {up.get('reason') or 'no reason recorded'}"
@@ -778,7 +778,7 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                     return out
             stem = prepared.stem
             listed = mc.template_names(page, stem)
-            # the list is only trusted when it shows the workbook's own sheets
+            # the list is only trusted  when it shows the workbook's own sheets
             trusted = bool(listed) and any(s in listed for s in sheet_names)
             untitled = mc.untitled_entries(listed) if trusted else []
             out["templates"] = {"stem": stem, "entries": len(listed), "trusted": trusted, "untitled": untitled}
@@ -787,7 +787,7 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
             progress({"event": "mind", "message": f"iteration {n}: Mind lists {len(listed)} template entries" + (f", {c['mind_untitled']} Untitled; app predicted {c['app_untitled']}, unexplained {len(c['unexplained'])}, app-only {len(c['app_only'])}" if trusted else " (selector could not be read; count skipped)")})
             if cfg.run_model:
                 progress({"event": "mind", "stage": "run", "message": f"iteration {n}: running the model"})
-                record["ran"] = True  # set before the click: a project that was run must never be deleted
+                record["ran"] = True  # set before the click: a  project that was run must never be  deleted
                 record["status"] = "run"
                 out["run"] = mc.run_model(page, shots=shots)
                 progress({"event": "mind", "stage": "results", "message": f"iteration {n}: run {'completed' if out['run']['completed'] else 'did not complete'}" + (", consistent with the audit trail" if out["run"]["audit_consistent"] else "")})
@@ -813,7 +813,7 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
 
 
 def summarize(report: dict[str, Any]) -> str:
-    """Human summary for the CLI and the change log."""
+    """Human  summary for  the CLI and the change log."""
     lines = [f"verdict: {report.get('verdict')} -- {report.get('reason')}", f"source: {report.get('source')}"]
     for it in report.get("iterations", []):
         nm, nums, mind = it.get("names") or {}, it.get("numbers") or {}, it.get("mind") or {}

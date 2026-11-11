@@ -792,10 +792,12 @@ def _paths(args: argparse.Namespace) -> list[Path]:
 
 
 def _state(report: Report) -> str:
+    if report.gaps == 0:
+        return "no comment text"
     if report.intact:
         return "intact (partial: no part is long enough for one full pass)" if report.partial else "intact"
     if report.moved:
-        return "intact, moved in " + ", ".join(f"{p} part" if p == 1 else f"{p} parts" for p in [report.parts_moved])
+        return f"intact, moved in {report.parts_moved} part" + ("" if report.parts_moved == 1 else "s")
     return "broken" if report.matched else "absent"
 
 

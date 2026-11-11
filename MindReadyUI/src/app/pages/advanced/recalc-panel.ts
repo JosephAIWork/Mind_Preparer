@@ -6,7 +6,7 @@ import { CodeName } from "../../core/code-name";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
-/** A full recalculation in Excel, and what it found: genuine errors, the add-in gap, new vs already there. */
+/** A  full recalculation  in Excel, and what it found: genuine errors, the add-in gap, new vs already there. */
 @Component({
   selector: "mr-recalc-panel",
   standalone: true,
@@ -32,7 +32,7 @@ export class RecalcPanel {
     const list = this.result()?.formula_errors ?? [];
     return this.showAll() ? list : list.slice(0, 200);
   });
-  /** What each error value the panel shows means -- in the error list or in the message (#NAME? on the
+  /** What  each error  value the panel shows means -- in the error list or in the message (#NAME? on the
    *  add-in gap) -- once each. */
   readonly legend = computed(() => {
     const r = this.result();

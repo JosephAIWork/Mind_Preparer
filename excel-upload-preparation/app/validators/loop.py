@@ -1,12 +1,12 @@
-"""LOOP-* / LBL-* / RES-* / RZS-* validators: MM_LOOP, MM_LOOPLABELS,
+"""LOOP-*  / LBL-*  / RES-* / RZS-* validators: MM_LOOP, MM_LOOPLABELS,
 MM_LOOPINSTANCE, MM_RESULT and the resize family (MM_SETSIZE, /Resize
 flags, MM_LASTROWCELL / MM_LASTCOLUMNCELL / MM_GETRANGE), via formula
 tokenization plus the detected grids.
 
 KB sources: 'MM_LOOP function', 'MM_LOOPLABELS function', 'MM_LOOPINSTANCE
-function', 'MM_RESULT function', 'MM_SETSIZE function', 'Dynamic resizing
-of grids', 'MM_LASTROWCELL function', 'MM_GETRANGE function', and the FAQ
-'How to solve a run error' (loop referenced but never created; SetSize of a
+function',  'MM_RESULT function', 'MM_SETSIZE function', 'Dynamic resizing
+of grids', 'MM_LASTROWCELL function', 'MM_GETRANGE function',  and the FAQ
+'How to solve a  run error' (loop referenced but never created;  SetSize of a
 SetSize)."""
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ DYNAMIC_FUNCTIONS = {"MM_FILTER", "MM_REMOVEDUPLICATES", "MM_HUNION", "MM_VUNION
 TEXT_SETSIZE_RE = re.compile(r"&\s*IF\s*\(\s*MM_SETSIZE\s*\([^()]*\)\s*=\s*0\s*,\s*\"\"\s*,\s*0\s*\)", re.IGNORECASE)
 
 
-# --- LOOP-001..003, LBL-001 (unchanged behaviour, shared helpers) -------------
+# ---  LOOP-001..003, LBL-001  (unchanged behaviour, shared helpers) -------------
 def mm_loop_inventory(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     defs = loop_definitions(analysis)
     inst = loopinstance_definitions(analysis)
@@ -38,7 +38,7 @@ def mm_loop_inventory(rule, analysis: dict[str, Any], config: dict[str, Any]) ->
 
 
 def loop_naming_consistency(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """Loop names are case-sensitive in Mind; flag names that only differ by case."""
+    """Loop  names are  case-sensitive in Mind; flag names that only differ by case."""
     defs = loop_definitions(analysis)
     by_lower: dict[str, set[str]] = {}
     for name in defs:
@@ -61,7 +61,7 @@ def repeated_definition_range_lengths(rule, analysis: dict[str, Any], config: di
             continue
         dyn = [s for s in sites if s.get("dynamic")]
         if dyn and len(dyn) == len(sites):
-            # every definition reads its range from the table (MM_COLUMN / MM_ROW / MM_TABLE): Mind sizes them
+            # every  definition reads  its range from the table (MM_COLUMN / MM_ROW / MM_TABLE): Mind sizes them
             # from the same grid, so they stay equal, and they grow together when rows are added
             dynamic_names.append(name)
             continue
@@ -113,7 +113,7 @@ def label_size_matches(rule, analysis: dict[str, Any], config: dict[str, Any]) -
 
 
 def loop_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """LOOP-004: MM_LOOPINSTANCE(Name, MaxSizeRange, InstanceSizeRange, [Index], [IndexStart])."""
+    """LOOP-004:  MM_LOOPINSTANCE(Name, MaxSizeRange,  InstanceSizeRange, [Index], [IndexStart])."""
     calls = mm_calls(analysis, "MM_LOOPINSTANCE")
     if not calls:
         return finding("PASS", "No MM_LOOPINSTANCE usage (loops do not vary by instance).", {"sites": []})
@@ -148,7 +148,7 @@ def res_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def res_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RES-002: every literal loop name in MM_RESULT / MM_DIMSIZE / MM_DIMINDEX /
+    """RES-002:  every literal  loop name in MM_RESULT / MM_DIMSIZE / MM_DIMINDEX /
     MM_LOOPLABELS must match a created loop exactly (case-sensitive)."""
     known = known_loop_names(analysis)
     known_lower = {n.lower(): n for n in known}
@@ -185,7 +185,7 @@ def res_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def res_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RES-003: MM_RESULT sums every loop it does not name."""
+    """RES-003:  MM_RESULT sums  every loop it does not name."""
     calls = _result_calls(analysis)
     all_loops = set(loop_definitions(analysis)) | set(loopinstance_definitions(analysis))
     no_spec = [c for c in calls if not c["loop_specs"]]
@@ -211,7 +211,7 @@ def res_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def res_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RES-004: the same loop named twice in one MM_RESULT call."""
+    """RES-004:  the same  loop named twice in one MM_RESULT call."""
     dups = []
     malformed = []
     for c in _result_calls(analysis):
@@ -234,7 +234,7 @@ def res_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def res_005(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RES-005: 'SIM' dimension usage in MM_RESULT / MM_DIMSIZE."""
+    """RES-005:  'SIM' dimension  usage in MM_RESULT / MM_DIMSIZE."""
     sim_sites = []
     for fn in ("MM_RESULT", "MM_DIMSIZE", "MM_DIMINDEX"):
         for c in mm_calls(analysis, fn):
@@ -257,7 +257,7 @@ def _setsize_calls(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _resolve_int(analysis: dict[str, Any], sheet: str, arg: str) -> int | None:
-    """Literal integer, or the constant in a same-sheet single-cell reference."""
+    """Literal  integer, or  the constant in a same-sheet single-cell reference."""
     n = as_number(arg)
     if n is not None:
         return int(n)
@@ -275,7 +275,7 @@ def rzs_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def rzs_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RZS-002: MM_SETSIZE(NbRows, NbCols) added to a formula with '+' (or the
+    """RZS-002:  MM_SETSIZE(NbRows, NbCols)  added to a formula with '+' (or the
     documented text form), never nested in another function, never a
     SetSize of a SetSize."""
     problems = []
@@ -311,7 +311,7 @@ def rzs_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def rzs_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RZS-003: the NbRows x NbCols block starting at the MM_SETSIZE cell must be
+    """RZS-003:  the NbRows  x NbCols block starting at the MM_SETSIZE cell must be
     empty or hold the copies MM_SETSIZE itself made ('+0' where it was
     copied) -- it never overwrites existing content."""
     violations, unresolvable = [], []
@@ -371,7 +371,7 @@ def rzs_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def rzs_005(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RZS-005: /Resize.NAME groups need at least two members; a flag may
+    """RZS-005:  /Resize.NAME groups  need at least two members; a flag may
     carry at most one name."""
     groups: dict[str, list[dict[str, Any]]] = {}
     malformed = []
@@ -397,8 +397,8 @@ def _resizable_grids(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for g in all_grids(analysis):
         flags = set(g["flag_names"])
-        # not an /InstanceSplit grid: each copy keeps a subset of the template's rows, never more, and Mind reads a
-        # fixed range over its whole column as the copy's column (COUNTA over the key column counted each copy's
+        # not  an /InstanceSplit  grid: each copy keeps a subset of the template's rows, never more, and Mind reads a
+        # fixed range over its whole column as the copy's column (COUNTA over the key column counted  each copy's
         # rows in a real Mind project, 29 October 2026)
         resizable = bool(flags & set(RESIZE_ROW_FLAGS + RESIZE_COL_FLAGS)) or "input" in flags or "inputlink" in flags
         if not resizable:
@@ -414,13 +414,13 @@ def _resizable_grids(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def rzs_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RZS-006: formulas that read a resizable grid with a fixed range ending
+    """RZS-006:  formulas that  read a resizable grid with a fixed range ending
     exactly on its current last row/column will not follow the resize --
     they must use MM_LASTROWCELL / MM_LASTCOLUMNCELL (or MM_TABLE/MM_COLUMN/MM_ROW)."""
     resizable = _resizable_grids(analysis)
-    # the Mind inputs made from outside files (app/outside_inputs.py) keep the size of the model's
-    # import area, as the model's own macro does (it refuses a file with more items than the area
-    # holds) and the app writes their CSVs at exactly that size: a fixed range over them is right
+    # the Mind inputs made from  outside files (app/outside_inputs.py) keep the size of the model's
+    # import area, as  the model's own macro does (it  refuses a file with more items than  the area
+    # holds) and the app writes their CSVs at exactly that  size: a fixed range over them is  right
     made = {str(n).casefold() for n in (((config or {}).get("outside_inputs") or {}).get("mind_inputs") or [])}
     fixed_inputs = [g for g in resizable if made and str(g.get("name") or "").casefold() in made]
     resizable = [g for g in resizable if g not in fixed_inputs]
@@ -463,7 +463,7 @@ def rzs_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def rzs_007(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RZS-007: MM_GETRANGE is system-generated next to dynamic functions."""
+    """RZS-007:  MM_GETRANGE is  system-generated next to dynamic functions."""
     getrange = mm_calls(analysis, "MM_GETRANGE")
     usage = analysis["features"].get("function_usage", {})
     dynamic = {fn: usage[fn] for fn in sorted(DYNAMIC_FUNCTIONS & set(usage))}

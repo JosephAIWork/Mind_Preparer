@@ -1,17 +1,17 @@
-"""A tiny workbook that probes the MM_LOOP forms the loop builder writes, for a real Mind run.
+"""A  tiny workbook  that probes the MM_LOOP forms the loop builder writes, for a real Mind run.
 
     python scripts/build_loop_forms_probe.py <out.xlsx>
 
 Sheet "Loop":
-  Settings block (A1:C7): first = 3, last = 7, column C = the loop value x 10 (a cell, MM_RESULT needs a cell),
-    K = MM_LOOP("K", B3, 3, B2, B3)   the five-argument form the builder writes for a counter loop
-                                       that does not start at 1 (as in a client model: IndexStart / IndexEnd),
-    J = MM_LOOP("J", B3)              the plain form over a single integer cell (dims 1..n),
+  Settings block (A1:C7): first = 3, last = 7, column C = the loop value  x 10 (a cell, MM_RESULT needs a cell),
+    K = MM_LOOP("K", B3,  3, B2, B3)   the five-argument form the  builder writes for a counter loop
+                                       that does  not start at 1 (as in a client model: IndexStart /  IndexEnd),
+    J = MM_LOOP("J", B3)              the plain form over  a single integer cell (dims 1..n),
     sizeK = MM_DIMSIZE("K"), sizeJ = MM_DIMSIZE("J").
   Results block (E1:G8): k = 1..7, K10 = MM_RESULT($C$4, "K", k), J10 = MM_RESULT($C$5, "J", k).
 Mind then shows, per block, which indices exist for K (3..7? or 1..5?) and what MM_RESULT returns for
 each k: the index base of the five-argument form, which the KB leaves open.
-Written through Excel with the MM for Excel add-in so the file carries cached values.
+Written through Excel with the MM  for Excel add-in so the file carries cached values.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def main() -> int:
         ws.cell(r, 2, row[1])
         if len(row) > 2 and row[2] is not None:
             ws.cell(r, 3, row[2])
-    # MM_RESULT needs a CELL (an expression such as $B$4*10 fails at runtime in Mind: "null reference")
+    # MM_RESULT  needs a  CELL (an expression such as $B$4*10 fails at runtime in Mind: "null reference")
     ws["E1"], ws["F1"], ws["G1"] = "k", "K10", "J10"
     for k in range(1, 8):
         ws.cell(k + 1, 5, k)

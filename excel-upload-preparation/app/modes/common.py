@@ -1,4 +1,4 @@
-"""Shared ANALYZE -> VALIDATE -> ASK -> REPORT runner for all four modes.
+"""Shared  ANALYZE ->  VALIDATE -> ASK -> REPORT runner for all four modes.
 TRANSFORM/VERIFY are intentionally absent (no change-set application or
 recalculation adapter here: Prep, the fixer and app/recalc.py do those).
 """
@@ -34,7 +34,7 @@ def _build_question(finding: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_mode(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """_run_mode with every formula parsed once for all the rules (formula_memo)."""
+    """_run_mode  with every  formula parsed once for all the rules (formula_memo)."""
     with formula_memo():
         return _run_mode(*args, **kwargs)
 
@@ -49,7 +49,7 @@ def _run_mode(
     ignore_sheets: list[str] | None = None,
     progress: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
-    """categories=None means 'all active rules' (used by PLAN_MODE).
+    """categories=None  means 'all  active rules' (used by PLAN_MODE).
     `ignore_sheets`: sheets the user chose not to scan (large workbooks).
     `progress(stage, message, fraction, **facts)`: status callback -- the
     inventory stages first, then one call per rule, then 'report'."""
@@ -66,7 +66,7 @@ def _run_mode(
     findings = []
     for i, rule in enumerate(rules):
         if progress is not None:
-            # the scan screen shows this line: the code with its plain name
+            # the scan  screen shows this line: the code with its plain name
             progress("rules", f"Checking rule {i + 1}/{len(rules)}: {cite(rule['id'])}", i / max(1, len(rules)), rule_id=rule["id"])
         findings.append(run_rule(rule, analysis, config))
     if progress is not None:

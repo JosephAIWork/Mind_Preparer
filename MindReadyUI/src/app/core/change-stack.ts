@@ -2,10 +2,10 @@ import { Injectable, computed, inject, signal } from "@angular/core";
 import { Operation, Version } from "./models";
 import { SessionStore } from "./session.store";
 
-/** 1.11.6: changes approved in Advanced (Prep actions, assistant proposals) wait here and are written
+/** 1.11.6:  changes approved  in Advanced (Prep actions, assistant proposals) wait here and are written
  *  together: one Excel session and one re-analysis instead of one each. The server writes the pivot
- *  tables first, then the cell changes in the order added, then the inserted rows and columns, the
- *  cells planned for after the inserts, and the sheet-level changes. */
+ *  tables first, then the cell changes  in the order added, then the inserted rows and columns, the
+ *  cells  planned for after the inserts, and  the sheet-level changes. */
 export interface StackEntry {
   key: string;
   source: "prep" | "assistant";
@@ -35,7 +35,7 @@ function colNumber(letters: string): number {
   return n;
 }
 
-/** The cells an operation writes: its range (an array formula) or its cell; null when it names no cells. */
+/** The  cells an  operation writes: its range (an array formula) or its cell; null when it names no cells. */
 export function opTarget(o: Operation): Target | null {
   const ref = String(o["range"] ?? o["ref"] ?? o["cell"] ?? "").replace(/\$/g, "").toUpperCase();
   const m = /^([A-Z]{1,3})(\d+)(?::([A-Z]{1,3})(\d+))?$/.exec(ref);
@@ -56,7 +56,7 @@ function where(t: Target, o: Operation): string {
   return `${t.sheet}!${String(o["range"] ?? o["ref"] ?? o["cell"])}`;
 }
 
-const BIG = 10_000; // a target this many cells or more is compared one by one, not cell by cell
+const BIG = 10_000; // a  target this  many cells or more is compared one by one, not cell by cell
 
 @Injectable({ providedIn: "root" })
 export class ChangeStack {
@@ -64,12 +64,12 @@ export class ChangeStack {
   private all = signal<StackEntry[]>([]);
   private n = 0;
 
-  /** The entries of the loaded session (a list made for another session is not shown). */
+  /** The  entries of  the loaded session (a list made for another session is not shown). */
   readonly entries = computed(() => this.all().filter((e) => e.sessionId === this.store.sessionId()));
   readonly count = computed(() => this.entries().reduce((n, e) => n + e.operations.length, 0));
 
   /** Every operation in order; an exact repeat is dropped, keeping the last copy (B2 = 3, then 3.5,
-   *  then 3 again must end at 3, so the earlier copy goes, not the later one). */
+   *  then 3 again  must end at 3, so the earlier copy goes, not the  later one). */
   readonly operations = computed<Operation[]>(() => {
     const out: Operation[] = [];
     const seen = new Set<string>();
@@ -84,8 +84,8 @@ export class ChangeStack {
     return out.reverse();
   });
 
-  /** Two entries writing the same cell differently (the later one wins, which may break what the
-   *  first one fixed; a pivot table is always converted first, so the cell write wins over it), entries
+  /** Two entries writing the same  cell differently (the later one wins, which  may break what the
+   *  first one fixed; a pivot table is always  converted first, so the cell write wins  over it), entries
    *  from Prep and from the assistant that both insert rows or columns on one sheet (the cells planned
    *  around one insert do not follow the other), and entries made on an earlier version (their
    *  "before" may no longer match). */
@@ -98,7 +98,7 @@ export class ChangeStack {
         out.push({ kind: "stale", text: `"${e.label}" was made on ${e.versionLabel}; the workbook is now ${current.label.split(" — ")[0]}. Its cells may have changed since: remove it and add it again from the current version.` });
 
     // An insert from Prep and one from the assistant on the same sheet: Prep's title cells are placed
-    // for its own inserts only, so they may land one row or column off.
+    // for its own inserts only, so  they may land one row or column off.
     const inserts = new Map<string, Set<number>>();
     entries.forEach((e, i) => {
       for (const op of e.operations)
@@ -190,7 +190,7 @@ export class ChangeStack {
     this.all.update((list) => list.filter((e) => e.key !== key));
   }
 
-  /** Removes the entries that were applied, by key: one added while the Apply ran stays. */
+  /** Removes  the entries that were applied,  by key: one added while the Apply  ran stays. */
   removeKeys(keys: Set<string>): void {
     this.all.update((list) => list.filter((e) => !keys.has(e.key)));
   }

@@ -3,11 +3,11 @@ import { Component, inject, output, signal } from "@angular/core";
 import { ApiService, errorText } from "../core/api.service";
 import { PendingUpload, SavedWorkbook, SessionStart } from "../core/models";
 
-/** 1.14.0: the main screen's "Recent workbooks" -- the workbooks the app kept in its data folder
+/** 1.14.0:  the main  screen's "Recent workbooks" -- the workbooks the app kept in its data folder
  *  (app/session_store.py), under the upload box, only when there is at least one. Reopen loads one
- *  with everything it had (every version, the check result, the plans and results) and the page shows
- *  the same screens as after its last step; Remove asks once, in place, then deletes it from this
- *  computer. Nothing opens by itself: the list waits. */
+ *  with everything it had (every  version, the check result, the plans and results) and the page  shows
+ *  the same screens as after its  last step; Remove asks once, in place,  then deletes it from this
+ *  computer. Nothing opens by itself: the list  waits. */
 @Component({
   selector: "mr-recent-workbooks",
   standalone: true,
@@ -108,19 +108,19 @@ import { PendingUpload, SavedWorkbook, SessionStart } from "../core/models";
 export class RecentWorkbooks {
   private api = inject(ApiService);
   readonly rows = signal<SavedWorkbook[]>([]);
-  /** the row whose Remove asked "Remove <name> from this computer?" */
+  /** the  row whose  Remove asked "Remove <name> from this computer?" */
   readonly askingId = signal<string | null>(null);
   /** the row being opened or removed: every button waits meanwhile */
   readonly busyId = signal<string | null>(null);
   readonly error = signal("");
-  /** The saved workbook, loaded again: the page shows it (a pending one goes to the sheet choice). */
+  /** The saved workbook, loaded again: the page shows it (a pending one goes to the sheet  choice). */
   readonly opened = output<SessionStart | PendingUpload>();
 
   constructor() {
     void this.refresh();
   }
 
-  /** The list as the server has it now (an older server without the route: no list). */
+  /** The list as the server has it now (an older server  without the route: no list). */
   async refresh(): Promise<void> {
     try {
       this.rows.set(await this.api.savedWorkbooks());
@@ -129,7 +129,7 @@ export class RecentWorkbooks {
     }
   }
 
-  /** "10 Nov 2026, 14:05 · 3 versions", "· not checked yet" for an upload never scanned. */
+  /** "10 Nov  2026, 14:05 · 3 versions", "· not  checked yet" for an upload never scanned. */
   metaText(r: SavedWorkbook): string {
     const parts = [whenText(r.last_opened ?? r.uploaded_at), `${r.versions} version${r.versions === 1 ? "" : "s"}`];
     if (!r.has_result) parts.push("not checked yet");
@@ -145,7 +145,7 @@ export class RecentWorkbooks {
       this.opened.emit(started);
     } catch (e) {
       this.error.set(`Could not open ${r.name}: ${errorText(e)}`);
-      void this.refresh(); // gone meanwhile: the list says so
+      void this.refresh(); // gone meanwhile: the list says  so
     } finally {
       this.busyId.set(null);
     }
@@ -177,7 +177,7 @@ export class RecentWorkbooks {
   }
 }
 
-/** "10 Nov 2026, 14:05" from the server's seconds since 1970 ("" when unknown). */
+/** "10  Nov 2026,  14:05" from the server's seconds since 1970 ("" when unknown). */
 export function whenText(seconds: number | null | undefined): string {
   if (!seconds) return "";
   const d = new Date(seconds * 1000);

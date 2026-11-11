@@ -24,7 +24,7 @@ interface PendingArea {
 
 type Resolved = { kind: "grid"; grid: Grid; hits: Grid[] } | { kind: "caption"; grid: Grid; table: Grid; hits: Grid[] } | { kind: "none" | "many"; hits: Grid[] };
 
-/** 1 -> A, 27 -> AA */
+/** 1  -> A,  27 -> AA */
 function colName(n: number): string {
   let s = "";
   while (n > 0) {
@@ -48,7 +48,7 @@ function rectRef(s: Rect): string {
   return s.r1 === s.r2 && s.c1 === s.c2 ? a : `${a}:${colName(s.c2)}${s.r2}`;
 }
 
-/** Mirror of the backend's resolution: the grids the selection touches (their rectangle or their
+/** Mirror  of the  backend's resolution: the grids the selection touches (their rectangle or their
  * title cell), and whether two of them are the caption-above-a-table pair that is named as one. */
 function resolveSelection(grids: Grid[], sel: Rect): Resolved {
   const hits = grids.filter((g) => {
@@ -87,7 +87,7 @@ function resolveSelection(grids: Grid[], sel: Rect): Resolved {
   return { kind: hits.length === 0 ? "none" : "many", hits };
 }
 
-/** "/Resize.A /Group.(My group).0.1" or "Resize.A" -> ["Resize.A", "Group.(My group).0.1"] */
+/** "/Resize.A  /Group.(My group).0.1"  or "Resize.A" -> ["Resize.A", "Group.(My group).0.1"] */
 function parseExtraFlags(text: string): string[] {
   const t = text.trim();
   if (!t) return [];
@@ -95,7 +95,7 @@ function parseExtraFlags(text: string): string[] {
   return [t];
 }
 
-/** Drag over an area of a sheet and give it a #Name and flags; Submit writes the titles as a new version. */
+/** Drag  over an  area of a sheet and give it a #Name and flags; Submit writes the titles as a new version. */
 @Component({
   selector: "mr-grid-namer-panel",
   standalone: true,
@@ -119,7 +119,7 @@ export class GridNamerPanel implements OnInit {
 
   readonly flagList = signal<MindFlag[]>([]);
   readonly allFlags = signal(false);
-  /** The flags people use most, first; the chosen ones always stay visible. */
+  /** The  flags people  use most, first; the chosen ones always stay visible. */
   readonly shownFlags = computed<MindFlag[]>(() => {
     const list = this.flagList();
     if (this.allFlags() || list.length <= 8) return list;
@@ -184,7 +184,7 @@ export class GridNamerPanel implements OnInit {
       this.chosenFlags.set(docFlags);
       this.extraFlags.set(extras.map((e) => "/" + e).join(" "));
     });
-    // The sheet's cells follow the active sheet, the size and the summary.
+    // The sheet's cells follow the active sheet, the size and  the summary.
     effect(() => {
       const id = this.store.sessionId();
       const sheet = this.active();
@@ -339,8 +339,8 @@ export class GridNamerPanel implements OnInit {
     }
   }
 
-  /** The suggestions' line: the server's words (no AI key: where to paste one), or how many names
-   *  were suggested and whether they went into the Prep plan (applied there). */
+  /** The suggestions' line: the server's words (no AI key: where  to paste one), or how many  names
+   *  were suggested and whether they went into  the Prep plan (applied there). */
   suggestLine(sg: GridNamesResult): string {
     return sg.message || sg.names.length + " suggestions" + (sg.applied ? ", added to the Prep plan" : "");
   }

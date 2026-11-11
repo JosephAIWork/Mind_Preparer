@@ -1,11 +1,11 @@
-"""Where a workbook repeats itself, read on formula shapes (the instance finder, 1.12.5).
+"""Where  a workbook  repeats itself, read on formula shapes (the instance finder, 1.12.5).
 
 On a `ShapeBook` (app/finder_shapes.py) this module finds:
-  * P2 bands: the same formulas side by side in one sheet, as blocks of columns or rows
-    (`bands`, `sheet_findings`), and fills: one column or row repeated many times (a time axis, a
-    list of items, or a uniform area with both axes);
-  * P3 sheet copies: sheets with the same layout and formulas (`sheet_copies`);
-  * P4 how copies differ: identical / reads a different input / differs only in a typed-in number /
+  * P2 bands: the same formulas side by side in one sheet, as blocks of columns or  rows
+    (`bands`, `sheet_findings`), and fills: one column or row repeated many times  (a time axis, a
+    list of items,  or a uniform area with both axes);
+  * P3  sheet copies: sheets with the same layout and formulas (`sheet_copies`);
+  * P4 how  copies differ: identical / reads a different  input / differs only in a typed-in number /
     different logic (`diff_kinds`), with the edits that would unify them (`edits_for`: typed-in
     numbers, numbers inside formulas, logic cells, cells present in some copies only);
   * chains: copies that read the copy before them (`chain_share`, `consecutive_reads`);
@@ -13,7 +13,7 @@ On a `ShapeBook` (app/finder_shapes.py) this module finds:
     index (ROW/COLUMN/COUNTA/MATCH inside OFFSET/INDEX) with the anchor resolved through the
     defined names.
 
-A pure-Python port of the prototype in tools/structure_check/analyze.py (no numpy, no Excel), with
+A  pure-Python port of the prototype in tools/structure_check/analyze.py (no numpy, no Excel), with
 the fixes agreed in the design: both axes deduplicated, a uniform area is one fill with two axes,
 the chain test counts relative reads only, computed indices are read. Nothing here names a client
 workbook; the texts are plain words for the card.
@@ -30,22 +30,22 @@ from .autofix import parse_r1c1, ref_rect
 from .finder_shapes import Budget, ShapeBook, SheetShape, cell_name, number_literals
 from .formula_utils import STORAGE_PREFIX_RE, find_calls, num_to_col, parse_ref, split_top_level_args
 
-SIM_SHEETS = 0.75  # share of formula cells that must match for two sheets to be copies
-SIM_COLS = 0.90  # share of a column's (row's) formula cells that must match its copy
-MIN_FORMULAS = 10  # sheets / blocks smaller than this are not worth a finding
-PMAX = 40  # widest block looked for
-SAMPLE = 3000  # cells sampled per reference test
-CHAIN_SHARE = 0.10  # share of sampled cells reading an earlier copy that makes a chain
-MIN_FILL = 6  # positions a fill needs
-BIG_FILL = 500  # cells: a fill this big is handed to the merge step
-SMALL_GAIN = 200  # formula cells: below this, "little to gain"
+SIM_SHEETS = 0.75  # share  of formula  cells that must match for two sheets to be copies
+SIM_COLS = 0.90  # share  of a  column's (row's) formula cells that must match its copy
+MIN_FORMULAS = 10  # sheets  / blocks  smaller than this are not worth a finding
+PMAX = 40  # widest  block looked  for
+SAMPLE = 3000  # cells  sampled per  reference test
+CHAIN_SHARE = 0.10  # share  of sampled  cells reading an earlier copy that makes a chain
+MIN_FILL = 6  # positions  a fill  needs
+BIG_FILL = 500  # cells:  a fill  this big is handed to the merge step
+SMALL_GAIN = 200  # formula  cells: below  this, "little to gain"
 MAX_COPIES_INSTANCES = 200
-MAX_IF_FORMS = 3  # distinct formulas a logic cell may have for "IF on the copy's key"
-MAX_EDITS = 40  # entries per edits list (counts stay complete)
-MAX_VALUES = 12  # values / literals listed per edit
-MAX_FORMS = 6  # formulas listed per logic cell
-MAX_BAND_FORMULAS = 2_000_000  # a sheet with more formula cells skips the band search (announced)
-PREFILTER = 0.5  # multiset overlap two sheets need before the aligned compare
+MAX_IF_FORMS = 3  # distinct  formulas a  logic cell may have for "IF on the copy's key"
+MAX_EDITS = 40  # entries  per edits  list (counts stay complete)
+MAX_VALUES = 12  # values  / literals  listed per edit
+MAX_FORMS = 6  # formulas  listed per  logic cell
+MAX_BAND_FORMULAS = 2_000_000  # a  sheet with  more formula cells skips the band search (announced)
+PREFILTER = 0.5  # multiset  overlap two  sheets need before the aligned compare
 
 NUMBERS_ACTION = "move into a table row per copy"
 FORMULA_NUMBERS_ACTION = "replace the typed number by a reference to a per-copy table cell"
@@ -57,9 +57,9 @@ SIZE_ACTION = ("copies of different size: instances, with MM_LOOPINSTANCE for th
 DIFF_LABELS = ("identical", "reads a different input", "differs only in a typed-in number", "different logic")
 
 
-# --- stacks: the copies of a finding, aligned ---------------------------------------------------
+# ---  stacks: the  copies of a finding, aligned ---------------------------------------------------
 class Stacks(list):
-    """One dict per copy, {(row offset, col offset): shape id}, the same key = the same place in
+    """One  dict per  copy, {(row offset, col offset): shape id}, the same key = the same place in
     every copy. `sheets[i]` and `origins[i]` turn a key back into a cell of copy i."""
 
     sheets: list[str]
@@ -71,7 +71,7 @@ class Stacks(list):
 
 
 def stacks_of(book: ShapeBook, finding: dict[str, Any]) -> Stacks:
-    """The aligned copies of a band / fill (`positions` per copy) or of a sheet group (`members`)."""
+    """The  aligned copies  of a band / fill (`positions` per copy) or of a sheet group (`members`)."""
     if "members" in finding:
         members = list(finding["members"])
         st = Stacks(dict(book.sheets[m].cells) if m in book.sheets else {} for m in members)
@@ -104,9 +104,9 @@ def stacks_of(book: ShapeBook, finding: dict[str, Any]) -> Stacks:
 
 
 def diff_kinds(book: ShapeBook, stacks: list[dict[tuple[int, int], int]]) -> dict[str, int]:
-    """Cells of the copies sorted by how the copies differ there: identical (same text everywhere),
+    """Cells  of the  copies sorted by how the copies differ there: identical (same text everywhere),
     reads a different input (same but for the references), differs only in a typed-in number,
-    different logic (anything else, including a formula in some copies only)."""
+    different logic (anything else, including a  formula in some copies only)."""
     out = {label: 0 for label in DIFF_LABELS}
     if not stacks:
         return out
@@ -132,9 +132,9 @@ def diff_kinds(book: ShapeBook, stacks: list[dict[tuple[int, int], int]]) -> dic
 
 # --- chains -------------------------------------------------------------------------------------
 def _relative_span(ref: tuple[Any, Any, Any], axis: str, row: int, col: int) -> tuple[int, int] | None:
-    """The rows (columns) a reference covers along `axis` when its component on that axis is
+    """The  rows (columns)  a reference covers along `axis` when its component on that axis is
     RELATIVE at both ends; None for an absolute component or a whole row/column (they read a fixed
-    place, not "the copy before")."""
+    place, not "the copy  before")."""
     spec, a, b = ref
     i = 0 if axis == "rows" else 1
     ea = a[i]
@@ -149,9 +149,9 @@ def _relative_span(ref: tuple[Any, Any, Any], axis: str, row: int, col: int) -> 
 
 
 def chain_share(book: ShapeBook, finding: dict[str, Any]) -> float:
-    """Share of sampled formula cells of copies 2..k that read an EARLIER copy of the same finding
+    """Share  of sampled  formula cells of copies 2..k that read an EARLIER copy of the same finding
     through a relative reference on its own sheet (an absolute reference or a whole row/column reads
-    a fixed cell -- a parameter inside copy 1's columns is not a chain)."""
+    a fixed cell  -- a parameter inside copy 1's columns is not a chain)."""
     sheet = book.sheets.get(finding["sheet"])
     if sheet is None:
         return 0.0
@@ -186,9 +186,9 @@ def chain_share(book: ShapeBook, finding: dict[str, Any]) -> float:
 
 
 def consecutive_reads(book: ShapeBook, group: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
-    """Do the sheet copies read each other? A CHAIN when every member after the first reads the
+    """Do  the sheet  copies read each other? A CHAIN when every member after the first reads the
     member before it (any number of cells); every other link is a cross read
-    [{from, to, cells}] (a value one copy needs from another: an override need, not a chain)."""
+    [{from, to, cells}] (a value  one copy needs from another: an override need, not a chain)."""
     members = list(group["members"])
     mset = set(members)
     reads: dict[str, Counter] = {m: Counter() for m in members}
@@ -208,7 +208,7 @@ def consecutive_reads(book: ShapeBook, group: dict[str, Any]) -> tuple[bool, lis
 
 
 def adding_cells(book: ShapeBook, members: list[str]) -> tuple[int, str | None]:
-    """Formula cells on other sheets that read two or more of the members (who adds the copies
+    """Formula  cells on  other sheets that read two or more of the members (who adds the copies
     up), and one example cell."""
     mset = set(members)
     count, example = 0, None
@@ -238,10 +238,10 @@ def _increasing(values: list[Any]) -> bool:
 
 
 def _header_hint(book: ShapeBook, sheet: SheetShape, axis: str, lo: int, hi: int) -> str:
-    """What the first filled row above (column left of) the repetition holds, reading from the top
+    """What  the first  filled row above (column left of) the repetition holds, reading from the top
     (left) of the sheet: "formulas", "numbers" (rising: a time axis of years, months, durations),
-    "text" (names of items; also numbers that do not rise), or "none". Constants come from the
-    workbook when it is open; without it only formula cells are seen."""
+    "text" (names of items; also numbers  that do not rise), or "none". Constants come from the
+    workbook when  it is open; without it only  formula cells are seen."""
     ws = book.worksheet(sheet.name)
     const = getattr(ws, "_cells", None) if ws is not None else None
     width = hi - lo + 1
@@ -250,7 +250,7 @@ def _header_hint(book: ShapeBook, sheet: SheetShape, axis: str, lo: int, hi: int
     need = max(2, len(positions) // 2)
     first, last = (sheet.r_lo, sheet.r_hi) if axis == "columns" else (sheet.c_lo, sheet.c_hi)
     cells = sheet.cells
-    for line in range(max(1, first - 50), min(last, first + 50) + 1):  # a header sits near the block
+    for line in range(max(1, first - 50), min(last, first + 50) + 1):  # a header sits near  the block
         n_f = n_num = n_txt = 0
         nums: list[Any] = []
         for pos in positions:
@@ -286,7 +286,7 @@ def _header_hint(book: ShapeBook, sheet: SheetShape, axis: str, lo: int, hi: int
 
 
 def _match_profile(prof: dict[int, dict[int, int]], npos: int, p: int) -> list[float | None]:
-    """For each position i: share of the formula cells of positions i and i+p that are equal
+    """For  each position  i: share of the formula cells of positions i and i+p that are equal
     (loose-1), None when both hold no formula. Positions past the end count as empty."""
     out: list[float | None] = [None] * npos
     for i in range(npos):
@@ -335,7 +335,7 @@ def _cells_of_positions(sheet: SheetShape, axis: str, positions: list[int]) -> l
 
 
 def _uniform_axes(book: ShapeBook, cells: list[tuple[int, int]], sheet: SheetShape) -> dict[str, int] | None:
-    """A uniform area: one loose-1 shape in >= 90 % of its cells and >= 90 % of its rectangle
+    """A  uniform area:  one loose-1 shape in >= 90 % of its cells and >= 90 % of its rectangle
     filled -> both axes, else None."""
     if not cells:
         return None
@@ -372,11 +372,11 @@ def _finding(book: ShapeBook, sheet: SheetShape, axis: str, positions: list[list
 
 
 def bands(book: ShapeBook, sheet: SheetShape, axis: str, budget: Budget | None = None) -> list[dict[str, Any]]:
-    """Blocks of `width` positions (columns or rows) repeated `copies` times side by side, each
+    """Blocks  of `width`  positions (columns or rows) repeated `copies` times side by side, each
     block >= MIN_FORMULAS formula cells and >= 90 % equal (loose-1) to the next; then fills: one
-    position repeated >= MIN_FILL times (`fill: True`; a uniform area carries both `axes`). Each
-    finding: sheet, axis, where, start, width, copies, positions (per copy), per_copy, n_cells,
-    cells {copy index: [(row, col)..]}, fill, axes, header, first_cell, first_formula_index,
+    position repeated >= MIN_FILL times  (`fill: True`; a uniform area carries both `axes`). Each
+    finding: sheet, axis,  where, start, width, copies, positions (per  copy), per_copy, n_cells,
+    cells {copy index: [(row, col)..]},  fill, axes, header, first_cell, first_formula_index,
     chain_share, diff, and for fills time_axis."""
     if sheet.n < MIN_FORMULAS:
         return []
@@ -397,7 +397,7 @@ def bands(book: ShapeBook, sheet: SheetShape, axis: str, budget: Budget | None =
     found: list[dict[str, Any]] = []
     taken = [False] * npos
     m1 = _match_profile(prof, npos, 1)
-    # bands of width p >= 2 (positions empty in both count as matching); a range that is one pure
+    # bands of  width p >= 2 (positions empty in  both count as matching); a range that is one pure
     # fill (every position equal to the next) holds no band: every block would fail the fill test
     if not all(v is None or v >= SIM_COLS for v in m1[:npos - 1]):
         for p in range(2, min(PMAX, npos // 2) + 1):
@@ -437,11 +437,11 @@ def _cell_set(f: dict[str, Any]) -> frozenset:
 
 
 def sheet_findings(book: ShapeBook, sheet: SheetShape, budget: Budget | None = None) -> list[dict[str, Any]]:
-    """Bands and fills of one sheet along both axes, deduplicated. The same cells found twice are
+    """Bands  and fills  of one sheet along both axes, deduplicated. The same cells found twice are
     kept once: two blocks -> the version with more copies; a block and a fill -> the block, which
-    keeps the fill as its `inner_axis` (the rows of a band of column blocks repeat too: that is the
-    band's own time or item axis, not a finding of its own); two fills of the same area -> ONE fill
-    with both axes (`axes`, `chain_shares`, `time_axes`, `headers` per axis). A coarse fill (whole
+    keeps  the fill as its `inner_axis` (the rows of a band of  column blocks repeat too: that is  the
+    band's own time or item axis, not  a finding of its own); two fills of the same area  -> ONE fill
+    with both axes (`axes`, `chain_shares`,  `time_axes`, `headers` per axis). A coarse fill (whole
     columns repeated, several formulas down each) that holds a UNIFORM area found along the other
     axis gives way to that area: the area keeps the coarse fill's axis facts and names it in
     `within`; the coarse fill is dropped (its computed index would be read from the wrong row)."""
@@ -450,7 +450,7 @@ def sheet_findings(book: ShapeBook, sheet: SheetShape, budget: Budget | None = N
     dropped: set[int] = set()
     for f in bands(book, sheet, "rows", budget):
         fs = _cell_set(f)
-        overlaps = []  # dropped coarse fills stay in: every uniform area inside them inherits their axis facts
+        overlaps = []  # dropped coarse fills stay in: every uniform area  inside them inherits their axis facts
         for i, gs in enumerate(sets):
             inter = len(fs & gs)
             if inter and inter >= SIM_COLS * min(len(fs), len(gs)):
@@ -501,7 +501,7 @@ def sheet_findings(book: ShapeBook, sheet: SheetShape, budget: Budget | None = N
 
 
 def _merge_fill_axis(target: dict[str, Any], source: dict[str, Any]) -> None:
-    """The other axis's facts of the same (or the enclosing) fill."""
+    """The  other axis's  facts of the same (or the enclosing) fill."""
     target["chain_shares"][source["axis"]] = source["chain_share"]
     target["time_axes"][source["axis"]] = source["time_axis"]
     target["headers"][source["axis"]] = source["header"]
@@ -519,7 +519,7 @@ def _inner_axis(fill: dict[str, Any]) -> dict[str, Any]:
             "time_axis": fill["time_axis"]}
 
 
-# --- P3: sheet copies ----------------------------------------------------------------------------
+# ---  P3: sheet  copies ----------------------------------------------------------------------------
 def _overlap(a: Counter, b: Counter) -> float:
     keys = a.keys() | b.keys()
     mn = sum(min(a.get(k, 0), b.get(k, 0)) for k in keys)
@@ -528,7 +528,7 @@ def _overlap(a: Counter, b: Counter) -> float:
 
 
 def _aligned_similarity(a: dict[tuple[int, int], int], b: dict[tuple[int, int], int], L1: list[int]) -> float:
-    """Share of the formula cells of two sheets (by address) that hold the same loose-1 shape."""
+    """Share  of the  formula cells of two sheets (by address) that hold the same loose-1 shape."""
     same = common = 0
     for k, v in a.items():
         w = b.get(k)
@@ -541,9 +541,9 @@ def _aligned_similarity(a: dict[tuple[int, int], int], b: dict[tuple[int, int], 
 
 
 def sheet_copies(book: ShapeBook, budget: Budget | None = None) -> list[dict[str, Any]]:
-    """Groups of sheets with the same formulas at the same addresses (>= SIM_SHEETS of the union
+    """Groups  of sheets  with the same formulas at the same addresses (>= SIM_SHEETS of the union
     equal in loose-1), in workbook order. Per group: members, per_copy (formulas of the first),
-    per_copy_formulas, copies, min_similarity (the weakest pair), cells {member: {(row, col): id}},
+    per_copy_formulas, copies, min_similarity (the weakest pair),  cells {member: {(row, col): id}},
     diff, chain, cross_reads, adding_cells, adding_example."""
     order = list(book.sheet_order) + [n for n in book.sheets if n not in book.sheet_order]
     cands = [n for n in order if n in book.sheets and book.sheets[n].n >= MIN_FORMULAS]
@@ -597,9 +597,9 @@ def sheet_copies(book: ShapeBook, budget: Budget | None = None) -> list[dict[str
     return out
 
 
-# --- P4: how the copies differ, and the edits that would unify them ------------------------------
+# --- P4: how  the copies differ, and the edits  that would unify them ------------------------------
 def _constant(cells: Any, row: int, col: int) -> Any:
-    """The typed-in value of a cell (None for an empty cell, a formula, or anything unusual)."""
+    """The  typed-in value  of a cell (None for an empty cell, a formula, or anything unusual)."""
     c = cells.get((row, col)) if cells is not None else None
     if c is None:
         return None
@@ -643,19 +643,19 @@ def _constants_differ(wb: Any, positions_per_copy: list[list[tuple[str, int, int
 
 
 def numbers_differ(wb: Any, positions_per_copy: list[list[tuple[str, int, int]]]) -> list[dict[str, Any]]:
-    """Positions (aligned per copy, as (sheet, row, col)) where EVERY copy holds a typed-in number
+    """Positions  (aligned per  copy, as (sheet, row, col)) where EVERY copy holds a typed-in number
     and the numbers differ: [{cell (copy 1), values (per copy)}]."""
     return _constants_differ(wb, positions_per_copy, _is_number)
 
 
 def texts_differ(wb: Any, positions_per_copy: list[list[tuple[str, int, int]]]) -> list[dict[str, Any]]:
-    """Like numbers_differ for typed-in texts."""
+    """Like  numbers_differ for  typed-in texts."""
     return _constants_differ(wb, positions_per_copy, lambda v: isinstance(v, str))
 
 
 def constant_positions(wb: Any, sheet: str, rect: tuple[int, int, int, int] | None = None, want=_is_number,
                        limit: int = 200_000) -> list[tuple[int, int]]:
-    """(row, col) of the typed-in values of a sheet (numbers by default), inside `rect`
+    """(row,  col) of  the typed-in values of a sheet (numbers by default), inside `rect`
     (r1, c1, r2, c2) when given; row-major. Reads the sheet's own cells, nothing is created."""
     try:
         cells = getattr(wb[sheet], "_cells", None) if wb is not None and sheet in wb.sheetnames else None
@@ -684,7 +684,7 @@ def constant_positions(wb: Any, sheet: str, rect: tuple[int, int, int, int] | No
 
 
 def copy_positions(book: ShapeBook, finding: dict[str, Any], wb: Any) -> list[list[tuple[str, int, int]]]:
-    """The typed-in numbers of copy 1 (a sheet group: the whole first member; a band: its own
+    """The  typed-in numbers  of copy 1 (a sheet group: the whole first member; a band: its own
     columns or rows) at the same place in every copy, for numbers_differ."""
     if wb is None:
         return []
@@ -720,7 +720,7 @@ def _all_keys(stacks: list[dict[tuple[int, int], int]]) -> list[tuple[int, int]]
 
 
 def formula_numbers_differ(book: ShapeBook, stacks: list[dict[tuple[int, int], int]]) -> list[dict[str, Any]]:
-    """Cells whose copies differ only in a typed-in number inside the formula (=C7*0.1 vs =C7*0.12):
+    """Cells  whose copies  differ only in a typed-in number inside the formula (=C7*0.1 vs =C7*0.12):
     [{cell (copy 1), literals (per copy, in order)}]."""
     L1, L2 = book.loose[1], book.loose[2]
     out: list[dict[str, Any]] = []
@@ -737,10 +737,10 @@ def formula_numbers_differ(book: ShapeBook, stacks: list[dict[tuple[int, int], i
 
 
 def logic_cells(book: ShapeBook, stacks: list[dict[tuple[int, int], int]]) -> list[dict[str, Any]]:
-    """Cells of different logic: [{cell, formulas (A1 per copy, None where the copy has none),
+    """Cells  of different  logic: [{cell, formulas (A1 per copy, None where the copy has none),
     action}]. The action: "IF on the copy's key" when the cell exists in every copy with at most
-    MAX_IF_FORMS distinct formulas, "override kept per copy" for more forms, "size differs" for a
-    cell present in some copies only."""
+    MAX_IF_FORMS distinct formulas,  "override kept per copy" for more forms, "size differs" for a
+    cell  present in some copies only."""
     L1, L2 = book.loose[1], book.loose[2]
     out: list[dict[str, Any]] = []
     for k in _all_keys(stacks):
@@ -761,9 +761,9 @@ def logic_cells(book: ShapeBook, stacks: list[dict[tuple[int, int], int]]) -> li
 
 
 def edits_for(book: ShapeBook, finding: dict[str, Any], wb: Any = None) -> dict[str, Any]:
-    """The edits that would unify the copies of a band / fill / sheet group, each list capped at
+    """The  edits that  would unify the copies of a band / fill / sheet group, each list capped at
     MAX_EDITS with complete counts: numbers (typed-in numbers that differ; needs the workbook),
-    formula_numbers, logic (with the IF-or-override action), size (cells in some copies only)."""
+    formula_numbers, logic (with the IF-or-override  action), size (cells in some copies only)."""
     st = stacks_of(book, finding)
     fnums = formula_numbers_differ(book, st)
     logic_all = logic_cells(book, st)
@@ -779,18 +779,18 @@ def edits_for(book: ShapeBook, finding: dict[str, Any], wb: Any = None) -> dict[
     }
 
 
-# --- what a repetition steps through ----------------------------------------------------------------
+# --- what a repetition steps  through ----------------------------------------------------------------
 def _relative_step(book: ShapeBook, finding: dict[str, Any]) -> dict[str, Any] | None:
-    """Copies whose cells read a DIFFERENT input at the same place (same loose-1 shape, different
+    """Copies  whose cells  read a DIFFERENT input at the same place (same loose-1 shape, different
     references): when the targets of copy j sit (j-1)*s rows or (j-1)*w columns after copy 1's,
-    the copies step through one area. The most common target wins."""
+    the copies step through one  area. The most common target wins."""
     stacks = stacks_of(book, finding)
     if len(stacks) < 2:
         return None
     L1 = book.loose[1]
     cands: Counter = Counter()  # (target sheet, axis, stride) -> cells
-    hulls: dict[tuple, list[int]] = {}  # -> [r1, r2, c1, c2] over every target seen
-    last_starts: dict[tuple, int] = {}  # -> the first row/column of the last copy's targets
+    hulls: dict[tuple, list[int]] = {}  # ->  [r1, r2, c1, c2] over every  target seen
+    last_starts: dict[tuple, int] = {}  # -> the first row/column of the  last copy's targets
     for k in stacks[0]:
         ids = [s.get(k) for s in stacks]
         first = ids[0]
@@ -834,7 +834,7 @@ def _relative_step(book: ShapeBook, finding: dict[str, Any]) -> dict[str, Any] |
         return None
     (target, axis, stride), n = cands.most_common(1)[0]
     hull = hulls[(target, axis, stride)]
-    if axis == "rows":  # the last copy's target reaches to the end of its slot
+    if axis == "rows":  # the last copy's target reaches to the end of  its slot
         hull[1] = max(hull[1], last_starts[(target, axis, stride)] + stride - 1)
     else:
         hull[3] = max(hull[3], last_starts[(target, axis, stride)] + stride - 1)
@@ -855,7 +855,7 @@ _CALL_FORMS = (
 
 
 def _unwrap(text: str) -> str:
-    """The text without a pair of parentheses that wraps all of it: "(COLUMN()-14)" -> "COLUMN()-14".
+    """The  text without  a pair of parentheses that wraps all of it: "(COLUMN()-14)" -> "COLUMN()-14".
     Parentheses inside string literals do not count; "(a)*(b)" is not wrapped and stays."""
     t = text.strip()
     while len(t) > 1 and t.startswith("(") and t.endswith(")"):
@@ -870,17 +870,17 @@ def _unwrap(text: str) -> str:
             elif ch == ")":
                 depth -= 1
                 if depth == 0 and i < len(t) - 1:
-                    return t  # the first parenthesis closes before the end: no wrap
+                    return t  # the first parenthesis closes before the end: no  wrap
         t = t[1:-1].strip()
     return t
 
 
 def _computed_arg(text: str) -> dict[str, Any] | None:
-    """One OFFSET/INDEX displacement argument read for the stepping idioms: (ROW()-n)*w, w*(ROW()-n),
+    """One  OFFSET/INDEX displacement  argument read for the stepping idioms: (ROW()-n)*w, w*(ROW()-n),
     ROW()-n (w 1), the same with COLUMN(); w*(COUNTA(expanding range)-1); w*(MATCH(key, list, 0)-1).
-    The parentheses must balance -- ROW()-21*10 is ROW()-210 in Excel, not one of the idioms -- and a
-    pair wrapping the whole text is dropped first. The finder's one parser of these idioms:
-    app.finder_grouping.displacement_form reads through it, so both passes see the same forms."""
+    The parentheses must balance -- ROW()-21*10 is ROW()-210 in Excel, not one of  the idioms -- and a
+    pair wrapping the whole text is dropped  first. The finder's one parser of  these idioms:
+    app.finder_grouping.displacement_form reads through it, so both  passes see the same forms."""
     t = _unwrap(text.replace("@", ""))
     for rx in _ROWCOL_FORMS:
         m = rx.match(t)
@@ -898,7 +898,7 @@ def _computed_arg(text: str) -> dict[str, Any] | None:
         if fn == "COUNTA" and args:
             rng = parse_ref(args[0])
             if not rng or rng["whole_column"] or rng["whole_row"]:
-                return None  # a whole column is no expanding range: its count is the same in every cell
+                return None  # a whole column is no expanding range:  its count is the same in every  cell
             # an expanding range down one column counts rows; along one row it counts columns; a block is no idiom
             if rng["c1"] == rng["c2"]:
                 step_axis = "rows"
@@ -916,7 +916,7 @@ def _computed_arg(text: str) -> dict[str, Any] | None:
 
 
 def _resolve_anchor(text: str, own_sheet: str, names: Any) -> tuple[str, int, int] | None:
-    """A reference or a defined name -> (sheet, row, col) of its top-left cell."""
+    """A  reference or  a defined name -> (sheet, row, col) of its top-left cell."""
     t = text.strip().replace("@", "")
     r = parse_ref(t)
     if r is None and names is not None:
@@ -928,11 +928,11 @@ def _resolve_anchor(text: str, own_sheet: str, names: Any) -> tuple[str, int, in
 
 
 def step_target(book: ShapeBook, finding: dict[str, Any], a1_text: str | None, names: Any = None) -> dict[str, Any] | None:
-    """What the copies of a finding step through. Two ways: differing relative references (a band
+    """What  the copies  of a finding step through. Two ways: differing relative references (a band
     whose copy j reads row/column j of an input area) or a computed index in the A1 text of the
-    first cell (OFFSET/INDEX with ROW/COLUMN/COUNTA/MATCH arithmetic, the use case's way). Returns
-    {sheet, r1, c1, r2, c2 (the area stepped through), stride, axis (slots along rows|columns),
-    computed: None | {form, anchor, w, slot_axis, step_axis, key, list, ...}} or None."""
+    first  cell (OFFSET/INDEX with ROW/COLUMN/COUNTA/MATCH arithmetic, the use case's way). Returns
+    {sheet, r1,  c1, r2, c2 (the area stepped  through), stride, axis (slots along rows|columns),
+    computed: None  | {form, anchor, w, slot_axis, step_axis, key, list, ...}} or None."""
     out = None
     if not finding.get("fill") and "members" not in finding:
         out = _relative_step(book, finding)
@@ -986,9 +986,9 @@ def _computed_step(book: ShapeBook, finding: dict[str, Any], a1_text: str, names
         v0 = (min(along) - best["n"]) * w if form in ("row", "column") and along else 0
     if best["index"]:
         v0 -= 1
-    # the slots along the slot axis; the other axis follows a second computed argument (w 1) or is one line.
-    # The hull runs from the first read cell to the last one (anchor .. anchor + w*(positions-1)): the
-    # index may land anywhere inside its slot, so a whole last slot would reach w-1 cells past the area.
+    # the  slots along  the slot axis; the other axis follows a second computed argument (w 1) or is one line.
+    # The hull runs from the first read cell to the last one (anchor .. anchor  + w*(positions-1)): the
+    # index may land anywhere inside its slot, so a  whole last slot would reach w-1  cells past the area.
     other = next((c for c in cands if c is not best and c["slot_axis"] != best["slot_axis"] and c["form"] in ("row", "column")), None)
     if other is not None:
         o_along = rows if other["step_axis"] == "rows" else cols

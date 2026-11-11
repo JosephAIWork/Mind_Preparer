@@ -1,21 +1,21 @@
-"""The one answer the user needs: is this workbook acceptable by Mind,
+"""The  one answer  the user needs: is this workbook acceptable by Mind,
 and if not, what exactly stands in the way?
 
 The engine already knows everything: each finding carries the rule's
-priority (REQUIRED / RECOMMENDED / INFORMATIONAL), the prep plan says which
-findings have an automatic fix, and the recalculation adapter says whether
-Excel evaluated the file cleanly. This module only assembles those facts into
-one verdict with three states -- it never judges a workbook on its own:
+priority (REQUIRED / RECOMMENDED / INFORMATIONAL),  the prep plan says which
+findings have an automatic fix, and the  recalculation adapter says whether
+Excel evaluated the  file cleanly. This module only assembles those  facts into
+one verdict with three states -- it never judges a  workbook on its own:
 
-  blocked     one or more REQUIRED rules are in ERROR (or wait for user input):
+  blocked     one or more REQUIRED  rules are in ERROR (or wait for user input):
               Mind's converter refuses the file or computes it wrong.
-  unverified  nothing blocks, but the current version was not recalculated
+  unverified nothing blocks, but the current version was not recalculated
               in Excel (or the recalculation found genuine formula errors).
   ready       nothing blocks and a real recalculation of this version is clean
               (add-in gaps -- #NAME? on MM_ functions when MMForExcel is
               missing on this machine -- are not workbook defects).
 
-Everything else (WARNING findings, ERRORs from non-required rules) is
+Everything  else (WARNING findings, ERRORs from non-required rules) is
 "optional": Mind reads the file as it is; the change improves it.
 
 Every entry that names a rule carries its plain name (`rule_name`), and every
@@ -30,12 +30,12 @@ from .plain_codes import cite, cite_all, rule_name
 
 BLOCKING_STATUSES = ("ERROR", "REQUIRES_USER_INPUT")
 RECALC_RULE = "READY-001"
-# Outside input files (app/outside_inputs.py): fixed by its own step, "Bring in the outside files"
+# Outside  input files  (app/outside_inputs.py): fixed by its own step, "Bring in the outside files"
 OUTSIDE_RULE = "INP-010"
 
 
 def level_of(finding: dict[str, Any]) -> str:
-    """'blocking' for a REQUIRED rule that fails, 'optional' for anything else
+    """'blocking'  for a  REQUIRED rule that fails, 'optional' for anything else
     that is not PASS, 'pass' otherwise. The recalculation rule is 'verify'."""
     if finding["rule_id"] == RECALC_RULE:
         return "verify"
@@ -48,10 +48,10 @@ def level_of(finding: dict[str, Any]) -> str:
 
 
 def _fix_route(rule_id: str, plan: list[dict[str, Any]]) -> tuple[str, str | None]:
-    """How a finding can be fixed: ('prep', action_id) when a plan action holds
+    """How  a finding  can be fixed: ('prep', action_id) when a plan action holds
     operations for the rule, ('prep_skipped', action_id) when the action
     exists but left every site for review, ('outside_inputs', None) for the
-    outside input files (their own step), else ('assistant', None)."""
+    outside input files (their  own step), else ('assistant', None)."""
     if rule_id == OUTSIDE_RULE:
         return "outside_inputs", None
     for a in plan:
@@ -64,16 +64,16 @@ def _fix_route(rule_id: str, plan: list[dict[str, Any]]) -> tuple[str, str | Non
 
 
 def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, Any]:
-    """What the last recalculation says about *this* version."""
+    """What  the last  recalculation says about *this* version."""
     if not recalc or recalc.get("version_id") != version_id:
         return {"ran": False, "clean": False, "version_id": recalc.get("version_id") if recalc else None, "formula_errors": 0, "addin_gap_errors": 0, "message": "not recalculated for this version"}
     ran = bool(recalc.get("ran", recalc.get("status") != "NOT_SUPPORTED"))
     errors = recalc.get("formula_errors") or []
     gaps = recalc.get("addin_gap_errors") or []
     # An error cell that was already an error in the original upload is the
-    # model's own (a #DIV/0! on an empty year, a #N/A lookup): it did not come
-    # from the preparation and Mind takes the file with it. Only *new* errors
-    # keep the verdict from turning green.
+    # model's own (a #DIV/0! on an empty year, a #N/A lookup): it did not  come
+    # from the preparation and Mind takes the file with it. Only  *new* errors
+    # keep the verdict from turning  green.
     preexisting = int(recalc.get("preexisting_errors") or 0) if "preexisting_errors" in recalc else 0
     new_errors = int(recalc["new_errors"]) if "new_errors" in recalc else len(errors)
     if ran:
@@ -159,14 +159,14 @@ def _site_count(f: dict[str, Any]) -> int | None:
 
 def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -> dict[str, Any]:
     if state == "blocked":
-        # The outside files first: the workbook's own macro brings them in, and it writes to fixed
+        # The  outside files  first: the workbook's own macro brings them in, and it writes to fixed
         # places -- before Prep inserts a row anywhere
         outside = next((b for b in blocking if b["rule_id"] == OUTSIDE_RULE), None)
         if outside is not None:
             n = outside.get("sites")
             return {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": f"{n} file{'' if n == 1 else 's'} the workbook's macro opens" if n else None,
                     "rule_id": OUTSIDE_RULE, "rule_name": rule_name(OUTSIDE_RULE)}
-        # Only a Prep action that targets a *blocking finding* counts here -- a
+        # Only a Prep action that targets a *blocking finding* counts here --  a
         # blocking-level action with work left for an optional finding does not.
         via_prep = [b for b in blocking if b["fix"] == "prep"]
         if via_prep:
@@ -182,7 +182,7 @@ def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -
 
 
 def apply_record(outcome: dict[str, Any]) -> dict[str, Any]:
-    """One line of the applied-changes gauge: what an Apply really wrote into
+    """One  line of  the applied-changes gauge: what an Apply really wrote into
     the file, by level, and how many of its repairs resolved their problem."""
     by_level = {lvl: {"applied": 0, "failed": 0} for lvl in ("blocking", "optional")}
     verdicts: dict[str, int] = {}
@@ -207,16 +207,16 @@ def apply_record(outcome: dict[str, Any]) -> dict[str, Any]:
 
 
 def prep_progress(history: list[dict[str, Any]], applies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """How the prep work evolves over the session's versions: one entry per
+    """How  the prep  work evolves over the session's versions: one entry per
     analysis with the operation counts, whether the last rounds stalled (the
     same operations coming back -- Prep cannot resolve them), and one entry
-    per Apply with the changes it really wrote (`applies`, `written`)."""
+    per Apply  with the changes it really wrote (`applies`, `written`)."""
     applies = list(applies or [])
     written = {k: sum(a.get(k, 0) for a in applies) for k in ("sent", "applied", "failed", "blocking_applied", "blocking_failed", "optional_applied", "optional_failed")}
     entries = [{k: h.get(k) for k in ("version_id", "blocking_ops", "optional_ops", "total_ops", "blocking_findings", "open_findings", "status_counts", "by_action")} for h in history]
-    # Stalled: three analyses in a row with work planned and no net decrease.
-    # (Exact repetition is not required -- a row insert that never resolves
-    # shifts its row number every round, yet the count never goes down.)
+    # Stalled: three analyses in  a row with work planned and  no net decrease.
+    # (Exact repetition is not required  -- a row insert that never resolves
+    # shifts its row number every  round, yet the count never goes down.)
     stalled = False
     if len(entries) >= 3:
         totals = [e["total_ops"] or 0 for e in entries[-3:]]
@@ -239,7 +239,7 @@ def plan_counts(plan: list[dict[str, Any]]) -> dict[str, int]:
     return {a["id"]: int(a.get("count", 0)) for a in plan}
 
 
-# --- what an Apply did --------------------------------------------------------------
+# ---  what an  Apply did --------------------------------------------------------------
 STATUS_RANK = {"PASS": 0, "WARNING": 1, "REQUIRES_USER_INPUT": 2, "NOT_SUPPORTED": 3, "ERROR": 4}
 MANUAL_SOURCES = {"assistant": "Assistant fix", "formula_replacement": "Formula fix", "mind_loop": "Mind loop", "mind_instances": "Mind instances"}
 
@@ -259,7 +259,7 @@ def _rule_move(rule_id: str, before: dict[str, dict[str, Any]], after: dict[str,
         "rule_id": rule_id,
         "rule_name": rule_name(rule_id),
         "from": b.get("status") if b else None,
-        # a rule the new analysis no longer reports has nothing left to say: it passes
+        # a  rule the  new analysis no longer reports has nothing left to say: it passes
         "to": None if after is None else (a.get("status") if a else "PASS"),
         "sites_from": _site_count(b) if b else None,
         "sites_to": None if after is None else (_site_count(a) if a else 0),
@@ -269,10 +269,10 @@ def _rule_move(rule_id: str, before: dict[str, dict[str, Any]], after: dict[str,
 
 
 def _verdict(applied: int, rules: list[dict[str, Any]], planned_before: int | None, planned_after: int | None, reanalyzed: bool) -> str:
-    """resolved: every rule the changes serve passes and nothing more is planned.
+    """resolved:  every rule  the changes serve passes and nothing more is planned.
     partial: something moved (a better status, fewer sites, fewer repairs planned).
-    unchanged: the changes were written and the new analysis says the same as before.
-    failed: nothing could be written. written: written, no analysis to compare with."""
+    unchanged: the changes were written and the new analysis says the same as  before.
+    failed: nothing could be written. written: written, no analysis to compare  with."""
     if applied == 0:
         return "failed"
     if not reanalyzed:
@@ -290,7 +290,7 @@ def _verdict(applied: int, rules: list[dict[str, Any]], planned_before: int | No
 
 
 def _action_summary(a: dict[str, Any]) -> tuple[str, str]:
-    """(the whole sentence, its conclusion alone): what was written and how the
+    """(the  whole sentence,  its conclusion alone): what was written and how the
     rules moved, then what is left and who acts."""
     written = f"{_plural(a['applied'], 'change')} written"
     if a["failed"]:
@@ -333,11 +333,11 @@ def apply_outcome(
     version_id: str,
     previous_version_id: str | None,
 ) -> dict[str, Any]:
-    """What an Apply did, repair by repair: how many changes were written, what
+    """What  an Apply  did, repair by repair: how many changes were written, what
     the rule said before and says now, what is still planned or left by hand,
-    and which repairs the new analysis plans that the previous one did not.
-    Only facts from the two analyses and the executor's result -- nothing is
-    judged here. Without a re-analysis (`after_*` None) only the writes are known."""
+    and which repairs the new analysis plans that  the previous one did not.
+    Only facts from the two analyses and  the executor's result -- nothing is
+    judged  here. Without a re-analysis (`after_*` None) only  the writes are known."""
     reanalyzed = after_report is not None and after_plan is not None
     before = {f["rule_id"]: f for f in (before_report or {}).get("findings", [])}
     after = {f["rule_id"]: f for f in after_report.get("findings", [])} if reanalyzed else None
@@ -417,7 +417,7 @@ def apply_outcome(
             by_hand = [cite(r["rule_id"]) for r in remaining if r["fix"] not in ("prep", "outside_inputs")]
             via_prep = [cite(r["rule_id"]) for r in remaining if r["fix"] == "prep"]
             outside = [cite(r["rule_id"]) for r in remaining if r["fix"] == "outside_inputs"]
-            # what to do first, then the rules it is for: each rule already carries its name in brackets
+            # what to do first, then the rules it  is for: each rule already carries its  name in brackets
             parts = (([f"Prep has a repair (apply it): {_some(via_prep)}"] if via_prep else []) + ([f"bring in the outside files: {_some(outside)}"] if outside else [])
                      + ([f"no automatic repair (by hand or with the assistant): {_some(by_hand)}"] if by_hand else []))
             headline += f" -- left: {'; '.join(parts)}"

@@ -1,10 +1,10 @@
-"""Turn every pivot table of a workbook into plain cells (values and formats), in a copy, through Excel.
+"""Turn  every pivot  table of a workbook into plain cells (values and formats), in a copy, through Excel.
 
     python scripts/pivots_to_values.py <workbook> <out workbook> [--only "Sheet1!PivotTable4,CFs!PivotTable6"]
 
-Mind's converter stopped on a client model with "The method or operation is not implemented" -- the only
-parts no accepted workbook had were its 8 pivot tables (one with a grouped field) and a web add-in. Mind
-imports values only, so a pivot table as values is what Mind would read: each pivot's whole range (its
+Mind's converter stopped on a client model with "The method or  operation is not implemented" -- the only
+parts no accepted workbook had  were its 8 pivot tables (one  with a grouped field) and a web  add-in. Mind
+imports values only, so a pivot table as values is  what Mind would read: each pivot's whole  range (its
 report filters included) is copied as values and number formats to a scratch sheet, the pivot is
 removed, and the copy is pasted back where it was. Formulas that read those cells keep reading the same
 values; GETPIVOTDATA would not (the script refuses a workbook that uses it). Prints what it did as JSON.
@@ -41,7 +41,7 @@ def main() -> int:
         wb = open_for_write(excel, out)
         try:
             calc = excel.Calculation
-            excel.Calculation = -4135  # manual while cells move
+            excel.Calculation = -4135  # manual  while cells  move
             for n in range(1, int(wb.Worksheets.Count) + 1):
                 ws = wb.Worksheets(n)
                 if ws.UsedRange.Find(What="GETPIVOTDATA", LookIn=-4123, LookAt=2) is not None:  # in formulas, part of the text

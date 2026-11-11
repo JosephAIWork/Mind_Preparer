@@ -1,10 +1,10 @@
-"""Ask Mind's own AI Assistant (the panel inside an open project) a question and record the answer.
+"""Ask  Mind's own  AI Assistant (the panel inside an open project) a question and record the answer.
 
     python scripts/mind_ask.py <project init url> "<question>" [--out <dir>] [--wait 180]
 
-Opens the project in the dedicated Edge profile (signed in), types the question into the assistant's
-box, presses Ask, waits for the reply to settle, and writes answer.txt + a screenshot into --out.
-Read-only: the assistant has no agentic features; nothing in the project changes.
+Opens the project in the dedicated Edge profile (signed  in), types the question into the assistant's
+box, presses Ask, waits for  the reply to settle, and writes  answer.txt + a screenshot into --out.
+Read-only: the  assistant has no agentic features; nothing in the project changes.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def main() -> int:
                 close.first.click(timeout=3000)
         except Exception:
             pass
-        # the assistant panel: open it when its box is not on the page yet
+        # the  assistant panel:  open it when its box is not on the page yet
         box = page.locator("textarea, input[type=text]").filter(has_not=page.locator("[type=file]"))
         found = None
         for _ in range(3):

@@ -1,32 +1,32 @@
-"""Next quarter's Mind input files -- from the client's RAW input files to the files Mind's Inputs
+"""Next  quarter's Mind  input files -- from the client's RAW input files to the files Mind's Inputs
 window takes.
 
 Once the outside files are brought in (app/outside_inputs.py), the model in Mind reads each outside
-file's data from an `IN_<sheet> /Input` grid. Each quarter the Mind team gives Mind new data for
-those grids in the project's **Inputs** window. Mind checks every file against its grid: the same
-name, the same header, the same columns. A raw input file (the quarterly cash-flow file itself, as
+file's data from  an `IN_<sheet> /Input` grid. Each quarter the Mind team gives Mind  new data for
+those grids in the  project's **Inputs** window. Mind checks every file  against its grid: the same
+name, the same header, the same columns.  A raw input file (the quarterly cash-flow  file itself, as
 the client's tool opens it) does not fit: Mind refuses it ("The file 2026_Q1 - BBA_01.csv doesn't
 have proper headers, there are 1340 columns while grid 'IN_BBA_01' of instance Original_Instance has
 93 columns"). The grid holds only the block the model's import macro pulls out of the raw file,
 often turned (items across, months down).
 
-So the app does what the client's tool does, then writes the grids out:
+So the app does what the client's tool  does, then writes the grids out:
 
 1. the picked files are sorted (`classify_files`): a file already shaped like a grid (its header is
    the grid's header) goes into the zip as it is, under the grid's name; any other file is a raw
    input file, matched to the model's import table like the files picked with the model (a file
    named like a grid but shaped otherwise is read as a raw file, and said so). A grid file must be
-   UTF-8 text; a comma-separated `.txt` goes in as `<grid>.csv` (Mind reads a `.txt` as TAB-separated);
-2. the model's OWN import macro runs on a copy of the version the outside files were first brought
+   UTF-8 text; a comma-separated `.txt`  goes in as `<grid>.csv` (Mind  reads a `.txt` as TAB-separated);
+2. the model's  OWN import macro  runs on  a copy of the version the outside files were first brought
    into, with the new raw files exactly as picked (`outside_inputs.run_import`: an Excel of the app's
-   own, message boxes answered). The macro opens each file its own way, as at the bring-in (its
-   OpenText settings, its checks of the name): the values are exactly as the client's tool puts them.
-   A raw .csv is not touched first: Excel keeps 15 significant digits of its numbers, as in the
+   own, message boxes answered). The macro opens  each file its own way, as at the bring-in (its
+   OpenText settings,  its checks of the name): the  values are exactly as the client's tool  puts them.
+   A raw .csv is not touched first: Excel keeps 15  significant digits of its numbers, as in  the
    client's tool, and the bring-in from the same file gives the same values;
 3. each grid's block is read from that copy (Excel, values only) and written with the grid's own
    header, under the grid's own name (`IN_BBA_01.csv`; TAB `.txt` when a value holds a comma, as at
    the bring-in);
-4. one zip: `README.md` (which file goes into which grid, and why raw files cannot go into Mind) and
+4. one zip: `README.md` (which file goes into which grid, and why raw files cannot  go into Mind) and
    the folder `Mind inputs` with the files. No new model upload: Mind keeps the model, the files
    only replace the grids' data. A grid without a new file is not in the zip: Mind keeps the data it
    has.
@@ -57,18 +57,18 @@ RAW_FILES_LINE = ("Raw input files cannot go into Mind directly. Mind takes one 
                   "shaped like the grid: the same name, the same header, the same columns.")
 
 
-# --- the grids of the model ----------------------------------------------------------------------
+# ---  the grids  of the model ----------------------------------------------------------------------
 def grid_name_of(title: Any) -> str | None:
-    """'#IN_BBA_01 /Input' -> 'IN_BBA_01' (None for anything else)."""
+    """'#IN_BBA_01  /Input' ->  'IN_BBA_01' (None for anything else)."""
     m = re.fullmatch(r"\s*#(.+?)\s+/Input\s*", str(title or ""), re.IGNORECASE)
     return m.group(1).strip() if m else None
 
 
 def read_first_row(path: Path, max_bytes: int = 16 << 20) -> dict[str, Any]:
-    """The first line of a text file as cells, the way Mind counts a file's columns: TAB-separated in a
+    """The  first line  of a text file as cells, the way Mind counts a file's columns: TAB-separated in a
     `.txt` (Mind reads a .txt as TAB-separated, even one with commas), comma-separated in any other
-    file (quotes as in any CSV). UTF-8 (a BOM is dropped); a file that is not UTF-8 is read as well as
-    it can be. -> {"cells": [...], "separator": "TAB" | "comma"}"""
+    file (quotes  as in any CSV). UTF-8 (a BOM is dropped); a file  that is not UTF-8 is read  as well as
+    it can be. -> {"cells":  [...], "separator": "TAB" | "comma"}"""
     path = Path(path)
     with open(path, "rb") as fh:
         line = fh.readline(max_bytes).rstrip(b"\r\n")
@@ -86,7 +86,7 @@ def _comma_cells(text: str) -> list[str]:
 
 
 def is_utf8(path: Path, chunk: int = 1 << 20) -> bool:
-    """Whether the whole file is UTF-8 text (the files Mind's Inputs window gets from the app are)."""
+    """Whether  the whole  file is UTF-8 text (the files Mind's Inputs window gets from the app are)."""
     dec = codecs.getincrementaldecoder("utf-8")()
     try:
         with open(path, "rb") as fh:
@@ -111,10 +111,10 @@ def _holds_any(path: Path, needles: tuple[bytes, ...], chunk: int = 1 << 20) -> 
 
 
 def grids_of(change_log: Iterable[dict[str, Any]], csv_dir: Path | str | None) -> list[dict[str, Any]]:
-    """The Mind input grids a bring-in made, from the change log of its "mind_inputs" version (ops
+    """The  Mind input  grids a bring-in made, from the change log of its "mind_inputs" version (ops
     `make_mind_input`: the area's sheet and range, `after` = the grid's title) and the files it wrote
-    (`csv_dir`: one per grid, named like it; their first row is the grid's header, exactly as Mind
-    has it). -> [{name, sheet, ref, r1, c1, r2, c2, rows, cols, header, file}]"""
+    (`csv_dir`: one per grid,  named like it; their first row is the grid's header, exactly  as Mind
+    has it). -> [{name, sheet,  ref, r1, c1, r2, c2, rows, cols,  header, file}]"""
     folder = Path(csv_dir) if csv_dir else None
     files = {normalize_name(p.stem): p for p in (folder.iterdir() if folder and folder.is_dir() else [])
              if p.is_file() and p.suffix.lower() in GRID_FILE_SUFFIXES}
@@ -140,14 +140,14 @@ def _same_header(a: list[str], b: list[str] | None) -> bool:
 
 
 def classify_files(paths: Iterable[Path], grids: list[dict[str, Any]], table: list[dict[str, Any]]) -> dict[str, Any]:
-    """Sort the picked files.
+    """Sort  the picked  files.
 
-    -> {"grid_files": [{file, path, grid, renamed, as_csv?}]  files already shaped like a grid (its
+    -> {"grid_files": [{file, path, grid, renamed, as_csv?}] files already shaped like a grid (its
         header; as_csv: a comma-separated .txt, which goes into the zip as <grid>.csv),
-        "rows": match_files rows for the raw files (the import table, each row with its file or None),
-        "raw": [names of the raw files given to the import table],
-        "notes": [{file, why}]  a file named like a grid but shaped otherwise (read as a raw file),
-        "unused": [{file, why}]  files nothing takes,
+        "rows": match_files rows for the raw files  (the import table, each row with its file or None),
+        "raw": [names  of the raw files given to  the import table],
+        "notes": [{file, why}] a file  named like a grid but shaped otherwise (read as a raw  file),
+        "unused": [{file, why}] files nothing takes,
         "ambiguous": [names]  raw files that fit several rows of the import table}"""
     by_name = {normalize_name(g["name"]): g for g in grids}
     grid_files: list[dict[str, Any]] = []
@@ -215,13 +215,13 @@ def classify_files(paths: Iterable[Path], grids: list[dict[str, Any]], table: li
 
 
 def not_utf8_line(file: str, grid: str) -> str:
-    """One plain sentence for a grid's file saved in another encoding than UTF-8."""
+    """One  plain sentence  for a grid's file saved in another encoding than UTF-8."""
     return (f"{file} is shaped like the Mind input grid {grid}, but it is not UTF-8 text, so the app cannot be sure Mind reads it right. "
             "Save it again as UTF-8 (in Excel: \"CSV UTF-8\") and pick it again.")
 
 
 def raw_file_line(file: str, cols: int, grid: str, grid_cols: int) -> str:
-    """One plain sentence for a raw file given where a grid's file is expected."""
+    """One  plain sentence  for a raw file given where a grid's file is expected."""
     return (f"{file} has {cols:,} column{'' if cols == 1 else 's'}; the Mind input grid {grid} has {grid_cols:,}. "
             "It looks like a raw input file, so the app reads it with the model's import macro.")
 
@@ -232,7 +232,7 @@ _HEADER_ERROR = re.compile(
 
 
 def explain_mind_input_error(text: str) -> str | None:
-    """What to do when Mind's Inputs window refuses a file because its columns are not the grid's
+    """What  to do  when Mind's Inputs window refuses a file because its columns are not the grid's
     (a raw input file given in a grid's place). None when the text holds no such refusal."""
     m = _HEADER_ERROR.search(str(text or ""))
     if not m:
@@ -247,15 +247,15 @@ def explain_mind_input_error(text: str) -> str | None:
             "it gives one file per grid to put in Mind's Inputs window.")
 
 
-# --- which grid each new file fills ------------------------------------------------------------
+# --- which  grid each new file fills ------------------------------------------------------------
 def _rect(d: dict[str, Any]) -> tuple[int, int, int, int]:
     return int(d["r1"]), int(d["c1"]), int(d["r2"]), int(d["c2"])
 
 
 def grids_filled(report: dict[str, Any], grids: list[dict[str, Any]]) -> dict[str, Any]:
-    """Which grid each file the macro opened filled (an area on the grid's sheet that meets the grid's
+    """Which  grid each  file the macro opened filled (an area on the grid's sheet that meets the grid's
     range). An area larger than its grid cannot go into Mind (Mind's grid keeps the model's shape):
-    that grid is refused, with why. -> {"filled": {grid: file}, "too_big": {grid: why}, "outside": [{file, sheet, ref}]}"""
+    that  grid is refused, with why. -> {"filled": {grid: file}, "too_big": {grid:  why}, "outside": [{file, sheet, ref}]}"""
     filled: dict[str, str] = {}
     too_big: dict[str, str] = {}
     outside: list[dict[str, Any]] = []
@@ -281,11 +281,11 @@ def grids_filled(report: dict[str, Any], grids: list[dict[str, Any]]) -> dict[st
     return {"filled": filled, "too_big": too_big, "outside": outside}
 
 
-# --- writing the files -----------------------------------------------------------------------------
+# --- writing  the files -----------------------------------------------------------------------------
 def export_grids(workbook: Path, grids: list[dict[str, Any]], out_dir: Path, progress: ProgressFn | None = None) -> list[dict[str, Any]]:
-    """Each grid's block of `workbook` (values exactly as Excel holds them: Value2 through an Excel of
+    """Each  grid's block  of `workbook` (values exactly as Excel holds them: Value2 through an Excel of
     the app's own, never the user's) written with the grid's header under the grid's name.
-    -> [{grid, path, rows, cols, separator}]"""
+    -> [{grid, path, rows, cols,  separator}]"""
     import pythoncom
 
     say = progress or (lambda _m: None)
@@ -337,9 +337,9 @@ def _significant_digits(text: str) -> int:
 
 
 def long_numbers(csv_path: Path) -> int:
-    """How many numbers of a CSV are written with more than 15 significant digits. Excel keeps 15 when
+    """How  many numbers  of a CSV are written with more than 15 significant digits. Excel keeps 15 when
     it opens a CSV (144686640.71679688 comes in as 144686640.716796), in the client's tool as here: the
-    app says so, it does not change what the macro reads."""
+    app says  so, it does not change what the macro reads."""
     n = 0
     with open(csv_path, encoding="utf-8-sig", errors="replace", newline="") as fh:
         for row in csv.reader(fh):
@@ -354,10 +354,10 @@ def _read_rows(path: Path) -> list[list[str]]:
 
 
 def changed_cells(old: Path | str | None, new: Path | str) -> int | None:
-    """How many data cells differ between two files of the same grid (the header is not counted; a
-    number written two ways counts as the same, and so does a number that differs only past its 15th
-    significant digit: Excel keeps 15 digits of a number when it opens a CSV, so the same data as .csv
-    and as .xlsx can differ there). None when there is no old file to compare with."""
+    """How  many data  cells differ between two files of the same grid (the header is not counted; a
+    number written two ways counts as the same, and so does a number that differs only past  its 15th
+    significant digit: Excel keeps 15 digits of a number when  it opens a CSV, so the  same data as .csv
+    and as .xlsx can  differ there). None when there is no old file to compare  with."""
     if not old or not Path(old).is_file():
         return None
     a, b = _read_rows(Path(old))[1:], _read_rows(Path(new))[1:]
@@ -381,7 +381,7 @@ def changed_cells(old: Path | str | None, new: Path | str) -> int | None:
 
 
 def readme(result: dict[str, Any]) -> str:
-    """The zip's README: which file goes into which grid, how to put them in Mind, why raw files cannot."""
+    """The  zip's README:  which file goes into which grid, how to put them in Mind, why raw files cannot."""
     lines = [
         "# Next quarter's Mind input files",
         "",
@@ -420,7 +420,7 @@ def readme(result: dict[str, Any]) -> str:
 
 
 def write_zip(zip_path: Path, files: list[dict[str, Any]], readme_text: str) -> Path:
-    """README.md at the root, the grid files in the folder `Mind inputs` (the folder to pick in Mind)."""
+    """README.md  at the  root, the grid files in the folder `Mind inputs` (the folder to pick in Mind)."""
     zip_path = Path(zip_path)
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -433,13 +433,13 @@ def write_zip(zip_path: Path, files: list[dict[str, Any]], readme_text: str) -> 
 def make_next_quarter(base_workbook: Path, table: list[dict[str, Any]], picked: list[Path], grids: list[dict[str, Any]], macro: str,
                       work_dir: Path, messages: list[dict[str, Any]] | None = None, progress: ProgressFn | None = None,
                       model_name: str | None = None, made_at: str | None = None) -> dict[str, Any]:
-    """The whole job (see the module text). `base_workbook`: the version the outside files were first
+    """The  whole job  (see the module text). `base_workbook`: the version the outside files were first
     brought into (it still has the import macro and its own areas); `table`: its import table;
-    `grids`: grids_of(...) of the line's "mind_inputs" version.
+    `grids`: grids_of(...) of the line's  "mind_inputs" version.
 
-    -> {"ok", "files": [{file, grid, from, source: macro | as_given, rows, cols, separator, changed, path}],
-        "not_in_zip": [{grid, why}], "notes": [str], "unused": [{file, why}], "import": run_import's report
-        (None when no raw file), "zip": path, "readme": text, "summary", "error"}"""
+    -> {"ok", "files": [{file, grid, from, source: macro | as_given,  rows, cols, separator, changed, path}],
+        "not_in_zip": [{grid,  why}], "notes": [str], "unused": [{file, why}], "import":  run_import's report
+        (None when no raw file), "zip": path, "readme": text, "summary",  "error"}"""
     say = progress or (lambda _m: None)
     work_dir = Path(work_dir)
     out_dir = work_dir / "files"
@@ -457,7 +457,7 @@ def make_next_quarter(base_workbook: Path, table: list[dict[str, Any]], picked: 
     raw_rows = [r for r in sorted_["rows"] if r.get("file")]
     if raw_rows:
         paths = {p.name: Path(p) for p in picked}
-        # the files exactly as picked: the macro opens each its own way (as at the bring-in)
+        # the files exactly as picked: the macro  opens each its own way (as at the bring-in)
         chosen = {f"{r['sheet']}!{r['cell']}": paths[r["file"]] for r in raw_rows}
         for p in chosen.values():
             if p.suffix.lower() == ".csv":

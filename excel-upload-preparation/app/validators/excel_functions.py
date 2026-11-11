@@ -1,12 +1,12 @@
-"""Catalog of native Excel worksheet-function names (all categories, through
+"""Catalog  of native  Excel worksheet-function names (all categories, through
 Microsoft 365), used only to tell "this is a native Excel function Mind may
-or may not support" apart from "this is not an Excel function at all" (a VBA
-UDF, an add-in function, or a typo) in FORMULA-002 / FRM-002.
+or may not support" apart from "this is not an Excel function at  all" (a VBA
+UDF, an add-in function, or a typo) in FORMULA-002  / FRM-002.
 
-This is *not* the Mind-supported list -- that is references/
-supported-excel-functions.yaml, mined from the KB. Being absent from this
-catalog is the signal for a user-defined function; being present here but
-absent from the mined list is the signal for a native function Mind doesn't
+This is *not* the Mind-supported  list -- that is references/
+supported-excel-functions.yaml, mined from  the KB. Being absent from this
+catalog is the signal for a  user-defined function; being present here but
+absent from  the mined list is the signal for a native function Mind doesn't
 document as supported.
 """
 from __future__ import annotations

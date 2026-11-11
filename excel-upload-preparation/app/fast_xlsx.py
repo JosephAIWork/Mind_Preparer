@@ -1,15 +1,15 @@
-"""Faster openpyxl reading for big workbooks. Imported by app.inventory; installs itself once.
+"""Faster  openpyxl reading  for big workbooks. Imported by app.inventory; installs itself once.
 
 1. The XML parser. openpyxl reads every sheet with defusedxml's iterparse when defusedxml is installed,
-   and that parser runs its handlers in Python: on a 27 MB workbook (5.7 million used cells) half of the
-   time a load took was spent inside it. The standard library's iterparse gives the same events from
-   its C parser (expat), which never resolves external entities and, from expat 2.4, stops entity
-   bombs itself -- what defusedxml guards against cannot happen there either.
+   and that parser runs its handlers in Python: on  a 27 MB workbook (5.7 million used cells) half of the
+   time  a load took was spent inside  it. The standard library's iterparse gives the  same events from
+   its C parser (expat), which never resolves external entities  and, from expat 2.4, stops entity
+   bombs itself  -- what defusedxml guards against cannot happen there either.
 
 2. The cached values. Several rules need the value Excel stored for each formula cell, and they got it
    by loading the whole workbook a second time with data_only=True -- another six minutes on that workbook.
    The value is in the same `<c>` element the formula is read from, so the first load keeps it
-   (`ws.mind_ready_cached[(row, col)]`, exactly what a data_only load would give that cell) and
+   (`ws.mind_ready_cached[(row,  col)]`, exactly what a data_only load would give that cell) and
    `values_view` serves the data_only workbook from it. Cells without a formula are the same in both
    loads.
 
@@ -32,10 +32,10 @@ _INSTALLED = False
 
 
 def _safe_iterparse():
-    """The standard library's iterparse on its C parser (expat). Measured on a 1.6 MB model: 5.4 s against
-    7.4 s for defusedxml and 10.6 s for lxml (whose Python element proxies cost more than they save).
-    ElementTree never fetches external entities or DTDs; expat >= 2.4 stops entity-expansion bombs
-    (billion laughs) by itself. An older expat keeps defusedxml."""
+    """The  standard library's  iterparse on its C parser (expat). Measured on a 1.6 MB model: 5.4 s against
+    7.4 s for defusedxml and 10.6 s for lxml (whose Python element proxies cost more than they  save).
+    ElementTree never fetches external entities or DTDs; expat >= 2.4 stops  entity-expansion bombs
+    (billion laughs) by itself. An  older expat keeps defusedxml."""
     import pyexpat
     from xml.etree.ElementTree import iterparse
 
@@ -46,7 +46,7 @@ def _safe_iterparse():
 
 
 class _CachedValueParser(_reader.WorkSheetParser):
-    """openpyxl's sheet parser, which also keeps the cached value of every formula cell."""
+    """openpyxl's  sheet parser,  which also keeps the cached value of every formula cell."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -96,7 +96,7 @@ class _CachedValueReader(_reader.WorksheetReader):
             self.parser = _CachedValueParser(xml_source, shared_strings, data_only, ws.parent.epoch, ws.parent._date_formats, ws.parent._timedelta_formats, rich_text)
 
     def bind_cells(self):
-        """openpyxl's bind_cells, without Cell.__init__ per cell: the same slots set to the same
+        """openpyxl's  bind_cells, without  Cell.__init__ per cell: the same slots set to the same
         values (a copy of the cell's style array, the parsed value and type, no comment, no link)."""
         ws = self.ws
         cells = ws._cells
@@ -125,7 +125,7 @@ class _CachedValueReader(_reader.WorksheetReader):
 
 
 def install() -> str | None:
-    """Idempotent. -> the parser in use ('lxml' / 'expat'), None when turned off."""
+    """Idempotent.  -> the  parser in use ('lxml' / 'expat'), None when turned off."""
     global _INSTALLED
     import openpyxl
 
@@ -143,10 +143,10 @@ def install() -> str | None:
 
 
 def patch_openpyxl() -> None:
-    """Always on (also with MINDREADY_FAST_XLSX=0): openpyxl 3.1 declares a pivot cache field group's
+    """Always  on (also  with MINDREADY_FAST_XLSX=0): openpyxl 3.1 declares a pivot cache field group's
     `<discretePr>` as a sequence of NestedInteger, a descriptor that cannot read an element, so any
-    workbook with a grouped pivot field failed to load ("Nested.from_tree() missing 1 required
-    positional argument: 'node'"). Its items are `<x v="..."/>`, which openpyxl reads as pivot Index."""
+    workbook with a grouped pivot field failed to  load ("Nested.from_tree() missing 1 required
+    positional argument: 'node'"). Its items are `<x  v="..."/>`, which openpyxl reads as pivot  Index."""
     try:
         from openpyxl.pivot.cache import FieldGroup
         from openpyxl.pivot.fields import Index
@@ -169,7 +169,7 @@ _EMPTY = _Value(None)
 
 
 class _CellsView:
-    """`ws._cells` of the data_only view: the formula cells answer with their cached value."""
+    """`ws._cells`  of the  data_only view: the formula cells answer with their cached value."""
 
     def __init__(self, cells: dict, cached: dict) -> None:
         self._cells = cells
@@ -207,7 +207,7 @@ class _SheetView:
     def __init__(self, ws) -> None:
         self._ws = ws
         self.title = ws.title
-        self._cells = _CellsView(getattr(ws, "_cells", {}), getattr(ws, "mind_ready_cached", {}))  # a chart sheet has no cells
+        self._cells = _CellsView(getattr(ws, "_cells", {}), getattr(ws, "mind_ready_cached", {}))  # a  chart sheet  has no cells
 
     def cell(self, row: int, column: int):
         return self._cells.get((row, column)) or _EMPTY
@@ -230,7 +230,7 @@ class _SheetView:
 
 
 class ValuesView:
-    """A read-only stand-in for `openpyxl.load_workbook(path, data_only=True)` built from a workbook
+    """A  read-only stand-in  for `openpyxl.load_workbook(path, data_only=True)` built from a workbook
     already loaded with formulas: `sheetnames`, `wb[sheet]`, `ws.cell(r, c).value`, `ws['A1'].value`,
     `ws._cells.get((r, c))`, `max_row` / `max_column`."""
 
@@ -257,7 +257,7 @@ class ValuesView:
 
 
 def values_view(wb, ignore: Iterable[str] = ()) -> ValuesView | None:
-    """The data_only view of `wb` (a formula load), or None when the load did not keep the cached
+    """The  data_only view  of `wb` (a formula load), or None when the load did not keep the cached
     values (turned off, or loaded before this module was installed)."""
     sheets = [ws for ws in wb.worksheets if hasattr(ws, "_cells")]
     if not sheets or any(not hasattr(ws, "mind_ready_cached") and not getattr(ws, "mind_ready_ignored", False) for ws in sheets):

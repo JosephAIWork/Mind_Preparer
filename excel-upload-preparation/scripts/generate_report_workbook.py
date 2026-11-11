@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Run PLAN_MODE analysis on a workbook and produce the reviewable Excel
+"""Run  PLAN_MODE analysis  on a workbook and produce the reviewable Excel
 outputs: a standalone report (.xlsx) and the analyzed workbook with the
 Mind_Readiness_Report sheets appended -- the latter written by Excel through
-COM when available and re-opened by Excel to verify it loads (see
-app/excel_report.py). See scripts/validate_workbook.py for the raw JSON form
+COM when available and re-opened  by Excel to verify it loads (see
+app/excel_report.py). See scripts/validate_workbook.py for the  raw JSON form
 (scripting/automation)."""
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def main() -> int:
         print(f"file not found: {input_path}")
         return 2
 
-    # Keep the source's own extension (xlsx stays xlsx, xlsm stays xlsm) so a
+    # Keep  the source's  own extension (xlsx stays xlsx, xlsm stays xlsm) so a
     # macro-enabled workbook doesn't silently lose its VBA project on save.
     output_path = Path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_mind_report{input_path.suffix}")
     standalone_path = Path(args.standalone) if args.standalone else input_path.with_name(f"{input_path.stem}_mind_readiness_report.xlsx")

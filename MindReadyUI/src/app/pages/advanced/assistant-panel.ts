@@ -31,7 +31,7 @@ export class AssistantPanel implements OnInit, OnDestroy {
   readonly phase = signal("");
   readonly partial = signal("");
   readonly proposal = signal<Proposal | null>(null);
-  /** The version the proposal was made on: an Apply from the list above may  make a newer one meanwhile. */
+  /** The  version the  proposal was made on: an Apply from the list above may make a newer one meanwhile. */
   private proposalVersion: Version | null = null;
   readonly applying = signal(false);
   readonly fraction = signal<number | null>(null);
@@ -40,9 +40,9 @@ export class AssistantPanel implements OnInit, OnDestroy {
   private stop: (() => void) | null = null;
 
   readonly target = computed(() => this.store.fixTarget());
-  /** 1.14.1: "AI used: 12,340 tokens in 7  calls" on this workbook, or "AI  not used yet on this workbook". */
+  /** 1.14.1: "AI used: 12,340 tokens in 7 calls" on this workbook, or "AI not used yet  on this workbook". */
   readonly usageLine = computed(() => aiUsageLine(this.store.aiUsage()));
-  /** Only the  app's own words in the chat get a "Show me", never  the assistant's free text. */
+  /** Only the app's own words in the chat get  a "Show me", never the assistant's  free text. */
   readonly appWords = chatIsAppWords;
   readonly prompts = computed(() => {
     const t = this.target();
@@ -59,14 +59,14 @@ export class AssistantPanel implements OnInit, OnDestroy {
     this.stop?.();
   }
 
-  /** The count from the  server (a step in a job -- Fix all issues, the grid namer -- adds to it too). */
+  /** The count from the server (a  step in a job -- Fix all issues, the grid namer  -- adds to it too). */
   async refreshUsage(): Promise<void> {
     const id = this.store.sessionId();
     if (!id) return;
     try {
       this.store.aiUsage.set((await this.api.aiUsage(id)).aiUsage);
     } catch {
-      // the line keeps what it had
+      // the line keeps  what it had
     }
   }
 
@@ -79,7 +79,7 @@ export class AssistantPanel implements OnInit, OnDestroy {
     return `${t.error || "the error"}${where ? " at " + where : ""}${n}${meaning ? ": " + meaning : ""}`;
   }
 
-  /** What follows a finding's code and name: where, the error, the cells  alike. */
+  /** What follows a finding's code and name: where, the error, the cells alike. */
   whereText(t: FixTarget): string {
     const where = [t.sheet, t.cell].filter(Boolean).join("!");
     const n = t.cells?.length ? ` and ${t.cells.length} cells alike` : "";
@@ -151,7 +151,7 @@ export class AssistantPanel implements OnInit, OnDestroy {
     if (!id || !p || this.applying()) return;
     const now = this.store.currentVersion();
     if (this.proposalVersion && now && this.proposalVersion.id !== now.id) {
-      // its cells were chosen on the older version: after an inserted row they would land one row off
+      // its cells were  chosen on the older version: after an inserted row they would land one row off
       this.error.set(`This proposal was made on ${this.proposalVersion.label.split(" — ")[0]}; the workbook is now ${now.label.split(" — ")[0]}. Ask again so it is made on the current version.`);
       return;
     }

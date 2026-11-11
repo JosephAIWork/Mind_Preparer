@@ -2,18 +2,18 @@ import { Injectable, inject, signal } from "@angular/core";
 import { ApiService } from "./api.service";
 import { PlainCodesGlossary } from "./models";
 
-/** Plain English next to every code the screens show (excel-upload-preparation/docs/PLAIN_CODES.md).
+/** Plain  English next  to every code the screens show (excel-upload-preparation/docs/PLAIN_CODES.md).
  *
  *  The words come from the server, GET /api/plain-codes: the same glossary the server's texts and the
- *  Excel report use (rules/plain_names.yaml, app/plain_codes.py), so the screens keep no list of their
- *  own. Until it has loaded -- or when it cannot -- a code shows alone and nothing else changes. */
+ *  Excel report use (rules/plain_names.yaml, app/plain_codes.py), so the screens keep no  list of their
+ *  own. Until it has loaded -- or when it  cannot -- a code shows alone  and nothing else changes. */
 
-/** "FRM-009 · an empty cell is compared with a number"; the code alone when it has no name. */
+/** "FRM-009 · an empty  cell is compared with a number"; the code alone when it  has no name. */
 export function ruleLabel(code: string, name?: string | null): string {
   return name ? `${code} · ${name}` : code;
 }
 
-/** The error values a text quotes, each once, in the order they first appear. */
+/** The  error values  a text quotes, each once, in the order they first appear. */
 export function errorValuesIn(text: string | null | undefined, errors: Record<string, string>): string[] {
   const t = text ?? "";
   return Object.keys(errors)
@@ -28,7 +28,7 @@ export interface ErrorMeaning {
   meaning: string;
 }
 
-/** What each error value means, once per value, for the values that are Excel's error values
+/** What  each error  value means, once per value, for the values that are Excel's error values
  *  (anything else -- a number, a text -- is left out). */
 export function errorLegend(values: Iterable<string | null | undefined>, errors: Record<string, string>): ErrorMeaning[] {
   const out: ErrorMeaning[] = [];
@@ -44,12 +44,12 @@ export function errorLegend(values: Iterable<string | null | undefined>, errors:
   return out;
 }
 
-/** "#REF! means the formula points at a cell that no longer exists; #N/A means ..." ("" when none). */
+/** "#REF!  means the  formula points at a cell that no longer exists; #N/A means ..." ("" when none). */
 export function meaningsText(legend: ErrorMeaning[]): string {
   return legend.map((m) => `${m.value} means ${m.meaning}`).join("; ");
 }
 
-/** The values of the cells a table marks as errors, as text, for `errorLegend` -- which keeps Excel's
+/** The  values of  the cells a table marks as errors, as text, for `errorLegend` -- which keeps Excel's
  *  error values only: the server marks every value that starts with '#', a '#Title' cell too. */
 export function errorCellValues(cells: Iterable<{ value: unknown; error?: boolean | null }>): string[] {
   const out: string[] = [];
@@ -57,21 +57,21 @@ export function errorCellValues(cells: Iterable<{ value: unknown; error?: boolea
   return out;
 }
 
-/** A cell's tooltip: its formula, and for an error value what it means, on a line of its own
+/** A  cell's tooltip:  its formula, and for an error value what it means, on a line of its own
  *  ("=A2*2", then "#REF! means the formula points at a cell that no longer exists"). */
 export function cellTip(formula: string | null | undefined, value: unknown, errors: Record<string, string>): string {
   const meaning = value === null || value === undefined ? "" : meaningsText(errorLegend([String(value)], errors));
   return [formula ?? "", meaning].filter(Boolean).join("\n");
 }
 
-/** The glossary as signals: the app shell loads it once at start (`load`); every screen asks it. */
+/** The  glossary as  signals: the app shell loads it once at start (`load`); every screen asks it. */
 @Injectable({ providedIn: "root" })
 export class PlainCodes {
   private api = inject(ApiService);
   readonly glossary = signal<PlainCodesGlossary>({ rules: {}, errors: {} });
   private loading: Promise<void> | null = null;
 
-  /** Fetches the glossary once; a failed fetch can be tried again. */
+  /** Fetches  the glossary  once; a failed fetch can be tried again. */
   load(): Promise<void> {
     this.loading ??= this.api
       .plainCodes()
@@ -83,7 +83,7 @@ export class PlainCodes {
   }
 
   /** A code's plain name: the one the server sent with it, else the glossary's -- a rule's name or what
-   *  an error value means (null: a code with no words, such as the screens' own "UI"). */
+   *  an error value means (null:  a code with no words, such as the screens' own "UI"). */
   name(code: string | null | undefined, given?: string | null): string | null {
     if (given) return given;
     if (!code) return null;
@@ -91,17 +91,17 @@ export class PlainCodes {
     return g.rules[code] ?? g.errors[code.trim().toUpperCase()] ?? null;
   }
 
-  /** "FRM-009 · an empty cell is compared with a number", for a tooltip or a line of text. */
+  /** "FRM-009  · an empty cell is compared  with a number", for a tooltip or  a line of text. */
   label(code: string, given?: string | null): string {
     return ruleLabel(code, this.name(code, given));
   }
 
-  /** What one error value means (null: not one of Excel's error values). */
+  /** What one error value means (null: not one  of Excel's error values). */
   meaning(value: string | null | undefined): string | null {
     return errorLegend([value], this.glossary().errors)[0]?.meaning ?? null;
   }
 
-  /** The meaning of each error value among `values`, once each. */
+  /** The meaning of each  error value among `values`, once each. */
   legend(values: Iterable<string | null | undefined>): ErrorMeaning[] {
     return errorLegend(values, this.glossary().errors);
   }
@@ -123,7 +123,7 @@ export class PlainCodes {
     return this.legend(errorCellValues(cells));
   }
 
-  /** A cell's tooltip: its formula, and for an error value what it means. */
+  /** A cell's tooltip: its formula,  and for an error value what it means. */
   cellTip(formula: string | null | undefined, value: unknown): string {
     return cellTip(formula, value, this.glossary().errors);
   }

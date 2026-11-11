@@ -1,13 +1,13 @@
-"""Workbook chatbot: grounds a multi-turn conversation
+"""Workbook  chatbot: grounds  a multi-turn conversation
 in the analysis and the findings, and lets the user ask for changes.
 
 The model gets, on every turn:
   * a bounded *context pack* -- workbook facts, every sheet with its grids
-    and flags, formula/MM_ statistics, every non-PASS finding in full and
-    the PASS rules by id, plus the prep actions the app can apply;
-  * *retrieved detail* for whatever the question names -- cell references
-    (the formula / value there), sheet or grid names (the grid's rows and
-    header), rule ids (the finding's observed data), MM_ function names
+    and  flags, formula/MM_ statistics, every non-PASS finding in full and
+    the PASS rules  by id, plus the prep actions  the app can apply;
+  * *retrieved detail* for whatever  the question names -- cell references
+    (the formula / value there), sheet  or grid names (the grid's rows and
+    header),  rule ids (the finding's observed data), MM_ function names
     (their call sites);
   * the conversation so far.
 
@@ -15,7 +15,7 @@ Changing the workbook: the assistant may (a) request cell contents
 it hasn't seen with a ```lookup block -- the app answers within the same
 turn, up to MAX_LOOKUPS times -- and (b) end its answer with a ```changes
 block listing operations. The app validates the block against the real
-workbook (app/prep.py::validate_proposal), shows it as a before/after table,
+workbook (app/prep.py::validate_proposal), shows  it as a before/after table,
 and applies it through Excel only when the user clicks Apply. The model's
 text is never written into the workbook by itself.
 """
@@ -32,18 +32,18 @@ from .llm import chat_completion
 from .plain_codes import cite
 from .prep import validate_proposal
 
-MAX_CONTEXT_CHARS = 14000  # the pack's facts, findings and Prep actions; the rules' plain names come on top (each named once)
+MAX_CONTEXT_CHARS = 14000  # the  pack's facts,  findings and Prep actions; the rules' plain names come on top (each named once)
 MAX_RETRIEVAL_CHARS = 6000
 MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
-MAX_PROPOSAL_RETRIES = 2  # a rejected ```changes block is sent back (twice at most) with the validation errors
-PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block
+MAX_PROPOSAL_RETRIES = 2  # a  rejected ```changes  block is sent back (twice at most) with the validation errors
+PROPOSAL_MAX_TOKENS = 4000  # room  for ~120  operations in one ```changes block
 CELL_REF_RE = re.compile(r"(?<!\w)(?:(?P<sheet>'[^']+'|[\w.]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![\w(])")
 RULE_ID_RE = re.compile(r"\b([A-Z]{2,7})-(\d{3})\b")
 MM_FN_RE = re.compile(r"\bMM_[A-Za-z0-9_]+\b", re.IGNORECASE)
-# Replacements the tool vouches for (every function on the right is on the Mind list); when the user
+# Replacements  the tool  vouches for (every function on the right is on the Mind list); when the user
 # asks to replace a function, the assistant proposes these rather than inventing one, and keeps the
-# original's behaviour on blanks/errors.
+# original's behaviour  on blanks/errors.
 KNOWN_EQUIVALENTS: dict[str, str] = {
     "NUMBERVALUE": 'IF(x="",0,VALUE(x)) -- NUMBERVALUE("") is 0 while VALUE("") is #VALUE!',
     "IFNA": "IF(ISNA(x),alt,x) -- IFERROR would also swallow #REF!/#DIV/0!, which changes behaviour",
@@ -141,9 +141,9 @@ def build_context_pack(analysis: dict[str, Any], validation_report: dict[str, An
         if standalone:
             lines.append("- standalone text: " + "; ".join(f"{c['cell']}='{str(c['text'])[:24]}'" for c in standalone))
 
-    # A rule's plain name goes with its first mention only (the assistant has it from there on), and
-    # the names come on top of `max_chars`: they never push out the end of the pack -- the last
-    # findings and the Prep actions -- that fitted before the names were added.
+    # A  rule's plain  name goes with its first mention only (the assistant has it from there on), and
+    # the names come on top of `max_chars`: they never push out the end of the pack --  the last
+    # findings and the Prep actions -- that fitted before the  names were added.
     named: set[str] = set()
     names_chars = 0
 
@@ -198,7 +198,7 @@ def _sheet_block(s: dict[str, Any]) -> str:
 
 
 def function_support(names: list[str], analysis: dict[str, Any]) -> str:
-    """The tool's verdict on Excel / MM_ function names (the same lists FRM-002
+    """The  tool's verdict  on Excel / MM_ function names (the same lists FRM-002
     applies), with the workbook's usage, so the assistant answers "is X
     supported by Mind?" from fact rather than from general knowledge."""
     from .formula_utils import called_functions
@@ -236,7 +236,7 @@ def function_support(names: list[str], analysis: dict[str, Any]) -> str:
 
 
 def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[str, Any], max_chars: int = MAX_RETRIEVAL_CHARS) -> str:
-    """Detail for the things the question names."""
+    """Detail  for the  things the question names."""
     wb = analysis["workbooks"][0]
     sheet_names = {s["name"]: s for s in wb["sheets"]}
     grids = all_grids(analysis)
@@ -290,7 +290,7 @@ def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[st
 
 
 def retrieve_structured(spec: Any, analysis: dict[str, Any], max_chars: int = MAX_RETRIEVAL_CHARS) -> str:
-    """Answer a ```lookup request: {"cells": [...], "grids": [...], "sheets": [...], "functions": [...]}."""
+    """Answer  a ```lookup  request: {"cells": [...], "grids": [...], "sheets": [...], "functions": [...]}."""
     wb = analysis["workbooks"][0]
     sheet_names = {s["name"]: s for s in wb["sheets"]}
     lower_sheets = {k.lower(): k for k in sheet_names}
@@ -324,7 +324,7 @@ def retrieve_structured(spec: Any, analysis: dict[str, Any], max_chars: int = MA
 
 
 def extract_block(text: str | None, kind: str) -> tuple[Any | None, str | None]:
-    """(parsed JSON, error) for the first ```<kind> block in `text`."""
+    """(parsed  JSON, error)  for the first ```<kind> block in `text`."""
     if not text:
         return None, None
     m = BLOCK_RE[kind].search(text)
@@ -342,7 +342,7 @@ def strip_block(text: str, kind: str) -> str:
 
 
 def recalculation_context(recalc: dict[str, Any] | None, max_sites: int = 40) -> str:
-    """A compact rendering of the last real Excel recalculation for the model:
+    """A  compact rendering  of the last real Excel recalculation for the model:
     status, message, genuine formula-error cells, and the #NAME? cells that
     only fail because the MMForExcel add-in is missing on this machine."""
     if not recalc:
@@ -376,12 +376,12 @@ def answer_question(
     extra_context: str | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one turn (with up to MAX_LOOKUPS lookup round-trips). Returns the
+    """Run  one turn  (with up to MAX_LOOKUPS lookup round-trips). Returns the
     display text, the raw text, and any validated change proposal.
     `extra_context` (e.g. the last recalculation) is appended to the system
-    context for this turn. `on_event` streams the turn: a
+    context for this turn. `on_event` streams  the turn: a
     {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
-    model call, then {"type": "delta", "text"} for each chunk of its reply."""
+    model call, then  {"type": "delta", "text"} for each chunk  of its reply."""
     context = build_context_pack(analysis, validation_report, prep_actions)
     detail = retrieve(question, analysis, validation_report)
     system = SYSTEM_PROMPT + "\n\n<workbook_context>\n" + context + "\n</workbook_context>"
@@ -389,8 +389,8 @@ def answer_question(
         system += "\n\n<recalculation>\n" + _trim(extra_context, 6000) + "\n</recalculation>"
     turn = question if not detail else f"{question}\n\n<retrieved_detail>\n{detail}\n</retrieved_detail>"
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]] + [{"role": "user", "content": turn}]
-    # A ```changes block costs ~30 tokens per cell: a 1200-token limit would cut a
-    # proposal off at ~35 operations without saying so (the rest of the finding's
+    # A ```changes block costs ~30  tokens per cell: a 1200-token limit would cut a
+    # proposal off at  ~35 operations without saying so (the rest  of the finding's
     # cells would never make it into the proposal).
     kwargs: dict[str, Any] = {"max_tokens": PROPOSAL_MAX_TOKENS}
     if model_id:

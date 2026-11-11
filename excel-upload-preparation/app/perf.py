@@ -1,9 +1,9 @@
-"""Stage timings: where the time goes on a big workbook.
+"""Stage  timings: where  the time goes on a big workbook.
 
 Every slow step (starting Excel, opening, writing, recalculating, saving, the check that the file opens,
-the scan) is timed with `stage(name)` and appended as one JSON line to
+the scan) is timed with `stage(name)` and appended as one JSON  line to
 `perf\\timings.jsonl` in the data folder (settings.yaml) (`MINDREADY_PERF_LOG` overrides the file;
-`MINDREADY_PERF_LOG=0` turns it off). Writing the line never fails the step it measures.
+`MINDREADY_PERF_LOG=0`  turns it off). Writing the line  never fails the step it measures.
 """
 from __future__ import annotations
 
@@ -46,14 +46,14 @@ _STAGES = threading.local()
 
 
 def current_stage() -> str | None:
-    """The innermost stage this thread is in (for a problem report)."""
+    """The  innermost stage  this thread is in (for a problem report)."""
     stack = getattr(_STAGES, "stack", None)
     return stack[-1] if stack else None
 
 
 @contextlib.contextmanager
 def stage(name: str, **facts: Any) -> Iterator[dict[str, Any]]:
-    """Times the block; the caller may add facts to the yielded dict (they are logged with it).
+    """Times  the block;  the caller may add facts to the yielded dict (they are logged with it).
     An error leaving the block carries the innermost stage it left (`mind_ready_stage`), for the
     problem report (app/feedback.py)."""
     extra: dict[str, Any] = {}

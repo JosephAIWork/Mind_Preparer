@@ -1,13 +1,13 @@
-"""Run the main screen's "Do everything" chain through the app's API, headless, and keep the result.
+"""Run  the main  screen's "Do everything" chain through the app's API, headless, and keep the result.
 
     python scripts/night_chain.py <workbook> <out dir> [--port 8600] [--first 2] [--skip-autofix] [--ignore "Sheet A,Sheet B"]
 
-`--ignore`: the sheets the scan skips (what the big-file sheet chooser does: a deferred upload, then
-the scan with those sheets left out).
+`--ignore`: the sheets the scan skips  (what the big-file sheet chooser does: a deferred upload, then
+the scan  with those sheets left out).
 
-upload -> Fix all issues (auto-fix, polled) -> Fix the formulas and the structure (every blocking Prep action on by
-default, in rounds) -> Build the
-Mind loop (first value as given, else the plan's) -> Recalculate -> download the final version and write
+upload ->  Fix all issues (auto-fix, polled) -> Fix  the formulas and the structure (every blocking Prep action on by
+default,  in rounds) -> Build the
+Mind loop (first  value as given, else the plan's) -> Recalculate -> download the final version and write
 chain.json (every step's result) into <out dir>. Mirrors MindReadyUI/src/app/pages/home.page.ts runAll().
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ def say(*a) -> None:
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
-# sheet names in any language: never let the console code page stop the chain
+# sheet  names in  any language: never let the console code page stop the chain
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -88,7 +88,7 @@ def main() -> int:
         r.raise_for_status()
         chain["pivot_mode"] = a.pivot_mode
         say("pivot setting:", a.pivot_mode)
-    # what the main screen shows before Do everything is clicked, to compare with the real time
+    # what  the main  screen shows before Do everything is clicked, to compare with the real time
     try:
         est = requests.get(f"{B}/sessions/{sid}/estimate", timeout=300)
         chain["estimate"] = est.json() if est.status_code == 200 else {"error": est.text[:300]}
@@ -103,7 +103,7 @@ def main() -> int:
         chain["outsideInputs"] = {k: outside.get(k) for k in ("macro", "matched", "missing", "extra", "summary", "brought_in")}
         say("outside files:", outside.get("summary"))
         if not outside.get("brought_in"):
-            # as Do everything: missing files are made by the assistant (stand-ins from the model's own numbers)
+            # as Do everything: missing files are made  by the assistant (stand-ins from the model's own numbers)
             stand_ins = bool(outside.get("missing")) and bool(outside.get("assistant"))
             r = requests.post(f"{B}/sessions/{sid}/outside-inputs/run", json={"standIns": True} if stand_ins else {}, timeout=300)
             say("bring in the outside files:", r.status_code, r.text[:200])
@@ -147,9 +147,9 @@ def main() -> int:
             full = requests.get(f"{B}/sessions/{sid}/auto-fix", params={"full": "1"}, timeout=300).json()
             res = full.get("result") or {}
             left = res.get("left") or []
-            # "unchanged" with no error left is fine: the workbook already recalculated clean (a client model had no error)
+            # "unchanged" with no  error left is fine: the workbook  already recalculated clean (a client model had  no error)
             ok = res.get("status") == "clean" or (res.get("status") in ("partial", "unchanged") and not left and (res.get("errors_after") or 0) == 0)
-            # 1.11.6, as the main screen: errors the workbook already had (no regression, no Stop) let the chain go on
+            # 1.11.6, as the main screen: errors the workbook already had  (no regression, no Stop) let the chain  go on
             ok = ok or (res.get("status") in ("partial", "stuck", "unchanged") and not res.get("stopped") and not res.get("regression_cells"))
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])

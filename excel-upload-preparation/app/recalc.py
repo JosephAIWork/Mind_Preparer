@@ -1,15 +1,15 @@
-"""Real recalculation adapter: drives the
+"""Real  recalculation adapter:  drives the
 locally-installed Excel via win32com to recalculate a copy of the workbook.
 Setting calculation flags or saving through openpyxl is explicitly NOT a
 valid recalculation per excel/recalculation.md -- this is the trusted
-adapter that actually is one.
+adapter that  actually is one.
 
 Never runs macros: AutomationSecurity is forced to msoAutomationSecurityForceDisable
-before opening, per instructions/core.md ("never execute VBA... during inspection").
-Always operates on a copy, never the user's original file.
+before opening,  per instructions/core.md ("never execute VBA... during  inspection").
+Always operates on a copy, never the  user's original file.
 
 Built on app/excel_com.py's `excel_session` like every other Excel
-path in the app, with every COM proxy scoped inside an inner function.
+path in  the app, with every COM proxy scoped  inside an inner function.
 Releasing Range/Worksheet proxies *after* `CoUninitialize` poisons the
 apartment for a later session in the same process: a recalculation following
 an Excel apply then fails with "The interface is unknown" (RPC_S_UNKNOWN_IF). Results carry `ran` so a
@@ -27,7 +27,7 @@ from .excel_com import MM_XLL_ENV, close_quietly, com_available, excel_session, 
 from .formula_utils import called_functions, col_to_num, mask_strings, ref_text
 from .plain_codes import plain_error
 
-# Excel COM's Range.Value returns error cells as these negative integer xlErr*
+# Excel  COM's Range.Value  returns error cells as these negative integer xlErr*
 # constants, never as the display string -- confirmed empirically (Range.Text
 # gives the string but only works cell-by-cell, not for a bulk range read).
 XL_ERROR_CODES = {
@@ -40,18 +40,18 @@ XL_ERROR_CODES = {
     -2146826273: "#VALUE!",
 }
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
-XL_CELL_TYPE_FORMULAS = -4123  # Range.SpecialCells(xlCellTypeFormulas, xlErrors)
+XL_CELL_TYPE_FORMULAS = -4123  # Range.SpecialCells(xlCellTypeFormulas,  xlErrors)
 XL_SPECIAL_ERRORS = 16
 ADDIN_NAME_MARKERS = ("mmforexcel", "milliman", "mind")
 
 
 def _mmforexcel_loaded(excel) -> bool:
-    """Is a Mind / MM for Excel add-in loaded in this Excel instance? `excel_session`
+    """Is  a Mind  / MM for Excel add-in loaded in this Excel instance? `excel_session`
     registers the machine's MM for Excel XLL into its background Excel (automation never
-    loads the user's startup add-ins by itself), and XLLs show up in `AddIns2` -- checked
-    first. The COMAddIns / AddIns checks stay for an add-in installed another way. Without
-    any of them, MM_ functions genuinely can't be evaluated by Excel, so a #NAME? on an MM_
-    call is not the same kind of finding as one on a native formula."""
+    loads the user's startup add-ins by itself), and XLLs  show up in `AddIns2` -- checked
+    first. The COMAddIns / AddIns checks  stay for an add-in installed another  way. Without
+    any of them, MM_ functions genuinely  can't be evaluated by Excel, so a #NAME? on an MM_
+    call  is not the same kind of finding  as one on a native formula."""
     if mm_addin_loaded(excel):
         return True
     try:
@@ -77,12 +77,12 @@ def _not_run(status: str, message: str) -> dict[str, Any]:
 
 
 def _array_formulas(sheet: Any, used_range: Any, cells: list[tuple[int, int, str, str]]) -> dict[tuple[int, int], str]:
-    """(row, column) -> the address of the array formula that error cell is part of.
+    """(row,  column) ->  the address of the array formula that error cell is part of.
 
     `Range.HasArray` answers for a whole range at once: False when no cell of
-    it belongs to an array formula, True when all do, Null when some do. So a
-    sheet without array formulas costs one question, and on a sheet that has
-    some only the rows that hold one are looked at cell by cell."""
+    it belongs to an array formula, True when  all do, Null when some do. So a
+    sheet without array formulas  costs one question, and on a  sheet that has
+    some only the rows that  hold one are looked at cell by cell."""
     try:
         anywhere = used_range.HasArray
     except Exception:
@@ -108,8 +108,8 @@ def _array_formulas(sheet: Any, used_range: Any, cells: list[tuple[int, int, str
             try:
                 if cell.HasArray:
                     arr = cell.CurrentArray
-                    # Dynamic COM dispatch (no gencache) resolves .Address as a no-arg
-                    # property, not a callable -- strip the '$' ourselves.
+                    # Dynamic COM dispatch (no  gencache) resolves .Address as a no-arg
+                    # property, not  a callable -- strip the '$' ourselves.
                     out[(row_no, col_no)] = str(arr.Address).replace("$", "")
                     arr = None
             finally:
@@ -118,7 +118,7 @@ def _array_formulas(sheet: Any, used_range: Any, cells: list[tuple[int, int, str
 
 
 def _errors_in_block(rng: Any, found: list[tuple[int, int, str, str]]) -> None:
-    """The formula cells of `rng` whose value is an error, read as two arrays (values, formulas)."""
+    """The  formula cells  of `rng` whose value is an error, read as two arrays (values, formulas)."""
     values = rng.Value
     formulas = rng.Formula
     if values is None:
@@ -129,10 +129,10 @@ def _errors_in_block(rng: Any, found: list[tuple[int, int, str, str]]) -> None:
         formulas = ((formulas,),)
     top_row = int(rng.Row)
     top_col = int(rng.Column)
-    # the error cells come out of the two arrays just read, and their
-    # addresses are arithmetic. Asking Excel about each one (Cells, Address,
-    # HasArray: three round trips a cell) takes ten minutes for a model with
-    # 65,883 error cells -- twice, since the original is recalculated too.
+    # the error cells come out of the two  arrays just read, and their
+    # addresses are arithmetic. Asking Excel about each  one (Cells, Address,
+    # HasArray: three round trips  a cell) takes ten minutes for a  model with
+    # 65,883 error cells -- twice, since the original is recalculated  too.
     for r_idx, row in enumerate(values):
         for c_idx, val in enumerate(row):
             error_text = XL_ERROR_CODES.get(val) if isinstance(val, int) else None
@@ -144,13 +144,13 @@ def _errors_in_block(rng: Any, found: list[tuple[int, int, str, str]]) -> None:
 
 
 def _error_cells(sheet: Any, used_range: Any) -> list[tuple[int, int, str, str]]:
-    """(row, column, error, formula) of every formula cell of the sheet showing an error, row by row.
+    """(row,  column, error,  formula) of every formula cell of the sheet showing an error, row by row.
 
     Excel answers first how many cells of the used range hold an error (one SUMPRODUCT,
-    computed inside Excel), and a sheet with none costs nothing more; otherwise Go To Special
-    (formulas that are errors) hands over just those cells. Reading the whole used range, values and
-    formulas, to find them takes 47 s on a workbook of 5.7 million cells, at every recalculation.
-    Whenever Excel cannot answer either question the whole used range is read."""
+    computed inside Excel), and  a sheet with none costs nothing more; otherwise Go To Special
+    (formulas  that are errors) hands over just  those cells. Reading the whole used range,  values and
+    formulas, to find them takes 47 s on a workbook  of 5.7 million cells, at every recalculation.
+    Whenever  Excel cannot answer either question the whole used range is read."""
     found: list[tuple[int, int, str, str]] = []
     try:
         address = str(used_range.Address)
@@ -181,10 +181,10 @@ def _error_cells(sheet: Any, used_range: Any) -> list[tuple[int, int, str, str]]
 
 
 def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str, Any]:
-    """Open, fully rebuild, save (unless `save` is False), and scan every used range for error values.
+    """Open,  fully rebuild,  save (unless `save` is False), and scan every used range for error values.
     Every COM proxy lives inside this function so it is released before the
-    session quits Excel. `wb`: `copy_path` already open in `excel` (the session's Excel
-    worker opened it); it is closed here as always."""
+    session quits Excel. `wb`: `copy_path` already open  in `excel` (the session's Excel
+    worker opened it); it is closed here  as always."""
     mmforexcel_loaded = _mmforexcel_loaded(excel)
     try:
         if wb is None:
@@ -206,7 +206,7 @@ def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str
                 entry = {"sheet": sheet_name, "cell": ref_text(col_no, row_no), "error": error_text, "formula": formula_text}
                 array_addr = arrays.get((row_no, col_no))
                 if array_addr and ":" in array_addr:
-                    entry["array"] = array_addr  # multi-cell array formula: can only be changed as a whole
+                    entry["array"] = array_addr  # multi-cell array formula: can only  be changed as a whole
                 is_mm_call = "MM_" in formula_text.upper()
                 if error_text == "#NAME?" and is_mm_call and not mmforexcel_loaded:
                     addin_gap_errors.append(entry)
@@ -219,8 +219,8 @@ def _scan(excel, copy_path: Path, save: bool = True, wb: Any = None) -> dict[str
         close_quietly(wb)
         wb = None
 
-    # without the add-in every cell that reads an MM_ cell shows #NAME? as well (a Mind
-    # loop written into a model: the whole calculation sheet). A #NAME? whose own functions are
+    # without the add-in  every cell that reads an MM_ cell shows #NAME? as well  (a Mind
+    # loop written into a model: the  whole calculation sheet). A #NAME? whose own functions are
     # all known -- Excel's or MM_ -- is downstream of the gap, not a defect of the workbook.
     downstream = 0
     if addin_gap_errors and not mmforexcel_loaded:
@@ -266,13 +266,13 @@ _REF_TOKEN_RE = re.compile(r"(?:(?:'[^']+'|[\w.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(
 _NUMBER_RE = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")
 _A1_CELL_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})$")
 
-# How a cell of the original moved in the prepared version: (sheet, row, column) -> the same
+# How  a cell  of the original moved in the prepared version: (sheet, row, column) -> the same
 # (app.numbers_check.Moves.forward -- rows / columns inserted, sheets renamed).
 Forward = Callable[[str, int, int], tuple[str, int, int]]
 
 
 def _moved_key(sheet: str, cell: str, forward: Forward | None) -> tuple[str, str]:
-    """(sheet, A1 address) of an original cell -> where that cell is in the prepared
+    """(sheet,  A1 address)  of an original cell -> where that cell is in the prepared
     version. A range or anything else that is not one plain address keeps its text
     (its sheet's new name still applies)."""
     cell = cell.replace("$", "")
@@ -286,20 +286,20 @@ def _moved_key(sheet: str, cell: str, forward: Forward | None) -> tuple[str, str
 
 
 def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str, Any]], original_formulas_with_ref: set[tuple[str, str]] | None = None, forward: Forward | None = None) -> dict[str, Any]:
-    """Split recalculation errors of a prepared version against the errors
+    """Split  recalculation errors  of a prepared version against the errors
     of the ORIGINAL after the same full recalculation (the honest baseline --
     cached values can be stale, e.g. a number saved before the column a
-    formula pointed to was deleted). An error is pre-existing when the
-    original errs at the same sheet+address, or has an erroring formula with
-    the same text on the same sheet (row inserts shift addresses), or when the
-    original's formula at that address already contained #REF! (broken
-    whatever its cached value said).
+    formula pointed  to was deleted). An error is pre-existing when the
+    original errs at  the same sheet+address, or has an  erroring formula with
+    the same text on the  same sheet (row inserts shift addresses), or when the
+    original's formula at  that address already contained #REF! (broken
+    whatever its  cached value said).
 
     `forward` (how the preparation moved the original's cells: rows inserted
     above a grid, sheets renamed) puts each original address where that cell
     is now, so a title row above an erroring grid does not turn its old errors
     into new ones -- nor pass a new error that landed on an old address.
-    With `forward` the addresses are exact and the formula-text match is not
+    With `forward` the addresses are exact and the formula-text match  is not
     used: a good cell pushed onto an erroring cell's row reads the same text
     (=A10/B10) and would pass a new error as an old one."""
     by_addr = {_moved_key(e.get("sheet", ""), str(e.get("cell", "")), forward) for e in original_errors}
@@ -316,7 +316,7 @@ def classify_errors(errors: list[dict[str, Any]], original_errors: list[dict[str
 
 
 def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
-    """(sheet, address) of every formula in the original that contains #REF!."""
+    """(sheet,  address) of  every formula in the original that contains #REF!."""
     from openpyxl import load_workbook
 
     out: set[tuple[str, str]] = set()
@@ -339,14 +339,14 @@ def formulas_with_broken_refs(original_path: Path) -> set[tuple[str, str]]:
 
 
 def classify_against_original(original_path: Path, errors: list[dict[str, Any]], forward: Forward | None = None) -> dict[str, Any]:
-    """Which recalculation errors were already errors in the ORIGINAL
+    """Which  recalculation errors  were already errors in the ORIGINAL
     upload (the model's own #DIV/0! / #N/A, which Mind takes as they are) and
     which are new (introduced by the preparation, or revealed by it).
 
-    An error cell counts as pre-existing when the original had an error at the
-    same sheet+address, or -- because row inserts shift addresses -- an error
-    with the same formula text on the same sheet; `forward` moves the original's
-    addresses as classify_errors does (and then the text match is not used).
+    An error cell  counts as pre-existing when the original had an error at the
+    same  sheet+address, or -- because row inserts  shift addresses -- an error
+    with the same  formula text on the same sheet; `forward` moves the original's
+    addresses as  classify_errors does (and then the text match  is not used).
     Reads the original's cached values (what Excel last saved), never
     recalculates it."""
     from openpyxl import load_workbook
@@ -384,7 +384,7 @@ def classify_against_original(original_path: Path, errors: list[dict[str, Any]],
 
 
 def formula_signature(formula: str) -> str:
-    """The *shape* of a formula: references -> REF, string literals -> "…",
+    """The  *shape* of  a formula: references -> REF, string literals -> "…",
     numeric constants -> N, whitespace removed, upper-cased. Two cells whose
     formulas share a signature almost always share a root cause."""
     if not formula:
@@ -403,7 +403,7 @@ def _unknown_functions(formula: str) -> list[str]:
 
 
 def group_errors(formula_errors: list[dict[str, Any]], addin_gap_errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Cluster recalculation errors by root cause so the UI can offer 'fix all':
+    """Cluster  recalculation errors  by root cause so the UI can offer 'fix all':
     #NAME? from the same unknown function(s); any error from formulas of the
     same shape; add-in-gap #NAME? by the MM_ function(s) involved."""
     groups: dict[tuple[str, str], dict[str, Any]] = {}
@@ -443,7 +443,7 @@ def group_errors(formula_errors: list[dict[str, Any]], addin_gap_errors: list[di
 
 
 def recalculate_in(excel: Any, copy_path: Path, wb: Any = None) -> dict[str, Any]:
-    """recalculate() in an Excel the caller owns, `copy_path` possibly already open in it as `wb`
+    """recalculate()  in an  Excel the caller owns, `copy_path` possibly already open in it as `wb`
     (the session's Excel worker, ahead of the Recalculate step). Errors are raised."""
     copy_path = Path(copy_path).resolve()
     with stage("recalculate", file=copy_path.name, worker=True):
@@ -451,7 +451,7 @@ def recalculate_in(excel: Any, copy_path: Path, wb: Any = None) -> dict[str, Any
 
 
 def recalculate(copy_path: Path, save: bool = True) -> dict[str, Any]:
-    """Recalculates `copy_path` in place (it's already a disposable copy)
+    """Recalculates  `copy_path` in  place (it's already a disposable copy)
     and reports any formula-error cells found afterward. `save=False`: the recalculated
     values are not written back -- for a copy nothing reads again (the original's baseline)."""
     if not com_available():
@@ -463,7 +463,7 @@ def recalculate(copy_path: Path, save: bool = True) -> dict[str, Any]:
         with stage("recalculate", file=copy_path.name), excel_session() as excel:
             return _scan(excel, copy_path, save=save)
     except Exception as exc:
-        # Excel's error in plain words ("Excel closed or stopped answering ..."), never pywin32's tuple:
-        # this message reaches the screens inside a normal answer. The prefix stays as it is --
+        # Excel's error in  plain words ("Excel closed or stopped answering ..."), never pywin32's tuple:
+        # this  message reaches the screens inside a  normal answer. The prefix stays as it  is --
         # server._recalc_out tells from it that the recalculation did not run.
         return _not_run("ERROR", f"Excel COM recalculation failed: {plain_error(exc)}")

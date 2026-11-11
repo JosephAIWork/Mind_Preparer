@@ -10,10 +10,10 @@ import { PlainCodes } from "./core/plain-codes";
 import { SessionStore } from "./core/session.store";
 import { ShowMeOverlay } from "./core/show-me-overlay";
 
-/** The shell: Mind's dark Carbon header, the two places (main screen, Advanced), the version, and
+/** The  shell: Mind's  dark Carbon header, the two places (main screen, Advanced), the version, and
  *  "Send feedback" (in the header, and in a box when a step failed), and the
- *  "Show me" pointer's overlay (once, above everything). A shared copy also says until when it works;
- *  once it stopped working, the notice replaces everything. */
+ *  "Show me" pointer's overlay (once, above  everything). A shared copy also says until when it works;
+ *  once it  stopped working, the notice replaces everything. */
 @Component({
   selector: "mr-root",
   standalone: true,
@@ -33,7 +33,7 @@ export class App implements OnInit {
   readonly rules = signal<number | null>(null);
 
   ngOnInit(): void {
-    void this.codes.load(); // the plain words for every code the screens show
+    void this.codes.load(); // the  plain words  for every code the screens show
 
     this.api
       .health()

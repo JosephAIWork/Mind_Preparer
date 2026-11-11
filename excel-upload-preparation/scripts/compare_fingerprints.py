@@ -1,4 +1,4 @@
-"""Compare two scan_fingerprint.py outputs: every difference by path, then the seconds of each.
+"""Compare  two scan_fingerprint.py  outputs: every difference by path, then the seconds of each.
 
     python scripts/compare_fingerprints.py <before.json> <after.json>     (exit 1 when they differ)
 """

@@ -10,7 +10,7 @@ import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
 
-/** The Prep actions one by one: tick what to apply, see the changes, apply through Excel. */
+/** The  Prep actions  one by one: tick what to apply, see the changes, apply through Excel. */
 @Component({
   selector: "mr-prep-panel",
   standalone: true,
@@ -39,7 +39,7 @@ export class PrepPanel implements OnDestroy {
   readonly optional = computed(() => this.store.plan().filter((a) => a.level !== "blocking" && (a.count > 0 || this.showEmpty())));
   readonly emptyCount = computed(() => this.store.plan().filter((a) => !a.count).length);
   readonly byHand = computed(() => (this.store.readiness()?.blocking ?? []).filter((b) => b.fix !== "prep" && b.fix !== "outside_inputs"));
-  /** each one with what the error values its message quotes mean, once each */
+  /** each  one with  what the error values its message quotes mean, once each */
   readonly byHandRows = computed(() => this.byHand().map((b) => ({ b, meanings: this.codes.meaningsIn(b.message) })));
   readonly selection = computed(() => {
     // Defaults follow the plan (default_on) until the user changes them; a new plan resets.
@@ -60,7 +60,7 @@ export class PrepPanel implements OnDestroy {
   readonly pivotSaving = signal(false);
   readonly pivotModeList = computed(() => Object.entries(this.store.pivotModes()) as [PivotMode, string][]);
 
-  /** 1.11.7: what Prep (and Do everything) does with the pivot tables: the plan is made again. */
+  /** 1.11.7: what Prep (and Do everything) does with the  pivot tables: the plan is made again. */
   async setPivotMode(mode: PivotMode): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.pivotSaving() || mode === this.store.pivotMode()) return;
@@ -94,8 +94,8 @@ export class PrepPanel implements OnDestroy {
     this.selected.set(next);
   }
 
-  /** The card's words for "Show me": the rules this action repairs ("The Prep action '…'" in their
-   *  findings leads here). None on an action with nothing to change: there is nothing to tick. */
+  /** The card's words for "Show  me": the rules this action repairs  ("The Prep action '…'" in their
+   *  findings leads  here). None on an action with nothing to change: there is  nothing to tick. */
   showMeWords(a: PrepAction): string | null {
     return a.count ? (a.rule_ids ?? []).map((r) => `prep-for-${r}`).join(" ") : null;
   }
@@ -118,7 +118,7 @@ export class PrepPanel implements OnDestroy {
     return `${o.op} ${target}${after !== "" && after !== null ? " → " + String(after).slice(0, 80) : ""}${note}`;
   }
 
-  /** 1.11.6: put the ticked actions on the list (Apply all writes the list in one Excel session). */
+  /** 1.11.6: put the ticked actions  on the list (Apply all writes the list in one Excel session). */
   addToList(): void {
     const sel = this.selection();
     const actions = this.store.plan().filter((a) => sel.has(a.id) && a.operations.length);

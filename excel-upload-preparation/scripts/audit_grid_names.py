@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Audit the grid names of a workbook the way docs/RUN_IN_MIND_NAMING.md
+"""Audit  the grid  names of a workbook the way docs/RUN_IN_MIND_NAMING.md
 describes: how many grids Mind would list as 'Untitled(row,col)', how many
 carry a name that means nothing ('Cashflows C4', 'I'), what the deterministic
-heuristics propose, and -- with --suggest -- what the APIM assistant proposes
+heuristics propose, and --  with --suggest -- what the APIM assistant proposes
 instead.
 
-Read-only by default: it analyses an immutable copy and writes no workbook.
-`--context` additionally dumps the cells around each unnamed/weak grid, which
-is what you read when judging a name yourself.
+Read-only by default: it  analyses an immutable copy and writes  no workbook.
+`--context` additionally dumps the cells around  each unnamed/weak grid, which
+is what you read when judging a name  yourself.
 
     python scripts/audit_grid_names.py model.xlsm
-    python scripts/audit_grid_names.py model.xlsm --suggest --output names.json
+    python scripts/audit_grid_names.py model.xlsm --suggest --output  names.json
     python scripts/audit_grid_names.py model.xlsm --context context.txt
 """
 from __future__ import annotations
@@ -102,7 +102,7 @@ def main() -> int:
             else:
                 print(f"[assistant unavailable] {out.get('message')}", file=sys.stderr)
 
-        # what the prep plan would do about it, and what it cannot do
+        # what  the prep  plan would do about it, and what it cannot do
         plan = {a["id"]: a for a in prep.plan_actions(analysis, report)}
         titles = plan["create_grid_titles"]
         blocked = [s for s in titles["skipped"] if "standalone text" not in s]

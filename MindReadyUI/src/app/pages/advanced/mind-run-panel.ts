@@ -6,9 +6,9 @@ import { MindLoopEvent, MindLoopIteration, MindLoopReport, MindRunOptionsInfo, M
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
 
-/** The app running itself against real Mind: prepare, gates, upload, convert, run, decide; one run at a time.
- *  Before the click: which version goes up (always the latest), the changes to make first (ticks) and a
- *  conservative time estimate. While it runs: the stages, the one going on now, time spent and time left. */
+/** The  app running  itself against real Mind: prepare, gates, upload, convert, run, decide; one run at a time.
+ *  Before the click: which version goes up (always the latest), the changes to make first (ticks) and  a
+ *  conservative time estimate. While it runs: the stages, the one going  on now, time spent and time  left. */
 @Component({
   selector: "mr-mind-run-panel",
   standalone: true,
@@ -36,7 +36,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
   readonly signIn = signal<MindSignIn | null>(null);
   readonly signInError = signal("");
   private signInTimer: ReturnType<typeof setTimeout> | null = null;
-  /** seconds since the last status answer, so the clock moves every second between polls */
+  /** seconds  since the  last status answer, so the clock moves every second between polls */
   readonly drift = signal(0);
   private next = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -60,7 +60,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
   readonly remaining = computed(() => Math.max(0, (this.timing()?.remaining_s ?? 0) - (this.running() ? this.drift() : 0)));
 
   constructor() {
-    // a new version (Fix all issues, Prep...) changes what goes up and what can be ticked
+    // a new version (Fix all issues, Prep...)  changes what goes up and what can be ticked
     effect(() => {
       this.store.currentVersion();
       this.store.plan();
@@ -83,8 +83,8 @@ export class MindRunPanel implements OnInit, OnDestroy {
     if (this.signInTimer) clearTimeout(this.signInTimer);
   }
 
-  // ---- the Mind sign-in ------------------------------------------------------------------
-  /** One line on the sign-in: signed in / not / never, and when. */
+  // ---- the Mind  sign-in ------------------------------------------------------------------
+  /** One line on the sign-in:  signed in / not / never, and  when. */
   signInLine(): string {
     const s = this.signIn();
     if (!s) return "";
@@ -131,7 +131,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
     }
   }
 
-  /** while the Edge window is open, look every 2 s */
+  /** while the Edge window is  open, look every 2 s */
   private watchSignIn(): void {
     if (this.signInTimer) clearTimeout(this.signInTimer);
     if (!this.live || this.signIn()?.state !== "waiting") return;
@@ -153,7 +153,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
       this.options.set(o);
       this.ticked.set(new Set(o.choices.filter((c) => c.default_on).map((c) => c.id)));
     } catch {
-      /* the panel still works without it: the loop then chooses by itself */
+      /* the panel  still works without it: the loop then chooses by itself */
     }
   }
 

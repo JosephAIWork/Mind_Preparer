@@ -1,4 +1,4 @@
-"""A control workbook whose right answers are known, to test the structure detector."""
+"""A  control workbook  whose right answers are known, to test the structure detector."""
 from pathlib import Path
 
 import openpyxl
@@ -12,7 +12,7 @@ inp["D1"] = "S3"
 for i, (a, b, c) in enumerate([(0.02, 0.03, 0.01)] * 1, start=2):
     inp[f"A{i}"], inp[f"B{i}"], inp[f"C{i}"], inp[f"D{i}"] = "Rate", a, b, c
 
-# 1. Three product sheets: same layout, own assumptions; Prod_B has one formula override.
+# 1.  Three product  sheets: same layout, own assumptions; Prod_B has one formula override.
 assump = {"A": (100, 10, 0.05), "B": (200, 6, 0.04), "C": (50, 16, 0.07)}
 for p, (pol, prem, lapse) in assump.items():
     ws = wb.create_sheet(f"Prod_{p}")
@@ -35,10 +35,10 @@ for y in range(1, 21):
     c = L(y + 1)
     tot[f"{c}1"] = f"=Prod_A!{c}9+Prod_B!{c}9+Prod_C!{c}9"
 
-# 2. Three independent scenario blocks side by side (4 columns each), 10 years down.
+# 2.  Three independent  scenario blocks side by side (4 columns each), 10 years down.
 sc = wb.create_sheet("Scen")
 for k in range(3):
-    c0 = 1 + k * 5            # block width 4 + one empty column
+    c0 = 1 + k * 5            # block  width 4  + one empty column
     A, B, C, D = (L(c0 + i) for i in range(4))
     sc[f"{A}1"] = f"Scenario {k + 1}"
     sc[f"{A}2"], sc[f"{B}2"], sc[f"{C}2"], sc[f"{D}2"] = "Year", "Rate", "Fund", "Interest"
@@ -52,7 +52,7 @@ sc["P2"] = "Total fund"
 for t in range(1, 11):
     sc[f"P{t + 2}"] = f"=C{t + 2}+H{t + 2}+M{t + 2}"
 
-# 3. Chained year sheets: each opens with the previous year's closing (a sequence, not copies).
+# 3.  Chained year  sheets: each opens with the previous year's closing (a sequence, not copies).
 for i, yr in enumerate((2024, 2025, 2026)):
     ws = wb.create_sheet(f"Y{yr}")
     ws["A1"], ws["A2"], ws["A3"], ws["A4"] = "Opening", "Premium", "Claims", "Closing"
@@ -66,7 +66,7 @@ for i, yr in enumerate((2024, 2025, 2026)):
         ws[f"{c}3"] = "=$B$3/12"
         ws[f"{c}4"] = f"={c}1+{c}2-{c}3"
 
-# 4. A plain one-policy time projection (filled across, recurrent): nothing to flag.
+# 4.  A plain  one-policy time projection (filled across, recurrent): nothing to flag.
 pj = wb.create_sheet("Proj")
 pj["A1"], pj["A2"], pj["A3"] = "Month", "Reserve", "Release"
 for m in range(1, 61):

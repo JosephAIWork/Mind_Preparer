@@ -1,9 +1,9 @@
-"""PRJ-* validators: the /ProjectSettings grid (KB '/ProjectSettings grid':
+"""PRJ-*  validators: the  /ProjectSettings grid (KB '/ProjectSettings grid':
 unique grid with Name | Value | Locked | Hidden; 'Projects settings edition'
 for the Runs/Debug settings; 'General structure and guidelines' for the
-#NbSimulations grid). The KB's list of setting *names* lives in an attached
-sample file that is not part of the scrape, so KB names are not validated -- but a subset
-confirmed rejected by Mind's real converter is flagged by PRJ-006."""
+#NbSimulations grid). The KB's list of  setting *names* lives in an attached
+sample file that is not part  of the scrape, so KB names  are not validated -- but a subset
+confirmed  rejected by Mind's real converter is flagged by PRJ-006."""
 from __future__ import annotations
 
 from typing import Any
@@ -15,7 +15,7 @@ STOCHASTIC_NATIVE = {"RAND", "RANDBETWEEN", "RANDARRAY"}
 STOCHASTIC_MM_PREFIXES = ("MM_SIMULATE", "MM_RANDOM", "MM_SIMCOPULA", "MM_RANDOMSAMPLE", "MM_SIMQUANTILE", "MM_SIMINDEXQUANTILE")
 DEBUG_KEYWORDS = ("profiler", "debug", "nan")
 SIM_KEYWORDS = ("simulation", "stochastic", "seed", "multicore", "multithread", "batch")
-# /ProjectSettings setting names Mind's converter rejects as non-existent (proven by real
+# /ProjectSettings  setting names  Mind's converter rejects as non-existent (proven by real
 # upload testing 2026-08-30: declaring them fails the Convert step). Compared lower-cased.
 MIND_INVALID_SETTINGS = {"enablecheckformatinputmanager", "enabledebugmode"}
 
@@ -109,9 +109,9 @@ def prj_005(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def prj_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """PRJ-006: reject /ProjectSettings setting names Mind's converter does not recognise.
+    """PRJ-006:  reject /ProjectSettings  setting names Mind's converter does not recognise.
     Confirmed by real Mind upload testing: declaring one of MIND_INVALID_SETTINGS makes the
-    Convert step fail with 'The <name> setting does not exist'. Mind converts fine without them."""
+    Convert step fail with 'The <name> setting does not exist'. Mind converts fine without  them."""
     grids = _settings(analysis)
     bad = []
     for g in grids:

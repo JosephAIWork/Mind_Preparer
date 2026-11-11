@@ -1,11 +1,11 @@
-"""Upload one workbook to real Milliman Mind, convert it, optionally run it, and print what Mind said.
+"""Upload  one workbook  to real Milliman Mind, convert it, optionally run it, and print what Mind said.
 
     python scripts/mind_upload.py <workbook> [--project <prefix>_<stem>] [--run] [--headed] [--keep]
 
-Uses the saved sign-in of app/mind_client.py (python -m app.mind_client check / login <init url>).
-Projects are created in the sandbox folder with a name starting with the project prefix (both in
+Uses the saved sign-in of app/mind_client.py (python -m app.mind_client check /  login <init url>).
+Projects are created in the sandbox folder with a  name starting with the project prefix  (both in
 settings.yaml) and deleted afterwards
-unless --keep is given. Nothing else in Mind is touched.
+unless --keep is  given. Nothing else in Mind is touched.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from app.mind_client import (  # noqa: E402
 
 
 def read_deterministic_differences(page) -> list[str]:
-    """After "Upload successful (with warnings)": Display Logs -> the "Deterministic Differences" tab ->
+    """After  "Upload successful  (with warnings)": Display Logs -> the "Deterministic Differences" tab ->
     every line "<wb> > <sheet> > <cell>: Excel value: x Mind value: y"."""
     from app.mind_client import body_text, screenshot
 
@@ -55,8 +55,8 @@ def read_deterministic_differences(page) -> list[str]:
     tab.first.click(timeout=8000)
     time.sleep(3)
     lines = [ln.strip() for ln in body_text(page).splitlines() if "Mind value" in ln]
-    # "Hide Logs" only: the window's "Close" comes first and closes it WITHOUT adding the templates,
-    # so --run then found no Run button (Tokyo instances, 10 November 2026)
+    # "Hide Logs" only: the window's "Close" comes first and closes  it WITHOUT adding the templates,
+    # so --run then found no Run button  (Tokyo instances, 10 November 2026)
     try:
         page.get_by_role("button", name=re.compile(r"^\s*Hide Logs\s*$", re.I)).first.click(timeout=4000)
     except Exception:

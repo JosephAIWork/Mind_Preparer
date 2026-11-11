@@ -6,7 +6,7 @@ import { CodeName } from "../../core/code-name";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
-/** Deliver: the report workbooks to download, and the numbers check (did the values change?). */
+/** Deliver:  the report  workbooks to download, and the numbers check (did the values change?). */
 @Component({
   selector: "mr-deliver-panel",
   standalone: true,
@@ -34,7 +34,7 @@ export class DeliverPanel {
     const s = this.numbers()?.samples ?? {};
     return Object.entries(s).flatMap(([kind, rows]) => rows.slice(0, 5).map((r) => ({ kind, ...r })));
   });
-  /** What each error value among the samples means ("#REF!" was a value, "#N/A" is now), once each. */
+  /** What  each error  value among the samples means ("#REF!" was a value, "#N/A" is now), once each. */
   readonly legend = computed(() => this.codes.legend(this.sampleRows().flatMap((r) => [r.was, r.is])));
 
   url(name: string): string | null {

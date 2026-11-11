@@ -1,13 +1,13 @@
-"""Real change-set application, scoped to
+"""Real  change-set application,  scoped to
 the handful of rules the mined rule set itself marks as safe to
 auto-correct (almost everything else needs a human judgment call by the
 rules' own design). Every apply function:
 
-  * works on a **fresh copy**, never the file it was handed directly
-    in place without a hash check first (non-negotiable rule #1);
-  * returns a dict with `output_path`, the write `method`, whether the
-    output was verified to open in Excel, and a change-log entry;
-  * never claims recalculation succeeded -- call app.recalc.recalculate()
+  * works on a  **fresh copy**, never the file it was handed directly
+    in place without  a hash check first (non-negotiable rule  #1);
+  * returns a dict with `output_path`, the write  `method`, whether the
+    output was verified to open in Excel, and a  change-log entry;
+  * never claims recalculation succeeded -- call  app.recalc.recalculate()
     separately afterward (see app/modes -- VERIFY is a distinct step).
 
 Cell edits are written by **Excel through COM** whenever Excel is
@@ -16,7 +16,7 @@ A pure-Python (openpyxl) save drops package parts it doesn't model and the
 result can fail to open in Excel -- see app/excel_com.py. The openpyxl path
 is kept as an explicitly-labelled reduced-fidelity fallback.
 
-The change log is an append-only JSON sidecar next to the output file,
+The change log is an  append-only JSON sidecar next to the output file,
 never written into the workbook itself (instructions/reporting.md,
 README.md's "Stores the change log in the application, not in the
 workbook").
@@ -51,7 +51,7 @@ def append_change_log(output_path: Path, entry: dict[str, Any]) -> Path:
 
 
 def convert_output_format(source_path: Path, work_dir: Path, target_suffix: str) -> dict[str, Any]:
-    """FILE-002: Excel COM Save-As to .xlsx/.xlsm. Used both to fix FILE-002
+    """FILE-002:  Excel COM  Save-As to .xlsx/.xlsm. Used both to fix FILE-002
     findings and to convert an uploaded .xlsb before analysis can even run
     (openpyxl can't read .xlsb at all)."""
     if target_suffix not in ("xlsx", "xlsm"):
@@ -86,13 +86,13 @@ def convert_output_format(source_path: Path, work_dir: Path, target_suffix: str)
         append_change_log(output_path, entry)
         return {"status": "APPLIED", "method": "excel_com", "output_path": output_path, "change_log_entry": entry}
     except Exception as exc:
-        # Excel's error in plain words, never pywin32's tuple: a failed .xlsb conversion is the scan's
-        # error, which the screens show as it is
+        # Excel's error in plain words, never pywin32's tuple:  a failed .xlsb conversion is the scan's
+        # error, which the screens show  as it is
         return {"status": "ERROR", "message": f"Excel COM Save-As failed: {plain_error(exc)}"}
 
 
 def apply_formula_edits(copy_path: Path, edits: list[dict[str, Any]], prefer_excel: bool = True) -> dict[str, Any]:
-    """Write `edits` ([{sheet, cell, after}]) into `copy_path` in place --
+    """Write  `edits` ([{sheet,  cell, after}]) into `copy_path` in place --
     the caller guarantees it is already a disposable copy. Excel COM when
     available (full fidelity), openpyxl otherwise (reduced fidelity)."""
     copy_path = Path(copy_path)
@@ -149,7 +149,7 @@ def apply_formula_edits(copy_path: Path, edits: list[dict[str, Any]], prefer_exc
 
 
 def plan_loop_case_fix(analysis: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """Compute (renames, edits) for LOOP-002 without touching any file.
+    """Compute  (renames, edits)  for LOOP-002 without touching any file.
     Renames every case-variant spelling of a loop name (in any MM_-function
     string argument) to the single most-used casing."""
     defs = loop_definitions(analysis)
@@ -186,10 +186,10 @@ def plan_loop_case_fix(analysis: dict[str, Any]) -> tuple[dict[str, str], list[d
 
 
 def fix_loop_case_mismatch(source_path: Path, work_dir: Path, analysis: dict[str, Any], prefer_excel: bool = True) -> dict[str, Any]:
-    """LOOP-002: rewrite every case-variant spelling of a loop name to the
+    """LOOP-002:  rewrite every  case-variant spelling of a loop name to the
     single most-used casing. Narrow and genuinely unambiguous -- loop names
     are case-sensitive in Mind, so this can only make previously-broken
-    references consistent, never change which loop a formula refers to."""
+    references consistent, never change which loop  a formula refers to."""
     renames, edits = plan_loop_case_fix(analysis)
     if not renames:
         return {"status": "NOT_APPLICABLE", "message": "No loop-name case mismatches found."}

@@ -1,10 +1,10 @@
-"""Time the app's scan (the analysis every upload and every Apply runs), stage by stage and rule by rule.
+"""Time  the app's  scan (the analysis every upload and every Apply runs), stage by stage and rule by rule.
 
     python scripts/perf_scan.py <workbook> [--out perf_scan.json] [--profile prof.txt]
 
-Runs app.modes.plan_mode exactly as the server does, with a progress hook that stamps every stage
-(copy, load, inventory, names, rules, report) and every rule, plus the plan (app.prep.plan_actions).
-`--profile` also writes the top cumulative functions (cProfile). Peak memory of the process is reported.
+Runs app.modes.plan_mode exactly as the server does, with a progress  hook that stamps every stage
+(copy, load, inventory, names, rules, report) and  every rule, plus the plan (app.prep.plan_actions).
+`--profile`  also writes the top cumulative functions (cProfile).  Peak memory of the process is reported.
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def main() -> int:
     if prof:
         prof.enable()
     ignore = [s.strip() for s in a.ignore.split(",") if s.strip()] or None
-    with formula_memo():  # as the server's scan (1.11.10)
+    with formula_memo():  # as  the server's  scan (1.11.10)
         result = plan_mode.run(path, work, load_config(), engine=engine, ignore_sheets=ignore, progress=progress)
         progress("plan", "plan")
         plan = plan_actions(result["workbook_analysis"], result["validation_report"], None)

@@ -1,12 +1,12 @@
-"""A rough time estimate for "Do everything", per step, before it runs.
+"""A  rough time  estimate for "Do everything", per step, before it runs.
 
 Built from what was measured (four Do everything runs on two large workbooks, 27 MB and 170 MB, with
-bulk writes and the per-session Excel worker): an Excel session starts in about 5 s, opens a
-workbook in about 8 s + 0.3 s per MB and saves it in about 10 s + 0.18 s per MB, and the app's own scan
-of the workbook (measured on this very file, the last scan) is the unit for the rest -- the fixer's first
+bulk writes and the per-session  Excel worker): an Excel session starts in about 5 s, opens  a
+workbook in about 8 s +  0.3 s per MB and saves it  in about 10 s + 0.18 s per MB, and the  app's own scan
+of the workbook (measured on  this very file, the last scan) is the unit for the rest -- the fixer's first
 full read of every cell takes about 0.3 of a scan, each fix pass about 0.1 of a scan (it writes in bulk),
 and every change is followed by a re-scan of 0.7-1.5 scans (the worker's Excel opens the next copy
-alongside it). How many fix passes a workbook needs cannot be known
+alongside it). How many fix passes a  workbook needs cannot be known
 before Excel recalculates it, so every step has a low / likely / high figure; the front end shows the
 range before the click and a countdown that corrects itself with the real duration of each step.
 """
@@ -19,15 +19,15 @@ OPEN_S = 8.0
 OPEN_S_PER_MB = 0.3
 SAVE_S = 10.0
 SAVE_S_PER_MB = 0.18
-FIRST_READ_PER_SCAN = 0.3  # the fixer reads every cell's value and formula once, after Excel recalculates
-PASS_PER_SCAN = 0.1  # one fix pass: write (in bulk), recalculate, read back, judge
-RESCAN = {"low": 0.7, "mid": 1.2, "high": 1.5}  # the re-scan of a new version, in scans of the last one
-RECALC_AHEAD_S = {"low": 5.0, "mid": 15.0}  # Recalculate worked out ahead by the worker: wait, read, answer
-BASELINE_EXTRA_S = 25.0  # the original's recalculation besides its Excel and open: rebuild, error read, answer
-WRITE_S_PER_OP = 0.02  # a Prep operation written through Excel
-FALLBACK_SCAN_S_PER_FORMULA = 0.0035  # when the file was never scanned in this session (measured on two large models)
+FIRST_READ_PER_SCAN = 0.3  # the  fixer reads  every cell's value and formula once, after Excel recalculates
+PASS_PER_SCAN = 0.1  # one  fix pass:  write (in bulk), recalculate, read back, judge
+RESCAN = {"low": 0.7, "mid": 1.2, "high": 1.5}  # the  re-scan of  a new version, in scans of the last one
+RECALC_AHEAD_S = {"low": 5.0, "mid": 15.0}  # Recalculate  worked out  ahead by the worker: wait, read, answer
+BASELINE_EXTRA_S = 25.0  # the  original's recalculation  besides its Excel and open: rebuild, error read, answer
+WRITE_S_PER_OP = 0.02  # a  Prep operation  written through Excel
+FALLBACK_SCAN_S_PER_FORMULA = 0.0035  # when  the file  was never scanned in this session (measured on two large models)
 # a pivot table turned into cells: copy, paste and clear through a scratch sheet, then (to formulas)
-# about ten Excel calls per value cell -- what the pivot adds up, its value, the formula, the check
+# about ten Excel calls per  value cell -- what the pivot adds up, its value, the  formula, the check
 PIVOT_S_EACH = 3.0
 PIVOT_S_PER_CELL = 0.01
 
@@ -38,12 +38,12 @@ CAVEAT = (
 
 
 def _excel_session(mb: float) -> tuple[float, float]:
-    """(start + open, save) seconds for a workbook of `mb` megabytes."""
+    """(start  + open,  save) seconds for a workbook of `mb` megabytes."""
     return EXCEL_START_S + OPEN_S + OPEN_S_PER_MB * mb, SAVE_S + SAVE_S_PER_MB * mb
 
 
 def pivot_seconds(pivots: list[tuple[str, int]]) -> float:
-    """Seconds to turn the pivot tables of a Prep round into cells: `pivots` = (operation, cells of the
+    """Seconds  to turn  the pivot tables of a Prep round into cells: `pivots` = (operation, cells of the
     pivot) per pivot; only "pivot_to_formulas" pays per cell (above MAX_FORMULA_CELLS it becomes values)."""
     from .pivots import MAX_FORMULA_CELLS
 
@@ -52,12 +52,12 @@ def pivot_seconds(pivots: list[tuple[str, int]]) -> float:
 
 def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0, stored_errors: int | None = None, blocking_ops: int = 0, has_loop: bool = True, worker: bool = False,
                    recalc_ahead: bool = True, baseline_mb: float = 0.0, pivots: list[tuple[str, int]] = ()) -> dict[str, Any]:
-    """-> {"steps": [{id, low_s, mid_s, high_s, why}], "total": {low_s, mid_s, high_s}, "caveat", "basis"}.
+    """->  {"steps": [{id,  low_s, mid_s, high_s, why}], "total": {low_s, mid_s, high_s}, "caveat", "basis"}.
     `scan_s`: the last scan of this file (without the .xlsb conversion); `stored_errors`: formula cells
-    whose value Excel last stored is an error (None = not known). `worker`: the session's
-    Excel worker opens each next copy while the version is analysed, so Prep rounds and the loop
-    wait for no Excel start, open or second check, and (`recalc_ahead`) Recalculate after the loop
-    is ready. `baseline_mb`: the size of the original when its own recalculation (the baseline the
+    whose value Excel last stored is an error (None  = not known). `worker`: the session's
+    Excel worker opens each next copy  while the version is analysed, so  Prep rounds and the loop
+    wait for no  Excel start, open or second check, and (`recalc_ahead`) Recalculate after the  loop
+    is ready. `baseline_mb`: the size of the  original when its own recalculation (the baseline the
     errors left are compared with) has not run yet in this session, 0 when it has or will not be
     needed. `pivots`: (operation, cells) of every pivot table Prep turns into cells (pivot_seconds)."""
     scan = float(scan_s) if scan_s and scan_s > 0 else max(30.0, FALLBACK_SCAN_S_PER_FORMULA * formula_count)
@@ -66,7 +66,7 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
     steps: list[dict[str, Any]] = []
 
     # Fix all issues: open, recalculate and read every cell; then per pass write/recalculate/read; then
-    # save, check it opens, re-scan. A clean workbook stops after the first read.
+    # save, check it opens,  re-scan. A clean workbook stops after the first read.
     first = open_s + FIRST_READ_PER_SCAN * scan
 
     def rescan(k: str) -> float:
@@ -112,8 +112,8 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
     ahead = worker and recalc_ahead and has_loop
     rc_low = RECALC_AHEAD_S["low"] if ahead else open_s + 5.0 + save_s + 5.0
     rc = RECALC_AHEAD_S["mid"] if ahead else rc_low
-    # with errors left, the original is recalculated once per session too (another Excel and a full
-    # open); the fixer's step may already have paid it, so the low figure leaves it out
+    # with errors left, the original is  recalculated once per session too  (another Excel and a full
+    # open); the fixer's  step may already  have paid  it, so the low figure leaves it out
     base = _excel_session(baseline_mb)[0] + BASELINE_EXTRA_S if baseline_mb > 0 else 0.0
     steps.append({"id": "recalc", "low_s": rc_low, "mid_s": rc + base, "high_s": 1.5 * rc + base,
                   "why": "one full recalculation in Excel" + (", and one of the original to compare the errors left with" if base else "")})
@@ -132,9 +132,9 @@ def estimate_chain(file_mb: float, scan_s: float | None, formula_count: int = 0,
 
 # --- Run in Mind --------------------------------------------------------------------------------
 # One iteration of app/mind_loop.py, stage by stage. Measured once on a 13 MB model (6 min end to end,
-# about 3 of them in Mind); Mind's side (project, upload and convert, run) grows with the file and with
-# how busy Mind is, so those figures are generous. The Mind team asked for a conservative estimate:
-# every figure is multiplied by MIND_SAFETY, and the countdown never shows less than what is left of the
+# about 3  of them in Mind); Mind's side (project, upload and convert, run)  grows with the file and with
+# how  busy Mind is, so those figures are  generous. The Mind team asked for a conservative estimate:
+# every figure is  multiplied by MIND_SAFETY, and the countdown never  shows less than what is left of the
 # stages still to come.
 MIND_SAFETY = 1.5
 MIND_STAGES: list[tuple[str, str]] = [
@@ -146,7 +146,7 @@ MIND_STAGES: list[tuple[str, str]] = [
     ("mind_open", "Opening Mind, creating a test project"),
     ("upload", "Uploading and converting in Mind"),
     ("template", "Adding the model in Mind"),
-    ("inputs", "Uploading the Mind inputs"),  # only when the outside files were made Mind inputs
+    ("inputs", "Uploading the Mind inputs"),  # only  when the  outside files were made Mind inputs
     ("run", "Running the model in Mind"),
     ("results", "Reading Mind's results"),
     ("cleanup", "Removing the test project"),
@@ -156,10 +156,10 @@ MIND_STAGE_TITLES = dict(MIND_STAGES)
 
 def estimate_mind_run(file_mb: float, scan_s: float | None, formula_count: int = 0, ops: int = 0, use_assistant: bool = True,
                       check_numbers: bool = True, run_model: bool = True, inputs: int = 0) -> dict[str, Any]:
-    """-> {"stages": [{id, title, seconds}], "first_s", "retry_s", "caveat"}: seconds per stage of the first
+    """->  {"stages": [{id,  title, seconds}], "first_s", "retry_s", "caveat"}: seconds per stage of the first
     iteration (already padded by MIND_SAFETY), the whole first iteration, and what each retry adds (a
-    retry asks the assistant nothing). A run that converges in one iteration takes about first_s.
-    `inputs`: the Mind inputs (CSV files) uploaded through Mind's Inputs window before the run."""
+    retry asks the assistant nothing). A run  that converges in one iteration takes about first_s.
+    `inputs`: the Mind inputs  (CSV files) uploaded through Mind's Inputs  window before the run."""
     scan = float(scan_s) if scan_s and scan_s > 0 else max(30.0, FALLBACK_SCAN_S_PER_FORMULA * formula_count)
     open_s, save_s = _excel_session(file_mb)
     raw: dict[str, float] = {
@@ -171,10 +171,10 @@ def estimate_mind_run(file_mb: float, scan_s: float | None, formula_count: int =
         "mind_open": 45.0,
         "upload": 60.0 + 5.0 * file_mb,
         "template": 30.0,
-        "inputs": (30.0 + 10.0 * inputs) if inputs else 0.0,  # open the Inputs window, one folder upload, a status per grid
+        "inputs": (30.0 + 10.0 * inputs) if inputs else 0.0,  # open the Inputs window,  one folder upload, a status per grid
         "run": (60.0 + 4.0 * file_mb) if run_model else 0.0,
         "results": 20.0 if run_model else 0.0,
-        "cleanup": 0.0 if run_model else 30.0,  # a project that was run is kept (Mind does not let automation delete it)
+        "cleanup": 0.0 if run_model else 30.0,  # a project that was run  is kept (Mind does not let automation  delete it)
     }
     stages = [{"id": k, "title": t, "seconds": round(raw[k] * MIND_SAFETY)} for k, t in MIND_STAGES if raw[k] > 0]
     first = sum(s["seconds"] for s in stages)
@@ -189,7 +189,7 @@ def estimate_mind_run(file_mb: float, scan_s: float | None, formula_count: int =
 
 
 def mind_run_remaining(stages: list[dict[str, Any]], current: str | None, stage_elapsed_s: float) -> float:
-    """Seconds left in this iteration: what is left of the current stage (never less than a tenth of
+    """Seconds  left in  this iteration: what is left of the current stage (never less than a tenth of
     its estimate: a stage past its estimate is still running) plus every later stage."""
     ids = [s["id"] for s in stages]
     if current not in ids:

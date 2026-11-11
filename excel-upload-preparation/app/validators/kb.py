@@ -1,4 +1,4 @@
-"""Rules mined directly from the Milliman Mind knowledge base
+"""Rules  mined directly  from the Milliman Mind knowledge base
 (CompleteMindDocn.docx) that 01_Mind_Readiness_Standard.md does not cover:
 documented flags, /Group syntax, backup flags, /HideRows columns,
 MM_RANGE placement, unique special grids, /Translations headers and the
@@ -32,7 +32,7 @@ def documented_flags() -> dict[str, dict[str, Any]]:
 
 
 def flg_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FLG-001: every '/Flag' must be documented, with the documented argument count."""
+    """FLG-001:  every '/Flag'  must be documented, with the documented argument count."""
     docs = documented_flags()
     if not docs:
         return finding("NOT_SUPPORTED", "references/mind-flags.yaml is missing; run tools/mine_kb_docx.py.", None)
@@ -58,7 +58,7 @@ def flg_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def grp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """GRP-001: /Group.(GroupName).x.y"""
+    """GRP-001:  /Group.(GroupName).x.y"""
     groups: dict[str, list[dict[str, Any]]] = {}
     problems = []
     for g in all_grids(analysis):
@@ -86,7 +86,7 @@ def grp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def bkp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """BKP-001: backup flags and the MM_BACKUPBUTTON placement."""
+    """BKP-001:  backup flags  and the MM_BACKUPBUTTON placement."""
     sources: dict[str, list[dict[str, Any]]] = {}
     dests: dict[str, list[dict[str, Any]]] = {}
     backup_grids = []
@@ -129,7 +129,7 @@ def bkp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def hid_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """HID-001: a /HideRows header column holds TRUE/FALSE (or 1/0, or formulas)."""
+    """HID-001:  a /HideRows  header column holds TRUE/FALSE (or 1/0, or formulas)."""
     problems, warnings, checked = [], [], 0
     for g in all_grids(analysis):
         for m in g.get("header_markers", []):
@@ -156,7 +156,7 @@ def hid_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def rng_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RNG-001: MM_RANGE alone in a single-cell table, used at the top level."""
+    """RNG-001:  MM_RANGE alone  in a single-cell table, used at the top level."""
     calls = mm_calls(analysis, "MM_RANGE")
     if not calls:
         return finding("PASS", "No MM_RANGE calls.", {"problems": []})
@@ -178,7 +178,7 @@ def rng_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def unq_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """UNQ-001: special grids that must be unique per project."""
+    """UNQ-001:  special grids  that must be unique per project."""
     docs = documented_flags()
     unique_flags = sorted(name for name, spec in docs.items() if spec.get("unique"))
     dups = {}

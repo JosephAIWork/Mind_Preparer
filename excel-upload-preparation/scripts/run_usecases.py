@@ -1,21 +1,21 @@
-"""Drive the running web app through the whole flow for one or more workbooks,
+"""Drive  the running  web app through the whole flow for one or more workbooks,
 exactly as a user would with the buttons:
 
     upload -> standard Prep (the actions that are on by default, repeated while
-    Prep still plans something) -> Recalculate -> Fix all automatically ->
-    Recalculate again (the independent confirmation)
+    Prep still  plans something) -> Recalculate -> Fix all automatically ->
+    Recalculate again (the  independent confirmation)
 
-    python scripts/run_usecases.py --base http://127.0.0.1:8601 --out <dir> a.xlsm b.xlsm
-    python scripts/run_usecases.py --ports 8601,8602 --out <dir> a.xlsm b.xlsm c.xlsm
+    python scripts/run_usecases.py --base http://127.0.0.1:8601 --out  <dir> a.xlsm b.xlsm
+    python scripts/run_usecases.py --ports 8601,8602 --out  <dir> a.xlsm b.xlsm c.xlsm
 
-With --ports the script starts a fresh server of its own for every workbook
-(one per port, so as many workbooks run side by side as there are ports) and
+With --ports the script starts a fresh server  of its own for every workbook
+(one per  port, so as many workbooks run side by side as there are ports) and
 stops it afterwards: a session keeps its analysis in memory, and four large
 workbooks in one server process do not fit.
 
 A very large workbook is uploaded the way the upload screen offers: when it
 unpacks to --skip-above-mb or more (default 100 MB), a sheet that alone holds
---skip-share of it (default 50 % -- a data dump or an output table) is left out
+--skip-share of it (default  50 % -- a data dump or an output table) is left out
 of the *scan*. The workbook itself stays whole: Prep, the recalculation and the
 automatic fixer work on all of it.
 
@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 
-for _stream in (sys.stdout, sys.stderr):  # the fixer's messages hold arrows; a redirected console is cp1252 on Windows
+for _stream in (sys.stdout, sys.stderr):  # the  fixer's messages  hold arrows; a redirected console is cp1252 on Windows
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 from pathlib import Path
@@ -41,7 +41,7 @@ from typing import Any
 
 import requests
 
-LONG = 6 * 3600  # one call on a 40 MB workbook can take many minutes
+LONG = 6 * 3600  # one  call on  a 40 MB workbook can take many minutes
 
 
 def _post(base: str, path: str, **kw: Any) -> dict[str, Any]:
@@ -58,11 +58,11 @@ def _get(base: str, path: str) -> dict[str, Any]:
     return r.json()
 
 
-SKIP_ACTIONS: set[str] = set()  # --skip-actions: actions left unticked, as a user would
+SKIP_ACTIONS: set[str] = set()  # --skip-actions:  actions left  unticked, as a user would
 
 
 def _default_ops(plan: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """What the Prep screen sends when the user presses Apply without touching a checkbox."""
+    """What  the Prep  screen sends when the user presses Apply without touching a checkbox."""
     chosen = [a for a in plan if a.get("default_on") and a.get("count", 0) > 0 and a["id"] not in SKIP_ACTIONS]
     return [o for a in chosen for o in a["operations"]], {a["id"]: a["count"] for a in chosen}
 
@@ -127,9 +127,9 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
             step(f"numbers check ({by})", started, ran=numbers.get("ran"), clean=numbers.get("clean"), verdict=numbers.get("verdict"), counts=numbers.get("counts"),
                  moves=numbers.get("moves"), by_sheet=numbers.get("by_sheet"), examples={k: v[:4] for k, v in (numbers.get("samples") or {}).items() if v})
 
-        # The fixer compares a prepared version with the original itself (an error that was a value
+        # The  fixer compares  a prepared version with the original itself (an error that was a value
         # in the original is Prep's doing). `one_comparison` uses that one instead of asking twice:
-        # on a 37 MB model each comparison is two full recalculations.
+        # on a 37 MB model each  comparison is two full recalculations.
         if not one_comparison:
             t = time.time()
             numbers_step(_post(base, f"/api/sessions/{sid}/numbers-check"), t, "original vs prepared")
@@ -158,7 +158,7 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                     break
             fixed_plan: list[dict[str, Any]] = []
             if st.get("state") == "done":
-                # the whole result: every kind of fix with its reason, what is left and why (not the recalculation / analysis payloads)
+                # the whole result: every kind of fix  with its reason, what is left  and why (not the recalculation / analysis  payloads)
                 whole = _get(base, f"/api/sessions/{sid}/auto-fix?full=1")
                 fixed_plan = (whole.get("analysis") or {}).get("plan") or []
                 st = {k: v for k, v in whole.items() if k not in ("recalc", "analysis")}
@@ -172,8 +172,8 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
                  broken_by_prep=fix.get("regression_cells"), good_values_changed=fix.get("good_values_changed"),
                  by_strategy=fix.get("by_strategy"), version=(st.get("version") or {}).get("label"), summary=fix.get("summary"))
 
-            # 1.8.1: what the verdict asks for next. A fix can be a form Mind computes differently
-            # (=IFERROR(x,0) over arithmetic on "": FRM-008); the analysis of the fixed version says so
+            # 1.8.1: what the verdict asks for next. A fix can be  a form Mind computes differently
+            # (=IFERROR(x,0) over arithmetic  on "": FRM-008); the analysis of the fixed version says so
             # and Prep rewrites it -- the blocking actions only, as the screen's next step does.
             again = [a for a in fixed_plan if a.get("default_on") and a.get("level") == "blocking" and a.get("count", 0) > 0 and a["id"] not in SKIP_ACTIONS]
             if again:
@@ -218,7 +218,7 @@ def flow(base: str, workbook: Path, out_dir: Path, prep_rounds: int, autofix: bo
 
 
 def _serve(port: int, log: Path) -> subprocess.Popen:
-    """A server of this app on `port`, started for one workbook."""
+    """A  server of  this app on `port`, started for one workbook."""
     root = Path(__file__).resolve().parents[1]
     env = {**os.environ, "MIND_READY_PORT": str(port), "PYTHONUTF8": "1"}
     proc = subprocess.Popen([sys.executable, "-m", "app.web.server"], cwd=root, env=env, stdout=log.open("w", encoding="utf-8"), stderr=subprocess.STDOUT)

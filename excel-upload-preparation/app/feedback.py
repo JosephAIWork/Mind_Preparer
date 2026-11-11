@@ -28,21 +28,21 @@ from typing import Any, Iterable
 
 from .settings import SETTINGS
 
-MAX_KEPT = 300  # incidents kept in the file
+MAX_KEPT = 300  # incidents  kept in  the file
 _LOCK = threading.Lock()
 _REF_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-# Text arguments that are Excel keywords, not the user's text: CELL / INFO info types, mostly
+# Text  arguments that  are Excel keywords, not the user's text: CELL / INFO info types, mostly
 KEYWORDS = frozenset(
     "address col color contents directory filename format parentheses prefix protect row type width "
     "numfile origin osversion recalc release system".split()
 )
-# Local variables a failing function may hold the formula it was working on in, innermost first
+# Local  variables a  failing function may hold the formula it was working on in, innermost first
 _FORMULA_LOCALS = ("formula", "formula_text", "text", "before", "after", "target", "f", "o", "op", "item", "cell")
 
 
 def code(kind: str, name: str) -> str:
-    """Two letters and three digits standing for `name` (a stage, a function, an error type)."""
+    """Two  letters and  three digits standing for `name` (a stage, a function, an error type)."""
     h = hashlib.sha256(f"mind-ready:{kind}:{name}".encode("utf-8")).digest()
     return chr(65 + h[0] % 26) + chr(65 + h[1] % 26) + f"{int.from_bytes(h[2:6], 'big') % 1000:03d}"
 
@@ -63,13 +63,13 @@ def _how_run() -> str:
     return "exe" if "__compiled__" in globals() or getattr(sys, "frozen", False) else "source"
 
 
-# --- formula shapes -----------------------------------------------------------------------
+# ---  formula shapes  -----------------------------------------------------------------------
 _A1 = r"\$?[A-Za-z]{1,3}\$?\d{1,7}"
 _LOCAL_REF = re.compile(rf"^(?:{_A1}(?::{_A1})?|\$?[A-Za-z]{{1,3}}:\$?[A-Za-z]{{1,3}}|\$?\d{{1,7}}:\$?\d{{1,7}})#?$")
 
 
 def _ref_kind(value: str) -> str:
-    """A reference as what kind of reference it is, without its sheet, its cells or its name."""
+    """A  reference as  what kind of reference it is, without its sheet, its cells or its name."""
     v = value.strip()
     if v.upper() == "#REF!":
         return "#REF!"
@@ -97,7 +97,7 @@ def _ref_kind(value: str) -> str:
 
 
 def _function_name(value: str) -> str:
-    """A function token ("MID(") kept when it is  Excel's or Mind's; a macro's  own function is not named."""
+    """A  function token  ("MID(") kept when it is Excel's or Mind's; a macro's own function is not named."""
     from .validators.excel_functions import EXCEL_FUNCTIONS
 
     name = value[:-1]
@@ -109,7 +109,7 @@ def _function_name(value: str) -> str:
 
 
 def shape(formula: Any) -> str:
-    """The formula with  every reference, text  and number  taken out: what kind of formula it is, not
+    """The  formula with  every reference, text and number taken out: what kind of formula it is, not
     what it reads. Function names, operators and Excel's own keywords stay."""
     text = str(formula or "").strip()
     if not text:
@@ -131,12 +131,12 @@ def shape(formula: Any) -> str:
                 out.append(_ref_kind(t.value))
             elif t.subtype == Token.TEXT:
                 inner = t.value[1:-1] if len(t.value) >= 2 else ""
-                # an Excel keyword, or text with  no letter or digit in it ("]", "#"), says nothing of  the workbook
+                # an  Excel keyword, or text with no letter or digit in it  ("]", "#"), says nothing of the  workbook
                 out.append(t.value if inner.lower() in KEYWORDS or not re.search(r"[^\W_]", inner) else '"<text>"')
             elif t.subtype == Token.NUMBER:
                 out.append(t.value if t.value in ("0", "1", "2", "-1") else "<n>")
             else:
-                out.append(t.value)  # TRUE / FALSE / #N/A  ...
+                out.append(t.value)  # TRUE / FALSE / #N/A ...
         elif t.type == Token.FUNC and t.subtype == Token.OPEN:
             out.append(_function_name(t.value))
         elif t.type == Token.WSPACE:
@@ -147,7 +147,7 @@ def shape(formula: Any) -> str:
 
 
 def formula_facts(item: dict[str, Any]) -> list[str]:
-    """What kind of cell a planned change  or a scanned formula is (no address)."""
+    """What  kind of  cell a planned change or a scanned formula is (no address)."""
     facts = []
     ref = str(item.get("array_ref") or "")
     if item.get("one_cell_array") or (ref and ":" not in ref):
@@ -176,7 +176,7 @@ _MASKS = [
 
 
 def mask(text: Any, names: Iterable[str] = ()) -> str:
-    """A message with  paths, file names, quoted text, cell addresses  and the workbook's own names
+    """A  message with  paths, file names, quoted text, cell addresses and the workbook's own names
     (sheets, defined names) taken out. Excel's and Python's wording stays."""
     out = str(text or "")
     for name in sorted({n for n in names if n and len(n) >= 3}, key=len, reverse=True):
@@ -196,7 +196,7 @@ def _frames(tb: Any) -> list[Any]:
 
 
 def exc_facts(exc: BaseException) -> dict[str, Any]:
-    """The error as codes: its type, Excel's code when Excel raised it, the app functions it went
+    """The  error as  codes: its type, Excel's code when Excel raised it, the app functions it went
     through (code:line, innermost last) and the library it came out of."""
     facts: dict[str, Any] = {"error": code("error", f"{type(exc).__module__}.{type(exc).__qualname__}")}
     info = getattr(exc, "excepinfo", None)
@@ -213,7 +213,7 @@ def exc_facts(exc: BaseException) -> dict[str, Any]:
     for tb in _frames(getattr(exc, "__traceback__", None)):
         frame = tb.tb_frame
         module = str(frame.f_globals.get("__name__") or "")
-        found = _formula_in(frame)  # a library's frame may hold it too: only its shape is kept
+        found = _formula_in(frame)  # a library's frame may hold it too: only  its shape is kept
         if found is not None:
             formula_seen = found
         if module == "app" or module.startswith("app."):
@@ -233,7 +233,7 @@ def exc_facts(exc: BaseException) -> dict[str, Any]:
 
 
 def _formula_in(frame: Any) -> dict[str, Any] | None:
-    """The formula the function was working  on, read from its local variables (best effort)."""
+    """The  formula the  function was working on, read from its local variables (best effort)."""
     try:
         local = frame.f_locals
     except Exception:
@@ -264,7 +264,7 @@ def _write(incident: dict[str, Any]) -> None:
             lines = lines[-(MAX_KEPT - 1):] + [json.dumps(incident, default=str)]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError:
-        pass  # a report that cannot be written must never break the step that failed
+        pass  # a  report that  cannot be written must never break the step that failed
 
 
 def recent(n: int = 20) -> list[dict[str, Any]]:
@@ -296,9 +296,9 @@ def record(
     workbook: dict[str, Any] | None = None,
     names: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Write one incident and return it (its `ref` is what the screen and the email show).
+    """Write  one incident  and return it (its `ref` is what the screen and the email show).
     `exc`: the error, when there is one. `failed_ops`: changes Excel did not write. `workbook`:
-    counts only (`workbook_counts`). `names`: the workbook's sheet and defined names, masked
+    counts only (`workbook_counts`). `names`: the workbook's  sheet and defined names, masked
     wherever they appear."""
     names = list(names)
     incident: dict[str, Any] = {
@@ -355,7 +355,7 @@ def _failed_summary(ops: list[dict[str, Any]], names: list[str]) -> dict[str, An
 
 
 def failed_op_facts(exc: BaseException) -> dict[str, Any]:
-    """The codes to keep with one change Excel refused (prep's apply loop)."""
+    """The  codes to  keep with one change Excel refused (prep's apply loop)."""
     f = exc_facts(exc)
     out = {"error_code": f["error"], "trace": f["trace"]}
     if f.get("excel_code"):
@@ -364,7 +364,7 @@ def failed_op_facts(exc: BaseException) -> dict[str, Any]:
 
 
 def workbook_counts(summary: dict[str, Any] | None, size: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The workbook in numbers only (no name of anything)."""
+    """The  workbook in  numbers only (no name of anything)."""
     if not summary and not size:
         return {}
     s = summary or {}
@@ -385,7 +385,7 @@ def workbook_counts(summary: dict[str, Any] | None, size: dict[str, Any] | None 
     return {k: v for k, v in out.items() if v not in (None, "")}
 
 
-# ---  the message --------------------------------------------------------------------------
+# --- the message --------------------------------------------------------------------------
 def _incident_lines(i: dict[str, Any]) -> list[str]:
     lines = []
     head = f"{i.get('rule_id') + ' ' if i.get('rule_id') else ''}{i.get('what', 'interrupted')}"
@@ -454,7 +454,7 @@ def _timings(n: int = 25) -> list[str]:
             fh.seek(0, 2)
             start = max(0, fh.tell() - 200_000)
             fh.seek(start)
-            lines = fh.read().decode("utf-8", "replace").splitlines()[1 if start else 0:]  # a cut first  line is dropped
+            lines = fh.read().decode("utf-8", "replace").splitlines()[1 if start else 0:]  # a  cut first  line is dropped
     except OSError:
         return []
     since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 24 * 3600))  # the last day only
@@ -485,10 +485,10 @@ def _workbook_line(w: dict[str, Any]) -> str:
 
 
 def assistant_lines(incident: dict[str, Any] | None, note: str, rule_title: str | None = None) -> str | None:
-    """Two or  three plain-English sentences  opening the  message, written by the assistant from the
+    """Two  or three  plain-English sentences opening the message, written by the assistant from the
     same facts the message holds (never the workbook). The user's note is given to it as background
-    only: the message prints the note itself, so the  assistant is told to say what happened in its
-    own words and  never to copy the note. None  when the assistant is off or fails."""
+    only: the message prints the  note itself, so the assistant is told to say what happened  in its
+    own words and never to  copy the note. None when the assistant  is off or fails."""
     from .llm import chat_completion, llm_available
 
     if not llm_available():
@@ -532,10 +532,10 @@ def _sentences(text: str) -> list[str]:
 
 
 def without_note(ai_text: str | None, note: str) -> str | None:
-    """The  assistant's opening without any sentence that repeats the user's note word  for word
-    (the note is printed in the  message anyway). A sentence goes when it holds the whole note or
-    one of the note's sentences (of 10 characters or more, so "Thanks." does not match everything);
-    case and the spaces around do not matter. None when nothing of the opening is left."""
+    """The  assistant's opening  without any sentence that repeats the user's note word for word
+    (the note is printed in the message anyway). A sentence goes when it holds the whole note or
+    one of the note's  sentences (of 10 characters or more, so "Thanks." does not match  everything);
+    case and the spaces around do  not matter. None when nothing of the  opening is left."""
     if not ai_text:
         return None
     pieces = [note.strip()] + _sentences(note)
@@ -554,10 +554,10 @@ def without_note(ai_text: str | None, note: str) -> str | None:
 
 def compose(incident: dict[str, Any] | None, note: str = "", ai_text: str | None = None, workbook: dict[str, Any] | None = None,
             ai_usage: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The email: subject, the text to paste, the file name to save it under, the address. The
-    assistant's `ai_text` opens it,  less any sentence that is the user's note word for word (the
-    note has its own part, "The user's note"). `ai_usage` (the open workbook's count, app/llm.py)
-    adds "AI used: 12,340 tokens in 7 calls" to the log part and comes back as `aiUsage`."""
+    """The  email: subject,  the text to paste, the file name to save it under, the address. The
+    assistant's `ai_text` opens it, less any sentence that is the user's note word for word (the
+    note has its  own part, "The user's note"). `ai_usage` (the open workbook's count, app/llm.py)
+    adds  "AI used: 12,340 tokens in 7  calls" to the log part and comes  back as `aiUsage`."""
     from .llm import usage_line
 
     version, run = _version(), _how_run()

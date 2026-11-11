@@ -1,9 +1,9 @@
-"""Check app.recalc._error_cells (count, then Go To Special) against reading every used range.
+"""Check  app.recalc._error_cells (count,  then Go To Special) against reading every used range.
 
     python scripts/check_recalc_errors.py <workbook>
 
 Opens a copy in a hidden Excel, recalculates it (full rebuild), and per sheet finds the error formula
-cells both ways, timing each. Exit 0 when both ways find the same cells, in the same order.
+cells both ways, timing  each. Exit 0 when both ways find the same cells, in  the same order.
 """
 from __future__ import annotations
 

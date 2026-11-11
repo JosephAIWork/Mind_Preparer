@@ -1,13 +1,13 @@
-"""Prove app/fast_xlsx.py changes nothing: for a workbook, compare
+"""Prove  app/fast_xlsx.py changes  nothing: for a workbook, compare
 
   1. the formula load with the fast parser vs openpyxl as shipped (every cell's value, type, style ids,
      merged ranges, validations, defined names), and
-  2. the data_only view built from the formula load vs a real data_only load (every cell's value).
+  2. the data_only view built  from the formula load vs a real data_only load (every cell's  value).
 
-    python scripts/check_fast_xlsx.py <workbook> [--ignore "Sheet A,Sheet B"]
+    python scripts/check_fast_xlsx.py <workbook> [--ignore "Sheet A,Sheet  B"]
 
-Exit 0 when everything is identical. Runs the shipped openpyxl in a child process
-(MINDREADY_FAST_XLSX=0) so the two loads cannot share any state.
+Exit 0 when everything is identical. Runs  the shipped openpyxl in a child process
+(MINDREADY_FAST_XLSX=0) so the two loads  cannot share any state.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def fingerprint(wb, data_only: bool) -> dict:
-    """Per sheet, a hash of every stored cell (coordinate, type, value, style array)."""
+    """Per  sheet, a  hash of every stored cell (coordinate, type, value, style array)."""
     out = {}
     for ws in wb.worksheets:
         h = hashlib.sha256()

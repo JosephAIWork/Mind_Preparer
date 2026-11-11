@@ -1,7 +1,7 @@
-"""Readiness aggregation: turns a list of Finding dicts into a ValidationReport-
+"""Readiness  aggregation: turns  a list of Finding dicts into a ValidationReport-
 shaped dict. Status is derived purely from the findings' statuses (worst wins),
 per instructions/reporting.md: "the application derives status from enums and
-structured fields, never prose. The LLM never computes the final readiness state."
+structured fields, never prose. The  LLM never computes the final readiness state."
 """
 from __future__ import annotations
 

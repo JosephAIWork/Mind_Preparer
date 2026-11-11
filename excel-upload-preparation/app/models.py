@@ -1,11 +1,11 @@
-"""Domain models mirroring schemas/*.json.
+"""Domain  models mirroring  schemas/*.json.
 
 Every top-level model here corresponds 1:1 to one schema file and uses
 ``extra="forbid"`` because every schema sets ``additionalProperties: false``.
 Fields typed loosely as ``dict``/``list`` mirror schema properties that are
-themselves only declared as ``type: object`` / ``type: array`` with no
-further nested schema -- tightening them further would be inventing
-structure the package doesn't document (no requirement is invented).
+themselves only declared as ``type:  object`` / ``type: array`` with no
+further nested schema -- tightening them  further would be inventing
+structure the package  doesn't document (no requirement is invented).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class Status(str, Enum):
     NOT_SUPPORTED = "NOT_SUPPORTED"
 
 
-# Worst-first precedence per validation/readiness-policy.md.
+# Worst-first  precedence per  validation/readiness-policy.md.
 STATUS_PRECEDENCE: list[Status] = [
     Status.NOT_SUPPORTED,
     Status.ERROR,
@@ -34,7 +34,7 @@ STATUS_PRECEDENCE: list[Status] = [
 
 
 def aggregate_status(statuses: list[Status]) -> Status:
-    """Worst-status-wins aggregation, per validation/readiness-policy.md."""
+    """Worst-status-wins  aggregation, per  validation/readiness-policy.md."""
     if not statuses:
         return Status.PASS
     for candidate in STATUS_PRECEDENCE:
@@ -81,7 +81,7 @@ class PreservationClass(str, Enum):
 
 
 class Finding(BaseModel):
-    """One validator result. Matches validation/validation-policy.md's required fields."""
+    """One  validator result.  Matches validation/validation-policy.md's required fields."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -101,7 +101,7 @@ class Finding(BaseModel):
     correction_available: bool = False
     source: dict[str, Any] = Field(default_factory=dict)
     # The rule's own priority (REQUIRED / RECOMMENDED / INFORMATIONAL),
-    # so the UI can tell a change Mind *needs* from one it merely benefits from.
+    # so  the UI can tell a change Mind *needs* from one it  merely benefits from.
     priority: str | None = None
 
 

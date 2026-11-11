@@ -2,17 +2,17 @@ import { HttpErrorResponse, HttpInterceptorFn, HttpResponse } from "@angular/com
 import { Injectable, inject, signal } from "@angular/core";
 import { tap } from "rxjs";
 
-/** "Send feedback": the problem the backend just reported (its incident ref),
+/** "Send  feedback": the  problem the backend just reported (its incident ref),
  *  shown as a box under the header, and the dialog that turns it into an email. */
 @Injectable({ providedIn: "root" })
 export class FeedbackService {
-  /** the incident waiting in the box under the header (null: no box), with what stopped, in plain words */
+  /** the  incident waiting  in the box under the header (null: no box), with what stopped, in plain words */
   readonly incident = signal<{ ref: string; text: string | null } | null>(null);
   /** the dialog is open, for this incident (null: feedback from the header) */
   readonly dialog = signal<{ ref: string | null } | null>(null);
   private seen = new Set<string>();
 
-  /** A problem the backend recorded: shown once, however often a poll repeats it. */
+  /** A problem the backend recorded: shown  once, however often a poll repeats it. */
   report(ref: unknown, text?: unknown): void {
     if (typeof ref !== "string" || !ref || this.seen.has(ref)) return;
     this.seen.add(ref);
@@ -32,7 +32,7 @@ export class FeedbackService {
   }
 }
 
-/** Every answer of the backend that carries an `incident` (a failed step, changes Excel did not
+/** Every  answer of  the backend that carries an `incident` (a failed step, changes Excel did not
  *  write, a background job that stopped on an error) puts the feedback box up. */
 export const feedbackInterceptor: HttpInterceptorFn = (req, next) => {
   const feedback = inject(FeedbackService);

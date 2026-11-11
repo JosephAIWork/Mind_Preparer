@@ -1,13 +1,13 @@
-"""Time what Excel itself takes on a workbook, step by step, the way the app drives it.
+"""Time  what Excel  itself takes on a workbook, step by step, the way the app drives it.
 
     python scripts/perf_excel_bench.py <workbook> [--out perf.json] [--no-addin] [--threads off|on]
                                        [--steps calc,full,rebuild,read,save,reopen]
 
-A fresh hidden Excel (app.excel_com.excel_session) opens a copy of the workbook and every step is timed:
-open, Calculate (F9), CalculateFull (Ctrl+Alt+F9), CalculateFullRebuild (Ctrl+Shift+Alt+F9), reading
-every used range's values and formulas (what app/recalc.py does), Save, and opening the saved file again
-in a second Excel (what verify_opens_in_excel does). Also reports Excel's calculation settings, so the
-app's numbers can be set against plain Excel's. The source file is never changed.
+A fresh hidden Excel (app.excel_com.excel_session) opens a copy of the  workbook and every step is timed:
+open, Calculate (F9), CalculateFull (Ctrl+Alt+F9), CalculateFullRebuild  (Ctrl+Shift+Alt+F9), reading
+every used range's values and  formulas (what app/recalc.py does), Save, and opening  the saved file again
+in a second Excel (what verify_opens_in_excel does). Also  reports Excel's calculation settings, so the
+app's numbers  can be set against plain Excel's. The source file is never changed.
 """
 from __future__ import annotations
 

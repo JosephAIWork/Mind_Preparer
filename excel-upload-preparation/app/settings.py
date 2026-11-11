@@ -1,8 +1,8 @@
-"""The settings a team may change, read once from `settings.yaml` next to the app.
+"""The  settings a  team may change, read once from `settings.yaml` next to the app.
 
 A line left out of the file means the default below. A mistake in the file (bad YAML, an unknown
-setting, a wrong type) stops the app with a message naming it, rather than running on a guess. The
-environment variables that existed before this file still win: MIND_READY_PORT, MIND_READY_MODEL,
+setting, a  wrong type) stops the app with a message naming it, rather  than running on a guess. The
+environment  variables that existed before this file still  win: MIND_READY_PORT, MIND_READY_MODEL,
 MIND_MCP_URL, MINDREADY_MM_XLL.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-# MIND_READY_SETTINGS names another file: the single-file program sets it to a settings.yaml placed
+# MIND_READY_SETTINGS  names another  file: the single-file program sets it to a settings.yaml placed
 # next to MindReady.exe (mind_ready_app.py), its own copy being unpacked out of sight.
 SETTINGS_FILE = Path(os.environ.get("MIND_READY_SETTINGS") or PACKAGE_ROOT / "settings.yaml")
 
@@ -41,7 +41,7 @@ class Settings:
 
     @property
     def mind_host_suffix(self) -> str:
-        """shared.milliman-mind.com -> milliman-mind.com: every page of the Mind app is under it."""
+        """shared.milliman-mind.com  -> milliman-mind.com:  every page of the Mind app is under it."""
         host = urlparse(self.mind_site).hostname or ""
         return ".".join(host.split(".")[-2:])
 
@@ -74,7 +74,7 @@ def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 
 
 def _folder(text: str) -> Path:
-    """%VARIABLES% expanded; a relative folder is under the app's folder; a variable this machine does
+    """%VARIABLES%  expanded; a  relative folder is under the app's folder; a variable this machine does
     not have falls back to the default."""
     expanded = os.path.expandvars(text.strip())
     if "%" in expanded or "$" in expanded:
@@ -98,7 +98,7 @@ def load(path: Path = SETTINGS_FILE) -> Settings:
             raise ValueError(f"{path.name}: unknown setting '{key}' (known: {', '.join(_KEYS)})")
         field, kind = _KEYS[key]
         if value is None or value == "":
-            continue  # empty = the default
+            continue  # empty  = the  default
         if kind is int and (isinstance(value, bool) or not isinstance(value, int)):
             raise ValueError(f"{path.name}: '{key}' should be a whole number, not {value!r}")
         if kind is bool and not isinstance(value, bool):

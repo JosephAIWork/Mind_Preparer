@@ -1,13 +1,13 @@
-"""INP-* / EXP-* validators: Input Manager and Export Manager grids.
+"""INP-*  / EXP-*  validators: Input Manager and Export Manager grids.
 
 KB sources: 'Input manager' (/Input grids, CSV named like the grid),
 'Input manager automatch' (/InputSettings: GridName | FileNamePattern with
 {GridName} {InstanceName} {ModelName} {*} {???}), 'Input manager reorder
-columns' (/Reorder needs /Input, no /NoHeader, unique headers), 'Projects
-settings edition' (Enable check format in Input manager), 'Export'
-(/Export, unique /ExportSettings with its documented columns and
-FileNamePattern tags). INP-010: outside files a macro imports (the facts come
-from the server, config["outside_inputs"]; app/outside_inputs.py)."""
+columns'  (/Reorder needs /Input, no /NoHeader, unique headers), 'Projects
+settings edition' (Enable check  format in Input manager), 'Export'
+(/Export, unique  /ExportSettings with its documented columns and
+FileNamePattern tags).  INP-010: outside files a macro imports (the facts come
+from the server,  config["outside_inputs"]; app/outside_inputs.py)."""
 from __future__ import annotations
 
 import re
@@ -32,7 +32,7 @@ def _grid_summary(g: dict[str, Any]) -> dict[str, Any]:
     return {"sheet": g["sheet"], "ref": g["ref"], "name": g["display_name"], "flags": g["flag_names"], "rows": g["n_rows"], "cols": g["n_cols"]}
 
 
-# --- INP ---------------------------------------------------------------------
+# ---  INP ---------------------------------------------------------------------
 def inp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     inputs = flagged_grids(analysis, "input")
     links = flagged_grids(analysis, "inputlink")
@@ -44,7 +44,7 @@ def inp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def inp_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """INP-002: the Input Manager matches CSV files to grids by grid name."""
+    """INP-002:  the Input  Manager matches CSV files to grids by grid name."""
     inputs = flagged_grids(analysis, "input")
     if not inputs:
         return finding("PASS", "No /Input grids.", {"issues": []})
@@ -142,9 +142,9 @@ def inp_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     inputs = flagged_grids(analysis, "input")
     if not inputs:
         return finding("PASS", "No /Input grids; the Input Manager format check is not relevant.", {"input_grids": 0})
-    # Input format checking is toggled per grid in Mind's Input Manager at import time -- it is NOT a
+    # Input  format checking  is toggled per grid in Mind's Input Manager at import time -- it is NOT a
     # workbook-declared setting. Declaring an 'EnableCheckFormatInputManager' /ProjectSettings setting
-    # makes Mind's converter fail (proven by real upload testing; flagged by PRJ-006).
+    # makes Mind's converter fail (proven by real upload testing; flagged  by PRJ-006).
     return finding(
         "PASS",
         f"{len(inputs)} /Input grid(s): enable format checking per grid in Mind's Input Manager at import "
@@ -154,17 +154,17 @@ def inp_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def _file_label(row: dict[str, Any]) -> str:
-    """How a row of the import table is named to the user: the file it expects, else its key, else its cell."""
+    """How  a row  of the import table is named to the user: the file it expects, else its key, else its cell."""
     return str(row.get("expected") or "/".join(str(k) for k in row.get("keys") or []) or row.get("cell") or "?")
 
 
 def inp_010(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """INP-010: the macros open other files and paste their data in (app/outside_inputs.py). Mind
+    """INP-010:  the macros  open other files and paste their data in (app/outside_inputs.py). Mind
     runs no macro and opens no outside file, so each file must become a Mind input the Mind team
-    swaps in Mind's Input Manager. The facts come from the server, in config["outside_inputs"]:
-    what the upload's macros open, the import table, the files the user picked with the workbook
-    and whether this version descends from one a finished bring-in made, with the files picked now
-    ("brought_in"; when not, "brought_in_reason" says why for a line that went through a bring-in:
+    swaps in Mind's Input  Manager. The facts come from the server, in config["outside_inputs"]:
+    what the upload's  macros open, the import table, the  files the user picked with the workbook
+    and  whether this version descends from one a finished bring-in made, with  the files picked now
+    ("brought_in"; when not, "brought_in_reason"  says why for a line that went through a bring-in:
     the input files changed since, or it did not finish). Without them, or when the macros open
     nothing, there is nothing to do (PASS: the Status enum has no NOT_APPLICABLE)."""
     oi = (config or {}).get("outside_inputs")
@@ -185,7 +185,7 @@ def inp_010(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     observed["stand_ins"] = made
     if oi.get("brought_in") and made:
         # brought in, but from files the assistant made from the model's own numbers: works, and the
-        # Mind team can swap the CSVs -- yet the actual files are what the model was built for
+        # Mind team can swap the CSVs -- yet the  actual files are what the model was built for
         return finding(
             "WARNING",
             f"The outside files are brought in, but {len(made)} of {len(rows) or len(made)} {'is a stand-in' if len(made) == 1 else 'are stand-ins'} the assistant made "

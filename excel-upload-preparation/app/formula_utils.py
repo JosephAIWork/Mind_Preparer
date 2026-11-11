@@ -1,14 +1,14 @@
-"""Deterministic formula inspection helpers: tokenization, argument splitting,
+"""Deterministic  formula inspection  helpers: tokenization, argument splitting,
 literal extraction and A1-reference parsing -- not a full Excel formula
 parser. Used by inventory.py, grids.py and the validators. Per
 instructions/decision-rules.md, function extraction and formula tokenization
-belong in code, not the LLM.
+belong in code, not the  LLM.
 
 String literals and quoted sheet names are masked before scanning
-(so `="SUM(" & A1` does not count as a SUM call), and the OOXML storage
-prefixes Excel adds to formulas are stripped: `_xlfn.` (functions newer than
-Excel 2007, e.g. `_xlfn.XLOOKUP`), `_xlws.`, `_xlpm.` (LAMBDA parameters) and
-`_xludf.` (user-defined / add-in functions that were unresolved when the file
+(so `="SUM("  & A1` does not count as  a SUM call), and the OOXML storage
+prefixes  Excel adds to formulas are stripped: `_xlfn.` (functions newer than
+Excel 2007,  e.g. `_xlfn.XLOOKUP`), `_xlws.`, `_xlpm.` (LAMBDA parameters) and
+`_xludf.`  (user-defined / add-in functions that were unresolved when the file
 was last saved) and `_xll.` (a call resolved through an XLL add-in such as
 MMForExcel -- seen on the real test workbook). See `storage_prefixes`.
 """
@@ -19,34 +19,34 @@ import re
 import threading
 from contextlib import contextmanager
 
-STORAGE_PREFIX_RE = re.compile(r"_xl(?:fn|ws|udf|pm|op|dlm|l)\.", re.IGNORECASE)  # _xll. = XLL add-in call (MMForExcel)
+STORAGE_PREFIX_RE = re.compile(r"_xl(?:fn|ws|udf|pm|op|dlm|l)\.", re.IGNORECASE)  # _xll.  = XLL  add-in call (MMForExcel)
 FUNCTION_CALL_RE = re.compile(r"(?<![\w.!])([^\W\d][\w.]*)\s*\(")
 
 REF_RE = re.compile(
     r"(?<![\w.])"
     r"(?:(?P<sheet>'[^']+'|[\w.]+)!)?"
     r"(?P<ref>"
-    r"\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?"  # A1 or A1:B2
-    r"|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}"  # A:A (whole columns)
+    r"\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?"  # A1  or A1:B2
+    r"|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}"  # A:A  (whole columns)
     r"|\$?\d{1,7}:\$?\d{1,7}"  # 1:1 (whole rows)
     r")"
     r"(?![\w(])"
 )
 SINGLE_REF_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d{1,7})$")
-# a bare identifier: not a function call (no '(' after), not sheet-qualified (no '!' around),
+# a  bare identifier:  not a function call (no '(' after), not sheet-qualified (no '!' around),
 # not a structured reference (no '[' after), not part of a reference ('$' before)
-# name characters as Excel allows them: letters of any alphabet, digits, '_', '.', '?', '\'
+# name characters as Excel allows them: letters  of any alphabet, digits, '_', '.', '?', '\'
 NAME_TOKEN_RE = re.compile(r"(?<![\w.$!'\[#?\\])([^\W\d\\][\w.?\\]*)(?![\w.(!\[?\\])")
 ERROR_LITERAL_RE = re.compile(r"#(?:N/A|REF!|DIV/0!|NAME\?|VALUE!|NUM!|NULL!|SPILL!|CALC!|GETTING_DATA)", re.IGNORECASE)
-LOCAL_SCOPE_FUNCTIONS = {"LET", "LAMBDA"}  # their arguments define names of their own
+LOCAL_SCOPE_FUNCTIONS = {"LET", "LAMBDA"}  # their  arguments define  names of their own
 
 
 # One scan asks the same formula for its references, its function calls and its names
 # several times over (on a 245,847-formula workbook: 1.7 million cell_refs_in_formula calls, one
-# rule after another). Inside formula_memo() each answer is worked out once per formula text and kept
-# until the last open scan ends -- compactly (tuples), and handed out as fresh lists and dicts,
-# so a caller that changes what it got changes nothing for the next one.
-MEMO_MAX = 600_000  # formulas remembered per kind; beyond that, worked out again each time
+# rule after another).  Inside formula_memo() each answer is worked out once per formula text  and kept
+# until the last open scan  ends -- compactly (tuples), and handed out  as fresh lists and dicts,
+# so a caller that changes what it  got changes nothing for the next one.
+MEMO_MAX = 600_000  # formulas  remembered per  kind; beyond that, worked out again each time
 _MEMO: dict[str, dict[str, tuple | str]] | None = None
 _MEMO_USERS = 0
 _MEMO_LOCK = threading.Lock()
@@ -54,7 +54,7 @@ _MEMO_LOCK = threading.Lock()
 
 @contextmanager
 def formula_memo():
-    """Remember what the formula helpers found, per formula text, until the outermost scan using
+    """Remember  what the  formula helpers found, per formula text, until the outermost scan using
     it ends (scans may nest and run in parallel: the answers depend on the text alone)."""
     global _MEMO, _MEMO_USERS
     with _MEMO_LOCK:
@@ -82,11 +82,11 @@ def _remember(kind: str, formula: str, value: tuple | str) -> None:
 
 
 def name_tokens(formula: str) -> list[str]:
-    """Every bare name a formula refers to (defined names, tables, or names
+    """Every  bare name  a formula refers to (defined names, tables, or names
     that do not exist): string literals, quoted sheet names, cell and range
     references, function calls and error literals are left out. A formula
-    that calls LET or LAMBDA is skipped: its own variables are not workbook
-    names, and RSK-004 reviews LET."""
+    that calls  LET or LAMBDA is skipped: its own variables are not workbook
+    names,  and RSK-004 reviews LET."""
     hit = _remembered("names", formula)
     if hit is not None:
         return list(hit)
@@ -111,7 +111,7 @@ def _name_tokens(formula: str) -> list[str]:
 
 
 def undefined_names(formula: str, known: set[str]) -> list[str]:
-    """Names the formula refers to that are not in `known` (upper-cased
+    """Names  the formula  refers to that are not in `known` (upper-cased
     defined names and table names of the workbook), in order, once each."""
     seen: list[str] = []
     for tok in name_tokens(formula):
@@ -121,15 +121,15 @@ def undefined_names(formula: str, known: set[str]) -> list[str]:
 
 
 def mask_strings(formula: str, mask_sheet_quotes: bool = True) -> str:
-    """Replace the *content* of "..." string literals (and optionally '...'
+    """Replace  the *content*  of "..." string literals (and optionally '...'
     quoted sheet names) with spaces, preserving length so positions line up."""
-    # most formulas hold no quote at all, and the rules mask the same formula dozens of
-    # times (4.4 million calls for 57,537 formulas on one workbook): nothing to mask, nothing to copy.
+    # most formulas hold no quote at all, and the rules mask the same formula dozens  of
+    # times (4.4 million calls for 57,537 formulas on one workbook): nothing  to mask, nothing to copy.
     if '"' not in formula and (not mask_sheet_quotes or "'" not in formula):
         return formula
     if _MEMO is None:
         return _mask_strings(formula, mask_sheet_quotes)
-    # inside a scan, every formula once (the cache below holds 65,536; a big workbook has far more)
+    # inside a  scan, every formula once (the cache below  holds 65,536; a big workbook has far more)
     kind = "masked" if mask_sheet_quotes else "masked_strings_only"
     hit = _remembered(kind, formula)
     if hit is None:
@@ -149,7 +149,7 @@ def _mask_strings(formula: str, mask_sheet_quotes: bool) -> str:
             j = i + 1
             while j < n:
                 if formula[j] == '"':
-                    if j + 1 < n and formula[j + 1] == '"':  # escaped quote
+                    if j + 1 < n and formula[j + 1] == '"':  # escaped  quote
                         j += 2
                         continue
                     break
@@ -174,14 +174,14 @@ def strip_storage_prefix(name: str) -> str:
 
 
 def storage_prefixes(formula: str) -> set[str]:
-    """Which OOXML storage prefixes (`_xlfn.`, `_xludf.`, ...) appear in a formula."""
+    """Which  OOXML storage  prefixes (`_xlfn.`, `_xludf.`, ...) appear in a formula."""
     if not formula:
         return set()
     return {m.group(0).lower() for m in STORAGE_PREFIX_RE.finditer(mask_strings(formula))}
 
 
 def called_functions(formula: str) -> list[str]:
-    """Every `NAME(` occurrence in a formula string, upper-cased, storage
+    """Every  `NAME(` occurrence  in a formula string, upper-cased, storage
     prefixes stripped, string literals ignored, in order."""
     if not formula or not formula.startswith("="):
         return []
@@ -195,7 +195,7 @@ def called_functions(formula: str) -> list[str]:
 
 
 def split_top_level_args(arglist: str) -> list[str]:
-    """Split a function's argument-list text on top-level commas only,
+    """Split  a function's  argument-list text on top-level commas only,
     respecting nested parens/brackets and quoted strings."""
     args: list[str] = []
     depth = 0
@@ -230,7 +230,7 @@ def split_top_level_args(arglist: str) -> list[str]:
 
 
 def find_calls(formula: str, function_name: str) -> list[list[str]]:
-    """All call sites of `function_name` in a formula, each as its split argument list."""
+    """All  call sites  of `function_name` in a formula, each as its split argument list."""
     return [c["args"] for c in find_calls_detailed(formula, function_name)]
 
 
@@ -240,13 +240,13 @@ def _call_pattern(function_name: str) -> re.Pattern:
 
 
 def find_calls_detailed(formula: str, function_name: str) -> list[dict]:
-    """Like find_calls but also returns each call's text span and the exact
+    """Like  find_calls but  also returns each call's text span and the exact
     call text, which the resize/syntax validators need."""
     if not formula or not formula.startswith("="):
         return []
     # the rules ask every formula for one function after another (a million calls on a
-    # small model); a formula that does not contain the name cannot call it (exact for ASCII text,
-    # where IGNORECASE is plain lower-casing)
+    # small model); a  formula that does not contain the name cannot call it (exact  for ASCII text,
+    # where IGNORECASE is plain  lower-casing)
     if formula.isascii() and function_name.isascii() and function_name.lower() not in formula.lower():
         return []
     masked = mask_strings(formula)
@@ -275,7 +275,7 @@ def find_calls_detailed(formula: str, function_name: str) -> list[dict]:
 
 
 def unquote(arg: str | None) -> str | None:
-    """The value of a "..." string literal argument, or None if it isn't one."""
+    """The  value of  a "..." string literal argument, or None if it isn't one."""
     if arg is None:
         return None
     s = arg.strip()
@@ -285,7 +285,7 @@ def unquote(arg: str | None) -> str | None:
 
 
 def as_number(arg: str | None) -> float | None:
-    """The value of a numeric literal argument, or None."""
+    """The  value of  a numeric literal argument, or None."""
     if arg is None:
         return None
     s = arg.strip()
@@ -310,7 +310,7 @@ def num_to_col(n: int) -> str:
 
 
 def parse_ref(text: str | None) -> dict | None:
-    """Parse `A1`, `$A$1:B2`, `Sheet!A1:B2`, `'My Sheet'!A1`, `A:A`, `1:1` into
+    """Parse  `A1`, `$A$1:B2`,  `Sheet!A1:B2`, `'My Sheet'!A1`, `A:A`, `1:1` into
     {sheet, c1, r1, c2, r2, whole_column, whole_row, cells}. None if not a
     literal reference (a defined name, an expression, a function call...)."""
     if not text:
@@ -370,7 +370,7 @@ def _ref_dict(sheet: str | None, ref: str) -> dict:
 
 
 def cell_refs_in_formula(formula: str) -> list[dict]:
-    """Every A1-style reference in a formula (string literals ignored), each as
+    """Every  A1-style reference  in a formula (string literals ignored), each as
     a parse_ref()-shaped dict. Sheet is None when the reference is local."""
     if not formula or not formula.startswith("="):
         return []
@@ -387,7 +387,7 @@ _REF_KEYS = ("sheet", "ref", "c1", "r1", "c2", "r2", "whole_column", "whole_row"
 
 def _cell_refs_in_formula(formula: str) -> list[dict]:
     masked = mask_strings(formula, mask_sheet_quotes=False)
-    # Mask double-quoted strings only; quoted sheet names must survive for REF_RE.
+    # Mask  double-quoted strings  only; quoted sheet names must survive for REF_RE.
     out = []
     for m in REF_RE.finditer(masked):
         sheet = m.group("sheet")
@@ -399,10 +399,10 @@ def _cell_refs_in_formula(formula: str) -> list[dict]:
 
 
 def range_length(ref: str) -> int | None:
-    """Cell count of a simple A1 / A1:A10 / Sheet!A1:B2 / 'My Sheet'!A1:B2 reference. None if
+    """Cell  count of  a simple A1 / A1:A10 / Sheet!A1:B2 / 'My Sheet'!A1:B2 reference. None if
     unparseable (e.g. a defined name or an expression rather than a literal range).
-    The quotes of a quoted sheet name are part of the reference: stripping them would make every
-    loop range on a sheet with a space in its name "unresolvable" (LOOP-003)."""
+    The quotes of a quoted sheet name  are part of the reference: stripping them would make every
+    loop range  on a sheet with a space  in its name "unresolvable" (LOOP-003)."""
     text = (ref or "").strip()
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1].strip()
@@ -417,15 +417,15 @@ def ref_text(c1: int, r1: int, c2: int | None = None, r2: int | None = None) -> 
     return f"{a}:{num_to_col(c2)}{r2}"
 
 
-# --- arguments Excel only accepts as a reference ----------------------------------------
+# ---  arguments Excel  only accepts as a reference ----------------------------------------
 # In these argument positions Excel accepts a range, a defined name, #REF! or a
 # function that returns a reference -- and REFUSES the whole formula (COM error
-# 0x800A03EC, nothing is written) for anything else: NA(), #N/A, a number, text,
-# TRUE, an array constant, arithmetic (A1:A5+0), IFERROR(...), FILTER(...).
-# Verified one by one in Excel after an assistant fix rewrote
-# SUMIFS('Some sheet'!#REF!, ...) to SUMIFS(NA(), ...) in 17 cells and Excel
-# refused every one. Positions are 0-based.
-def _ifs_positions(n: int) -> list[int]:  # SUMIFS(sum_range, criteria_range1, criteria1, criteria_range2, ...)
+# 0x800A03EC,  nothing is written) for anything else: NA(), #N/A, a number, text,
+# TRUE,  an array constant, arithmetic (A1:A5+0), IFERROR(...),  FILTER(...).
+# Verified one by one in Excel after  an assistant fix rewrote
+# SUMIFS('Some sheet'!#REF!, ...) to SUMIFS(NA(), ...) in 17  cells and Excel
+# refused every one. Positions are  0-based.
+def _ifs_positions(n: int) -> list[int]:  # SUMIFS(sum_range,  criteria_range1, criteria1,  criteria_range2, ...)
     return [0] + list(range(1, n, 2))
 
 
@@ -437,7 +437,7 @@ REFERENCE_ARGS = {
     "AVERAGEIFS": _ifs_positions,
     "MAXIFS": _ifs_positions,
     "MINIFS": _ifs_positions,
-    "COUNTIFS": lambda n: list(range(0, n, 2)),  # COUNTIFS(criteria_range1, criteria1, ...)
+    "COUNTIFS": lambda n: list(range(0, n, 2)),  # COUNTIFS(criteria_range1,  criteria1, ...)
     "COUNTBLANK": lambda n: [0],
     "OFFSET": lambda n: [0],
     "ROW": lambda n: [0],
@@ -446,13 +446,13 @@ REFERENCE_ARGS = {
     "CELL": lambda n: [1],
     "SUBTOTAL": lambda n: list(range(1, n)),
 }
-# Functions whose result can be a reference (Excel accepts them in those positions).
+# Functions  whose result  can be a reference (Excel accepts them in those positions).
 REFERENCE_FUNCTIONS = {"INDEX", "OFFSET", "INDIRECT", "IF", "IFS", "CHOOSE", "SWITCH", "XLOOKUP", "LET"}
 _OPERATOR_CHARS = set("+-*/^&=<>%")
 
 
 def _closing_paren(masked: str, open_at: int) -> int:
-    """Index of the parenthesis closing the one at `open_at` (-1 if none)."""
+    """Index  of the  parenthesis closing the one at `open_at` (-1 if none)."""
     depth = 0
     for i in range(open_at, len(masked)):
         if masked[i] == "(":
@@ -465,7 +465,7 @@ def _closing_paren(masked: str, open_at: int) -> int:
 
 
 def _arg_spans(masked: str, start: int, end: int) -> list[tuple[int, int]]:
-    """(start, end) of each top-level argument between `start` and `end`
+    """(start,  end) of  each top-level argument between `start` and `end`
     (exclusive), split on commas outside parens/braces; strings and quoted
     sheet names are already masked."""
     spans, depth, s = [], 0, start
@@ -484,7 +484,7 @@ def _arg_spans(masked: str, start: int, end: int) -> list[tuple[int, int]]:
 
 
 def not_a_reference(arg: str) -> bool:
-    """True only when `arg` is certainly NOT a reference in Excel's eyes (see
+    """True  only when  `arg` is certainly NOT a reference in Excel's eyes (see
     REFERENCE_ARGS). Unknown shapes (names, unions, A1:INDEX(...), add-in
     calls) are given the benefit of the doubt."""
     s = arg.strip()
@@ -508,15 +508,15 @@ def not_a_reference(arg: str) -> bool:
         elif ch == ")":
             depth -= 1
         elif depth == 0 and ch in _OPERATOR_CHARS:
-            return True  # arithmetic / comparison / concatenation gives a value
+            return True  # arithmetic / comparison / concatenation gives  a value
     return False
 
 
 def reference_arg_problems(formula: str) -> list[dict]:
-    """Every argument in a reference-only position (REFERENCE_ARGS) that is
+    """Every  argument in  a reference-only position (REFERENCE_ARGS) that is
     certainly not a reference -- i.e. why Excel would refuse to store this
     formula. Each: {function, position (1-based), arg, start, end, call}
-    with start/end the span of the whole call in `formula`."""
+    with start/end the span of the  whole call in `formula`."""
     if not formula or not formula.startswith("="):
         return []
     masked = mask_strings(formula)
@@ -551,12 +551,12 @@ def _is_na(arg: str) -> bool:
 
 
 def collapse_na_reference_calls(formula: str) -> str:
-    """Replace every call that has NA() / #N/A in a reference-only position by
+    """Replace  every call  that has NA() / #N/A in a reference-only position by
     NA() itself, innermost first: `=SUMIFS(NA(),J:J,"x")` -> `=NA()`, and
     `=IFERROR(SUMIF(NA(),1),0)` -> `=IFERROR(NA(),0)`. Exact: such a call can
-    only ever have produced an error (it held a broken #REF! range), and NA()
-    is an error too, so every result -- IFERROR branches included -- stays the
-    same, while Excel now accepts the formula. Other problems are left alone."""
+    only ever have produced an error (it held  a broken #REF! range), and NA()
+    is an error too, so every  result -- IFERROR branches included --  stays the
+    same, while Excel now accepts the  formula. Other problems are left alone."""
     for _ in range(100):
         na = [p for p in reference_arg_problems(formula) if _is_na(p["arg"])]
         if not na:

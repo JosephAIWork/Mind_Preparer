@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""One-time deterministic extraction of the MM function registry.
+"""One-time  deterministic extraction  of the MM function registry.
 
 Source: 02_MM_Function_Registry.md (sibling doc). Every function entry is a
 single fenced ```yaml block under a '## <n> MM_FUNCTION' heading, already in
 a directly-parseable shape (function/category/syntax/parameters/...). This
-script concatenates those blocks into references/mm-function-registry.yaml,
+script concatenates those blocks  into references/mm-function-registry.yaml,
 which becomes the authoritative "Mind-supported function list" that
-FRM-002 Unsupported Functions checks against.
+FRM-002 Unsupported Functions  checks against.
 """
 from __future__ import annotations
 
@@ -18,11 +18,11 @@ import yaml
 
 BLOCK_RE = re.compile(r"```yaml\n(.*?)\n```", re.S)
 
-# A handful of list items in the source doc quote a leading token but then
+# A  handful of  list items in the source doc quote a leading token but then
 # continue with unquoted trailing text on the same line (e.g. `- "SIM" is
-# used for ...`), which is not valid YAML (a quoted scalar can't have
-# trailing plain content). Drop the inner quotes on those lines only; the
-# quoted word's meaning is unaffected.
+# used for ...`), which is not valid YAML  (a quoted scalar can't have
+# trailing plain content). Drop the inner quotes  on those lines only; the
+# quoted word's  meaning is unaffected.
 INLINE_QUOTE_FIX_RE = re.compile(r'^(\s*-\s*)"([^"]+)"(\s+\S.*)$', re.M)
 
 
@@ -35,7 +35,7 @@ def extract_functions(text: str) -> list[dict]:
         except yaml.YAMLError as exc:
             print(f"  WARNING: could not parse a yaml block ({exc})")
             continue
-        # Section 1.3 documents the entry format as a template block with
+        # Section  1.3 documents  the entry format as a template block with
         # every field empty (function: <blank>) -- skip it, not a real entry.
         if isinstance(data, dict) and data.get("function"):
             functions.append(data)

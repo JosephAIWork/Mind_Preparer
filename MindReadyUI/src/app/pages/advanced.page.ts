@@ -28,7 +28,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
   PASS: { type: "green", label: "Pass" },
 };
 
-/** The lists and the manual work: findings, the Prep actions by hand, versions. Grows in later chunks. */
+/** The  lists and  the manual work: findings, the Prep actions by hand, versions. Grows in later chunks. */
 @Component({
   selector: "mr-advanced",
   standalone: true,
@@ -60,7 +60,7 @@ export class AdvancedPage {
     const d = this.store.delta();
     return d && d.previous_version_id && (d.fixed.length || d.improved.length || d.regressed.length) ? d : null;
   });
-  /** The workbook map: every sheet with its grids and the findings that point at each grid. */
+  /** The  workbook map:  every sheet with its grids and the findings that point at each grid. */
   readonly sheetMap = computed(() => {
     const sheets = this.store.summary()?.sheets ?? [];
     const findings = this.store.findings().filter((f) => f.status !== "PASS");
@@ -113,7 +113,7 @@ export class AdvancedPage {
     return [loc.sheet, loc.cell ?? loc.ref].filter(Boolean).join("!");
   }
 
-  /** A chip shows the code; its tooltip says it in plain words. */
+  /** A chip shows the  code; its tooltip says it in plain words. */
   chipTip(f: Finding): string {
     return this.codes.name(f.rule_id, f.rule_name) ?? f.message;
   }

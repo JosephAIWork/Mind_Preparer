@@ -1,15 +1,15 @@
-"""Mind loop -- the macro's run loop written as Mind formulas.
+"""Mind  loop --  the macro's run loop written as Mind formulas.
 
 The Model map (app.model_map) says which cell a macro sets on every pass (the driver), what it
-sets it from (a row of a table, an item of a list, a counter), the cells that bound the run, and
-where each pass's results are written. This module turns that into the Mind construct that runs
+sets it from (a row of a table,  an item of a list, a counter), the cells that bound  the run, and
+where each pass's results  are written. This module turns that into  the Mind construct that runs
 through the same values without the macro:
 
-- every driver cell gets ``=MM_LOOP("Name", range)``: the loop, one value per row of the table
+-  every driver cell gets ``=MM_LOOP("Name", range)``: the  loop, one value per row of the table
   (or item of the list), so everything that reads the driver is computed for every value;
 - the block the macro writes on every pass gets ``=MM_RESULT(source, "Name", k)`` row by row:
   row k reads the source cells for the k-th loop value, as the macro's k-th pass wrote them;
-- the area the macro clears before a run is emptied of what an earlier run left there.
+- the area the macro clears before  a run is emptied of what an earlier run left there.
 
 Everything comes from the map and the workbook. Where the macro does something these two
 functions cannot say (a block whose place depends on a counter the macro keeps, a counted loop
@@ -17,7 +17,7 @@ with no cell holding the count, a block that depends on several nested loops) th
 and builds nothing for it. Loop names are the driver's defined name, else the source sheet's
 name; both are overridable.
 
-    python -m app.loop_builder <workbook.xlsm> [--json] [--name N] [--first a] [--last b]
+    python -m app.loop_builder <workbook.xlsm> [--json] [--name  N] [--first a] [--last b]
 """
 from __future__ import annotations
 
@@ -31,21 +31,21 @@ from .formula_utils import col_to_num, num_to_col, parse_ref
 
 ACTION_ID = "mind_loop"
 RULE_ID = "LOOP-001"
-MAX_RESULT_CELLS = 60_000  # MM_RESULT formulas one plan writes at most (items x cells of the block)
+MAX_RESULT_CELLS = 60_000  # MM_RESULT  formulas one  plan writes at most (items x cells of the block)
 MAX_CLEARS = 5_000
 
-# The Prep actions that rewrite formulas so Mind computes what Excel does (the main screen's "Fix the
-# formulas"). A loop model built on a version where they are not applied yet goes to Mind with them:
-# on the Tokyo IFRS 17 tool the loop was written before Prep, and CELL("filename") on BBA_01..VFA_01!B3
-# (the sheet's own name, the key of every lookup on the sheet) was NaN in Mind, so every formula of
-# those six calculation sheets was NaN too (14,737 differences in Mind's test, 2026-11-09).
+# The  Prep actions  that rewrite formulas so Mind computes what Excel does (the main screen's "Fix the
+# formulas"). A loop model built on a version where they are not applied yet goes to Mind with  them:
+# on the Tokyo IFRS 17 tool the loop was written before  Prep, and CELL("filename") on BBA_01..VFA_01!B3
+# (the sheet's  own name, the key of every lookup  on the sheet) was NaN in Mind, so every formula of
+# those  six calculation sheets was NaN too (14,737  differences in Mind's test, 2026-11-09).
 FORMULA_REPAIRS = (
     "fix_broken_refs", "fix_broken_refs_whole", "expand_3d_references", "freeze_external_links", "direct_references", "freeze_spill_refs",
     "guard_blank_arithmetic", "freeze_environment_formulas", "offset_ranges", "line_breaks_as_char", "keep_error_cells", "empty_cells_as_zero",
 )
-# What Mind's upload test lists after a loop or instances build, and is not an error (seen on every
+# What  Mind's upload  test lists after a loop or instances build, and is not an error (seen on every
 # model checked in Mind since 2026-11-09; docs/MIND_VS_EXCEL.md). One note on every ready plan, so
-# nobody chases these cells.
+# nobody chases these  cells.
 UPLOAD_TEST_NOTE = ("After the upload, Mind's test may list two kinds of cell that are not errors: check cells that are 0 in Excel "
                     "and a rounding residue below 0.00001 in Mind, and cells holding the text TRUE or FALSE (the test reads Excel's side "
                     "as 1 or 0). The values agree; there is nothing to fix.")
@@ -55,26 +55,26 @@ _VAR_ASSIGN_RE = re.compile(r"^\s*(?:Dim\s+[^:]+:\s*)?([A-Za-z_]\w*)\s*=")
 _OFFSET_RE = re.compile(r"\.Offset\(\s*(?P<r>[^,]+?)\s*,\s*(?P<c>[^)]+?)\s*\)", re.IGNORECASE)
 _RANGE_NAME_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)(?:\.Value2?)?""", re.IGNORECASE)
 _SAFE_EXPR_RE = re.compile(r"^[\d\s+\-*/().]+$")
-# the driver set to an item of a named list: X = GroupGrid(i + 1, 1).Value  (row, column of the name's range)
+# the  driver set  to an item of a named list: X = GroupGrid(i + 1, 1).Value (row, column of the name's range)
 _NAMED_ITEM_RE = re.compile(r"=\s*(?P<name>[A-Za-z_]\w*)\(\s*(?P<row>[^,()]+?)\s*,\s*(?P<col>\d+)\s*\)(?:\.Value2?)?\s*$", re.IGNORECASE)
 
 
-# --- small helpers --------------------------------------------------------------------------------
+# ---  small helpers  --------------------------------------------------------------------------------
 def loop_name_from(text: str) -> str:
-    """A loop name Mind accepts everywhere: letters, digits and underscores."""
+    """A  loop name  Mind accepts everywhere: letters, digits and underscores."""
     name = re.sub(r"[^A-Za-z0-9_]+", "_", str(text or "")).strip("_")
     return name or "Loop"
 
 
 def _qs(sheet: str) -> str:
-    """The sheet name as a formula writes it: quoted unless it is a plain word."""
+    """The  sheet name  as a formula writes it: quoted unless it is a plain word."""
     if re.fullmatch(r"[^\W\d][\w.]*", sheet):
         return sheet
     return "'" + sheet.replace("'", "''") + "'"
 
 
 def _split(cell: str) -> tuple[str | None, str]:
-    """'Sheet'!A1:B2 -> (Sheet, A1:B2)."""
+    """'Sheet'!A1:B2  -> (Sheet,  A1:B2)."""
     if "!" not in cell:
         return None, cell
     sheet, ref = cell.rsplit("!", 1)
@@ -82,7 +82,7 @@ def _split(cell: str) -> tuple[str | None, str]:
 
 
 def _cells_of(sheet: str, ref: str) -> list[tuple[int, int]]:
-    """(col, row) of every cell of a literal range, row-major."""
+    """(col,  row) of  every cell of a literal range, row-major."""
     r = parse_ref(f"'{sheet}'!{ref}")
     if not r or r["whole_column"] or r["whole_row"]:
         return []
@@ -90,9 +90,9 @@ def _cells_of(sheet: str, ref: str) -> list[tuple[int, int]]:
 
 
 def _reader_of_area(wb: Any, block: str, area: dict[str, Any]) -> str | None:
-    """The first cell of `block` ('Sheet'!A1:B2, an output the macro copies) whose formula reads a cell of
-    `area` (a cleared area: sheet, r1, c1, r2, c2), or None. Such a block adds what an earlier run left
-    there to every loop value: the macro clears it first, Mind would not."""
+    """The  first cell  of `block` ('Sheet'!A1:B2, an output the macro copies) whose formula reads a cell of
+    `area` (a cleared area: sheet, r1, c1, r2, c2), or None. Such a block adds what an earlier  run left
+    there to every loop value: the macro clears it first,  Mind would not."""
     from .formula_utils import cell_refs_in_formula
 
     sheet, ref = _split(block)
@@ -131,7 +131,7 @@ def _in_sqref(sqref: str, col: int, row: int) -> bool:
 
 
 def _x14_dropdowns(copy_path: str, sheet: str) -> list[tuple[str, str]]:
-    """(sqref, source) of the dropdowns Excel keeps in the sheet's extension block (a list taken from
+    """(sqref,  source) of  the dropdowns Excel keeps in the sheet's extension block (a list taken from
     another sheet): openpyxl does not read those."""
     import posixpath
     import zipfile
@@ -174,8 +174,8 @@ def _x14_dropdowns(copy_path: str, sheet: str) -> list[tuple[str, str]]:
 
 
 def _dropdown_at(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
-    """The list dropdown (data validation) on a cell, if it has one. Mind reads a cell with a
-    dropdown as an input and drops its formula: an MM_LOOP written there is lost (seen in Mind on
+    """The  list dropdown  (data validation) on a cell, if it has one. Mind reads a cell with a
+    dropdown as an input and drops its formula: an MM_LOOP written there is lost (seen in Mind  on
     2026-10-16 with a model's two driver cells and a probe workbook)."""
     from .inventory import open_cached
 
@@ -201,7 +201,7 @@ def _dropdown_at(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
 
 
 def _number_at(analysis: dict[str, Any], sheet: str, ref: str) -> tuple[Any, str | None]:
-    """A cell's number: its constant, else the value Excel last stored for its formula."""
+    """A  cell's number:  its constant, else the value Excel last stored for its formula."""
     from .inventory import values_cell
 
     r = parse_ref(ref)
@@ -233,7 +233,7 @@ def _as_int(v: Any) -> int | None:
 
 
 def _sheet_max(analysis: dict[str, Any], sheet: str) -> tuple[int, int]:
-    """(max column, max row) of a sheet's used range, from the inventory's dimensions."""
+    """(max  column, max  row) of a sheet's used range, from the inventory's dimensions."""
     for s in analysis["workbooks"][0].get("sheets", []):
         if s["name"] == sheet:
             dims = s.get("dimensions") or s.get("dims")
@@ -244,7 +244,7 @@ def _sheet_max(analysis: dict[str, Any], sheet: str) -> tuple[int, int]:
 
 
 def _eval_shift(expr: str, var: str, value: int) -> int | None:
-    """`i - 1` at i = value, for the small arithmetic VBA writes inside Offset()."""
+    """`i  - 1`  at i = value, for the small arithmetic VBA writes inside Offset()."""
     text = re.sub(rf"\b{re.escape(var)}\b", str(value), expr)
     if not _SAFE_EXPR_RE.fullmatch(text):
         return None
@@ -255,13 +255,13 @@ def _eval_shift(expr: str, var: str, value: int) -> int | None:
 
 
 def _tight(expr: str) -> str:
-    """The expression without spaces, except inside quoted sheet names."""
+    """The  expression without  spaces, except inside quoted sheet names."""
     parts = expr.split("'")
     return "'".join(part if i % 2 else part.replace(" ", "") for i, part in enumerate(parts))
 
 
 def _bound_var(bound: dict[str, Any]) -> str | None:
-    """The VBA variable a bound was read into (`num_debut = Worksheets(...)`) -- the macro's
+    """The  VBA variable  a bound was read into (`num_debut = Worksheets(...)`) -- the macro's
     own clearing / writing statements use it, so the map's placeholders may carry it."""
     m = _VAR_ASSIGN_RE.match(str(bound.get("text") or ""))
     return m.group(1) if m else None
@@ -272,7 +272,7 @@ _PLAIN_NAME_RE = re.compile(r"^=\s*(?P<name>[A-Za-z_\\][\w.]*)\s*$")
 
 
 def _follow_refs(analysis: dict[str, Any], sheet: str, ref: str, hops: int = 6) -> tuple[str, str] | None:
-    """The cell a chain of plain references (=C10, =Ctrl_01!C18, =CalcYear) ends on: the first
+    """The  cell a  chain of plain references (=C10, =Ctrl_01!C18, =CalcYear) ends on: the first
     cell of the chain that holds no formula. None when a link is anything else."""
     from .model_map import _Names
 
@@ -300,8 +300,8 @@ def _follow_refs(analysis: dict[str, Any], sheet: str, ref: str, hops: int = 6) 
 
 
 def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any) -> tuple[int | None, dict[str, Any]]:
-    """The number a loop bound stands for, and where it came from. A chosen bound is a number, or
-    a cell (Sheet!A1) whose number is read: that cell then plays the part of the macro's own."""
+    """The  number a  loop bound stands for, and where it came from. A chosen bound is a number, or
+    a cell (Sheet!A1) whose number is read: that cell then plays the part of the macro's  own."""
     if override not in (None, ""):
         n = _as_int(override)
         if n is None and isinstance(override, str) and "!" in override:
@@ -309,7 +309,7 @@ def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any)
             ref = ref.replace("$", "").upper()
             r = parse_ref(ref) if sheet else None
             if r and not r["whole_column"] and not r["whole_row"] and r["c1"] == r["c2"] and r["r1"] == r["r2"]:
-                # read like the macro's own bound cell (a plain reference chain is followed)
+                # read like the macro's own bound cell (a plain reference chain  is followed)
                 n, src = _bound_value(analysis, {"kind": "cell", "cell": f"{sheet}!{ref}"}, None)
                 return n, {**src, "chosen": True, "text": override.strip()}
         return n, {"kind": "chosen", "value": n}
@@ -322,13 +322,13 @@ def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any)
             v, formula = _number_at(analysis, sheet, ref)
             n = _as_int(v)
             if formula is not None:
-                # =C10, =CalcYear, =Ctrl_01!C18 ...: the plain reference chain ends on the cell that
-                # holds the number itself, which MM_LOOP can read as the count (it never changes)
+                # =C10, =CalcYear, =Ctrl_01!C18 ...: the  plain reference chain ends on the cell  that
+                # holds the number itself, which MM_LOOP can read as the count  (it never changes)
                 end = _follow_refs(analysis, sheet, ref)
                 if end is not None:
                     e_sheet, e_ref = end
                     ev, ef = _number_at(analysis, e_sheet, e_ref)
-                    if ef is None and _as_int(ev) is not None and (n is None or _as_int(ev) == n):  # no stored value (a file never calculated): the end's
+                    if ef is None and _as_int(ev) is not None and (n is None or _as_int(ev) == n):  # no stored value (a file  never calculated): the end's
                         n = _as_int(ev)
                         return n, {"kind": "cell", "cell": f"{e_sheet}!{e_ref}", "name": bound.get("name"), "value": n, "formula": None,
                                    "via": bound["cell"], "text": f"{bound['cell']} -> {e_sheet}!{e_ref}"}
@@ -339,16 +339,16 @@ def _bound_value(analysis: dict[str, Any], bound: dict[str, Any], override: Any)
 # --- the loops -------------------------------------------------------------------------------------
 
 def _anchored_column(sheet: str, col: str, first: int, key_col: str | None) -> str:
-    """'Sheet'!X<first>:INDEX('Sheet'!X:X, MM_LASTROW('Sheet'!<key><first>)): the column from the loop's
+    """'Sheet'!X<first>:INDEX('Sheet'!X:X,  MM_LASTROW('Sheet'!<key><first>)): the  column from the loop's
     first row to the last row of the table, as Mind sizes it (the key column's grid), and as Excel sees
-    it today (the key column's last filled row). MM_COLUMN(X2) alone collapses to one cell in Excel when
-    X has an empty cell inside the loop rows, and MM_LOOP then reads that single cell as a count."""
+    it today (the key column's last filled row).  MM_COLUMN(X2) alone collapses to one cell in Excel when
+    X has an  empty cell inside the loop rows,  and MM_LOOP then reads that single cell  as a count."""
     q = _qs(sheet)
     return f"{q}!{col}{first}:INDEX({q}!{col}:{col},MM_LASTROW({q}!{key_col}{first}))"
 
 
 def _anchored_row(sheet: str, row: int, first: int, key_row: int | None) -> str:
-    """The row counterpart: 'Sheet'!<first col><row>:INDEX('Sheet'!<row>:<row>, MM_LASTCOLUMN('Sheet'!<first col><key row>))."""
+    """The  row counterpart:  'Sheet'!<first col><row>:INDEX('Sheet'!<row>:<row>, MM_LASTCOLUMN('Sheet'!<first col><key row>))."""
     q = _qs(sheet)
     c = num_to_col(first)
     return f"{q}!{c}{row}:INDEX({q}!{row}:{row},MM_LASTCOLUMN({q}!{c}{key_row}))"
@@ -356,7 +356,7 @@ def _anchored_row(sheet: str, row: int, first: int, key_row: int | None) -> str:
 
 
 def _clear_stale_loop(analysis: dict[str, Any], drv_sheet: str, drv_cell: tuple[int, int], name: str, extra_ops: list[dict[str, Any]]) -> None:
-    """A driver cell the plan leaves out must not keep an MM_LOOP of this loop from an earlier build
+    """A  driver cell  the plan leaves out must not keep an MM_LOOP of this loop from an earlier build
     (it would be a definition with another length): clear it."""
     dc, dr = drv_cell
     held = _held(analysis, drv_sheet, dc, dr)
@@ -367,7 +367,7 @@ def _clear_stale_loop(analysis: dict[str, Any], drv_sheet: str, drv_cell: tuple[
 
 
 def _growth_note(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str:
-    """Which ways of adding rows reach the loop: a new upload always; Mind's Input Manager only imports into
+    """Which  ways of  adding rows reach the loop: a new upload always; Mind's Input Manager only imports into
     grids flagged /Input."""
     from .grids import all_grids, grid_containing
 
@@ -381,7 +381,7 @@ def _growth_note(analysis: dict[str, Any], sheet: str, row: int, col: int) -> st
 
 
 def _text_header_at(analysis: dict[str, Any], d: dict[str, Any], first: int, last: int) -> bool:
-    """Is the loop's first value the table's header row (column), text above numbers? Only for table loops."""
+    """Is  the loop's  first value the table's header row (column), text above numbers? Only for table loops."""
     src_sheet, src_ref = _split(str(d.get("set_from") or ""))
     if not src_sheet or last <= first:
         return False
@@ -399,7 +399,7 @@ def _text_header_at(analysis: dict[str, Any], d: dict[str, Any], first: int, las
 
 
 def _dynamic_ok(analysis: dict[str, Any], sheet: str, cells: list[tuple[int, int]]) -> bool:
-    """Does the column (row) hold any value in the loop's cells? A column the table leaves empty
+    """Does  the column  (row) hold any value in the loop's cells? A column the table leaves empty
     gets no loop (the macro copies nothing there, and MM_COLUMN of an empty column is no range)."""
     for col, row in cells:
         v = _held(analysis, sheet, col, row)
@@ -409,13 +409,13 @@ def _dynamic_ok(analysis: dict[str, Any], sheet: str, cells: list[tuple[int, int
 
 
 def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, dynamic: bool = True) -> dict[str, Any]:
-    """The macro copies one row (or column) of a table into a driver row (or column): every
+    """The  macro copies  one row (or column) of a table into a driver row (or column): every
     driver cell takes its own column (row) of the table as an MM_LOOP range.
 
-    `dynamic` (default): the range is MM_COLUMN(first cell) / MM_ROW(first cell), the form the
-    Formula Generation Guide shows (=MM_LOOP("...", MM_COLUMN(A2))): Mind reads the column to the
-    last row of the table's grid, so rows added to the table (Input Manager, a new upload) join the
-    loop. The fixed range stays in `range_fixed` for the Excel check and the plan's counts. A
+    `dynamic` (default): the range is  MM_COLUMN(first cell) / MM_ROW(first cell), the form the
+    Formula Generation Guide shows  (=MM_LOOP("...", MM_COLUMN(A2))): Mind reads the column  to the
+    last row of the table's grid,  so rows added to the table (Input Manager, a new upload)  join the
+    loop. The fixed range stays in  `range_fixed` for the Excel check and the plan's counts. A
     column with no value in the loop's rows gets no loop: MM_COLUMN of an empty column is no range,
     and the macro copies nothing there."""
     var = d["loop_var"]
@@ -468,7 +468,7 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
                 dynamic = False
                 cut_note = f"the loop stops at column {num_to_col(last)}, before the end of the table (column {num_to_col(end)}): the ranges stay fixed, columns added later do not join the loop"
     if r1 == ph and r2 == ph and ph not in (c1, c2):
-        # a row per loop value: the loop value is the row number; one range per column
+        # a row per loop value: the loop value is the row number; one  range per column
         cols = list(range(col_to_num(c1.upper()), col_to_num(c2.upper()) + 1))
         for i, col in enumerate(cols):
             if i >= len(drv_cells):
@@ -529,10 +529,10 @@ def _table_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: i
 
 
 def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, dynamic: bool = True) -> dict[str, Any]:
-    """The macro walks a list with Range("start").Offset(0, i - 1) (or Offset(i - 1, 0)):
+    """The  macro walks  a list with Range("start").Offset(0, i - 1) (or Offset(i - 1, 0)):
     the driver cell gets MM_LOOP over the stretch of the list the loop covers. `dynamic`: when the
-    stretch reaches the last filled cell of the list, MM_ROW / MM_COLUMN from its first cell, so
-    items added to the list join the loop in Mind."""
+    stretch reaches the last  filled cell of the list, MM_ROW / MM_COLUMN from its first  cell, so
+    items added to the list  join the loop in Mind."""
     var = d["loop_var"]
     m = _OFFSET_RE.search(str(d.get("statement") or ""))
     src_sheet, src_ref = _split(d["set_from"])
@@ -567,8 +567,8 @@ def _list_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: in
 
 
 def _named_item(analysis: dict[str, Any], names: Any, d: dict[str, Any]) -> dict[str, Any] | None:
-    """X = List(i + k, c).Value where List is a defined name: the sheet, the column and the row
-    expression of item i, and the number of filled cells the list holds from item `first` down
+    """X  = List(i  + k, c).Value where List is a defined name: the sheet, the column and the row
+    expression of item i, and the number of filled cells the list holds from item `first`  down
     (what the macro's End(xlDown) count gives)."""
     m = _NAMED_ITEM_RE.search(str(d.get("statement") or ""))
     var = d.get("loop_var") or ""
@@ -589,9 +589,9 @@ def _named_item(analysis: dict[str, Any], names: Any, d: dict[str, Any]) -> dict
 
 
 def _dropdown_item(analysis: dict[str, Any], d: dict[str, Any], first: int) -> dict[str, Any] | None:
-    """A counter driver whose own dropdown lists the loop's values (0, 1, 2, 3 under the cell the
-    macro counts to the end of): the list, item i at its (i - first + 1)-th row. Only a one-column
-    list of whole numbers that run first, first + 1, ... without a gap."""
+    """A  counter driver  whose own dropdown lists the loop's values (0, 1, 2, 3 under the cell the
+    macro counts to the end of): the list, item i at its (i - first + 1)-th  row. Only a one-column
+    list of whole numbers that run first, first  + 1, ... without a gap."""
     drv_sheet, drv_ref = _split(d["cell"])
     dd = _dropdown_at(analysis, drv_sheet, drv_ref) if drv_sheet else None
     m = re.match(r"a dropdown list \((.+)\)$", dd or "")
@@ -606,12 +606,12 @@ def _dropdown_item(analysis: dict[str, Any], d: dict[str, Any], first: int) -> d
     if n < 1 or any(_as_int(_held(analysis, sheet, r["c1"], r["r1"] + k)) != first + k for k in range(n)):
         return None
     top = r["r1"]
-    # fixed range: nothing says the list has a header row, and Mind takes a grid's first row as its header
+    # fixed  range: nothing says the list has a  header row, and Mind takes a grid's first row as its  header
     return {"list": f"the dropdown of {d['cell']}", "sheet": sheet, "col": r["c1"], "row_of": lambda i: top + i - first, "fixed": True}
 
 
 def _filled_down(analysis: dict[str, Any], sheet: str, col: int, row: int) -> int:
-    """How many filled cells run down from (col, row) without a gap."""
+    """How  many filled  cells run down from (col, row) without a gap."""
     _, max_row = _sheet_max(analysis, sheet)
     n = 0
     while row + n <= max_row and _held(analysis, sheet, col, row + n) not in (None, ""):
@@ -620,9 +620,9 @@ def _filled_down(analysis: dict[str, Any], sheet: str, col: int, row: int) -> in
 
 
 def _named_list_loop(analysis: dict[str, Any], d: dict[str, Any], item: dict[str, Any], name: str, first: int, last: int, dynamic: bool, counted: bool) -> dict[str, Any]:
-    """The driver takes item i of a named list: MM_LOOP over the list's cells for i = first..last.
+    """The  driver takes  item i of a named list: MM_LOOP over the list's cells for i = first..last.
     `counted`: the last item was counted from the list (the macro counts to its end), so with
-    `dynamic` the range follows the list in Mind (MM_COLUMN) and items added to it join the loop."""
+    `dynamic`  the range follows the list in Mind (MM_COLUMN) and items added  to it join the loop."""
     sheet, col = item["sheet"], item["col"]
     r_first, r_last = item["row_of"](first), item["row_of"](last)
     if r_first is None or r_last is None or r_first < 1 or r_last < r_first:
@@ -641,14 +641,14 @@ def _named_list_loop(analysis: dict[str, Any], d: dict[str, Any], item: dict[str
 
 
 def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first: int, last: int, first_src: dict[str, Any], last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
-    """The driver is the loop counter itself (a cell the macro sets to its counter): MM_LOOP over
+    """The  driver is  the loop counter itself (a cell the macro sets to its counter): MM_LOOP over
     a cell holding the count gives 1..n; another first value needs the IndexStart / IndexEnd
-    arguments; without a cell holding the count the plan asks for one."""
+    arguments; without a cell  holding the count the plan asks for one."""
     drv_sheet, drv_ref = _split(d["cell"])
     notes: list[str] = []
     ops_extra: list[dict[str, Any]] = []
     if first < 1:
-        # e.g. scenario 0 .. n-1: MM_LOOP counts 1..n in a cell holding the count, the driver takes the shift
+        # e.g. scenario 0 ..  n-1: MM_LOOP counts 1..n in a  cell holding the count, the driver takes  the shift
         count = last - first + 1
         shift = f"{first - 1:+d}"
         if not count_cell:
@@ -696,7 +696,7 @@ def _counter_loop(analysis: dict[str, Any], d: dict[str, Any], name: str, first:
 
 
 def _derived_loop(analysis: dict[str, Any], d: dict[str, Any], names: Any, name: str, first: int, last: int, last_src: dict[str, Any], count_cell: str | None) -> dict[str, Any]:
-    """The driver is computed from the counter (e.g. year = first_year + i - 1): the
+    """The  driver is  computed from the counter (e.g. year = first_year + i - 1): the
     statement's right-hand side with MM_LOOP in the counter's place."""
     st = str(d.get("statement") or "")
     if "=" not in st:
@@ -740,12 +740,12 @@ def _derived_loop(analysis: dict[str, Any], d: dict[str, Any], names: Any, name:
 # --- the plan --------------------------------------------------------------------------------------
 
 def _complete_header(analysis: dict[str, Any], t_sheet: str, t_cells: list[tuple[int, int]], from_sheet: str, src_cells: list[tuple[int, int]], loop_name: str) -> tuple[list[dict[str, Any]], str | None]:
-    """The row above an MM_RESULT block, completed so Mind reads the block as ONE grid.
+    """The  row above  an MM_RESULT block, completed so Mind reads the block as ONE grid.
 
     Seen in real Mind (2026-10-15): a grid's first row is its header; an empty cell in that row
-    splits the block into several grids, and a grid that then starts on the block's first row shows
-    the first loop pass as its header. Every header cell that is empty, a number or a date gets the
-    caption the source block carries above it (the row above the source), else the source cell's
+    splits the block  into several grids, and a grid that then starts on the  block's first row shows
+    the first loop  pass as its header. Every header cell  that is empty, a number or a date gets the
+    caption the  source block carries above it (the row  above the source), else the source cell's
     address. Text headers and formulas are left alone. Returns (operations, note)."""
     if not t_cells or not src_cells or len(t_cells) != len(src_cells):
         return [], None
@@ -773,7 +773,7 @@ def _complete_header(analysis: dict[str, Any], t_sheet: str, t_cells: list[tuple
 
 
 def _free_cell(analysis: dict[str, Any], driver: str) -> str | None:
-    """An empty cell on the driver's row, two columns past the sheet's used range (the column
+    """An  empty cell  on the driver's row, two columns past the sheet's used range (the column
     between them takes its label): a place for a loop's count that touches nothing."""
     sheet, ref = _split(driver)
     r = parse_ref(ref.replace("$", "")) if sheet else None
@@ -787,13 +787,13 @@ def _free_cell(analysis: dict[str, Any], driver: str) -> str | None:
 
 
 def _driver_key(cell: str) -> str:
-    """A cell as a key: sheet without quotes, reference without $, upper case."""
+    """A  cell as  a key: sheet without quotes, reference without $, upper case."""
     sheet, ref = _split(str(cell or ""))
     return f"{sheet or ''}!{ref.replace('$', '').upper()}"
 
 
 def _runs(model_map: dict[str, Any]) -> dict[str, str]:
-    """Each procedure (lower case) -> the macro a person runs that reaches it (an entry point, through
+    """Each  procedure (lower  case) -> the macro a person runs that reaches it (an entry point, through
     the calls). Loops of one such macro run inside each other; loops of two run on their own."""
     macros = model_map.get("macros") or {}
     procs = macros.get("procedures") or [] if isinstance(macros, dict) else []
@@ -813,14 +813,14 @@ def _runs(model_map: dict[str, Any]) -> dict[str, str]:
 
 
 def run_of(runs: dict[str, str], macro: Any) -> str | None:
-    """The macro a person runs for a loop that sits in `macro` (itself when no entry point reaches it)."""
+    """The  macro a  person runs for a loop that sits in `macro` (itself when no entry point reaches it)."""
     if not macro:
         return None
     return runs.get(str(macro).lower()) or str(macro)
 
 
 def _same_value(a: Any, b: Any) -> bool:
-    """A cell already holding what the plan writes there (4 and 4.0 and '4' are the same)."""
+    """A  cell already  holding what the plan writes there (4 and 4.0 and '4' are the same)."""
     if a is None or b is None:
         return False
     try:
@@ -830,7 +830,7 @@ def _same_value(a: Any, b: Any) -> bool:
 
 
 def _formula_reads(analysis: dict[str, Any], cache: dict[str, Any], sheet: str, col: int, row: int) -> str | None:
-    """A formula cell that reads Sheet!<col><row> (alone or inside a range), or None. The references are
+    """A  formula cell  that reads Sheet!<col><row> (alone or inside a range), or None. The references are
     read once per plan, only when a cell the plan wants to fill must stay unread."""
     from .formula_utils import cell_refs_in_formula
 
@@ -850,16 +850,16 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                     first: Any = None, last: Any = None, count_cell: str | None = None, clear_old: bool = False, dynamic: bool = True, max_result_cells: int = MAX_RESULT_CELLS,
                     loops: dict[str, dict[str, Any]] | None = None, prep_plan: list[dict[str, Any]] | None = None, repairs: bool = True,
                     macro: str | None = None) -> dict[str, Any]:
-    """The Mind loop for the map's run loop: what goes where, with the operations that write it.
+    """The  Mind loop  for the map's run loop: what goes where, with the operations that write it.
 
-    One macro's loops at a time: `macro` names it (a macro a person runs, or a procedure it calls;
-    default: the macro of the first loop). Loops of two macros are not nested in Excel -- each macro
-    runs with the other's drivers fixed -- but in one model Mind would run them inside each other, so
-    the other macros' loops are listed, not written (`macros` lists every macro with its loops).
+    One macro's loops at a time: `macro` names it (a macro a person runs, or a procedure it  calls;
+    default: the macro of the first loop). Loops of two macros  are not nested in Excel --  each macro
+    runs with the other's drivers fixed  -- but in one model Mind would run them inside each  other, so
+    the other macros' loops are listed,  not written (`macros` lists every macro with its loops).
     `names` maps a driver cell to the loop name wanted; `name` is the shorthand for the first
     loop; `first` / `last` override the bounds read from the workbook; `count_cell` is where a
     counted loop's size may be written when the workbook has no cell for it; `clear_old` also
-    empties what an earlier run left in the areas the macro clears (listed either way).
+    empties what an earlier run left in the  areas the macro clears (listed either way).
     `loops` holds each loop's own choices, by driver cell: {"Sheet!C27": {"name", "first", "last",
     "count_cell"}}; first / last are a number or a cell holding one. They win over the shorthands.
     `prep_plan` is Prep's plan for the same version (app.prep.plan_actions): the formula repairs it
@@ -898,9 +898,9 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
     chosen = {_driver_key(k): v for k, v in (loops or {}).items() if isinstance(v, dict)}
     driver_keys = {_driver_key(x["cell"]) for x in drivers}
     ops: list[dict[str, Any]] = []
-    built: dict[tuple[str | None, str], dict[str, Any]] = {}  # (macro, loop var) -> loop entry: two macros may both say `i`
-    placeholders: dict[str, int] = {}  # bound variables the macro's statements use -> their value
-    count_cells: dict[str, str] = {}  # count cell -> the loop whose count it holds
+    built: dict[tuple[str | None, str], dict[str, Any]] = {}  # (macro, loop var) ->  loop entry: two macros may  both say `i`
+    placeholders: dict[str, int] = {}  # bound variables the macro's statements  use -> their  value
+    count_cells: dict[str, str] = {}  # count cell  -> the loop whose count it holds
     label_cells: dict[str, str] = {}  # label cell written beside a count -> its loop
     refs_cache: dict[str, Any] = {}
     for idx, d in enumerate(drivers):
@@ -955,7 +955,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             continue
         set_from0 = str(d.get("set_from") or "")
         if first_src.get("kind") != "chosen" and not first_src.get("chosen") and set_from0 and f"<{d['loop_var']}>" in set_from0 and _text_header_at(analysis, d, first_n, last_n):
-            # the macro starts on the table's header row (it runs it too); Mind would make the header instance 1
+            # the  macro starts on the table's header row (it runs it too);  Mind would make the header instance  1
             entry["notes"].append(f"the macro starts at {first_n}, the table's header: the loop starts at {first_n + 1} (choose first = {first_n} to keep the header pass)")
             entry["header_skipped"] = first_n
             first_n += 1
@@ -980,7 +980,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         else:
             res = {"status": "not_built", "why": f"the macro sets the driver in a way the plan cannot write as MM_LOOP: {d.get('statement')}"}
         if res.get("status") == "ready":
-            # one count cell per loop, never a driver: two loops writing one cell would both be wrong
+            # one count cell per loop, never a  driver: two loops writing one cell would both be wrong
             mine = [_driver_key(f"{o['sheet']}!{o['cell']}") for o in res.get("extra_ops") or [] if o.get("op") == "set_value"]
             why = None
             planned = {_driver_key(f"{o['sheet']}!{o['cell']}") for o in ops}
@@ -995,7 +995,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
                     why = f"the count cell {c} is a cell this plan writes already: pick another free cell"
                 if why:
                     break
-            # a count cell already holding the count this plan writes (an earlier build with the same choices) is fine
+            # a count  cell already holding the count this plan  writes (an earlier build with the same choices) is fine
             held = next((o for o in res.get("extra_ops") or [] if o.get("op") == "set_value" and o.get("before") not in (None, "") and not _same_value(o.get("before"), o.get("after"))), None)
             if why is None and held is not None:
                 why = f"the count cell {held['sheet']}!{held['cell']} is not empty (it holds {str(held['before'])[:60]!r}): pick an empty cell" + (f", e.g. {_free_cell(analysis, d['cell'])}" if _free_cell(analysis, d["cell"]) else "")
@@ -1030,7 +1030,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         entry["notes"] = pre_notes + list(entry.get("notes") or [])
         if res.get("status") == "ready":
             if entry["kind"] in ("row_of_table", "column_of_table") and first_n >= 1:
-                # the first value is the table's header row? (text in the first filled cells, numbers below)
+                # the first  value is the table's header row? (text in the first filled cells, numbers below)
                 src_sheet = res["source_sheet"]
                 head = [_held(analysis, src_sheet, c, first_n) for c in range(1, 6)]
                 below = [_held(analysis, src_sheet, c, first_n + 1) for c in range(1, 6)] if last_n > first_n else []
@@ -1184,7 +1184,7 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
             plan["notes"].append(f"{target}: {header_note}")
         plan["outputs"].append(entry_o)
 
-    # --- the cleared areas: drop what an earlier run left outside the rows the plan writes ---------
+    # --- the cleared areas: drop what  an earlier run left outside  the rows the plan writes ---------
     from .inventory import open_cached
 
     written_cells = {(op["sheet"], op["cell"].upper()) for op in ops if op["op"] == "set_formula"}
@@ -1198,9 +1198,9 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
         ws = wb[c["sheet"]]
         r2 = min(c["r2"], ws.max_row)
         c2 = min(c["c2"], ws.max_column)
-        # an output block that reads the cleared area (e.g. A13 = ... + OFFSET(V13, ...) over the
+        # an output  block that reads  the cleared  area (e.g. A13 = ... + OFFSET(V13, ...) over the
         # per-item results the macro pastes) would add the earlier run's values to every loop
-        # value in Mind; the macro clears them first, so the plan does too, without being asked
+        # value in Mind; the macro clears them first, so  the plan does too, without being asked
         reader = next((rd for o in plan["outputs"] if o.get("from") for rd in [_reader_of_area(wb, o["from"], c)] if rd), None)
         clear = clear_old or reader is not None
         if reader and not clear_old:
@@ -1250,8 +1250,8 @@ def build_loop_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, name
 
 
 def _undo_inserts(y: int, points: list[int]) -> int | None:
-    """The position before the inserts of what sits at `y` after them (each insert at p moves p and
-    everything past it by one, p in the workbook's own numbering); None for a row / column the inserts made."""
+    """The  position before  the inserts of what sits at `y` after them (each insert at p moves p and
+    everything past it by one, p in the workbook's own numbering); None for a row /  column the inserts made."""
     for x in range(max(1, y - len(points)), y + 1):
         if x + sum(1 for p in points if p <= x) == y:
             return x
@@ -1259,9 +1259,9 @@ def _undo_inserts(y: int, points: list[int]) -> int | None:
 
 
 def _original_cells(op: dict[str, Any], ops: list[dict[str, Any]], limit: int = 50_000) -> list[tuple[str, str]]:
-    """The cells `op` writes, as (sheet, A1) in the workbook's addresses before the plan's inserts. An
+    """The  cells `op`  writes, as (sheet, A1) in the workbook's addresses before the plan's inserts. An
     operation flagged `after_inserts` is written at its address after them: columns are inserted after
-    the rows (app.prep._ordered), so the column inserts are undone first. Cells the inserts make are left out."""
+    the rows (app.prep._ordered), so the column  inserts are undone first. Cells the inserts make are left out."""
     from .prep import insert_moves
 
     sheet = op.get("sheet")
@@ -1275,7 +1275,7 @@ def _original_cells(op: dict[str, Any], ops: list[dict[str, Any]], limit: int = 
     if not op.get("after_inserts"):
         return [(sheet, f"{num_to_col(c)}{rw}") for c, rw in cells] if len(cells) > 1 else [(sheet, cell)]
     if op.get("insert_at") is not None:
-        return []  # written into a row an insert makes
+        return []  # written  into a row an insert makes
     col_points = [col_to_num(str(o["column"])) for o in ops if o.get("op") == "insert_column" and o.get("sheet") == sheet]
     rows = [o for o in ops if o.get("op") == "insert_row" and o.get("sheet") == sheet]
     out: list[tuple[str, str]] = []
@@ -1291,10 +1291,10 @@ def _original_cells(op: dict[str, Any], ops: list[dict[str, Any]], limit: int = 
 
 
 def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: list[dict[str, Any]] | None, write: bool, what: str = "the loop") -> None:
-    """The formula repairs Prep still has for this version, written with the loop (or only named when
+    """The  formula repairs  Prep still has for this version, written with the loop (or only named when
     `write` is False). A cell the loop writes keeps the loop's formula. `what` names the step in the
-    note ("the loop", "the instances"). The repairs run before the plan's row / column inserts, on the
-    workbook's own addresses; a cell the plan writes after the inserts is compared at the address it
+    note  ("the loop", "the instances"). The repairs run before the plan's row  / column inserts, on the
+    workbook's own  addresses; a cell the plan writes after  the inserts is compared at the address it
     had before them."""
     taken: set[tuple[str, str]] = set()
     for o in ops:
@@ -1322,9 +1322,9 @@ def _add_repairs(plan: dict[str, Any], ops: list[dict[str, Any]], prep_plan: lis
 
 
 def prep_blockers(prep_plan: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Prep's blocking actions that are not formula repairs and still have something to do on this
+    """Prep's  blocking actions  that are not formula repairs and still have something to do on this
     version (a lone text cell to title, a pivot table, a trapped grid title ...): neither the loop nor
-    the instances write them, and Mind's converter refuses the workbook or computes wrong without them."""
+    the  instances write them, and Mind's converter refuses the workbook or computes  wrong without them."""
     from .plain_codes import rule_name
 
     out: list[dict[str, Any]] = []
@@ -1334,7 +1334,7 @@ def prep_blockers(prep_plan: list[dict[str, Any]] | None) -> list[dict[str, Any]
         rules = [str(r) for r in a.get("rule_ids") or []]
         given = list(a.get("rule_names") or [])
         said: list[str] = []
-        for i, r in enumerate(rules):  # plain words first, the code after: "a formula reads a lone text cell (STR-008)"
+        for i, r in enumerate(rules):  # plain words first, the  code after: "a formula reads a lone  text cell (STR-008)"
             name = (given[i] if i < len(given) else None) or rule_name(r)
             said.append(f"{name} ({r})" if name else r)
         out.append({"id": a["id"], "title": a.get("title") or a["id"], "count": len(a["operations"]), "rule_ids": rules, "said": said or [str(a.get("title") or a["id"])]})
@@ -1342,7 +1342,7 @@ def prep_blockers(prep_plan: list[dict[str, Any]] | None) -> list[dict[str, Any]
 
 
 def _note_prep_blockers(plan: dict[str, Any], prep_plan: list[dict[str, Any]] | None) -> None:
-    """One plain line when Prep still has blocking items the plan does not write."""
+    """One  plain line  when Prep still has blocking items the plan does not write."""
     blockers = prep_blockers(prep_plan)
     plan["prep_blockers"] = [{k: b[k] for k in ("id", "title", "count", "rule_ids")} for b in blockers]
     if not blockers:

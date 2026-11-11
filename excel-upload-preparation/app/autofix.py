@@ -1,22 +1,22 @@
-"""The automatic formula-error fixer ("Fix all automatically" on the
+"""The  automatic formula-error  fixer ("Fix all automatically" on the
 Recalculate step).
 
 Next to the manual way (Fix panel: one error or one group at a time, a proposal,
-an Apply, a recalculation), this module does the same job on its own, for
-every error cell of a workbook, in ONE Excel session:
+an Apply, a recalculation), this module does the same  job on its own, for
+every error cell of a workbook, in  ONE Excel session:
 
-    open a copy -> full recalculation -> read every formula cell
+    open a copy ->  full recalculation -> read every formula cell
     loop:
-        find the ROOT error cells (an error whose own inputs are fine --
+        find  the ROOT error cells (an error whose own inputs are fine  --
         everything downstream only repeats it)
-        choose a fix for each root (the strategy ladder below, optionally
+        choose a fix  for each root (the strategy ladder below, optionally
         ordered by the assistant)
         write the fixes -> recalculate -> read every formula cell again
         THE NUMBERS GATE: a formula cell that had a valid value in the
         workbook as it was opened must still have exactly that value.
         A fix that changed one is rolled back, and its next strategy is
         tried on the following pass.
-    until no error is left, or nothing more can be fixed safely
+    until no error  is left, or nothing more can be fixed safely
     full rebuild (the confirmation) -> save
 
 Two rules decided by the tool's owner:
@@ -25,21 +25,21 @@ Two rules decided by the tool's owner:
     way is tried, and when none works the error stays and is listed for a person.
 
 What a fix is. An error cell keeps its formula and gets a value to return when
-the formula fails: =IFERROR(<the formula>, 0) -- or "" where the cells around
-it hold text. A formula that can never compute again (its reference was
+the formula fails: =IFERROR(<the formula>, 0) --  or "" where the cells  around
+it hold text. A formula that can  never compute again  (its reference  was
 deleted: only NA() / #REF! is left of it) becomes =IFERROR(NA(), 0): still a
 formula, and one that says what it is -- "not available, shown as 0" (the
-package's rule 6: a formula is never turned into a value). A constant that is
-an error value is cleared. Nothing else is rewritten, so a cell that works
-today computes exactly as before.
+package's rule 6: a  formula is never turned into a value). A constant that is
+an  error value is cleared. Nothing else  is rewritten, so a cell that works
+today  computes exactly as before.
 
-The assistant may go further and propose the repair itself -- N() around a
-reference that may hold text, a guard on a divisor. Such a rewrite is written
+The assistant may go further and propose the  repair itself -- N() around a
+reference that  may hold text, a guard on a divisor. Such a rewrite is written
 to the WHOLE block (every cell sharing the formula) and kept only if each cell
 that works today still returns exactly the same value, the error cells are
 cured, and the numbers gate passes. Otherwise it is undone and the wrap is used.
 
-Formulas are handled in R1C1 notation: cells filled down or across share one
+Formulas are handled in R1C1 notation: cells filled down  or across share one
 R1C1 text, so a block of thousands of cells is one group, one decision and one
 write.
 """
@@ -62,20 +62,20 @@ from .plain_codes import is_com_error, plain_com_error
 from .recalc import XL_ERROR_CODES
 
 Progress = Callable[..., None]
-Key = tuple[int, int, int]  # (sheet index, row, column)
+Key = tuple[int, int, int]  # (sheet  index, row,  column)
 
 CHUNK_ROWS = 2000
 CHUNK_CELLS = 600_000
 XL_MANUAL = -4135
 MAX_ROW, MAX_COL = 1_048_576, 16_384
 NUMERIC_TOL = 1e-9
-TRANSIENT_COM_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
+TRANSIENT_COM_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED,  RPC_E_SERVERCALL_RETRYLATER
 VOLATILE_FUNCS = {"NOW", "TODAY", "RAND", "RANDBETWEEN", "RANDARRAY"}
-DYNAMIC_FUNCS = {"INDIRECT", "OFFSET", "GETPIVOTDATA", "EVALUATE"}  # they read cells the formula text does not name
-RESOLVABLE_FUNCS = {"INDIRECT", "OFFSET"}                       # ... and for these Excel can say which ones
+DYNAMIC_FUNCS = {"INDIRECT", "OFFSET", "GETPIVOTDATA", "EVALUATE"}  # they  read cells  the formula text does not name
+RESOLVABLE_FUNCS = {"INDIRECT", "OFFSET"}                       # ...  and for  these Excel can say which ones
 LOOKUP_FUNCS = {"VLOOKUP", "HLOOKUP", "XLOOKUP", "LOOKUP", "MATCH", "XMATCH", "INDEX"}
 ERROR_CODE_OF = {v: k for k, v in XL_ERROR_CODES.items()}
-MAX_REPORTED = 400  # groups / left-over cells listed in the result (the counts are always complete)
+MAX_REPORTED = 400  # groups  / left-over  cells listed in the result (the counts are always complete)
 
 ERROR_MEANING = {
     "#DIV/0!": "a division by zero",
@@ -88,7 +88,7 @@ ERROR_MEANING = {
 }
 
 
-# --- R1C1 formulas: references, names, functions -------------------------------------------
+# ---  R1C1 formulas:  references, names, functions -------------------------------------------
 _STRING_RE = re.compile(r'"(?:[^"]|"")*"')
 _ERROR_LITERAL_RE = re.compile(r"#(?:N/A|REF!|DIV/0!|NAME\?|VALUE!|NUM!|NULL!|SPILL!|CALC!|GETTING_DATA)", re.IGNORECASE)
 _WORD = r"\w.À-￿"
@@ -108,7 +108,7 @@ _ADDRESS_RE = re.compile(r"^(?:(?P<sheet>'(?:[^']|'')+'|[^!]+)!)?\$?(?P<col>[A-Z
 
 
 def dynamic_calls(a1_formula: str) -> list[str]:
-    """The outermost INDIRECT(...) / OFFSET(...) calls of an A1 formula, as text."""
+    """The  outermost INDIRECT(...)  / OFFSET(...) calls of an A1 formula, as text."""
     masked = _STRING_RE.sub(lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', a1_formula)
     out: list[str] = []
     pos = 0
@@ -133,7 +133,7 @@ def dynamic_calls(a1_formula: str) -> list[str]:
 
 
 def qualify_refs(text: str, sheet: str) -> str:
-    """Give every reference of a formula fragment that names no sheet the sheet
+    """Give  every reference  of a formula fragment that names no sheet the sheet
     it is written on, so the fragment means the same from another sheet."""
     prefix = "'" + sheet.replace("'", "''") + "'!"
     out: list[str] = []
@@ -147,13 +147,13 @@ def qualify_refs(text: str, sheet: str) -> str:
 
 
 def holds_deleted_ref(text: str) -> bool:
-    """A #REF! outside the formula's string literals: a deleted reference. "#REF!" in quotes is
+    """A  #REF! outside  the formula's string literals: a deleted reference. "#REF!" in quotes is
     text the formula looks for or shows (=COUNTIF(..., "#REF!")), and Mind compiles it."""
     return "#REF!" in _STRING_RE.sub('""', text).upper()
 
 
 def deleted_refs_to_na(text: str) -> str:
-    """Each deleted reference (#REF!) becomes NA(); a "#REF!" inside a string literal stays."""
+    """Each  deleted reference  (#REF!) becomes NA(); a "#REF!" inside a string literal stays."""
     out: list[str] = []
     pos = 0
     for m in _STRING_RE.finditer(text):
@@ -165,10 +165,10 @@ def deleted_refs_to_na(text: str) -> str:
 
 
 def target_probe(r1c1_formula: str, sheet: str) -> str | None:
-    """A formula (R1C1, every reference naming its sheet) that says where the
+    """A  formula (R1C1,  every reference naming its sheet) that says where the
     INDIRECT / OFFSET calls of `r1c1_formula` point: "row|column|sheet number|
     rows|columns" per call, ";"-separated, "!" for a call that points nowhere.
-    Turned into A1 for the cell it probes, it can be written anywhere."""
+    Turned into A1 for the  cell it probes, it can be written anywhere."""
     calls = dynamic_calls(r1c1_formula)
     if not calls:
         return None
@@ -182,18 +182,18 @@ def target_probe(r1c1_formula: str, sheet: str) -> str | None:
 
 @dataclass(frozen=True)
 class Parsed:
-    """What an R1C1 formula text reads, independent of the cell it sits in."""
+    """What  an R1C1  formula text reads, independent of the cell it sits in."""
     refs: tuple[tuple[Any, Any, Any], ...]  # (sheet spec, endpoint a, endpoint b | None)
     names: tuple[str, ...]                  # candidate defined names, upper-cased
     funcs: frozenset[str]
-    dynamic: bool                           # INDIRECT / OFFSET / a table reference: reads cells the text does not show
-    resolvable: bool                        # ... and all of it is INDIRECT / OFFSET, which Excel can be asked about
-    external: bool                          # reads another workbook
+    dynamic: bool                           # INDIRECT / OFFSET / a table reference: reads cells the text does  not show
+    resolvable: bool                        # ... and all of it is INDIRECT / OFFSET, which  Excel can be asked about
+    external: bool                          # reads another  workbook
     broken: bool                            # contains a literal #REF!
 
 
 def _endpoint(text: str) -> tuple[Any, Any]:
-    """'R[-1]C3' -> ((False, -1), (True, 3)); 'C[2]' -> (None, (False, 2)).
+    """'R[-1]C3'  -> ((False,  -1), (True, 3)); 'C[2]' -> (None, (False, 2)).
     An axis is None (the whole row/column), (True, n) absolute, (False, n) relative."""
     def axis(s: str) -> tuple[bool, int]:
         if not s:
@@ -250,7 +250,7 @@ def parse_r1c1(formula: str) -> Parsed:
 
     rest = _REF_RE.sub(take, text)
     if "[" in rest and re.search(r"\[[^\]]*\]", rest) and not _TABLE_RE.search(rest):
-        external = True  # an external workbook prefix that no reference followed (e.g. a name in another book)
+        external = True  # an  external workbook  prefix that no reference followed (e.g. a name in another book)
     funcs = frozenset(_STORAGE_PREFIX_RE.sub("", f).upper() for f in _FUNC_RE.findall(rest))
     names = tuple(sorted({n.upper() for n in _NAME_RE.findall(rest)} - {"TRUE", "FALSE"}))
     table = bool(_TABLE_RE.search(rest))
@@ -262,7 +262,7 @@ def parse_r1c1(formula: str) -> Parsed:
 
 
 def _span(a: Any, b: Any, cur: int, limit: int) -> tuple[int, int]:
-    """Rows (or columns) an axis pair covers for a formula sitting at `cur`."""
+    """Rows  (or columns)  an axis pair covers for a formula sitting at `cur`."""
     lo = a[1] if a[0] else cur + a[1]
     hi = lo
     if b is not None:
@@ -272,7 +272,7 @@ def _span(a: Any, b: Any, cur: int, limit: int) -> tuple[int, int]:
 
 
 def ref_rect(ref: tuple[Any, Any, Any], row: int, col: int) -> tuple[int, int, int, int]:
-    """(r1, r2, c1, c2) a parsed reference covers for a formula at (row, col)."""
+    """(r1,  r2, c1,  c2) a parsed reference covers for a formula at (row, col)."""
     _, a, b = ref
     ar, ac = a
     if b is None:
@@ -293,7 +293,7 @@ def _a1_endpoint(ep: tuple[Any, Any], row: int, col: int) -> tuple[str, str]:
 
 
 def r1c1_to_a1(formula: str, row: int, col: int) -> str:
-    """The A1 text of an R1C1 formula sitting at (row, col) -- for reports and the
+    """The  A1 text  of an R1C1 formula sitting at (row, col) -- for reports and the
     change log (people read A1). Strings are left alone."""
     out: list[str] = []
     pos = 0
@@ -311,7 +311,7 @@ def _convert_refs(text: str, row: int, col: int) -> str:
         b = _endpoint(m.group("b")) if m.group("b") else None
         ac, ar = _a1_endpoint(a, row, col)
         if b is None:
-            if a[0] is None or a[1] is None:  # a whole column / row needs both ends in A1
+            if a[0] is None or a[1] is None:  # a  whole column  / row needs both ends in A1
                 one = ac or ar
                 return f"{m.group('sheet') or ''}{one}:{one}"
             return f"{m.group('sheet') or ''}{ac}{ar}"
@@ -329,9 +329,9 @@ def rect_a1(r1: int, c1: int, r2: int, c2: int) -> str:
     return a1(r1, c1) if (r1, c1) == (r2, c2) else f"{a1(r1, c1)}:{a1(r2, c2)}"
 
 
-# --- cells by sheet, with range queries -------------------------------------------------------
+# ---  cells by  sheet, with range queries -------------------------------------------------------
 class CellIndex:
-    """A set of (sheet, row, col) that answers "is any of them in this rectangle?"
+    """A  set of  (sheet, row, col) that answers "is any of them in this rectangle?"
     in time proportional to the smaller side of the rectangle."""
 
     def __init__(self, cells: Iterable[Key] = ()):
@@ -399,11 +399,11 @@ class CellIndex:
         return bool(self.cells_in(si, r1, r2, c1, c2, limit=1, exclude=exclude))
 
 
-MULTI_AREA_CHARS = 250  # Excel refuses a Range address of more than 255 characters
+MULTI_AREA_CHARS = 250  # Excel  refuses a  Range address of more than 255 characters
 
 
 def _multi_area_batches(rects: list[tuple[int, int, int, int]]) -> list[list[tuple[int, int, int, int]]]:
-    """Rectangles in groups whose joined A1 address ("A1:B3,D5,...") fits one Range call."""
+    """Rectangles  in groups  whose joined A1 address ("A1:B3,D5,...") fits one Range call."""
     out: list[list[tuple[int, int, int, int]]] = []
     batch: list[tuple[int, int, int, int]] = []
     size = 0
@@ -420,7 +420,7 @@ def _multi_area_batches(rects: list[tuple[int, int, int, int]]) -> list[list[tup
 
 
 def rectangles(cells: Iterable[tuple[int, int]]) -> list[tuple[int, int, int, int]]:
-    """Cover (row, col) cells with rectangles (r1, c1, r2, c2): runs along each
+    """Cover  (row, col)  cells with rectangles (r1, c1, r2, c2): runs along each
     row, then identical runs on consecutive rows stacked."""
     by_row: dict[int, list[int]] = defaultdict(list)
     for r, c in cells:
@@ -457,12 +457,12 @@ FALLBACK_LABEL = {"0": "0", '""': "empty text", "FALSE": "FALSE"}
 
 
 def candidate_fixes(formula: str, parsed: Parsed, kind_of_value: str, preferred: str | None = None) -> list[dict[str, Any]]:
-    """Every way this module may fix a root error formula, best first. Each is
+    """Every  way this  module may fix a root error formula, best first. Each is
     {"kind": "formula"|"value", "content", "strategy", "what"}.
 
     `kind_of_value` ("number" | "text" | "bool") is what the healthy cells with
-    the same formula return; `preferred` (a fallback literal chosen by the
-    assistant) moves to the front when it is one of the allowed ones."""
+    the same formula return; `preferred` (a  fallback literal chosen by the
+    assistant) moves to the front when it  is one of the allowed ones."""
     order = {"number": ["0", '""'], "text": ['""', "0"], "bool": ["FALSE", "0", '""']}.get(kind_of_value, ["0", '""'])
     if preferred in FALLBACK_LABEL and preferred in order:
         order = [preferred] + [f for f in order if f != preferred]
@@ -471,8 +471,8 @@ def candidate_fixes(formula: str, parsed: Parsed, kind_of_value: str, preferred:
     body: str | None = formula[1:]
     dead = False
     if parsed.broken:
-        # the deleted reference becomes NA(); a call that needs a range there (SUMIFS(#REF!, ...) --
-        # Excel refuses SUMIFS(NA(), ...)) becomes NA() as a whole. What is left may still compute
+        # the  deleted reference becomes NA(); a call that  needs a range there (SUMIFS(#REF!, ...) --
+        # Excel refuses SUMIFS(NA(), ...)) becomes  NA() as a whole. What is left  may still compute
         # in another branch, so IFERROR goes first; the plain value is the last resort.
         substituted = deleted_refs_to_na(formula)
         body = None if holds_deleted_ref(substituted) else collapse_na_reference_calls(substituted)[1:]
@@ -504,12 +504,12 @@ SAFE_REPAIR_FUNCS = frozenset({
 
 
 def repair_refused(old: str, new: str) -> str | None:
-    """Why the assistant's rewrite `new` of the formula `old` (both R1C1) must not
+    """Why  the assistant's  rewrite `new` of the formula `old` (both R1C1) must not
     be written at all -- None when it may be tried. It may only read what the
-    original reads (the same sheets, the same names, no other workbook) and
-    call what the original calls plus a short list of guards; DDE, a deleted
-    reference and a formula that reads nothing any more are refused. Whether it
-    is *right* is then decided by the block check and the numbers gate."""
+    original reads (the same sheets, the  same names, no other workbook) and
+    call what the original calls plus  a short list of guards; DDE,  a deleted
+    reference and a formula that reads  nothing any more are refused. Whether it
+    is *right* is then decided  by the block check and the numbers  gate."""
     if not new.startswith("=") or len(new) > 4000:
         return "it is not a formula of a reasonable length"
     if new == old:
@@ -542,19 +542,19 @@ CONSTANT_FIXES = [
 ]
 
 
-# --- configuration, units -------------------------------------------------------------------
+# ---  configuration, units  -------------------------------------------------------------------
 @dataclass
 class AutoFixConfig:
     max_passes: int = 500
     time_budget_s: float = 3 * 3600
     numeric_tol: float = NUMERIC_TOL
-    # The owner's rule: a good number never changes. False lifts it -- for the values that
+    # The  owner's rule:  a good number never changes. False lifts it -- for the values that
     # only exist because a formula was swallowing the error being fixed (=IFERROR(<the error>, 0)
-    # shows 0 today and computes once the error is gone). Every such change is then listed.
+    # shows 0 today and computes once  the error is gone). Every such change is then listed.
     keep_good_values: bool = True
-    # Cells that hold an error now but computed a value in the ORIGINAL workbook --
-    # [(sheet, row, col, original value)], from app.numbers_check when the fixer runs on a
-    # prepared version. The preparation broke them: a fallback value would hide that, so
+    # Cells that  hold an error now but computed  a value in the ORIGINAL workbook --
+    # [(sheet,  row, col, original value)], from app.numbers_check when the fixer runs on  a
+    # prepared version. The preparation broke them: a  fallback value would hide that, so
     # they are never given one; they stay, listed, with what they were.
     regressions: list[tuple[str, int, int, Any]] | None = None
     # advisor(groups) -> {group key: {"fallback": '0'|'""'|'FALSE', "reason": str}} -- the assistant's say on
@@ -566,17 +566,17 @@ class AutoFixConfig:
 
 @dataclass
 class Unit:
-    """One thing a fix writes as a whole: a plain cell, a multi-cell array
+    """One  thing a  fix writes as a whole: a plain cell, a multi-cell array
     formula, the anchor of a spilled array, or a constant cell."""
     key: Key
     r2: int
     c2: int
     kind: str            # "cell" | "array" | "spill" | "const"
-    old: Any             # R1C1 text, or the error text of a constant
+    old: Any             # R1C1 text, or the error  text of a constant
     error: str           # the error that made it a root
-    group: str           # group key: sheet + error + R1C1 text
+    group: str           # group key:  sheet + error + R1C1 text
     fixes: list[dict[str, Any]] = field(default_factory=list)
-    tries: int = 0       # index of the next fix to try
+    tries: int = 0       # index  of the next fix to try
     accepted: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -586,11 +586,11 @@ class Unit:
         return [(si, r, c) for r in range(r1, self.r2 + 1) for c in range(c1, self.c2 + 1)]
 
 
-DORMANT_REF = "dormant #REF!"  # the group of a formula holding #REF! that shows no error (fix_dormant_refs)
+DORMANT_REF = "dormant #REF!"  # the  group of  a formula holding #REF! that shows no error (fix_dormant_refs)
 
 
 class Stop(Exception):
-    """The time budget is used up, or the caller asked to stop: keep what is accepted."""
+    """The  time budget  is used up, or the caller asked to stop: keep what is accepted."""
 
 
 def _same(a: Any, b: Any, tol: float) -> bool:
@@ -606,7 +606,7 @@ def _is_error(v: Any) -> bool:
 
 
 def _retry(fn: Callable[[], Any], attempts: int = 6) -> Any:
-    """Excel answers RPC_E_CALL_REJECTED while it is busy for an instant."""
+    """Excel  answers RPC_E_CALL_REJECTED  while it is busy for an instant."""
     for n in range(attempts):
         try:
             return fn()
@@ -625,7 +625,7 @@ class _Sheet:
     def __init__(self, name: str, index: int, r0: int, c0: int, nr: int, nc: int):
         self.name, self.index, self.r0, self.c0, self.nr, self.nc = name, index, r0, c0, nr, nc
         self.per = max(1, min(CHUNK_ROWS, CHUNK_CELLS // max(1, nc)))
-        self.vals: dict[int, tuple] = {}             # chunk start -> rows of values (formula-bearing chunks only)
+        self.vals: dict[int, tuple] = {}             # chunk  start ->  rows of values (formula-bearing chunks only)
         self.fml: dict[int, list[list | None]] = {}  # chunk start -> rows of R1C1 texts (None where no formula)
         self.ws: Any = None
 
@@ -636,18 +636,18 @@ class _Engine:
         self.t0 = time.time()
         self.sheets: list[_Sheet] = []
         self.sheet_index: dict[str, int] = {}
-        self.sheet_numbers: dict[int, int] = {}  # what SHEET() answers (position among all sheets, charts included) -> index here
+        self.sheet_numbers: dict[int, int] = {}  # what  SHEET() answers  (position among all sheets, charts included) -> index here
         self.names: dict[str, tuple] = {}
         self.err: dict[Key, int] = {}            # formula cells that are errors now
         self.err0: set[Key] = set()              # ... that were errors when the workbook was opened
         self.const_err: dict[Key, int] = {}      # constants that are error values
-        self.unstable: set[Key] = set()          # cells whose value changes from one recalculation to the next
+        self.unstable: set[Key] = set()          # cells whose value changes from one  recalculation to the next
         self.volatile_texts: set[str] = set()
-        self.votes: dict[tuple[int, str], list[int]] = {}  # (sheet, R1C1 text) -> [numbers, texts, booleans] among healthy cells
+        self.votes: dict[tuple[int, str], list[int]] = {}  # (sheet, R1C1 text) -> [numbers, texts, booleans] among  healthy cells
         self.units: dict[Key, Unit] = {}
-        self.cell_unit: dict[Key, Key] = {}      # every cell of an array / spill unit -> the unit's key
-        self.fixed_groups: set[tuple[int, int, str]] = set()  # (sheet, error, R1C1 text) with a fix already kept
-        self.protected: dict[Key, str] = {}      # error cells that must stay: a good value depends on the error -> why
+        self.cell_unit: dict[Key, Key] = {}      # every cell of an array  / spill unit -> the unit's key
+        self.fixed_groups: set[tuple[int, int, str]] = set()  # (sheet,  error, R1C1 text) with a fix already kept
+        self.protected: dict[Key, str] = {}      # error cells that must  stay: a good value depends on the  error -> why
         self._dynamic_cache: dict[tuple[Key, str], list | None] = {}
         self._scratch: tuple[int, int] | None = None  # (sheet index, column): the empty column probes are written in
         self._scratch_ok = True
@@ -663,7 +663,7 @@ class _Engine:
         self.counts: dict[str, int] = defaultdict(int)
         self.formula_cells = 0
         self.passes = 0
-        # the label of the round being settled ("Pass 1"), so the steps inside one round (write,
+        # the label of the round being settled ("Pass 1"), so the steps inside  one round (write,
         # recalculate, read back, undo) report progress; None outside a round
         self._round_label: str | None = None
         self._round_size = 0
@@ -918,9 +918,9 @@ class _Engine:
         return []
 
     def precedent_rects(self, key: Key, text: str) -> tuple[list[tuple[int, int, int, int, int]], bool]:
-        """Every rectangle the formula at `key` reads that this module can see,
-        and whether it also reads something it cannot (dynamic). What INDIRECT
-        and OFFSET point at is asked from Excel, cell by cell."""
+        """Every rectangle the formula at `key` reads that this  module can see,
+        and whether it  also reads something it cannot (dynamic). What  INDIRECT
+        and OFFSET point  at is  asked from Excel, cell by cell."""
         parsed = parse_r1c1(text)
         si, row, col = key
         out: list[tuple[int, int, int, int, int]] = []
@@ -951,10 +951,10 @@ class _Engine:
         return self._dynamic_cache.get((key, text))
 
     def _scratch_column(self) -> tuple[int, int] | None:
-        """An empty column, a few columns right of everything used, on the sheet
-        that leaves most room -- where probe formulas are written, read and
-        cleared. (A scratch *sheet* was tried first: adding a sheet makes Excel
-        re-evaluate GET.WORKBOOK-style names, which fails with macros disabled.)"""
+        """An  empty column, a few columns right of everything used, on the  sheet
+        that leaves most room -- where  probe formulas are written, read and
+        cleared. (A  scratch *sheet* was tried first: adding a sheet makes Excel
+        re-evaluate GET.WORKBOOK-style  names, which fails with macros disabled.)"""
         if self._scratch is None and self._scratch_ok:
             for sh in sorted(self.sheets, key=lambda x: x.c0 + x.nc):
                 col = sh.c0 + sh.nc + 3
@@ -973,7 +973,7 @@ class _Engine:
         return self._scratch
 
     def drop_scratch(self) -> None:
-        """Nothing is left behind: probes are cleared as soon as they are read."""
+        """Nothing is  left behind: probes are cleared as soon as they are read."""
         self._scratch = None
 
     def resolve_dynamic(self, keys: Iterable[Key]) -> None:
@@ -1020,7 +1020,7 @@ class _Engine:
                 _retry(write)
             except Exception:
                 ok = False
-                for i, b in enumerate(batch):  # one probe Excel refuses: write them one by one
+                for i, b in enumerate(batch):  # one probe Excel refuses: write them one  by one
                     try:
                         cell = ws.Cells(i + 1, col)
                         try:
@@ -1121,13 +1121,13 @@ class _Engine:
         return out
 
     def pin_channel(self, unit: Unit, violations: list, changed: list, written: dict[Key, Unit]) -> int:
-        """`unit` failed alone, with its last fix: good values moved. Between it
-        and those values runs a channel of error cells -- each of them, fixed,
+        """`unit` failed alone, with  its last fix: good values  moved. Between it
+        and those values runs a  channel of error  cells --  each of them, fixed,
         would move the same values (the formula at the end is swallowing the
         error: =IFERROR(<...>, 0), =IF(ISERROR(...))...). They are kept as they
-        are, at once, instead of being found out one level per pass; the cells
-        that read them from outside the channel are where cleaning goes on.
-        -> how many cells were pinned."""
+        are, at once, instead of being found out  one level per pass; the cells
+        that read them from outside the  channel are where cleaning goes on.
+        ->  how many cells were pinned."""
         if not violations:
             return 0
         moved = CellIndex([k for k, _, _ in changed] + list(written))
@@ -1167,8 +1167,8 @@ class _Engine:
         return n
 
     def chain_members(self, roots: list[Key], propagated: list[Key]) -> list[Key]:
-        """A recurrence down a column (=R[-1]C+RC[3]-R[-1]C[3], 600 rows) where every
-        cell fails on its own: fixing the first one only makes the second one the
+        """A recurrence down  a column (=R[-1]C+RC[3]-R[-1]C[3], 600 rows) where every
+        cell fails on its own:  fixing the first one only makes the  second one the
         next root, one pass per row. Once a formula block has had a fix kept and
         shows a root again, the cells of that block whose only failing inputs are
         cells of the block being fixed are taken in the same pass. A block that
@@ -1243,7 +1243,7 @@ class _Engine:
         return f"{self.sheets[si].name}|{XL_ERROR_CODES.get(code, '?')}|{text}"
 
     def make_units(self, cells: list[Key]) -> list[Unit]:
-        """Turn root cells into units (resolving arrays and spills through Excel),
+        """Turn root cells  into units (resolving arrays and spills through Excel),
         each with its ladder of fixes. Cells already known keep their state."""
         fresh: list[Unit] = []
         by_text: dict[tuple[int, str], list[Key]] = defaultdict(list)
@@ -1360,12 +1360,12 @@ class _Engine:
     def _write_plain(self, si: int, cells: list[tuple[int, int]], content: Any, formula: bool, on_written: Callable[[int], None] | None = None) -> list[tuple[int, int, str]]:
         """Write one content into plain cells. -> failures (row, col, message). `on_written(n)` hears
         of every rectangle written (n cells), for progress.
-        Many rectangles go in ONE Excel call -- a multi-area range ("A1:B3,D5,...", at most
-        MULTI_AREA_CHARS characters), which Excel writes area by area exactly as one rectangle each
-        (a relative R1C1 formula adjusts per cell). On a 170 MB workbook, clearing 10,002 error
+        Many rectangles go in ONE Excel call -- a multi-area range ("A1:B3,D5,...",  at most
+        MULTI_AREA_CHARS characters), which Excel  writes area by area exactly as one  rectangle each
+        (a relative  R1C1 formula  adjusts per cell). On a 170 MB workbook, clearing 10,002 error
         constants one Excel call each took most of the fixer's 977 s of writing. A batch Excel refuses is written again
-        rectangle by rectangle (and a refused rectangle cell by cell), so a refusal is found and
-        blamed on its own cell as before."""
+        rectangle  by rectangle (and a refused rectangle cell by cell), so a  refusal is found and
+        blamed on its  own cell as before."""
         sh = self.sheets[si]
         failures: list[tuple[int, int, str]] = []
         rects = rectangles(cells)
@@ -1399,7 +1399,7 @@ class _Engine:
         return failures
 
     def _write_rects(self, si: int, rects: list[tuple[int, int, int, int]], content: Any, formula: bool, on_written: Callable[[int], None] | None = None) -> list[tuple[int, int, str]]:
-        """One content into plain cells, a rectangle at a time (a refused rectangle cell by cell)."""
+        """One content into plain  cells, a rectangle at a time (a refused rectangle cell by  cell)."""
         sh = self.sheets[si]
         failures: list[tuple[int, int, str]] = []
         for r1, c1, r2, c2 in rects:
@@ -1430,7 +1430,7 @@ class _Engine:
         return failures
 
     def _write_unit(self, unit: Unit, content: Any, formula: bool) -> str | None:
-        """Write an array / spill / constant unit. -> the failure message, or None."""
+        """Write an array  / spill / constant unit. -> the failure message, or None."""
         si, r1, c1 = unit.key
         sh = self.sheets[si]
         try:
@@ -1533,7 +1533,7 @@ class _Engine:
 
     # -- the gate --
     def judge(self, changed: list[tuple[Key, Any, Any]], written: set[Key]) -> list[tuple[Key, Any, Any]]:
-        """The changes that are violations: a formula cell that was fine when the
+        """The changes  that are violations: a formula cell that was fine when the
         workbook was opened and now holds another value."""
         out = []
         for key, old, new in changed:
@@ -1561,7 +1561,7 @@ class _Engine:
         moved = CellIndex([k for k, _, _ in changed] + list(written))
         self.resolve_dynamic([k for k, _, _ in changed if k not in written])
         NOBODY, MANY = 0, 1
-        label: dict[Key, Any] = {}      # cell -> NOBODY | a unit key (it alone) | MANY
+        label: dict[Key, Any] = {}      # cell ->  NOBODY | a unit key  (it alone) | MANY
         kids: dict[Key, list[Key]] = {}
         open_cells: set[Key] = set()
         blamed: set[Key] = set()
@@ -1616,20 +1616,20 @@ class _Engine:
                 stack.pop()
             who = label.get(violation[0], NOBODY)
             if who == NOBODY:
-                complete = False  # a good value moved and nothing written explains it
+                complete = False  # a good value moved  and nothing written  explains it
             elif who != MANY:
                 sole[who].append(violation)
         return blamed, dict(sole), complete
 
     def settle(self, units: list[Unit], label: str) -> list[Unit]:
-        """Apply the units' current fixes and keep the ones that pass the gate.
+        """Apply  the units' current fixes and keep the ones that pass the gate.
         A unit that fails moves on to its next fix (tried on a later pass).
         -> the accepted units.
 
-        One round for the whole lot. When good values moved, the walk back from
-        them names the suspects (often too many: a cell that reads two fixed
-        cells blames both); they are taken out, the rest is kept, and the
-        suspects are then tried again by halves until each has an exact verdict
+        One round for  the whole lot. When good values moved, the walk back from
+        them  names the suspects (often too many:  a cell that reads two fixed
+        cells blames  both); they are taken out, the rest is kept, and the
+        suspects  are then tried again by halves until  each has an exact verdict
         -- a group that passes alone is kept, a single unit that fails alone has
         failed."""
         self.check_budget()
@@ -1682,9 +1682,9 @@ class _Engine:
 
     def _round(self, units: list[Unit], use_blame: bool) -> tuple[list[Unit], list[Any]]:
         """Write `units`, recalculate, read, judge. Excel is left holding exactly
-        the accepted state, and the stored values match it.
+        the accepted state, and the stored values match  it.
 
-        use_blame=True  -> (kept, suspects): the units the walk back from the moved
+        use_blame=True -> (kept, suspects): the units the walk back from the moved
                            good values points at are reverted *without a verdict*.
         use_blame=False -> (kept, violations): all or nothing; with violations
                            everything is reverted and nothing is kept."""
@@ -1747,7 +1747,7 @@ class _Engine:
             fresh, changed = self.read_changes()
             moved = self.judge(changed, set())
         if moved:
-            # these move although nothing of ours is written: volatile / iterative, not ours to guard
+            # these move although nothing of ours is written: volatile / iterative,  not ours to guard
             for key, _, _ in moved:
                 self.unstable.add(key)
             self.note(f"{len(moved)} cell(s) change by themselves between recalculations: left out of the gate")
@@ -1758,7 +1758,7 @@ class _Engine:
 
     @staticmethod
     def _split(units: list[Unit]) -> int:
-        """Cut at a group boundary near the middle when there is one."""
+        """Cut at  a group boundary near the middle when  there is one."""
         mid = len(units) // 2
         for off in range(0, mid):
             for i in (mid - off, mid + off):
@@ -1794,7 +1794,7 @@ class _Engine:
                     self.err.pop(k, None)
         self.counts["accepted"] += len(units)
 
-    # -- the loop --
+    # --  the loop  --
     def ask_advisor(self, units: list[Unit]) -> None:
         if self.cfg.advisor is None:
             return
@@ -1834,10 +1834,10 @@ class _Engine:
     def try_repairs(self, todo: list[Unit]) -> list[Unit]:
         """The assistant's own rewrites, before the wraps. Each is written to the
         whole block -- the root error cells and every cell with the same formula
-        that works today -- and kept only if (a) the error cells are cured,
-        (b) not one working cell of the block returns another value, (c) the
-        numbers gate passes. All blocks in one round; when that fails, one block
-        per round. -> the units still to fix the ordinary way."""
+        that works today -- and kept only  if (a) the error cells are cured,
+        (b) not one working cell  of the block returns another value,  (c) the
+        numbers gate passes. All blocks in  one round; when that fails, one block
+        per round. -> the units  still to fix the ordinary way."""
         by_block: dict[tuple[int, str], list[Unit]] = defaultdict(list)
         for u in todo:
             advice = self.advice.get(u.group) or {}
@@ -1862,7 +1862,7 @@ class _Engine:
         for t in trials:
             roots = {(u.key[1], u.key[2]) for u in t["units"]}
             t["working"] = [c for c in working.get(t["block"], []) if c not in roots]
-            # the block's other error cells only repeat an error today: same formula, same repair
+            # the block's  other error cells only repeat an error today: same formula, same repair
             t["others"] = [c for c in failing.get(t["block"], []) if c not in roots]
         self.tell("fix", f"Pass {self.passes}: trying {len(trials)} repair(s) proposed by the assistant", None, pass_no=self.passes)
         kept = self._repair_round(trials)
@@ -1902,7 +1902,7 @@ class _Engine:
 
     def _repair_round(self, trials: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
         """Write the rewrites of `trials`, recalculate, judge. -> the trials kept;
-        None when the round failed as a whole and each must be tried alone."""
+        None when the round  failed as a whole and each must be tried alone."""
         applied: list[dict[str, Any]] = []
         for t in trials:
             si = t["block"][0]
@@ -2098,7 +2098,7 @@ class _Engine:
                 todo = self._open_units(uncertain)
                 tier = "cells that read other cells indirectly (INDIRECT / OFFSET / a named formula)"
             if not todo:
-                # nothing is a clear starting point (errors that feed each other): take them all
+                # nothing is a clear starting point  (errors that feed each other):  take them all
                 rest = [k for k in propagated if k not in name_gap]
                 self.make_units(rest)
                 todo = self._open_units(rest)
@@ -2128,11 +2128,11 @@ class _Engine:
         return "partial" if self.counts["accepted"] else "stuck"
 
     def fix_dormant_refs(self) -> list[Unit]:
-        """A formula that holds #REF! in a branch Excel does not evaluate today shows no
+        """A formula that holds #REF!  in a branch  Excel does  not evaluate today shows no
         error, so no pass reaches it -- yet Mind cannot compile it (REF-001). Each deleted reference
-        becomes NA() (a call that needs a range there becomes NA() as a whole), as Prep's
-        fix_broken_refs does, and goes through the same gate: kept only if no value moves, the
-        cell's own included. Plain cells only; an array or a spill is left to Prep."""
+        becomes NA() (a call that needs a range there becomes NA() as  a whole), as Prep's
+        fix_broken_refs does, and goes through the same gate:  kept only if no value moves,  the
+        cell's own included. Plain cells only; an  array or a spill is left to Prep."""
         found: dict[tuple[int, str], list[Key]] = defaultdict(list)
         for sh in self.sheets:
             for start, rows in sh.fml.items():
@@ -2196,7 +2196,7 @@ class _Engine:
 
     # -- results --
     def confirm(self) -> None:
-        """The full rebuild the app's own Recalculate does, and one more read."""
+        """The full  rebuild the app's own Recalculate does, and  one more read."""
         self.tell("confirm", "Full recalculation to confirm the result", None)
         self.calculate(full=True)
         fresh, changed = self.read_changes()
@@ -2332,14 +2332,14 @@ def _show(v: Any) -> str:
 
 
 def _plain(v: Any) -> Any:
-    """A cell value for a JSON result: error codes as their text."""
+    """A  cell value  for a JSON result: error codes as their text."""
     if v.__class__ is int and v in XL_ERROR_CODES:
         return XL_ERROR_CODES[v]
     return v
 
 
 def _com_text(exc: BaseException) -> str:
-    """Why Excel refused a write, in words: Excel's own message (the common ones as a plain sentence,
+    """Why  Excel refused  a write, in words: Excel's own message (the common ones as a plain sentence,
     Excel's words in brackets: app/plain_codes.py), never the raw pywin32 tuple."""
     info = getattr(exc, "excepinfo", None)
     if info and len(info) > 2 and info[2]:
@@ -2372,7 +2372,7 @@ def summary_sentence(res: dict[str, Any]) -> str:
 
 
 def _fix_in_excel(copy_path: Path, cfg: AutoFixConfig, out: dict[str, Any]) -> str | None:
-    """The Excel session of a run: open the copy, run the engine, confirm, save.
+    """The  Excel session  of a run: open the copy, run the engine, confirm, save.
     Fills `out` with the engine's report. -> why the run stopped early, if it did."""
     stopped: str | None = None
     with excel_session() as excel:
@@ -2430,12 +2430,12 @@ def _fix_in_excel(copy_path: Path, cfg: AutoFixConfig, out: dict[str, Any]) -> s
 
 
 def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = None) -> dict[str, Any]:
-    """Fix the formula errors of `source_path` on a fresh copy in `work_dir`.
+    """Fix  the formula  errors of `source_path` on a fresh copy in `work_dir`.
 
     -> {status: clean | partial | stuck | unchanged | error, ran, message, summary,
         errors_before, errors_after, cells_rewritten, passes, fixes, left, applied,
-        output_path, verified_opens_in_excel, recalc (the shape of app.recalc.recalculate), ...}
-    The source is never modified. With status unchanged / stuck / error no new file is kept."""
+        output_path, verified_opens_in_excel, recalc (the  shape of app.recalc.recalculate), ...}
+    The source is never modified. With status unchanged  / stuck / error no new  file is kept."""
     cfg = cfg or AutoFixConfig()
     if not com_available():
         return {"status": "error", "ran": False, "message": "Excel is not available here (pywin32): the automatic fixer needs a real Excel."}
@@ -2444,8 +2444,8 @@ def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = N
     copy_path, source_sha = make_immutable_copy(source_path, Path(work_dir))
     out: dict[str, Any] = {"status": "error", "ran": False}
     try:
-        # In a function of its own: every frame that holds the Excel proxy is gone before the
-        # next Excel session (verify_opens_in_excel) starts. A proxy of the session before,
+        # In a function of its  own: every frame that holds the Excel proxy is gone before  the
+        # next Excel session (verify_opens_in_excel) starts. A proxy  of the session before,
         # released while a new one runs, leaves the thread's COM apartment unusable -- the
         # next recalculation in the process failed with "The interface is unknown".
         stopped = _fix_in_excel(copy_path, cfg, out)
@@ -2485,7 +2485,7 @@ def run_autofix(source_path: Path, work_dir: Path, cfg: AutoFixConfig | None = N
     return out
 
 
-if __name__ == "__main__":  # python -m app.autofix <workbook> <work dir> [--assistant] [--allow-handled]
+if __name__ == "__main__":  # python  -m app.autofix  <workbook> <work dir> [--assistant] [--allow-handled]
     import json
 
     def _print(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:

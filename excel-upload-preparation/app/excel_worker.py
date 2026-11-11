@@ -1,23 +1,23 @@
-"""One Excel per session, kept by a thread of its own.
+"""One  Excel per  session, kept by a thread of its own.
 
 Starting an Excel, opening the version (a minute on a 179 MB workbook), writing, saving and quitting
-for every step of Do everything, then opening the saved file again read-only to check it, costs
-minutes on a big file. Instead:
+for every step of Do everything, then opening  the saved file again read-only to check it, costs
+minutes on a  big file. Instead:
 
-- When a version is saved, its check is made by opening a fresh copy of it -- the very copy the next
-  apply will write into, at the very path make_immutable_copy would give it -- in a freshly started
+- When a version  is saved, its check is made by  opening a fresh copy of it -- the very copy the  next
+  apply will write into, at the very  path make_immutable_copy would give it -- in a freshly started
   Excel. That runs while the server re-analyses the version (minutes on a big file), so it costs no
   wall-clock time, and the workbook stays open ("held").
 - The next apply on that version writes into the held workbook: no Excel start, no open, no copy.
-- Anything else -- another version, an explicit_colors operation (it edits the copy before Excel
+- Anything else -- another version, an explicit_colors operation (it  edits the copy before Excel
   opens it), a workbook with data connections, little free memory, the idle timeout, a Recalculate
   or any other Excel user -- closes the held workbook and deletes its copy first, so later paths and
   results are exactly what they were.
 
 Every COM object of a session lives on its thread `excel-<session id>`: other threads hand it jobs
 through a queue and wait for plain results (COM proxies must stay on the thread that made them).
-When Excel dies or hangs (the wait has a timeout), the worker kills it, drops what it held and
-raises WorkerUnavailable; the server then falls back to one Excel per step.
+When Excel dies or hangs (the wait  has a timeout), the worker  kills it, drops what it held and
+raises  WorkerUnavailable; the server  then falls  back to one Excel per step.
 MINDREADY_EXCEL_WORKER=0 turns it off.
 """
 from __future__ import annotations
@@ -39,8 +39,8 @@ from .inventory import make_immutable_copy, next_copy_path
 from .perf import record as perf_record
 from .perf import stage as perf_stage
 
-JOB_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_JOB_TIMEOUT_S", "1800"))  # once a job has started
-QUEUE_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_QUEUE_TIMEOUT_S", "1800"))  # waiting for its turn
+JOB_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_JOB_TIMEOUT_S", "1800"))  # once  a job  has started
+QUEUE_TIMEOUT_S = float(os.environ.get("MINDREADY_EXCEL_QUEUE_TIMEOUT_S", "1800"))  # waiting  for its  turn
 IDLE_S = float(os.environ.get("MINDREADY_EXCEL_IDLE_S", "900"))
 HOLD_MIN_FREE_MB = int(os.environ.get("MINDREADY_EXCEL_HOLD_MIN_FREE_MB", "3000"))
 
@@ -54,7 +54,7 @@ def enabled() -> bool:
 
 
 class WorkerUnavailable(RuntimeError):
-    """The worker's Excel died, hung or failed: do it the way it was done before (a fresh Excel)."""
+    """The  worker's Excel  died, hung or failed: do it the way it was done before (a fresh Excel)."""
 
 
 def free_mb() -> int:
@@ -74,7 +74,7 @@ def free_mb() -> int:
 
 @dataclass
 class _Held:
-    source: Path            # the version file the copy was made from
+    source: Path            # the  version file  the copy was made from
     stamp: tuple[int, int]  # its (mtime_ns, size) then
     copy_path: Path
     source_sha256: str
@@ -83,7 +83,7 @@ class _Held:
 
 @dataclass
 class ExcelRun:
-    """What apply_operations needs to write into a workbook the worker already holds open."""
+    """What  apply_operations needs  to write into a workbook the worker already holds open."""
     excel: Any
     wb: Any
     copy_path: Path
@@ -98,7 +98,7 @@ class ExcelWorker:
         self.idle_s = idle_s
         self._q: queue.Queue = queue.Queue()
         self._stopped = False
-        # owned by the worker thread only
+        # owned  by the  worker thread only
         self._excel: Any = None
         self._pid: int | None = None
         self._held: _Held | None = None
@@ -153,7 +153,7 @@ class ExcelWorker:
 
     def _discard_recalc(self) -> None:
         """A recalculation made ahead that nobody took: delete its copy, so the next Recalculate's
-        copy takes the path it always did."""
+        copy takes the path  it always did."""
         found, self._recalc = self._recalc, None
         if found is not None:
             try:
@@ -162,7 +162,7 @@ class ExcelWorker:
                 pass
 
     def _drop(self) -> None:
-        """Close what is held, delete its copy (so the next copy takes the same path), quit Excel."""
+        """Close what is held, delete its copy (so the  next copy takes the same path),  quit Excel."""
         self._discard_recalc()
         held, self._held = self._held, None
         if held is not None:
@@ -179,7 +179,7 @@ class ExcelWorker:
         gc.collect()
 
     def _abandon(self) -> None:
-        """Excel died or hangs: kill it first, then forget everything."""
+        """Excel died or hangs: kill it  first, then forget everything."""
         kill_excel(self._pid)
         held, self._held = self._held, None
         if held is not None:
@@ -193,7 +193,7 @@ class ExcelWorker:
         perf_record("excel_worker_abandon", 0.0, session=self.sid)
 
     def _submit(self, fn: Callable[[], Any], timeout: float = JOB_TIMEOUT_S, queue_timeout: float = QUEUE_TIMEOUT_S, kill_on_timeout: bool = True) -> Any:
-        """Run `fn` on the worker thread and wait for it. Waiting for its turn and running are timed
+        """Run `fn` on the worker thread and wait  for it. Waiting for its turn and  running are timed
         apart: a job that never got its turn is cancelled (it will not run later); a job that runs
         too long has its Excel killed -- only then, and only the running job's -- and the worker is
         retired, so later requests fall back to one Excel per step at once instead of queueing behind it."""
@@ -210,7 +210,7 @@ class ExcelWorker:
             if not kill_on_timeout:
                 raise WorkerUnavailable(f"the Excel worker did not finish within {int(timeout)} s") from None
             self._retire()
-            kill_excel(self._pid)  # the hung call then fails on the worker thread, which drops everything
+            kill_excel(self._pid)  # the hung call then fails on  the worker thread, which drops everything
             raise WorkerUnavailable(f"Excel did not answer within {int(timeout)} s") from None
 
     def _retire(self) -> None:
@@ -306,7 +306,7 @@ class ExcelWorker:
         res: dict[str, Any] = {}
         try:
             res = apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, run=run)
-        except Exception as exc:  # the text only: the exception's frames hold COM proxies of this thread
+        except Exception as exc:  # the text only: the exception's  frames hold COM proxies of  this thread
             failed = f"{type(exc).__name__}: {str(exc)[:240]}"
             gone = excel_gone(exc)
         finally:
@@ -316,12 +316,12 @@ class ExcelWorker:
             if gone:
                 self._abandon()
             else:
-                excel, self._excel, self._pid = self._excel, None, None  # every write starts from a freshly opened copy
+                excel, self._excel, self._pid = self._excel, None, None  # every write starts from a freshly  opened copy
                 quit_excel(excel)
                 excel = None
         if failed is not None:
             try:
-                copy_path.unlink()  # the old path makes this copy again, at this path
+                copy_path.unlink()  # the old  path makes  this copy again, at this path
             except OSError:
                 pass
             raise WorkerUnavailable(f"the apply in the open copy failed ({failed})")
@@ -329,13 +329,13 @@ class ExcelWorker:
 
     def _job_recalc_ahead(self) -> None:
         """After a Mind loop version, Do everything recalculates next: do it now, on the copy held open
-        -- what POST /recalculate does (a full rebuild in a fresh Excel with the add-in, saved, every
-        error cell read), on a byte-identical copy, earlier. The copy then moves to where Recalculate
+        -- what POST /recalculate does (a full rebuild in a  fresh Excel with the add-in, saved, every
+        error cell read), on a  byte-identical copy, earlier. The copy then  moves to where Recalculate
         would have put it."""
         from .recalc import recalculate_in
 
         if self._held is not None and free_mb() < HOLD_MIN_FREE_MB:
-            self._drop()  # not now: Recalculate runs in its own fresh Excel
+            self._drop()  # not  now: Recalculate runs in its own fresh Excel
             return
         held, self._held = self._held, None
         if held is None:
@@ -370,9 +370,9 @@ class ExcelWorker:
             return path, res
         return None
 
-    # --- public (any thread) ------------------------------------------------------------------
+    # --- public (any thread)  ------------------------------------------------------------------
     def preopen(self, version: Path, recalc_ahead: bool = False) -> dict[str, Any]:
-        """The opens-in-Excel check of `version`, made by opening the next apply's copy of it.
+        """The opens-in-Excel check of `version`, made by  opening the next apply's copy of it.
         `recalc_ahead`: a Mind loop version -- recalculate the held copy right after (in the queue,
         before any later request), for the Recalculate step that follows."""
         try:
@@ -397,7 +397,7 @@ class ExcelWorker:
 
     def apply(self, source: Path, operations: list[dict[str, Any]], progress: Any = None, defer_verify: bool = False, recalc_ahead: bool = False) -> dict[str, Any]:
         """apply_operations on `source`, in the copy held open when it is this version's. The check
-        that the result opens is the open of the next copy (preopen). Not deferred: done before
+        that the result  opens is the open of the next copy (preopen). Not deferred: done before
         returning, as apply_operations does. `recalc_ahead`: the result is a Mind loop version."""
         verify = (lambda path: self.preopen(path, recalc_ahead=True)) if recalc_ahead else self.preopen
         res = self._submit(lambda: self._job_apply(Path(source), operations, progress, verify))

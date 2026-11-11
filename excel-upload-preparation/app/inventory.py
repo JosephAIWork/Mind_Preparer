@@ -1,15 +1,15 @@
-"""Workbook inventory: builds a WorkbookAnalysis-shaped dict from a copy of
+"""Workbook  inventory: builds  a WorkbookAnalysis-shaped dict from a copy of
 the source file using openpyxl (cells/formulas/names/styles) and zipfile
 (raw OOXML package parts). Never executes VBA, links, or OLE content --
 inspection only, per instructions/core.md.
 
-The `workbooks[i]` / `features` / `risks` shapes here are this app's own
-convention: schemas/workbook-analysis.schema.json declares those fields as
-plain `type: object` / `type: array` with no nested schema, so there is
+The `workbooks[i]` / `features`  / `risks` shapes here are this app's own
+convention: schemas/workbook-analysis.schema.json declares those  fields as
+plain `type: object` / `type:  array` with no nested schema, so there  is
 nothing more specific to conform to.
 
-Also read (all read-only, all from the same single cell pass):
-  * Mind-style grid detection with '#Title /Flag' parsing (app/grids.py)
+Also read (all read-only, all from  the same single cell pass):
+  * Mind-style grid detection  with '#Title /Flag' parsing (app/grids.py)
   * array formulas (legacy CSE and dynamic-array) and data-table formulas,
     which openpyxl hands back as objects rather than '=...' strings and
     would otherwise be invisible to every formula check
@@ -18,7 +18,7 @@ Also read (all read-only, all from the same single cell pass):
     conditional formatting, sheet protection, tab colour
   * docProps/app.xml (which application last saved the file) and the size of
     the VBA project part
-  * a process-wide cache of the opened workbook so validators that need raw
+  * a process-wide cache  of the opened workbook so validators that need raw
     cell values (resize destinations, MM_READTABLE ranges) don't re-parse a
     multi-MB file.
 """
@@ -44,23 +44,23 @@ from .perf import stage as perf_stage
 from .formula_utils import STORAGE_PREFIX_RE, called_functions, find_calls, parse_ref, range_length, storage_prefixes
 from .grids import detect_grids, is_occupied, json_safe, MergedInto
 
-fast_xlsx.install()  # the C XML parser, and the cached values kept from the formula load
-fast_xlsx.patch_openpyxl()  # a grouped pivot field must not stop the load
+fast_xlsx.install()  # the  C XML  parser, and the cached values kept from the formula load
+fast_xlsx.patch_openpyxl()  # a  grouped pivot  field must not stop the load
 
 STEP_LABELS_MARKER = "steplabels"
 MAX_STYLE_SAMPLES = 25
-# Coordinates kept per sheet for app/prep.py actions. A small cap (5000) would make
+# Coordinates  kept per  sheet for app/prep.py actions. A small cap (5000) would make
 # the theme-colour and empty-style actions run in 5000-cell batches, so a large
 # sheet would need several Prep rounds for one action. 250k
-# short strings cost a few MB at most; the public API still truncates lists.
+# short strings  cost a few MB at most; the public API still truncates  lists.
 MAX_STYLE_CELL_REFS = 250_000
 
 class _BoundedCache(dict):
-    """A dict that keeps only the `limit` most recently used entries.
+    """A  dict that  keeps only the `limit` most recently used entries.
 
     The workbook caches below hold a whole openpyxl workbook per analysed copy. Unbounded, every
-    re-analysis of a version would add one more: a 36 MB model took the web server past 13 GB and
-    the machine out of memory. An evicted workbook is simply read again from its copy if needed."""
+    re-analysis of a version would add one more: a 36 MB  model took the web server past 13 GB and
+    the machine out  of memory. An evicted workbook is  simply read again from its copy if  needed."""
 
     def __init__(self, limit: int) -> None:
         super().__init__()
@@ -95,10 +95,10 @@ class _BoundedCache(dict):
 WORKBOOK_CACHE_LIMIT = int(os.environ.get("MIND_READY_WORKBOOK_CACHE", "2"))
 _WORKBOOK_CACHE: dict[str, Any] = _BoundedCache(WORKBOOK_CACHE_LIMIT)
 
-# A progress callback: progress(stage, message, fraction_within_stage_or_None, **facts).
+# A  progress callback:  progress(stage, message, fraction_within_stage_or_None, **facts).
 # Stages, in order: copy, load, inventory, names, rules, plan (the web server
 # turns them into one status the front-end polls). Any exception a callback
-# raises is the caller's problem -- the scanner never swallows it.
+# raises is the caller's problem --  the scanner never swallows it.
 ProgressFn = Callable[..., None]
 
 
@@ -108,13 +108,13 @@ def _notify(progress: ProgressFn | None, stage: str, message: str, fraction: flo
 
 
 class _SelectiveReader(ExcelReader):
-    """openpyxl's reader, except that the sheets in `ignore` are never parsed:
+    """openpyxl's  reader, except  that the sheets in `ignore` are never parsed:
     they come back as empty placeholder sheets at their original position
     (so sheet indexes, sheet-scoped defined names and the active-sheet index
-    stay right) with their real name and visibility. Everything else --
-    strings, styles, names, VBA, the other sheets -- is read exactly as
-    openpyxl would. Also the hook for per-sheet load progress: openpyxl
-    parses one sheet at a time and the workbook part has told us how many."""
+    stay right) with their real  name and visibility. Everything else --
+    strings, styles, names, VBA, the other  sheets -- is read exactly as
+    openpyxl  would. Also the hook for per-sheet load  progress: openpyxl
+    parses one sheet at a time and the workbook part  has told us how many."""
 
     def __init__(self, fn, ignore: set[str], progress: ProgressFn | None, **kwargs):
         super().__init__(fn, **kwargs)
@@ -142,14 +142,14 @@ class _SelectiveReader(ExcelReader):
             super().read_worksheets()
         finally:
             parser.find_sheets = original
-        for i, sheet in skipped:  # ascending index order keeps every position right
+        for i, sheet in skipped:  # ascending index order  keeps every position right
             ws = self.wb.create_sheet(sheet.name, index=i)
             ws.sheet_state = sheet.state
             ws.mind_ready_ignored = True
 
 
 def load_workbook_selective(path: str | Path, ignore_sheets: Iterable[str] = (), data_only: bool = False, keep_vba: bool = False, progress: ProgressFn | None = None):
-    """openpyxl.load_workbook that does not parse the sheets in `ignore_sheets`
+    """openpyxl.load_workbook  that does  not parse the sheets in `ignore_sheets`
     (they are present, but empty). With nothing to ignore and no progress
     hook it is exactly openpyxl.load_workbook."""
     ignore = {str(n) for n in ignore_sheets or ()}
@@ -164,7 +164,7 @@ def load_workbook_selective(path: str | Path, ignore_sheets: Iterable[str] = (),
 
 
 def ignored_sheet_names(analysis: dict[str, Any], workbook_index: int = 0) -> list[str]:
-    """The sheets the user asked the scan to skip (none for an ordinary analysis)."""
+    """The  sheets the  user asked the scan to skip (none for an ordinary analysis)."""
     try:
         return [s["name"] for s in analysis["workbooks"][workbook_index].get("ignored_sheets", [])]
     except (KeyError, IndexError, TypeError):
@@ -172,10 +172,10 @@ def ignored_sheet_names(analysis: dict[str, Any], workbook_index: int = 0) -> li
 
 
 def sheet_order(workbook: dict[str, Any]) -> list[str]:
-    """Every sheet of the workbook in tab order, the sheets the scan skipped at their own tab
+    """Every  sheet of  the workbook in tab order, the sheets the scan skipped at their own tab
     index. A skipped sheet still exists for a reference (a 3-D range 'First:Last'!, an INDIRECT
-    that names it, a defined name into it): only its cells were never read, so nothing about them
-    (their values, their grids) may be assumed."""
+    that names it, a  defined name into it): only its cells were never read, so  nothing about them
+    (their values, their grids)  may be assumed."""
     names = [s["name"] for s in workbook.get("sheets", [])]
     for ig in sorted(workbook.get("ignored_sheets", []), key=lambda s: int(s.get("index", 0))):
         names.insert(min(int(ig.get("index", len(names))), len(names)), ig["name"])
@@ -191,11 +191,11 @@ def sha256_of(path: Path) -> str:
 
 
 def has_vba_project(path: Path) -> bool:
-    """Cheap zipfile-only check for a VBA project part -- works even on
+    """Cheap  zipfile-only check  for a VBA project part -- works even on
     .xlsb (also an OPC/zip container, confirmed empirically: 'xl/vbaProject.bin'
     is present the same way it is in .xlsm), which openpyxl can't open at all.
-    Used to decide whether an auto-converted file should target .xlsm
-    (preserve macros) or .xlsx (no macros to preserve)."""
+    Used to  decide whether an auto-converted file should target .xlsm
+    (preserve macros) or .xlsx  (no macros to preserve)."""
     try:
         with zipfile.ZipFile(path) as zf:
             return "xl/vbaProject.bin" in zf.namelist()
@@ -204,7 +204,7 @@ def has_vba_project(path: Path) -> bool:
 
 
 def make_immutable_copy(source_path: Path, work_dir: Path) -> tuple[Path, str]:
-    """Hash the source, then copy it -- never open or modify the original.
+    """Hash  the source,  then copy it -- never open or modify the original.
     The source workbook is never modified.
     """
     source_path = Path(source_path)
@@ -217,10 +217,10 @@ def make_immutable_copy(source_path: Path, work_dir: Path) -> tuple[Path, str]:
 
 
 def next_copy_path(work_dir: Path, name: str) -> Path:
-    """Where the next copy named `name` goes in `work_dir`: work_dir/name, else the first free
+    """Where  the next  copy named `name` goes in `work_dir`: work_dir/name, else the first free
     work_dir/vN/name. The source may itself be an earlier output living in `work_dir` (the UI
-    re-applies changes to the file it just produced): never copy a file onto itself, and never
-    overwrite a previous output -- use a fresh versioned sub-folder instead."""
+    re-applies changes to the file it just produced):  never copy a file onto itself, and never
+    overwrite a previous output  -- use a fresh versioned sub-folder  instead."""
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     copy_path = work_dir / name
@@ -236,7 +236,7 @@ def next_copy_path(work_dir: Path, name: str) -> Path:
 
 
 def open_cached(analysis: dict[str, Any], workbook_index: int = 0):
-    """The openpyxl workbook behind an analysis (the immutable copy), kept
+    """The  openpyxl workbook  behind an analysis (the immutable copy), kept
     open in a process-wide cache so validators can read arbitrary cells
     without re-parsing. Read-only use only."""
     copy_path = analysis["workbooks"][workbook_index]["copy_path"]
@@ -258,14 +258,14 @@ _VALUES_CACHE: dict[str, Any] = _BoundedCache(max(1, WORKBOOK_CACHE_LIMIT - 1))
 
 
 def _values_workbook(path: str, ignore_sheets: Iterable[str] = ()):
-    """A data_only (cached values) view of a workbook, cached per path -- the
+    """A  data_only (cached  values) view of a workbook, cached per path -- the
     values Excel last stored, i.e. what the user sees in the cells. Sheets the
-    analysis skipped are skipped here too (they would cost the same again)."""
+    analysis skipped are skipped here too (they would cost  the same again)."""
     ignore = tuple(sorted({str(n) for n in ignore_sheets or ()}))
     key = f"{path}|{'|'.join(ignore)}" if ignore else path
     wb = _VALUES_CACHE.get(key)
     if wb is None:
-        # the formula load of the same file kept every cached value -- no second parse
+        # the formula load of the same file kept every  cached value -- no second parse
         formulas = _WORKBOOK_CACHE.get(str(path))
         if formulas is not None and getattr(formulas, "mind_ready_ignore", ()) == ignore:
             wb = fast_xlsx.values_view(formulas)
@@ -277,13 +277,13 @@ def _values_workbook(path: str, ignore_sheets: Iterable[str] = ()):
 
 
 def values_cell(analysis: dict[str, Any], sheet: str, row: int, col: int) -> Any:
-    """The value Excel last stored for a cell (what a formula computed), or
+    """The  value Excel  last stored for a cell (what a formula computed), or
     None when the workbook carries no cached value for it."""
     copy_path = analysis["workbooks"][0]["copy_path"]
     ignored = ignored_sheet_names(analysis)
     try:
-        # the sheets the scan skipped stay out of the load (it is then served from the scan's own
-        # load); a value on a skipped sheet needs the full load
+        # the sheets the scan skipped stay out of the load (it is then  served from the scan's own
+        # load); a value on a skipped sheet  needs the full load
         wb = _values_workbook(str(copy_path), () if sheet in ignored else ignored)
     except Exception:
         return None
@@ -296,10 +296,10 @@ def values_cell(analysis: dict[str, Any], sheet: str, row: int, col: int) -> Any
 
 
 def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, cols: int = 3, values_path: str | Path | None = None) -> dict[str, Any]:
-    """What is going on in the workbook around `cell`: a small grid of the
+    """What  is going  on in the workbook around `cell`: a small grid of the
     cells' contents (values) with their formulas, so a finding or a
     recalculation error can be understood in place. `values_path` may point
-    at a fresher copy (e.g. the last recalculation) for the values."""
+    at a  fresher copy (e.g. the last recalculation) for the values."""
     from openpyxl.utils import get_column_letter
 
     from .formula_utils import parse_ref, ref_text
@@ -328,7 +328,7 @@ def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, 
     top, left = max(1, ref["r1"] - rows), max(1, ref["c1"] - cols)
     bottom = min(ref["r2"] + rows, max(ws_f.max_row, ref["r2"]))
     right = min(ref["c2"] + cols, max(ws_f.max_column, ref["c2"]))
-    # multi-cell array formulas live in their anchor cell only; members show the anchor's formula
+    # multi-cell array formulas  live in their anchor cell only;  members show the anchor's formula
     arrays: list[tuple[dict, str]] = []
     for entry in analysis["workbooks"][0].get("formulas", []):
         if entry.get("sheet") == sheet and entry.get("array_ref") and ":" in str(entry["array_ref"]):
@@ -343,7 +343,7 @@ def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, 
             raw = cf.value
             formula = None
             array_ref = None
-            if isinstance(raw, str) and raw.startswith("=") and cf.data_type == "f":  # text typed as '=... is text
+            if isinstance(raw, str) and raw.startswith("=") and cf.data_type == "f":  # text typed as  '=... is text
                 formula = STORAGE_PREFIX_RE.sub("", raw)  # `_xlfn.` etc. are storage artefacts, not what Excel shows
             elif isinstance(raw, ArrayFormula):
                 text = raw.text if str(raw.text).startswith("=") else "=" + str(raw.text)
@@ -375,12 +375,12 @@ def cell_window(analysis: dict[str, Any], sheet: str, cell: str, rows: int = 3, 
     }
 
 
-# --- number-format classification (FMT-001) ---------------------------------
+# ---  number-format classification (FMT-001) ---------------------------------
 _NUMERIC_FMT_RE = re.compile(r"^[#0,]*(\.[#0]+)?(;-?[#0,]*(\.[#0]+)?)?(;[^;]*)?$")
 
 
 def classify_number_format(fmt: str | None, cell) -> str:
-    """Map an Excel number format onto the KB's list of preserved cell
+    """Map  an Excel  number format onto the KB's list of preserved cell
     formats ("Excel specificities kept in Mind": Standard, Number, Text,
     Boolean, Date) or a named category outside that list."""
     if cell.data_type == "b":
@@ -427,7 +427,7 @@ def _app_properties(names_in_package: set[str], zf: zipfile.ZipFile) -> dict[str
 
 
 def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, int]]:
-    """One pass over the sheet's cells: occupancy map for grid detection,
+    """One  pass over  the sheet's cells: occupancy map for grid detection,
     formulas, styles, comments, hyperlinks, locked cells."""
     merged = [str(r) for r in ws.merged_cells.ranges]
     sheet_protected = bool(getattr(ws.protection, "sheet", False))
@@ -449,8 +449,8 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
     format_category: dict[tuple[str, bool], str] = {}
 
     # the cells the sheet holds, row by row -- ws.iter_rows() also *creates* a blank cell for
-    # every empty position of the used rectangle (5.4 million on one 27 MB workbook), and a blank cell
-    # adds nothing below (no value, no style, no comment, no link)
+    # every empty position of  the used rectangle (5.4 million on one 27 MB workbook), and  a blank cell
+    # adds nothing below (no  value, no style, no comment, no link)
     for _key, cell in sorted(ws._cells.items()):
         value = cell.value
         occupied_here = is_occupied(value)
@@ -459,7 +459,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
 
         formula_text: str | None = None
         entry: dict[str, Any] | None = None
-        if isinstance(value, str) and value.startswith("=") and cell.data_type == "f":  # text typed as '=... is text
+        if isinstance(value, str) and value.startswith("=") and cell.data_type == "f":  # text  typed as '=... is text
             formula_text = value
             entry = {"sheet": ws.title, "cell": cell.coordinate, "formula": value}
         elif isinstance(value, ArrayFormula):
@@ -480,8 +480,8 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
                         prefix_counts[p] = prefix_counts.get(p, 0) + 1
             formulas.append(entry)
 
-        # Excel locks every cell by default (an explicit lock leaves no style
-        # trace), and locking only bites on a protected sheet (KB): count
+        # Excel locks every cell by default (an  explicit lock leaves no style
+        # trace), and locking  only bites on a protected sheet (KB): count
         # occupied cells on protected sheets that are not explicitly unlocked.
         if occupied_here and sheet_protected and (cell.protection is None or cell.protection.locked):
             locked_cells += 1
@@ -524,7 +524,7 @@ def _sheet_inventory(ws) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str
         if cell.hyperlink is not None:
             hyperlinks.append({"cell": cell.coordinate, "target": cell.hyperlink.target})
 
-    # a merged range whose first cell is occupied occupies every cell it covers (see grids.MergedInto)
+    # a merged range whose first cell is occupied  occupies every cell it covers (see grids.MergedInto)
     for rng in ws.merged_cells.ranges:
         anchor = (rng.min_row, rng.min_col)
         if anchor in occupied:
@@ -651,11 +651,11 @@ def build_analysis(
     ignore_sheets: Iterable[str] | None = None,
     progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
-    """The inventory of one workbook. `ignore_sheets` names sheets the user
+    """The  inventory of  one workbook. `ignore_sheets` names sheets the user
     chose not to scan (a large-workbook option): they are neither parsed nor
     inventoried, appear under `workbooks[0].ignored_sheets` (name + state)
     and nowhere else, and are counted in `features.ignored_sheet_count`.
-    `progress` receives the stages (see ProgressFn)."""
+    `progress`  receives the stages (see ProgressFn)."""
     ignore = {str(n) for n in ignore_sheets or ()}
     _notify(progress, "copy", "Copying the workbook (the original is never modified)", None)
     copy_path, source_sha256 = make_immutable_copy(source_path, work_dir)
@@ -717,7 +717,7 @@ def build_analysis(
 
     features = {
         "sheet_count": len(sheets),
-        # Excel's "enable iterative calculation" -- the setting that lets circular references compute (FRM-005)
+        # Excel's "enable iterative calculation" -- the setting  that lets circular references compute (FRM-005)
         "iterative_calculation": bool(getattr(getattr(wb, "calculation", None), "iterate", False)),
         "ignored_sheet_count": len(ignored_sheets),
         "total_sheet_count": len(all_sheets),
@@ -790,14 +790,14 @@ def build_analysis(
     }
 
 
-# --- MM-call iterators shared by the validators -----------------------------
-_MM_FORMULAS: dict[str, Any] = {}  # the last workbook's formulas that can call an MM_ function
+# ---  MM-call iterators shared by the validators -----------------------------
+_MM_FORMULAS: dict[str, Any] = {}  # the  last workbook's  formulas that can call an MM_ function
 
 
 def _mm_formulas(formulas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The rules ask for one MM_ function after another (38 times per scan), each a pass
+    """The  rules ask  for one MM_ function after another (38 times per scan), each a pass
     over every formula (245,847 on a big workbook): the formulas that mention "mm_" at all are found once.
-    A formula with non-ASCII text is always kept (find_calls' own shortcut is ASCII only)."""
+    A formula  with non-ASCII text is always kept (find_calls' own shortcut is ASCII  only)."""
     hit = _MM_FORMULAS
     if hit.get("src") is formulas and hit.get("n") == len(formulas):
         return hit["mm"]
@@ -808,7 +808,7 @@ def _mm_formulas(formulas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def mm_calls(analysis: dict[str, Any], function_name: str) -> list[dict[str, Any]]:
-    """Every call site of one MM_ function: {sheet, cell, formula, args, array_ref}."""
+    """Every  call site  of one MM_ function: {sheet, cell, formula, args, array_ref}."""
     out = []
     for wb_entry in analysis["workbooks"]:
         formulas = wb_entry["formulas"]
@@ -829,7 +829,7 @@ def mm_calls(analysis: dict[str, Any], function_name: str) -> list[dict[str, Any
 
 
 def loop_definitions(analysis: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    """Every MM_LOOP("Name", Range, ...) call site, grouped by Name."""
+    """Every  MM_LOOP("Name", Range,  ...) call site, grouped by Name."""
     defs: dict[str, list[dict[str, Any]]] = {}
     for call in mm_calls(analysis, "MM_LOOP"):
         args = call["args"]
@@ -864,7 +864,7 @@ def loopinstance_definitions(analysis: dict[str, Any]) -> dict[str, list[dict[st
 
 
 def looplabels_definitions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every MM_LOOPLABELS("Name", Range, ...) call site."""
+    """Every  MM_LOOPLABELS("Name", Range,  ...) call site."""
     out = []
     for call in mm_calls(analysis, "MM_LOOPLABELS"):
         args = call["args"]
@@ -885,7 +885,7 @@ def looplabels_definitions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def known_loop_names(analysis: dict[str, Any]) -> set[str]:
-    """Loop names a formula may legitimately reference: MM_LOOP / MM_LOOPINSTANCE
+    """Loop  names a  formula may legitimately reference: MM_LOOP / MM_LOOPINSTANCE
     definitions, iteration names (MM_ITERATIONS), the built-in SIM (simulations),
     BATCH (run batches) and Analysis (AOC/AOS) dimensions -- KB MM_RESULT,
     MM_DIMSIZE, MM_BATCHINDEX and AOC/AOS articles."""

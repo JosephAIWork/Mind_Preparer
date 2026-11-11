@@ -1,33 +1,33 @@
-"""Outside input files -- a workbook whose macros open other files and paste their data in.
+"""Outside  input files  -- a workbook whose macros open other files and paste their data in.
 
 Mind runs no VBA and opens no outside file, so data a macro pulls in from other workbooks
-must reach Mind another way. This module, for any workbook and any language:
+must reach  Mind another way. This module, for any workbook and any language:
 
-1. reads the VBA for the calls that open outside files (`Workbooks.Open`, `OpenText`,
-   `Open ... For Input`, `QueryTables.Add`, `GetObject`) and picks the macro that does the
-   import (the procedure without parameters closest to the opening call: in the Tokyo IFRS 17
+1.  reads the VBA for the calls  that open outside files (`Workbooks.Open`, `OpenText`,
+   `Open ...  For Input`, `QueryTables.Add`, `GetObject`) and picks the macro that does the
+   import  (the procedure without parameters closest to the  opening call: in the Tokyo IFRS 17
    tool `calcCF`, which `OneScenarioRun` calls);
 2. finds the cells that hold the files' paths (a formula that builds a name ending in .xlsm,
    .xlsx, .csv ... or a typed path) -- the import table -- with, for each row, the cells its
-   path formula reads on the same row (the row's key, e.g. "BBA_01") and the sheet it fills;
+   path formula reads on the same row (the row's key, e.g. "BBA_01") and the sheet it  fills;
 3. matches the files the user picked to those rows (exact name first, else the row's key as a
    whole word of the file name; Unicode NFKC + case-folding, so full-width （） and Japanese
    names compare as Excel shows them);
 4. runs the workbook's OWN import macro on a throw-away copy, in an Excel of its own
    (DispatchEx: never the user's Excel), each path cell pointing at the picked file, and
-   watches it through Excel's events: which file it opens and which cells it writes while that
-   file is open -- the file's import area. Message boxes are answered and reported. Values
-   therefore arrive exactly as the client's own tool puts them (no re-implementation of
+   watches it through Excel's events: which file it opens and which cells it writes while  that
+   file is open -- the  file's import area. Message boxes are answered  and reported. Values
+   therefore  arrive exactly  as the client's own tool puts them (no re-implementation of
    the macro, no openpyxl round trip: openpyxl and Excel parse some decimals 1 ulp apart);
-5. makes each import area a Mind input: a sheet IN_<name> with a `#IN_<name> /Input` grid
-   holding the data, the formulas that read the area pointed at that grid (same shape, so
-   every value stays the same), the old area cleared, and one CSV per grid that Mind's Input
-   Manager matches by name (proven in real Mind 2026-11-08: grid `#CF_Test /Input`, CSV
+5. makes each import area a Mind input:  a sheet IN_<name> with a `#IN_<name> /Input` grid
+   holding the data, the  formulas that read the area pointed  at that grid (same shape, so
+   every value  stays the same), the old area cleared, and one CSV per  grid that Mind's Input
+   Manager matches by name  (proven in real Mind 2026-11-08: grid `#CF_Test /Input`, CSV
    `CF_Test.csv` with Japanese headers, matched, used by the next run). Each quarter the Mind
    team imports new CSVs instead of uploading the model again.
 
 An area whose readers cannot all be pointed at the new grid (a range that only partly
-covers it, OFFSET from inside it, a whole-column reference across it, a name or an array
+covers it, OFFSET from inside it, a whole-column reference across it, a name or an  array
 formula over part of it) stays where it is, inside the model, and is reported.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ FILE_NAME_RE = re.compile(rf"\.(?:{_EXT})$", re.IGNORECASE)
 PATH_LITERAL_RE = re.compile(rf'"[^"]*\.(?:{_EXT})"', re.IGNORECASE)
 INPUT_FILE_EXTENSIONS = {"." + e for e in FILE_EXTENSIONS}
 
-# --- 1. VBA ----------------------------------------------------------------------------------------
+# ---  1. VBA  ----------------------------------------------------------------------------------------
 IMPORT_CALLS: tuple[tuple[str, re.Pattern], ...] = (
     ("Workbooks.Open", re.compile(r"\bWorkbooks\s*\.\s*Open\b", re.IGNORECASE)),
     ("Workbooks.OpenText", re.compile(r"\bWorkbooks\s*\.\s*OpenText\b", re.IGNORECASE)),
@@ -61,7 +61,7 @@ IMPORT_CALLS: tuple[tuple[str, re.Pattern], ...] = (
     ("QueryTables.Add", re.compile(r"\bQueryTables\s*\.\s*Add\b", re.IGNORECASE)),
     ("GetObject", re.compile(r"\bGetObject\s*\(", re.IGNORECASE)),
 )
-# names in any alphabet (a Japanese Sub name is still a Sub)
+# names  in any  alphabet (a Japanese Sub name is still a Sub)
 _PROC_RE = re.compile(r"^\s*(?:(?:Public|Private|Friend)\s+)?(?:Static\s+)?(Sub|Function|Property\s+(?:Get|Let|Set))\s+([^\W\d]\w*)\s*\((.*)\)", re.IGNORECASE)
 _END_PROC_RE = re.compile(r"^\s*End\s+(?:Sub|Function|Property)\b", re.IGNORECASE)
 _MSGBOX_RE = re.compile(r"\b(?:MsgBox|InputBox)\b", re.IGNORECASE)
@@ -85,9 +85,9 @@ def _mask_vba_strings(line: str) -> str:
 
 
 def vba_procedures(modules: Iterable[tuple[str, str]]) -> dict[str, dict[str, Any]]:
-    """{key: {name, module, kind, params, lines}} for every Sub/Function/Property (comments dropped,
+    """{key:  {name, module,  kind, params, lines}} for every Sub/Function/Property (comments dropped,
     ` _` continuations joined). Names in any alphabet. The key is the name, or `Module.Name` when
-    another module has a procedure of the same name (CommandButton1_Click on two sheets): that is
+    another module has a procedure of the same name  (CommandButton1_Click on two sheets): that is
     also how Application.Run reaches it."""
     procs: dict[str, dict[str, Any]] = {}
     for module, code in modules:
@@ -117,12 +117,12 @@ def vba_procedures(modules: Iterable[tuple[str, str]]) -> dict[str, dict[str, An
 
 
 def scan_vba(modules: Iterable[tuple[str, str]]) -> dict[str, Any]:
-    """What the macros open, and which macro runs the import.
+    """What  the macros  open, and which macro runs the import.
 
     {"imports": [{procedure, module, call, line}], "import_macro": name | None,
      "chain": [names from the import macro down to the opening procedure],
      "procedures": {name: {calls, opens, params, msgbox, yes_no}},
-     "messages": [{procedure, line}] -- every MsgBox/InputBox line as the source writes it}"""
+     "messages":  [{procedure, line}] -- every MsgBox/InputBox line as the source writes it}"""
     modules = list(modules)
     procs = vba_procedures(modules)
     module_alt = "|".join(re.escape(m) for m, _c in modules if m) or "(?!)"
@@ -146,7 +146,7 @@ def scan_vba(modules: Iterable[tuple[str, str]]) -> dict[str, Any]:
         body = "\n".join(masked)
         calls_set: set[str] = set()
         for bare, keys in by_bare.items():
-            # `Name`, `Call Name(...)` or `Module.Name` (a call through its module)
+            # `Name`,  `Call Name(...)` or `Module.Name` (a call  through its module)
             if not re.search(rf"(?<![\w.])(?:(?:{module_alt})\.)?{re.escape(bare)}(?!\w)", body):
                 continue
             targets = [k for k in keys if k != name]
@@ -168,7 +168,7 @@ def scan_vba(modules: Iterable[tuple[str, str]]) -> dict[str, Any]:
     for name, i in info.items():
         if i["kind"] != "sub" or i["params"]:
             continue
-        # breadth-first down the calls to the nearest opening procedure
+        # breadth-first down the calls to  the nearest opening procedure
         seen, frontier, parent = {name}, [name], {name: None}
         found = name if name in openers else None
         depth = 0
@@ -205,12 +205,12 @@ def scan_vba(modules: Iterable[tuple[str, str]]) -> dict[str, Any]:
 
 # --- 2. the import table ---------------------------------------------------------------------------
 def normalize_name(name: str) -> str:
-    """How two file names compare: Unicode NFKC (full-width （１） = (1)), case-folded, trimmed."""
+    """How  two file  names compare: Unicode NFKC (full-width （１） = (1)), case-folded, trimmed."""
     return unicodedata.normalize("NFKC", str(name or "")).casefold().strip()
 
 
 def _split_concat(expr: str) -> list[str]:
-    """Top-level operands of `a & b & c` (quotes and parentheses respected)."""
+    """Top-level  operands of  `a & b & c` (quotes and parentheses respected)."""
     out, cur, depth, in_q = [], [], 0, False
     i = 0
     while i < len(expr):
@@ -249,7 +249,7 @@ def _literal(op: str) -> str | None:
 
 
 def file_name_tail(formula: str) -> str | None:
-    """The part of a path formula that builds the FILE NAME: everything after its last "\\"
+    """The  part of  a path formula that builds the FILE NAME: everything after its last "\\"
     (or "/"). `=Folder&"\\"&IF(..)&"_"&D35&".xlsm"` -> `IF(..)&"_"&D35&".xlsm"`. None when the
     formula has no folder separator to cut at."""
     body = formula[1:] if formula.startswith("=") else formula
@@ -267,7 +267,7 @@ def file_name_tail(formula: str) -> str | None:
 
 
 def _same_row_refs(formula: str, sheet: str, row: int) -> list[tuple[str, int, int]]:
-    """Single cells on `row` of `sheet` that the formula reads (the row's key cells)."""
+    """Single  cells on  `row` of `sheet` that the formula reads (the row's key cells)."""
     out = []
     for x in _refs(formula, sheet):
         if x["external"] or x["three_d"] or normalize_name(x["sheet"]) != normalize_name(sheet):
@@ -279,7 +279,7 @@ def _same_row_refs(formula: str, sheet: str, row: int) -> list[tuple[str, int, i
 
 
 def _builds_file_name(formula: str) -> bool:
-    """Whether a formula BUILDS a file name: a text with a name or a folder before the extension
+    """Whether  a formula  BUILDS a file name: a text with a name or a folder before the extension
     ("data.csv", "C:\\x\\a.xlsm"), or the extension joined on with & (&".xlsm") -- not a check such as
     RIGHT(H35,5)=".xlsm"."""
     for m in re.finditer(rf'"([^"]*)\.(?:{_EXT})"', formula, re.IGNORECASE):
@@ -291,12 +291,12 @@ def _builds_file_name(formula: str) -> bool:
 
 
 def find_import_table(cells: Iterable[dict[str, Any]], value_of: Callable[[str, int, int], Any], sheet_names: Iterable[str]) -> list[dict[str, Any]]:
-    """The cells that hold an outside file's path, one dict per cell:
+    """The  cells that  hold an outside file's path, one dict per cell:
     {sheet, cell, row, col, formula, cached, expected (exact name when known), tail (formula text
-    that builds the name), keys (values of the same-row cells the formula reads), target_sheet}.
+    that builds the name), keys (values of the same-row cells  the formula reads), target_sheet}.
 
-    `cells`: {sheet, cell, formula} for formula cells and {sheet, cell, value} for typed text.
-    `value_of(sheet, row, col)`: the value Excel last stored there."""
+    `cells`: {sheet, cell, formula} for formula cells and  {sheet, cell, value} for typed text.
+    `value_of(sheet,  row, col)`: the value Excel last stored  there."""
     sheets = {normalize_name(s): s for s in sheet_names}
     rows: list[dict[str, Any]] = []
     for c in cells:
@@ -313,7 +313,7 @@ def find_import_table(cells: Iterable[dict[str, Any]], value_of: Callable[[str, 
             continue
         cached = value_of(c["sheet"], row, col) if formula else value
         if formula and isinstance(cached, str) and cached.strip() and not cached.startswith("#") and not FILE_NAME_RE.search(cached.strip()):
-            continue  # it computes something else ("OK" / "NG" of a check on a path)
+            continue  # it computes something else ("OK" / "NG" of a check on  a path)
         expected = None
         if isinstance(cached, str) and FILE_NAME_RE.search(cached.strip()):
             expected = re.split(r"[\\/]", cached.strip())[-1]
@@ -336,7 +336,7 @@ def find_import_table(cells: Iterable[dict[str, Any]], value_of: Callable[[str, 
 
 
 def import_table_from_analysis(analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    """find_import_table over a scan's analysis (formula cells, plus typed paths)."""
+    """find_import_table  over a  scan's analysis (formula cells, plus typed paths)."""
     from .inventory import open_cached, values_cell
 
     wb_entry = analysis["workbooks"][0]
@@ -371,11 +371,11 @@ def _key_in_name(key: str, name: str) -> bool:
 
 
 def match_files(table: list[dict[str, Any]], uploaded: Iterable[str]) -> dict[str, Any]:
-    """Which picked file goes with which import-table row.
+    """Which  picked file  goes with which import-table row.
 
     {"rows": [row + {"file": name | None, "how": "exact" | "key" | None, "candidates": [...]}],
      "matched": n, "missing": [rows without a file], "extra": [files no row wants],
-     "ambiguous": [files that fit several rows, left for the user to place]}"""
+     "ambiguous": [files  that fit several rows, left for the user to place]}"""
     files = list(dict.fromkeys(uploaded))
     by_norm = {normalize_name(f): f for f in files}
     used: set[str] = set()
@@ -395,7 +395,7 @@ def match_files(table: list[dict[str, Any]], uploaded: Iterable[str]) -> dict[st
             if len(cands) == 1:
                 row.update({"file": cands[0], "how": "key"})
         out_rows.append(row)
-    # a file claimed by two rows: keep the exact claim, else leave both open
+    # a file  claimed by two rows: keep the  exact claim, else leave both open
     claims: dict[str, list[dict[str, Any]]] = {}
     for row in out_rows:
         if row["file"]:
@@ -419,7 +419,7 @@ def match_files(table: list[dict[str, Any]], uploaded: Iterable[str]) -> dict[st
 
 
 def describe_match(match: dict[str, Any]) -> str:
-    """One plain sentence: '6 of 6 files matched' / '5 of 6 matched; missing: ...; not used: ...'."""
+    """One  plain sentence:  '6 of 6 files matched' / '5 of 6 matched; missing: ...; not used: ...'."""
     n = len(match["rows"])
     parts = [f"{match['matched']} of {n} input files matched"]
     if match["missing"]:
@@ -435,7 +435,7 @@ xlCalculationManual = -4135
 
 
 class _Events:
-    """Application events of the import Excel (WithEvents on a DispatchEx object)."""
+    """Application  events of  the import Excel (WithEvents on a DispatchEx object)."""
 
     log: list[tuple]
 
@@ -465,10 +465,10 @@ class _Events:
 
 
 def repair_dialog_text(text: str) -> str:
-    """A VBA MsgBox goes through the ANSI window functions: on a machine whose system code page is
+    """A  VBA MsgBox  goes through the ANSI window functions: on a machine whose system code page is
     not the macro's (a Japanese tool on a Hebrew Windows) its text arrives garbled. Undo that when
-    it can be undone: re-encode with the system code page, decode with an East Asian one. Bytes the
-    system code page cannot hold are lost: compare with source_of_message."""
+    it can  be undone: re-encode with the system code page, decode with an  East Asian one. Bytes the
+    system code  page cannot hold are lost: compare with  source_of_message."""
     if not text or text.isascii():
         return text
     try:
@@ -476,8 +476,8 @@ def repair_dialog_text(text: str) -> str:
         import ctypes
 
         acp = int(ctypes.windll.kernel32.GetACP())
-        # Windows' own conversion back to bytes: the bytes the code page leaves undefined came in as
-        # U+0081 / U+F88E ...; Python's cp1255 codec refuses those, Windows maps them back exactly
+        # Windows' own conversion back to bytes: the bytes the code page  leaves undefined came in as
+        # U+0081 / U+F88E  ...; Python's cp1255 codec refuses those, Windows maps them back exactly
         raw = codecs.code_page_encode(acp, text, "strict")[0]
     except Exception:
         return text
@@ -501,7 +501,7 @@ def repair_dialog_text(text: str) -> str:
         cjk = sum(1 for ch in cand if "\u3040" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7af")
         if not cjk:
             continue
-        # a reading that is valid all through beats one with holes; then the script that only that
+        # a reading that is valid all through beats one with holes; then the  script that only that
         # code page has (kana for Japanese, Hangul for Korean: GBK reads Shift-JIS bytes as Chinese
         # without a single hole); then the most East Asian characters
         # (Korean read from Japanese bytes is all Hangul without a hole too: any kana in a hole-free
@@ -516,7 +516,7 @@ def repair_dialog_text(text: str) -> str:
 
 
 def source_of_message(text: str, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The MsgBox line of the VBA that most likely showed `text` (its string pieces found in it)."""
+    """The  MsgBox line  of the VBA that most likely showed `text` (its string pieces found in it)."""
     best, best_n = None, 0
     for m in messages or []:
         pieces = [x for x in re.findall(r'"([^"]*)"', m.get("line", "")) if len(x) >= 2]
@@ -527,7 +527,7 @@ def source_of_message(text: str, messages: list[dict[str, Any]]) -> dict[str, An
 
 
 def _dialog_watch(pid: int, stop: threading.Event, found: list[dict[str, Any]], deadline: float, on_timeout: Callable[[], None]) -> None:
-    """Answer the message boxes of Excel `pid` (a VBA MsgBox waits forever in a hidden Excel):
+    """Answer  the message  boxes of Excel `pid` (a VBA MsgBox waits forever in a hidden Excel):
     record the text, press OK -- or No / Cancel on a question, so nothing goes ahead unasked."""
     try:
         import win32api
@@ -580,8 +580,8 @@ def _dialog_watch(pid: int, stop: threading.Event, found: list[dict[str, Any]], 
             seen.add(h)
             parts = texts(h)
             message = " ".join(p.split(":", 1)[1] for p in parts if p.startswith("Static:")).strip()
-            # the buttons by their control id, the same in every language:
-            # IDOK 1, IDCANCEL 2, IDABORT 3, IDRETRY 4, IDIGNORE 5, IDYES 6, IDNO 7
+            # the buttons  by their control id, the same in every language:
+            # IDOK 1, IDCANCEL  2, IDABORT 3, IDRETRY 4, IDIGNORE  5, IDYES 6, IDNO 7
             btns: dict[int, tuple[int, str]] = {}
 
             def btn(hh, _):
@@ -596,7 +596,7 @@ def _dialog_watch(pid: int, stop: threading.Event, found: list[dict[str, Any]], 
                 win32gui.EnumChildWindows(h, btn, None)
             except Exception:
                 pass
-            # one button: press it; a question: No, else Cancel -- nothing goes ahead unasked
+            # one button: press  it; a question: No, else Cancel -- nothing goes ahead unasked
             pick = next(iter(btns)) if len(btns) == 1 else next((i for i in (7, 2, 3, 1) if i in btns), None)
             found.append({"title": win32gui.GetWindowText(h), "message": message,
                           "buttons": [t for _hh, t in btns.values()],
@@ -637,7 +637,7 @@ def _xl_file_format(path: Path) -> int:
 
 
 def _new_excel(macros: bool):
-    """A hidden Excel of our own -- DispatchEx always starts a new process (Dispatch could
+    """A  hidden Excel  of our own -- DispatchEx always starts a new process (Dispatch could
     attach to the user's open Excel)."""
     import win32com.client
     import win32process
@@ -695,22 +695,22 @@ def _pid_alive(pid: int) -> bool:
 def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path], macro: str, out_path: Path,
                work_dir: Path, timeout_s: int = 900, progress: ProgressFn | None = None,
                messages: list[dict[str, Any]] | None = None, restore_rows: Iterable[str] | None = None) -> dict[str, Any]:
-    """Run the workbook's own import macro on a copy with the picked files, watch it, save
+    """Run  the workbook's  own import macro on a copy with the picked files, watch it, save
     the result to `out_path` (path cells restored to their formulas).
 
-    rows: the import table (match_files rows); files: {row "sheet!cell": picked file path}.
-    Rows without a file keep the workbook's own data (the macro clears their area and writes
-    "file not found"; both are put back from the upload).
+    rows: the import table (match_files rows); files: {row "sheet!cell": picked  file path}.
+    Rows without a file keep the workbook's own data (the  macro clears their area and writes
+    "file  not found"; both are put back from  the upload).
 
-    messages: scan_vba(...)["messages"] -- to show a message box's text as the VBA source writes it.
+    messages: scan_vba(...)["messages"] -- to show a message box's text as  the VBA source writes it.
 
-    restore_rows: rows ("sheet!cell") whose import-table row gets the upload's own content back after
+    restore_rows: rows ("sheet!cell")  whose import-table row gets the upload's own content back after
     the run, as for a missing file: a stand-in file (app/stand_in_inputs.py) is not a real import, so
     the macro's own bookkeeping there (the time of the import, "file not found") stays as it was.
 
     Returns {ok, macro, seconds, files: [{cell, file, expected, exact, opened, areas, cleared}],
     kept: [...], dialogs: [{title, message, message_repaired, source, buttons, pressed}],
-    stopped_early, error, saved}. ok: no error, no early stop, every picked file opened and written."""
+    stopped_early,  error, saved}. ok: no error, no early stop, every picked file opened and written."""
     import pythoncom
     import win32com.client
 
@@ -786,7 +786,7 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
         report["seconds"] = round(time.time() - t0, 1)
         stop.set()
         if report.get("run_exception") and not found:
-            # no message box explains the stop: the macro itself failed
+            # no message  box explains the stop: the  macro itself failed
             report["error"] = "The workbook's import macro stopped with an error: " + report["run_exception"]
         for d in found:
             d["message_repaired"] = repair_dialog_text(d.get("message") or "")
@@ -797,7 +797,7 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
         if timed_out["v"]:
             report["error"] = f"the import macro ran longer than {timeout_s} s and was stopped"
             return report
-        # --- what happened, file by file
+        # --- what happened, file by  file
         files_by_name = {normalize_name(Path(e["file"]).name): e for e in report["files"] if e["file"]}
         seen = analyse_events(ev.log, wb.Name, set(files_by_name))
         for nname, info in seen["files"].items():
@@ -805,7 +805,7 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
             e["opened"] = True
             e["areas"] = info["areas"]
             e["cleared"] = info["cleared"]
-        # a box with one button is information ("完了しました"): pressing it changes nothing (its OK
+        # a box with  one button  is information ("完了しました"): pressing it changes nothing (its OK
         # button carries id 2 in an MB_OK box); a question answered No / Cancel / Abort is an early stop
         report["stopped_early"] = any(e["file"] and not e["opened"] for e in report["files"]) or any(
             len(d.get("buttons") or []) > 1 and d.get("pressed_id") in (2, 3, 7) for d in found)
@@ -814,8 +814,8 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
         if picked and not any(e["opened"] for e in picked) and wrote and not report["error"]:
             report["error"] = ("The macro read the files without opening them as workbooks (Open ... For Input, a query table ...): "
                                "the app cannot yet tell which data came from which file.")
-        # --- put back what must not change: the path formulas; for a file nobody picked, the
-        # row of the import table (status cell) and the area the macro cleared get the upload's own content
+        # --- put back what  must not change: the path formulas; for a file nobody picked,  the
+        # row of the import table (status  cell) and the area the macro cleared  get the upload's own content
         for e in report["files"]:
             ws, _row = row_cells[e["cell"]]
             ws.Range(e["cell"].split("!", 1)[1]).Formula = originals[e["cell"]]
@@ -870,15 +870,15 @@ def run_import(workbook: Path, rows: list[dict[str, Any]], files: dict[str, Path
 
 
 def analyse_events(log: list[tuple], book: str, file_names: set[str]) -> dict[str, Any]:
-    """Read the macro's run from its event log.
+    """Read  the macro's  run from its event log.
 
     log items: ("open", full name) / ("close", full name) / ("change", book, sheet, address).
     file_names: the picked files (normalize_name of the file name).
 
-    Returns {"files": {name: {"areas": [...], "cleared": [...]}}, "orphans": [(sheet, rect)]}:
-    a file's areas are the ranges written while it was open, joined with the range the macro
-    cleared just before opening it on the same sheet (its whole input area, even when this
-    file fills less of it); an orphan is a range cleared for no opened file (a file not picked)."""
+    Returns {"files": {name: {"areas": [...], "cleared":  [...]}}, "orphans": [(sheet, rect)]}:
+    a file's areas are the ranges written while  it was open, joined with the  range the macro
+    cleared just before opening it  on the same sheet (its whole input area, even when this
+    file  fills less of it); an orphan is  a range cleared for no opened file (a file not picked)."""
     windows: list[dict[str, Any]] = []  # one per opened picked file, in order
     outside: list[tuple[int, str, tuple[int, int, int, int]]] = []  # (position, sheet, rect) written while no picked file was open
     current: dict[str, Any] | None = None
@@ -931,7 +931,7 @@ def analyse_events(log: list[tuple], book: str, file_names: set[str]) -> dict[st
                     cleared.append({"sheet": sheet, "ref": rect_ref(rect)})
                     used_clears.add(k)
                     break
-        # pieces written in any order (E, C, D) or joined by the cleared range: one area each
+        # pieces written in any order (E, C, D) or joined by the  cleared range: one area each
         merged = True
         while merged:
             merged = False
@@ -959,7 +959,7 @@ def analyse_events(log: list[tuple], book: str, file_names: set[str]) -> dict[st
 
 
 def _restore(src_ws: Any, dst_ws: Any, rect: tuple[int, int, int, int]) -> None:
-    """Put back `rect` from the upload: values exactly (Value2), formulas as their text --
+    """Put  back `rect`  from the upload: values exactly (Value2), formulas as their text --
     never Range.Copy across workbooks (it would turn sheet references into outside links)."""
     ref = rect_ref(rect)
     src = src_ws.Range(ref)
@@ -988,7 +988,7 @@ def _ascii_name(text: str) -> str:
 
 
 def plan_mind_inputs(report: dict[str, Any], sheet_names: Iterable[str]) -> list[dict[str, Any]]:
-    """One Mind input per import area: {name, sheet, ref, r1, c1, r2, c2, rows, cols, file}.
+    """One  Mind input  per import area: {name, sheet, ref, r1, c1, r2, c2, rows, cols, file}.
     Names are `IN_<sheet>` (ASCII, unique; `IN_<sheet>_2` when one sheet holds two areas)."""
     taken = {normalize_name(s) for s in sheet_names}
     out = []
@@ -997,7 +997,7 @@ def plan_mind_inputs(report: dict[str, Any], sheet_names: Iterable[str]) -> list
     for e in report.get("files", []):
         for a in e.get("areas", []):
             key = (normalize_name(a["sheet"]), a["ref"])
-            if key in seen_areas:  # a later file overwrote the same area: its data is what stays
+            if key in seen_areas:  # a later file overwrote the same area: its  data is what stays
                 out[seen_areas[key]]["file"] = e.get("file")
                 continue
             k += 1
@@ -1013,10 +1013,10 @@ def plan_mind_inputs(report: dict[str, Any], sheet_names: Iterable[str]) -> list
 
 
 def _refs(formula: str, own_sheet: str) -> Iterable[dict[str, Any]]:
-    """Every A1 reference of a formula: {start, end, raw, sheet, ref, external, three_d}.
+    """Every  A1 reference  of a formula: {start, end, raw, sheet, ref, external, three_d}.
     external: a reference into another workbook (`[1]Sheet!A1`, `'[Book.xlsx]Sheet'!A1`) -- never
     one of this workbook's areas. three_d: a span of sheets (`Jan:Dec!A1`, `'BBA_04:合計'!A1`) --
-    which sheets it covers depends on the tab order, so it is treated as covering every sheet."""
+    which  sheets it covers depends on the tab order, so it is  treated as covering every sheet."""
     masked = mask_strings(formula, mask_sheet_quotes=False)
     for m in REF_RE.finditer(masked):
         ref = parse_ref(m.group("ref"))
@@ -1051,9 +1051,9 @@ def _intersects(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> b
 
 
 def redirect_formula(formula: str, own_sheet: str, areas: list[dict[str, Any]]) -> tuple[str, int, str | None]:
-    """Point every reference that lies inside an import area at the same cells of its Mind input
+    """Point  every reference  that lies inside an import area at the same cells of its Mind input
     grid. Returns (new formula, references changed, why-not) -- why-not is set when the formula
-    reads an area in a way that cannot be moved (partly covered, whole columns, OFFSET from inside)."""
+    reads an area in a  way that cannot be moved (partly covered, whole columns, OFFSET from  inside)."""
     if not formula or not formula.startswith("="):
         return formula, 0, None
     pieces: list[str] = []
@@ -1074,7 +1074,7 @@ def redirect_formula(formula: str, own_sheet: str, areas: list[dict[str, Any]]) 
                 continue
             if ref["whole_column"] or ref["whole_row"] or not _contains(arect, rect):
                 return formula, 0, f"{r['sheet']}!{r['raw']} covers only part of the import area {a['sheet']}!{a['ref']}"
-            # same cells on the input grid: data starts at row 3, column A of IN_<name>
+            # same cells on the input grid:  data starts at row 3, column A  of IN_<name>
             new_ref = _shift_ref(r["raw"], row_shift=3 - a["r1"], col_shift=1 - a["c1"])
             pieces.append(formula[last:r["start"]])
             pieces.append(f"{_quote_sheet(a['name'])}!{new_ref}")
@@ -1085,7 +1085,7 @@ def redirect_formula(formula: str, own_sheet: str, areas: list[dict[str, Any]]) 
         return formula, 0, None
     pieces.append(formula[last:])
     new = "".join(pieces)
-    # OFFSET from a cell of the area can land outside it: not provable, keep the area
+    # OFFSET from a cell of the area can land outside  it: not provable, keep the area
     for args in find_calls(new, "OFFSET"):
         if args and any(a["name"].lower() + "!" in args[0].lower().replace("'", "") for a in areas):
             return formula, 0, f"OFFSET({args[0]}, ...) may step outside the import area"
@@ -1097,7 +1097,7 @@ _RANGE_ARG_RE = re.compile(r"^(?P<sheet>'(?:[^']|'')+'!|[^\W\d][\w.]*!)?(?P<a>\$
 
 
 def _split_range_cols(arg: str, first: int, last: int, offsets: tuple[int, int]) -> str:
-    """`$AD4:$ABS4` sliced to the columns `offsets` (0-based, relative to the range's first column)."""
+    """`$AD4:$ABS4`  sliced to  the columns `offsets` (0-based, relative to the range's first column)."""
     m = _RANGE_ARG_RE.match(arg.strip())
     a, b = m.group("a"), m.group("b")
     ma = re.fullmatch(r"(\$?)([A-Za-z]{1,3})(\$?)(\d+)", a)
@@ -1109,13 +1109,13 @@ def _split_range_cols(arg: str, first: int, last: int, offsets: tuple[int, int])
 
 
 def split_partial_sums(formula: str, own_sheet: str, areas: list[dict[str, Any]]) -> str | None:
-    """SUMIF / SUMIFS whose ranges run past the side of an import area, split into one call over
+    """SUMIF  / SUMIFS  whose ranges run past the side of an import area, split into one call over
     the columns outside the area plus one over the columns inside it:
-    SUMIF($AD$1:$ABS$1,N$2,$AD4:$ABS4) with the area at AE:ABS ->
+    SUMIF($AD$1:$ABS$1,N$2,$AD4:$ABS4) with the area at AE:ABS  ->
     (SUMIF($AD$1:$AD$1,N$2,$AD4:$AD4)+SUMIF($AE$1:$ABS$1,N$2,$AE4:$ABS4)).
-    A sum over two sets of columns is the sum over each set, so the value is the same (to the
-    last bits of the addition order). Only column splits of ranges that share one shape and whose
-    rows lie inside the area. None when nothing could be split."""
+    A sum over two sets of columns is the sum over  each set, so the value is  the same (to the
+    last bits of the  addition order). Only column splits of ranges that share one shape  and whose
+    rows lie inside the area. None  when nothing could be split."""
     if not formula or not formula.startswith("="):
         return None
     masked = mask_strings(formula, mask_sheet_quotes=False)
@@ -1199,7 +1199,7 @@ def _shift_ref(ref: str, row_shift: int, col_shift: int) -> str:
 
 
 def csv_number(v: float) -> str:
-    """A number as plain decimal text that reads back as exactly the same double
+    """A  number as  plain decimal text that reads back as exactly the same double
     (shortest round-trip digits, never an exponent: 5.5826458e-05 -> 0.000055826458)."""
     if v != v or v in (float("inf"), float("-inf")):
         return ""
@@ -1211,9 +1211,9 @@ def csv_number(v: float) -> str:
 
 
 def write_input_csv(path: Path, header: list[Any], data: list[list[Any]]) -> dict[str, Any]:
-    """The grid as Mind's Input Manager takes it: UTF-8 (no BOM), one header row, then the rows.
+    """The  grid as  Mind's Input Manager takes it: UTF-8 (no BOM), one header row, then the rows.
     Comma-separated `.csv`; when a value holds a comma or a quote, TAB-separated `.txt` instead
-    (Mind reads .txt as TAB by default), so no quoting rule of Mind's is relied on."""
+    (Mind reads .txt as TAB  by default), so no quoting rule of Mind's is relied on."""
     def cell(v: Any) -> str:
         if v is None:
             return ""
@@ -1245,7 +1245,7 @@ def _all_text(values: list[Any]) -> bool:
 
 
 def _partly_covered(formula: str, own_sheet: str, areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The areas a formula reads in a way that cannot be moved: a reference that covers only part of
+    """The  areas a  formula reads in a way that cannot be moved: a reference that covers only part of
     the area (or whole columns / rows across it), or OFFSET starting inside it."""
     out: list[dict[str, Any]] = []
     for r in _refs(formula, own_sheet):
@@ -1271,13 +1271,13 @@ def _partly_covered(formula: str, own_sheet: str, areas: list[dict[str, Any]]) -
 
 
 def plan_rewrites(formulas: list[dict[str, Any]], areas: list[dict[str, Any]], names: Iterable[tuple[str, str]] = ()) -> dict[str, Any]:
-    """Which import areas can move, and the new text of every formula (and defined name) that
+    """Which  import areas  can move, and the new text of every formula (and defined name) that
     reads them. Repeats until stable: an area some reader cannot follow stays in the model, and
-    the formulas are planned again without it (a formula reading a moving and a staying area
-    moves its references to the first only).
+    the formulas are planned  again without it (a formula reading a moving and a staying  area
+    moves its references to the first  only).
 
-    names: (name, refers-to text) pairs. Returns {"areas": movable areas, "kept": [{name, why}],
-    "rewrites": {(sheet, cell): formula}, "names": {name: refers-to}, "readers": {area: n}, "sums_split": n}."""
+    names: (name, refers-to text) pairs. Returns {"areas":  movable areas, "kept": [{name, why}],
+    "rewrites": {(sheet, cell): formula}, "names": {name: refers-to},  "readers": {area: n}, "sums_split": n}."""
     active = [dict(a) for a in areas]
     kept: list[dict[str, Any]] = []
     while True:
@@ -1331,10 +1331,10 @@ def plan_rewrites(formulas: list[dict[str, Any]], areas: list[dict[str, Any]], n
 
 def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iterable[dict[str, Any]],
                       out_path: Path, csv_dir: Path, progress: ProgressFn | None = None) -> dict[str, Any]:
-    """Make each planned import area a Mind input (see the module text). `formulas`: the
+    """Make  each planned  import area a Mind input (see the module text). `formulas`: the
     scan's formula cells {sheet, cell, formula} of `workbook` -- to find the readers.
 
-    Returns {inputs: [{name, sheet, ref, file, rows, cols, csv, separator, readers}],
+    Returns {inputs: [{name, sheet, ref, file, rows, cols, csv,  separator, readers}],
     kept: [{sheet, ref, name, why}], formulas_changed, names_changed, sums_split, saved}."""
     import pythoncom
 
@@ -1359,7 +1359,7 @@ def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iter
             xl.Calculation = xlCalculationManual
         except Exception:
             pass
-        # 1. an area holding error values or formulas cannot become a values-only Mind input
+        # 1. an  area holding error values or formulas  cannot become a values-only Mind input
         movable = []
         for a in areas:
             rng = wb.Worksheets(a["sheet"]).Range(a["ref"])
@@ -1378,7 +1378,7 @@ def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iter
                 result["kept"].append({"sheet": a["sheet"], "ref": a["ref"], "name": a["name"], "why": why})
             else:
                 movable.append(a)
-        # 2. who reads the areas (formulas and defined names), planned until stable
+        # 2.  who reads the areas (formulas and defined names), planned until stable
         names: list[tuple[str, str]] = []
         name_objs: dict[str, Any] = {}
         for nm in list(wb.Names):
@@ -1391,7 +1391,7 @@ def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iter
         result["kept"].extend(plan_r["kept"])
         result["sums_split"] = plan_r["sums_split"]
         keep = plan_r["areas"]
-        # 3. the input sheets
+        # 3.  the input sheets
         for a in keep:
             src = wb.Worksheets(a["sheet"])
             data = src.Range(rect_ref((a["r1"], a["c1"], a["r2"], a["c2"]))).Value2
@@ -1412,7 +1412,7 @@ def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iter
                                      "rows": a["rows"], "cols": a["cols"], "csv": info["path"], "separator": info["separator"],
                                      "readers": plan_r["readers"].get(a["name"], 0), "header_from_workbook": header[:1] != ["C1"],
                                      "text_that_looks_like_numbers": info["text_that_looks_like_numbers"]})
-        # 4. defined names over a moving area
+        # 4. defined names over a  moving area
         for nm, refers in plan_r["names"].items():
             name_objs[nm].RefersTo = refers
             result["names_changed"] += 1
@@ -1466,7 +1466,7 @@ def apply_mind_inputs(workbook: Path, plan: list[dict[str, Any]], formulas: Iter
 
 
 def _reads_area(formula: str, own_sheet: str, area: dict[str, Any], partly: bool = True) -> bool:
-    """Whether any reference of the formula touches the area (fully or partly); a span of sheets
+    """Whether  any reference  of the formula touches the area (fully or partly); a span of sheets
     over the area's cells counts, a reference into another workbook does not."""
     arect = (area["r1"], area["c1"], area["r2"], area["c2"])
     for r in _refs(formula, own_sheet):

@@ -1,16 +1,16 @@
-"""Shapes of a workbook's formulas, for the instance finder (1.12.5).
+"""Shapes  of a  workbook's formulas, for the instance finder (1.12.5).
 
 A formula cell "has the same shape" as another when their R1C1 texts are equal: cells filled down
-or across, or copied to another sheet, share one text. The finder reads repetition on these shapes.
+or across, or copied to another sheet, share  one text. The finder reads repetition on these shapes.
 
-  * `a1_to_r1c1(formula, row, col)`: the A1 text of a cell turned into R1C1 (the inverse of
-    `autofix.r1c1_to_a1`); string literals and structured references are copied verbatim, the
-    `_xlfn.` / `_xll.` storage prefixes are dropped so copies compare equal.
-  * `loose_keys(r1c1)`: three looser keys of one text -- references masked (sheets kept), references
+  * `a1_to_r1c1(formula, row, col)`:  the A1 text of a cell  turned into R1C1 (the inverse of
+    `autofix.r1c1_to_a1`); string  literals and structured references are copied verbatim, the
+    `_xlfn.` / `_xll.` storage  prefixes are dropped so copies compare equal.
+  * `loose_keys(r1c1)`:  three looser keys of one text -- references masked (sheets kept), references
     and sheets masked, typed-in numbers masked too. They sort how two copies differ.
   * `ShapeBook` / `build_book(analysis, budget)`: one shape id per distinct R1C1 text, and per sheet
     the id of every formula cell (by cell, by column, by row). Constants are not stored.
-  * `Budget`: the time budget the finder checks between its steps; a skipped step is written down.
+  * `Budget`: the time budget the finder checks between its steps;  a skipped step is written down.
 
 Pure Python: no Excel, no numpy. Nothing here names a client workbook.
 """
@@ -25,11 +25,11 @@ from .autofix import _REF_RE as R1C1_REF_RE, _SHEET_PREFIX, _STRING_RE, _TABLE_R
 from .formula_utils import STORAGE_PREFIX_RE, col_to_num, num_to_col, parse_ref
 from .inventory import open_cached
 
-# --- A1 -> R1C1 ------------------------------------------------------------------------------
+# ---  A1 ->  R1C1 ------------------------------------------------------------------------------
 # The A1 reference grammar with the FULL sheet-prefix grammar of autofix's R1C1 parser (quoted,
 # plain, external `[1]Sheet!`, 3-D `S1:S3!`). The lookbehind holds `[` and `]` so a column name that
-# looks like a cell inside a structured reference (`Table1[Q1]`) is never converted, and `$` so the
-# engine cannot restart inside `$B$3`. A leading `@` (implicit intersection) is dropped.
+# looks like  a cell inside a structured reference (`Table1[Q1]`) is never converted, and  `$` so the
+# engine cannot restart inside  `$B$3`. A leading `@` (implicit intersection) is  dropped.
 _W = _WORD
 _PFX = _SHEET_PREFIX
 _CELL = r"\$?[A-Za-z]{1,3}\$?\d{1,7}"
@@ -41,7 +41,7 @@ A1_REF_RE = re.compile(
 _CELL_PARTS_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})")
 _COL_PART_RE = re.compile(r"(\$?)([A-Za-z]{1,3})")
 _ROW_PART_RE = re.compile(r"(\$?)(\d{1,7})")
-# what the normaliser copies verbatim: a string literal, or a structured reference `Name[` ... `]`
+# what  the normaliser  copies verbatim: a string literal, or a structured reference `Name[` ... `]`
 _SKIP_RE = re.compile(_STRING_RE.pattern + "|" + _TABLE_RE.pattern)
 _COORD_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d{1,7})$")
 
@@ -52,12 +52,12 @@ def _axis(kind: str, absolute: str, n: int, cur: int) -> str:
     return kind if n == cur else f"{kind}[{n - cur}]"
 
 
-MAX_ROW = 1_048_576  # Excel's last row
-MAX_COL = 16_384  # Excel's last column (XFD)
+MAX_ROW = 1_048_576  # Excel's  last row
+MAX_COL = 16_384  # Excel's  last column  (XFD)
 
 
 class _PastExcel(Exception):
-    """A text that looks like a cell but lies past Excel's last row or column (ABC1234567, XFE1): Excel
+    """A  text that  looks like a cell but lies past Excel's last row or column (ABC1234567, XFE1): Excel
     allows such a text as a defined name, so the normaliser copies it as it is."""
 
 
@@ -96,7 +96,7 @@ def _convert_in_bounds(m: re.Match, row: int, col: int) -> str:
     if _CELL_PARTS_RE.fullmatch(a):
         return f"{sheet}{_cell_endpoint(a, row, col)}:{_cell_endpoint(b, row, col)}"
     mc = _COL_PART_RE.fullmatch(a)
-    if mc:  # whole columns A:A / $F:$F / A:C
+    if mc:  # whole  columns A:A  / $F:$F / A:C
         mb = _COL_PART_RE.fullmatch(b)
         ea = _col_axis(mc.group(1), mc.group(2), col)
         eb = _col_axis(mb.group(1), mb.group(2), col)
@@ -108,10 +108,10 @@ def _convert_in_bounds(m: re.Match, row: int, col: int) -> str:
 
 
 def a1_to_r1c1(formula: str, row: int, col: int) -> str:
-    """The R1C1 text of an A1 formula sitting at (row, col): the inverse of `autofix.r1c1_to_a1`.
+    """The  R1C1 text  of an A1 formula sitting at (row, col): the inverse of `autofix.r1c1_to_a1`.
     Storage prefixes (`_xlfn.`, `_xll.`) are dropped everywhere; string literals, structured
-    references, defined names (also one that looks like a cell past Excel's last row or column),
-    numbers and function names stay as they are."""
+    references, defined names (also one that looks like a cell past  Excel's last row or column),
+    numbers and function names stay as they  are."""
     text = STORAGE_PREFIX_RE.sub("", formula) if "_xl" in formula else formula
 
     def conv(m: re.Match) -> str:
@@ -131,7 +131,7 @@ def a1_to_r1c1(formula: str, row: int, col: int) -> str:
             out.append(m.group(0))
             pos = m.end()
             continue
-        depth = 0  # a structured reference: copy up to the matching `]` (they nest: [[#This Row],[Q1]])
+        depth = 0  # a structured reference: copy up to  the matching `]` (they nest: [[#This Row],[Q1]])
         i = m.end() - 1
         while i < n:
             if text[i] == "[":
@@ -148,7 +148,7 @@ def a1_to_r1c1(formula: str, row: int, col: int) -> str:
     return "".join(out)
 
 
-# --- loose keys --------------------------------------------------------------------------------
+# ---  loose keys --------------------------------------------------------------------------------
 _NUM_RE = re.compile(r"(?<![A-Za-z_\]\[\d.])\d+(?:\.\d+)?(?:E[+-]?\d+)?(?![\d\]])", re.IGNORECASE)
 
 
@@ -164,7 +164,7 @@ def _outside_strings(text: str, fn) -> str:
 
 
 def loose_keys(r1c1: str) -> tuple[str, str, str]:
-    """(references masked but sheets kept, references and sheets masked, + typed-in numbers masked).
+    """(references  masked but  sheets kept, references and sheets masked, + typed-in numbers masked).
     String literals are left alone."""
     k1 = _outside_strings(r1c1, lambda s: R1C1_REF_RE.sub(lambda m: (m.group("sheet") or "") + "@", s))
     k2 = _outside_strings(r1c1, lambda s: R1C1_REF_RE.sub("@", s))
@@ -173,7 +173,7 @@ def loose_keys(r1c1: str) -> tuple[str, str, str]:
 
 
 def number_literals(r1c1: str) -> list[str]:
-    """The typed-in numbers of a formula, in order, outside its string literals and references."""
+    """The  typed-in numbers  of a formula, in order, outside its string literals and references."""
     masked = _outside_strings(r1c1, lambda s: R1C1_REF_RE.sub("@", s))
     out: list[str] = []
     pos = 0
@@ -186,7 +186,7 @@ def number_literals(r1c1: str) -> list[str]:
 
 # --- the time budget ---------------------------------------------------------------------------
 class Budget:
-    """Seconds the finder may spend; checked between steps. A step that is skipped says so in
+    """Seconds  the finder  may spend; checked between steps. A step that is skipped says so in
     `skipped` (plain words), nothing is skipped silently."""
 
     def __init__(self, seconds: float = 120.0) -> None:
@@ -195,7 +195,7 @@ class Budget:
         self.skipped: list[str] = []
 
     def restart(self) -> None:
-        """Start the clock now (after the workbook is open: a reload is reported, not charged)."""
+        """Start the clock now (after the workbook is open: a reload is reported,  not charged)."""
         self.started = time.monotonic()
 
     def elapsed(self) -> float:
@@ -213,13 +213,13 @@ class Budget:
 
 
 # --- the shape book ----------------------------------------------------------------------------
-EMPTY_ID, NUMBER_ID, TEXT_ID = 0, 1, 2  # ids below FIRST_FORMULA_ID are reserved for constants
+EMPTY_ID, NUMBER_ID, TEXT_ID = 0, 1, 2  # ids  below FIRST_FORMULA_ID  are reserved for constants
 FIRST_FORMULA_ID = 10
 
 
 @dataclass
 class SheetShape:
-    """The formula cells of one sheet as shape ids. Bounds are those of the FORMULA cells, not of
+    """The  formula cells  of one sheet as shape ids. Bounds are those of the FORMULA cells, not of
     the used range. `indices` are positions in wb0["formulas"], in the order they were read."""
 
     name: str
@@ -228,7 +228,7 @@ class SheetShape:
     c_lo: int = 0
     c_hi: int = 0
     cells: dict[tuple[int, int], int] = field(default_factory=dict)  # (row, col) -> id
-    cols: dict[int, dict[int, int]] = field(default_factory=dict)  # col -> {row: id}
+    cols: dict[int, dict[int, int]] = field(default_factory=dict)  # col  -> {row: id}
     rows: dict[int, dict[int, int]] = field(default_factory=dict)  # row -> {col: id}
     n: int = 0
     indices: list[int] = field(default_factory=list)
@@ -259,10 +259,10 @@ class SheetShape:
 
 
 class ShapeBook:
-    """Every distinct R1C1 text of the workbook once (`texts[id]`, ids from 10), the formula cells
+    """Every  distinct R1C1  text of the workbook once (`texts[id]`, ids from 10), the formula cells
     of every sheet as ids, and the three loose-key tables. The A1 text of a cell is re-read from the
-    analysis (`a1_text`) when a detector needs it; the workbook itself is opened only on demand
-    (`workbook()`, through the app's cache) for constants."""
+    analysis  (`a1_text`) when a detector needs it; the workbook itself is opened  only on demand
+    (`workbook()`, through the app's  cache) for constants."""
 
     def __init__(self, analysis: dict[str, Any]) -> None:
         self.analysis = analysis
@@ -286,7 +286,7 @@ class ShapeBook:
         return self.loose[level][sid]
 
     def sheets_read(self, sid: int, own: str) -> set[str]:
-        """The other sheets a shape reads (3-D spans expanded along the workbook order)."""
+        """The other sheets a  shape reads (3-D spans expanded along the workbook order)."""
         out: set[str] = set()
         for spec, _a, _b in self.parsed(sid).refs:
             if spec is None:
@@ -299,7 +299,7 @@ class ShapeBook:
                 out.update(self.sheet_order[i:j + 1])
         return out
 
-    # -- A1 texts, by index into the analysis
+    # -- A1 texts,  by index into the analysis
     def index_of(self, sheet: str, row: int, col: int) -> int | None:
         m = self._index.get(sheet)
         if m is None:
@@ -321,7 +321,7 @@ class ShapeBook:
         i = self.index_of(sheet, row, col)
         return None if i is None else self.formulas[i].get("formula")
 
-    # -- the workbook, for constants (opened through the app's cache; None when it cannot be)
+    # -- the workbook,  for constants (opened through the app's cache; None when it cannot be)
     def workbook(self) -> Any:
         if not self._wb_tried:
             self._wb_tried = True
@@ -340,7 +340,7 @@ class ShapeBook:
 
 
 def coord_of(cell: str) -> tuple[int, int] | None:
-    """'B2' -> (2, 2); None for anything else."""
+    """'B2'  -> (2,  2); None for anything else."""
     m = _COORD_RE.match(cell)
     if not m:
         return None
@@ -348,7 +348,7 @@ def coord_of(cell: str) -> tuple[int, int] | None:
 
 
 def range_cells(ref: str) -> list[tuple[int, int]]:
-    """(row, col) of every cell of a literal range (no whole rows/columns), row-major."""
+    """(row,  col) of  every cell of a literal range (no whole rows/columns), row-major."""
     r = parse_ref(ref)
     if not r or r["whole_column"] or r["whole_row"]:
         return []
@@ -356,16 +356,16 @@ def range_cells(ref: str) -> list[tuple[int, int]]:
 
 
 def cell_name(sheet: str, row: int, col: int) -> str:
-    """'Sheet'!A1 as a formula writes it."""
+    """'Sheet'!A1  as a  formula writes it."""
     q = sheet if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", sheet) else "'" + sheet.replace("'", "''") + "'"
     return f"{q}!{num_to_col(col)}{row}"
 
 
 def build_book(analysis: dict[str, Any], budget: Budget | None = None) -> ShapeBook:
-    """One pass over wb0["formulas"]: every formula cell gets the id of its R1C1 text (the same text
-    on any sheet = the same id); an array formula gives its anchor's id to every member cell. The
-    budget is accepted for the finder's bookkeeping; the pass itself always completes (a partial
-    book would mislead every detector)."""
+    """One  pass over  wb0["formulas"]: every formula cell gets the id of its R1C1 text (the same text
+    on any sheet = the same id); an array formula gives its anchor's id to every member cell.  The
+    budget is accepted for the finder's bookkeeping; the pass itself always  completes (a partial
+    book would mislead every  detector)."""
     book = ShapeBook(analysis)
     texts, id_of, sheets = book.texts, book.id_of, book.sheets
     for i, f in enumerate(book.formulas):

@@ -1,10 +1,10 @@
-"""Compare two workbooks cell by cell: every formula (shared formulas expanded) and every value Excel stored.
+"""Compare  two workbooks  cell by cell: every formula (shared formulas expanded) and every value Excel stored.
 
     python scripts/compare_final_workbooks.py <before.xlsm> <after.xlsm> [--out diff.json] [--ignore "Sheet A,Sheet B"]
 
-Made for before/after runs of a speed change, where the final workbooks must be identical. One workbook
-is in memory at a time: the first is reduced to a hash per cell and freed before the second is loaded.
-Prints counts and samples of formula differences, value differences, and cells present in one only.
+Made for before/after runs of a speed change, where the  final workbooks must be identical. One workbook
+is in memory at a  time: the first is reduced to  a hash per cell and freed before  the second is loaded.
+Prints counts and samples of formula differences, value  differences, and cells present in one only.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ NUM_TOL = 1e-9
 def _norm(v):
     if isinstance(v, float):
         return round(v, 9) if abs(v) < 1e15 else v
-    if hasattr(v, "text"):  # ArrayFormula / DataTableFormula
+    if hasattr(v, "text"):  # ArrayFormula  / DataTableFormula
         return f"{type(v).__name__}:{getattr(v, 'ref', '')}:{v.text}"
     return v
 

@@ -1,25 +1,25 @@
-"""Build Mind Ready as a compiled package (Nuitka): a folder with MindReady.exe that needs no Python.
+"""Build  Mind Ready  as a compiled package (Nuitka): a folder with MindReady.exe that needs no Python.
 
     <build venv>\\Scripts\\python.exe tools/package/build.py <out dir> [--onefile]
         [--expires YYYY-MM-DD | --no-expiry] [--contact "Name"]
 
-The build venv holds requirements.txt and nuitka (nothing else, so nothing else is pulled in). Nuitka
-fetches its own C compiler the first time. The result is <out dir>/MindReady/, the folder to zip:
-MindReady.exe plus what the app reads next to it (rules, references, config, settings.yaml, VERSION)
-and the built screens in ui/ (run `npx ng build --configuration production` in MindReadyUI first).
+The build venv holds requirements.txt and nuitka (nothing else,  so nothing else is pulled in). Nuitka
+fetches its own C compiler  the first time. The result is  <out dir>/MindReady/, the folder to zip:
+MindReady.exe plus  what the app reads next to it (rules, references, config, settings.yaml,  VERSION)
+and the built screens in ui/ (run  `npx ng build --configuration production` in MindReadyUI first).
 A second build reuses Nuitka's compile cache and is much shorter.
 
 --onefile makes one file instead, <out dir>/MindReady.exe, to share as a link: it unpacks itself the
 first time it starts (into %LOCALAPPDATA%\\MindReady-program\\<version and build time>, so later
 starts are quick) and reads a settings.yaml placed next to it (mind_ready_app.py).
 
-A copy to share stops working after an end date (docs/SHARING.md, app/expiry.py): --expires is the
+A copy to share stops working after an  end date (docs/SHARING.md, app/expiry.py): --expires is the
 last day it works, local time (by default 15 December 2026), --contact the person its message tells
 to ask for a new copy. Both go into a small file EXPIRY next to VERSION in the package. A copy that
 never stops needs --no-expiry, said explicitly.
 
 The package takes the screens as built in MindReadyUI/dist: build them first (npx ng build in
-MindReadyUI). A copy with an end date is never built from screens made before the end date was added
+MindReadyUI). A copy with an end date is never built from screens made before the end date was  added
 (they could not show it).
 """
 from __future__ import annotations
@@ -38,11 +38,11 @@ UI = APP.parent / "MindReadyUI" / "dist" / "mind-ready-ui" / "browser"
 sys.path.insert(0, str(APP))
 from app.expiry import end_date_text, long_date, parse_day  # noqa: E402  (one format: the app reads what this writes)
 
-# The copies shared from 1.12.4 work through 15 December 2026 (Joseph, 9 November 2026).
+# The  copies shared  from 1.12.4 work through 15 December 2026 (Joseph, 9 November 2026).
 DEFAULT_EXPIRES = "2026-12-15"
-# The selector of the screens' notice for a copy past its end date (MindReadyUI/src/app/core/
+# The  selector of  the screens' notice for a copy past its end date (MindReadyUI/src/app/core/
 # expired-notice.ts). Built screens without it were made before the end date was added: they would
-# show neither "Works until" nor the stopped page, so a copy with a date is never packaged with them.
+# show neither "Works until" nor the stopped  page, so a copy with a date is never packaged with  them.
 END_DATE_NOTICE = "mr-expired-notice"
 START_HERE = """Mind Ready {version}
 
@@ -69,7 +69,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def end_date(args: argparse.Namespace, today: dt.date | None = None) -> dt.date | None:
-    """The copy's last day (None with --no-expiry). A date that is not one, or one already past (the
+    """The  copy's last  day (None with --no-expiry). A date that is not one, or one already past (the
     copy would not even start), stops the build with a message."""
     if args.no_expiry:
         return None
@@ -83,10 +83,10 @@ def end_date(args: argparse.Namespace, today: dt.date | None = None) -> dt.date 
 
 
 def write_expiry_file(folder: Path, last_day: dt.date, contact: str = "", built: str | None = None) -> Path:
-    """The EXPIRY file the package carries next to VERSION (app/expiry.py reads it). It is written in
+    """The  EXPIRY file  the package carries next to VERSION (app/expiry.py reads it). It is written in
     the build folder, never next to the source's VERSION: there it would stop the developer servers.
-    `built` (now, by default) makes this build its own copy for the dates it remembers: a date an
-    older copy saw never stops this one."""
+    `built` (now, by default)  makes this build its own copy for the dates it remembers:  a date an
+    older copy saw never  stops this one."""
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "EXPIRY"
     path.write_text(end_date_text(last_day, contact, built or dt.datetime.now().isoformat(timespec="seconds")), encoding="utf-8")
@@ -94,7 +94,7 @@ def write_expiry_file(folder: Path, last_day: dt.date, contact: str = "", built:
 
 
 def screens_show_end_date(ui: Path) -> bool:
-    """Whether the built screens in `ui` can show a copy's end date: one of their scripts holds the
+    """Whether  the built  screens in `ui` can show a copy's end date: one of their scripts holds the
     notice (Angular cleans the folder at every build, so no older script is left beside them)."""
     for script in ui.glob("*.js"):
         try:
@@ -110,10 +110,10 @@ def nuitka_command(out: Path, version: str, onefile: bool, expiry_file: Path | N
         sys.executable, "-m", "nuitka", str(APP / "mind_ready_app.py"),
         "--standalone", "--assume-yes-for-downloads", "--lto=no",
         f"--output-dir={out}", "--output-filename=MindReady.exe",
-        "--include-package=app",  # the rules engine imports app.validators.<category> by name
+        "--include-package=app",  # the  rules engine  imports app.validators.<category> by name
         "--include-package=uvicorn",  # uvicorn picks its protocol and loop modules by name
         # pywintypes imports win32timezone by name when Excel hands back a date or time (a cell
-        # value, a file's save time): Nuitka cannot see that import (Mind team, 2026-11: "No module
+        # value, a file's save time): Nuitka  cannot see that import (Mind team, 2026-11: "No module
         # named win32timezone")
         "--include-module=win32timezone",
         "--enable-plugin=playwright",
@@ -128,7 +128,7 @@ def nuitka_command(out: Path, version: str, onefile: bool, expiry_file: Path | N
     if expiry_file is not None:
         cmd.append(f"--include-data-files={expiry_file}=EXPIRY")
     if onefile:
-        # unpacked once per build (a rebuild of the same version must not reuse an older unpacking)
+        # unpacked once  per build (a rebuild of the  same version must not reuse an older  unpacking)
         cmd += ["--onefile", f"--onefile-tempdir-spec={{CACHE_DIR}}/MindReady-program/{version}-{time.strftime('%Y%m%d-%H%M')}"]
     return cmd
 
@@ -149,16 +149,16 @@ def main(argv: list[str] | None = None) -> int:
         expiry_file: Path | None = write_expiry_file(data, last_day, args.contact)
     else:
         expiry_file = None
-        (data / "EXPIRY").unlink(missing_ok=True)  # an earlier build's date, so nobody mistakes it for this one's
+        (data / "EXPIRY").unlink(missing_ok=True)  # an  earlier build's  date, so nobody mistakes it for this one's
     until = f"This copy works until {long_date(last_day)}." if last_day else "This copy never stops working (--no-expiry)."
     print(until, flush=True)
     cmd = nuitka_command(out, version, args.onefile, expiry_file)
     print(" ".join(cmd), flush=True)
     # A fresh compiler cache for every build. Zig (Nuitka's C compiler here) caches an object by its C
-    # source, and the files that embed the program's constants and the onefile payload (`#embed
-    # "blobs/..."`) read the same every time: on 2026-11-05 it handed back the previous build's objects,
-    # so the program carried old constants with new code (a segmentation fault at start) and the
-    # onefile exe unpacked the previous version. Costs the compiler's own runtime once per build.
+    # source, and the files that embed the  program's constants and the onefile payload (`#embed
+    # "blobs/..."`) read the same every  time: on 2026-11-05 it handed back  the previous build's objects,
+    # so the program carried  old constants with new code (a segmentation fault at start) and  the
+    # onefile exe unpacked the previous version. Costs  the compiler's own runtime once per build.
     env = dict(os.environ)
     zig = out / "zig-cache"
     if zig.exists():

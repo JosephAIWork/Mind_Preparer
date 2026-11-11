@@ -1,20 +1,20 @@
-"""Context-aware grid names from the Milliman APIM Claude gateway.
+"""Context-aware  grid names  from the Milliman APIM Claude gateway.
 
 Why this exists
 ---------------
 `prep._context_name` reads a name off the cells around a grid. That is
 deterministic and cheap, and it is right whenever the model actually wrote a
-heading next to the block. When it isn't -- a block with no heading, a heading
-that is a whole sentence, a header row of single letters -- it falls back to
-`"<Sheet> <Anchor>"` ("Cashflows C4"), which is unique and useless: Mind shows
-it in the template list and nobody can tell what the grid holds.
+heading  next to the block. When it isn't -- a block with  no heading, a heading
+that is a  whole sentence, a header row of single  letters -- it falls back to
+`"<Sheet> <Anchor>"` ("Cashflows C4"), which is  unique and useless: Mind shows
+it in the  template list and nobody can tell what the grid holds.
 
 This module asks the model to read the same surroundings and propose a short
 name, in ONE batched call for the whole workbook. It is advisory in exactly the
 way every assistant feature of the app is:
 
   * it never writes anything -- it returns names, and the ordinary prep plan
-    (`prep.plan_create_grid_titles`) turns them into reviewable operations the
+    (`prep.plan_create_grid_titles`) turns them into reviewable operations  the
     user approves;
   * every name is sanitised and made unique by the same helpers the
     deterministic path uses, so an odd answer cannot produce an invalid title;
@@ -59,7 +59,7 @@ def _clip(value: Any, limit: int = CELL_TEXT_MAX) -> str:
 
 
 def _shown(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str | None:
-    """The cell as a human reads it: a formula with the value it computed."""
+    """The  cell as  a human reads it: a formula with the value it computed."""
     raw = cell_value(analysis, sheet, row, col)
     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         return None
@@ -71,7 +71,7 @@ def _shown(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str | No
 
 
 def build_grid_context(analysis: dict[str, Any], grid: dict[str, Any]) -> dict[str, Any]:
-    """What surrounds a grid, in the form both the model and the UI can read."""
+    """What  surrounds a  grid, in the form both the model and the UI can read."""
     sheet = grid["sheet"]
     r0, r1 = grid["first_row"], grid["last_row"]
     c0, c1 = grid["first_col"], grid["last_col"]
@@ -153,7 +153,7 @@ def suggest_names(
     batch_size: int = 25,
     completion: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """{available, names: {grid_id: name}, message}. Batched so a whole
+    """{available,  names: {grid_id:  name}, message}. Batched so a whole
     workbook costs a handful of calls; a batch that fails is skipped rather
     than losing the batches that worked."""
     if not contexts:

@@ -1,12 +1,12 @@
-"""Click through the real screens the way a user would, for one workbook:
+"""Click  through the  real screens the way a user would, for one workbook:
 
     upload -> Recalculate -> "Fix all automatically" -> wait -> read the result card
 
     python scripts/ui_autofix_check.py --base http://127.0.0.1:8601 --out <dir> model.xlsm
 
-Needs Playwright (pip install playwright) and a browser: Edge is used when
-Chromium is not installed. Saves a screenshot before and after, and prints
-what the result card says. It checks the *screen*; scripts/run_usecases.py
+Needs Playwright (pip  install playwright) and a browser: Edge is used when
+Chromium is not  installed. Saves a screenshot before and  after, and prints
+what the result card says.  It checks the *screen*; scripts/run_usecases.py
 checks the numbers.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def main() -> int:
         page.goto(args.base, wait_until="networkidle")
         page.set_input_files("input[type=file]", str(args.workbook))
         page.get_by_role("button", name="Run analysis").click()
-        # a workbook above the size limit stops at the sheet choice (scan everything here); the analysis ends on Findings
+        # a  workbook above  the size limit stops at the sheet choice (scan everything here); the analysis ends on Findings
         page.wait_for_function("() => document.body.innerText.includes('Scan everything') || location.pathname.startsWith('/findings')", timeout=10 * minutes)
         if not page.url.rstrip("/").endswith("/findings"):
             page.get_by_role("button", name="Scan everything").click()

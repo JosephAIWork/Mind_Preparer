@@ -5,7 +5,7 @@ export interface ApplyTick {
   text: string;
 }
 
-/** Follows a running Apply through GET .../status (field `apply`) until `stop()` is called. */
+/** Follows  a running  Apply through GET .../status (field `apply`) until `stop()` is called. */
 export function followApply(api: ApiService, sessionId: string, onTick: (t: ApplyTick) => void, everyMs = 600): () => void {
   let live = true;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -16,7 +16,7 @@ export function followApply(api: ApiService, sessionId: string, onTick: (t: Appl
       const a = s.apply;
       if (live && a && a.state === "running") onTick({ fraction: a.fraction ?? null, text: [a.title, a.message].filter(Boolean).join(" · ") });
     } catch {
-      /* keep the last tick */
+      /* keep  the last  tick */
     }
     if (live) timer = setTimeout(tick, everyMs);
   };

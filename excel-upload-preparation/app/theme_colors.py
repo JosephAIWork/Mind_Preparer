@@ -1,19 +1,19 @@
-"""FMT-002 where the colours live: the workbook's style table.
+"""FMT-002  where the  colours live: the workbook's style table.
 
 A cell does not carry a colour. It points at a font and a fill in
 `xl/styles.xml`, and a few hundred fonts and fills serve hundreds of
-thousands of cells. Doing the action "Replace theme colours with explicit
-RGB" through the cells in Excel (read the colour, assign it back) has two
-faults on real models:
+thousands  of cells. Doing the action "Replace theme colours with explicit
+RGB" through  the cells in Excel (read the  colour, assign it back) has two
+faults on  real models:
 
-  * it never finishes its job: when the colour assigned is the one the cell
-    already shows, Excel keeps the theme reference for the default text
+  * it never finishes its job: when the colour assigned is  the one the cell
+    already shows, Excel keeps  the theme reference for the default text
     colour, so the same cells are planned again in every Prep round
     (11,807 -> 11,719 -> 11,720 cells on one sheet of a large model);
   * it is slow where colours are mixed: about 10 COM calls a cell -- an hour
     for one 123,686-cell sheet of another model, with 60 more sheets behind it.
 
-Here every theme colour of the style table's fonts and fills is replaced by
+Here every theme colour of  the style table's fonts and fills is replaced by
 the RGB colour Excel shows for it (theme colour + tint, in Excel's own
 arithmetic: see `tinted`). Same look, nothing depends on the theme any more,
 every sheet at once, in well under a minute. Only `xl/styles.xml` changes inside
@@ -21,7 +21,7 @@ the package; `prep.apply_operations` does this on its fresh copy *before*
 Excel opens it, so the file the user gets is still one Excel wrote.
 
 Not touched: borders, conditional formats (`dxfs`) and rich-text runs --
-FMT-002 looks at a cell's font colour and fill only.
+FMT-002 looks at a cell's font  colour and fill only.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-# SpreadsheetML numbers the theme's colours with the first two pairs swapped:
+# SpreadsheetML  numbers the  theme's colours with the first two pairs swapped:
 # theme="0" is the light background (lt1), theme="1" the dark text (dk1).
 THEME_ORDER = ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink")
 SYSTEM_COLORS = {"windowtext": "000000", "window": "FFFFFF"}
@@ -44,7 +44,7 @@ _ATTR = re.compile(r'([\w:]+)\s*=\s*"([^"]*)"')
 
 
 def theme_palette(theme_xml: str) -> list[str] | None:
-    """The 12 colours of the theme as RRGGBB, in SpreadsheetML's order.
+    """The  12 colours  of the theme as RRGGBB, in SpreadsheetML's order.
     None when the scheme cannot be read (the caller then leaves the workbook alone)."""
     out = []
     for name in THEME_ORDER:
@@ -67,7 +67,7 @@ def theme_palette(theme_xml: str) -> list[str] | None:
     return out
 
 
-HLSMAX = 240  # Windows' HLS scale, which is what Excel computes a tint on
+HLSMAX = 240  # Windows'  HLS scale,  which is what Excel computes a tint on
 RGBMAX = 255
 
 
@@ -123,14 +123,14 @@ def _to_rgb(hue: int, lum: int, sat: int) -> tuple[int, int, int]:
 
 
 def tinted(rgb: str, tint: float) -> str:
-    """A colour with Excel's tint applied (-1 = black ... 0 = unchanged ... 1 = white).
+    """A  colour with  Excel's tint applied (-1 = black ... 0 = unchanged ... 1 = white).
 
     The luminance moves, hue and saturation stay (ECMA-376 18.8.19) -- with
-    Excel's own whole-number arithmetic: HLS on Windows' 0..240 scale, the
-    darkened luminance cut to a whole number, the lightened one built from two
-    parts cut separately. The textbook formula in floating point is 1 or 2
-    off on more than half the shades; this one gave Excel's `Interior.Color`
-    exactly for all 264 colour / tint pairs tried (12 theme colours, 22 tints;
+    Excel's own whole-number arithmetic: HLS on Windows' 0..240  scale, the
+    darkened luminance cut to a whole number, the lightened one  built from two
+    parts cut separately. The  textbook formula in floating point is 1  or 2
+    off on more than half the shades; this one gave  Excel's `Interior.Color`
+    exactly for all 264 colour /  tint pairs tried (12 theme colours, 22 tints;
     a sample is in tests/unit/test_theme_colors.py)."""
     if not tint:
         return rgb.upper()
@@ -143,7 +143,7 @@ def tinted(rgb: str, tint: float) -> str:
 
 
 def explicit_styles(styles_xml: str, palette: list[str]) -> tuple[str, dict[str, int]]:
-    """`xl/styles.xml` with every theme colour of its fonts and fills written
+    """`xl/styles.xml`  with every  theme colour of its fonts and fills written
     as RGB. -> (the new text, {"fonts": n, "fills": n} colours converted).
     Everything else in the text is returned byte for byte."""
     counts = {"fonts": 0, "fills": 0}
@@ -159,7 +159,7 @@ def explicit_styles(styles_xml: str, palette: list[str]) -> tuple[str, dict[str,
                 base = palette[int(attrs["theme"])]
                 tint = float(attrs.get("tint") or 0.0)
             except (ValueError, IndexError):
-                return tag.group(0)  # a theme index this palette does not have: left as it is
+                return tag.group(0)  # a theme index this  palette does not have: left as it is
             counts[kind] += 1
             return f'<{tag.group(1)} rgb="FF{tinted(base, tint)}"/>'
 
@@ -182,10 +182,10 @@ def _theme_part(names: set[str], read: Any) -> str | None:
 
 
 def explicit_theme_colors_in_package(path: Path) -> dict[str, int] | None:
-    """Rewrite `path` (an .xlsx / .xlsm package) with the theme colours of its
+    """Rewrite  `path` (an  .xlsx / .xlsm package) with the theme colours of its
     fonts and fills as RGB. -> {"fonts": n, "fills": n}, or None when the
-    package has no style table / no readable theme (nothing is written then).
-    Only `xl/styles.xml` differs afterwards; the file is replaced in one move."""
+    package has no style table / no readable theme  (nothing is written then).
+    Only `xl/styles.xml` differs afterwards; the file is replaced  in one move."""
     path = Path(path)
     if not zipfile.is_zipfile(path):
         return None
@@ -202,7 +202,7 @@ def explicit_theme_colors_in_package(path: Path) -> dict[str, int] | None:
             return counts
         tmp = path.with_name(path.name + ".styles.tmp")
         try:
-            # The copy is opened and saved again by Excel right after: speed matters here, not size.
+            # The copy is opened  and saved again by Excel right after:  speed matters here, not size.
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zout:
                 for info in zin.infolist():
                     data = new_styles.encode("utf-8") if info.filename == STYLES_PART else zin.read(info.filename)

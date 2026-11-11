@@ -1,10 +1,10 @@
-"""Milliman Mind's MCP server, as an optional extra.
+"""Milliman  Mind's MCP  server, as an optional extra.
 
 Mind exposes its AI Assistant's tools over MCP (https://vm-prod.milliman-mind.com/api/chatbot/mcp, a
-bearer token per user, issued by the Mind team; the one seen lasts 24 h). With a token the app reads a
-project as data: its loops and their sizes, every instance's cell values, the run log, Mind's grid
-cells mapped back to Excel addresses. Without one, nothing here is required: `available()` says why and
-the callers fall back to the browser automation (app/mind_client.py).
+bearer token per user, issued by the Mind team; the one seen lasts 24 h). With a token  the app reads a
+project as data: its loops and their sizes,  every instance's cell values, the run  log, Mind's grid
+cells mapped back to Excel  addresses. Without one, nothing here is required: `available()` says why and
+the  callers fall back to the browser automation  (app/mind_client.py).
 
 Token: env MIND_MCP_TOKEN, else `mind_mcp_token` in the data folder (settings.yaml) (one line; never in the repo).
 The company network re-signs TLS, so the Windows certificate store is used (truststore) when present.
@@ -37,7 +37,7 @@ def read_token() -> str | None:
 
 
 def token_expiry(token: str) -> float | None:
-    """The token's `exp` (epoch seconds), read from its payload without verifying it."""
+    """The  token's `exp`  (epoch seconds), read from its payload without verifying it."""
     try:
         part = token.split(".")[1]
         return float(json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))["exp"])
@@ -46,7 +46,7 @@ def token_expiry(token: str) -> float | None:
 
 
 def available() -> tuple[bool, str]:
-    """(True, "") when a token is present and not expired; else (False, the reason, in plain words)."""
+    """(True,  "") when  a token is present and not expired; else (False, the reason, in plain words)."""
     tok = read_token()
     if not tok:
         return False, f"no Mind MCP token (set {TOKEN_ENV} or write it to {TOKEN_FILE})"
@@ -57,7 +57,7 @@ def available() -> tuple[bool, str]:
 
 
 def project_id_from(link_or_id: str) -> str:
-    """The project GUID from a .../init/<company>/<guid> link, or the GUID itself."""
+    """The  project GUID  from a .../init/<company>/<guid> link, or the GUID itself."""
     m = _INIT_RE.search(link_or_id or "")
     if m:
         return m.group(1)
@@ -76,7 +76,7 @@ def _ssl_context() -> ssl.SSLContext:
 
 
 class MindMcp:
-    """One MCP connection; `open(project)` opens a project session that every tool call then uses.
+    """One  MCP connection;  `open(project)` opens a project session that every tool call then uses.
 
         with MindMcp() as mcp:
             mcp.open("https://shared.milliman-mind.com/init/<company>/<guid>")
@@ -127,8 +127,8 @@ class MindMcp:
 
     # ---- tools ----------------------------------------------------------------------------------
     def call(self, tool: str, **args: Any) -> Any:
-        """Call a tool; the project session is passed for you. Returns the parsed JSON content when the
-        tool answers JSON, else its text."""
+        """Call a tool; the project session  is passed for you. Returns the parsed JSON content when the
+        tool  answers JSON, else its text."""
         if self.session_id and tool not in ("open_project",):
             args.setdefault("sessionId", self.session_id)
         res = self._rpc("tools/call", {"name": tool, "arguments": {k: v for k, v in args.items() if v is not None}})
@@ -171,7 +171,7 @@ class MindMcp:
         self.close()
 
 
-# ---- the tools' answers: a compact text format ("Rows[1]{A,B}:" then indented CSV lines) ----------------
+# ---- the  tools' answers: a compact text format ("Rows[1]{A,B}:"  then indented CSV lines) ----------------
 def _csv(line: str) -> list[str]:
     import csv
 
@@ -196,7 +196,7 @@ def _scalar(v: str) -> Any:
 
 
 def table(text: str, key: str) -> list[dict[str, Any]]:
-    """Rows of a `Key[n]{ColA,ColB}:` block, as dicts."""
+    """Rows  of a  `Key[n]{ColA,ColB}:` block, as dicts."""
     lines = str(text or "").splitlines()
     for i, ln in enumerate(lines):
         m = re.match(rf"^(\s*){re.escape(key)}\[\d+\]\{{([^}}]*)\}}:\s*$", ln)
@@ -214,13 +214,13 @@ def table(text: str, key: str) -> list[dict[str, Any]]:
 
 
 def field(text: str, key: str) -> Any:
-    """A `Key: value` line (the first one)."""
+    """A  `Key: value`  line (the first one)."""
     m = re.search(rf"^\s*{re.escape(key)}:\s*(.*)$", str(text or ""), re.M)
     return _scalar(m.group(1)) if m else None
 
 
 def values(text: str) -> list[dict[str, Any]]:
-    """`Values[n]:` then `- [k]: Dim1,...,Values` lines: the first line names the columns."""
+    """`Values[n]:`  then `-  [k]: Dim1,...,Values` lines: the first line names the columns."""
     lines = str(text or "").splitlines()
     start = next((i for i, ln in enumerate(lines) if re.match(r"^\s*Values\[\d+\]:\s*$", ln)), None)
     if start is None:
@@ -236,7 +236,7 @@ def values(text: str) -> list[dict[str, Any]]:
 
 # ---- 1. the loop as data ------------------------------------------------------------------------------
 def dimensions(mcp: MindMcp) -> list[dict[str, Any]]:
-    """[{Name, Length, IsLoopInstance, HasLabels}] -- empty until the session has a run (start one)."""
+    """[{Name,  Length, IsLoopInstance,  HasLabels}] -- empty until the session has a run (start one)."""
     return table(mcp.call("get_project_structure"), "Dimensions")
 
 
@@ -247,7 +247,7 @@ def first_instance(mcp: MindMcp) -> tuple[int, str]:
 
 
 def cell_instances(mcp: MindMcp, sheet: str, address: str, loop: str | None = None, model: tuple[int, str] | None = None) -> dict[str, Any]:
-    """Every instance's value of one Excel cell, read in Mind: {grid, row, col, values: {index: value}}."""
+    """Every  instance's value  of one Excel cell, read in Mind: {grid, row, col, values: {index: value}}."""
     mi, inst = model or first_instance(mcp)
     r = mcp.call("resolve_excel_address", modelIndex=mi, instanceId=inst, spreadsheetName=sheet, cellAddress=address)
     if field(r, "OutOfGrids"):
@@ -266,14 +266,14 @@ def cell_instances(mcp: MindMcp, sheet: str, address: str, loop: str | None = No
         if isinstance(key, int):
             vals[key] = rec.get("Values")
     if not dimensioned:
-        # a cell without the loop (a constant, a formula not reading the driver): one value for every instance
+        # a cell without the loop (a  constant, a formula not reading the driver): one value for every  instance
         scalar = recs[0].get("Values") if recs else _scalar(str(field(v, "Value") or ""))
     return {"cell": f"{sheet}!{address}", "grid": field(r, "GridName"), "grid_index": g, "row": row, "col": col, "total": field(v, "TotalValuesCount"),
             "dimensioned": dimensioned, "scalar": scalar, "values": vals}
 
 
 def instance_value(cell: dict[str, Any], k: int) -> Any:
-    """Instance k of a cell read by `cell_instances`: its own value, or the single value of a cell the loop does not reach."""
+    """Instance  k of  a cell read by `cell_instances`: its own value, or the single value of a cell the loop does not reach."""
     return cell["values"].get(k) if cell.get("dimensioned") else cell.get("scalar")
 
 
@@ -283,7 +283,7 @@ _UNTITLED_REF = re.compile(r"Untitled\(\d+,\d+\)\((\d+),(\d+)\)")
 
 
 def run(mcp: MindMcp, save: bool = False, timeout_s: int = 1800, poll_s: float = 3.0) -> dict[str, Any]:
-    """Start a classic run of the whole project, wait for it, and return its history row and, on a
+    """Start  a classic  run of the whole project, wait for it, and return its history row and, on a
     failure, the log with every Mind cell it names mapped to its Excel address."""
     opts = mcp.call("get_run_options")
     if field(opts, "RunAllowed") is False:
@@ -310,7 +310,7 @@ def run(mcp: MindMcp, save: bool = False, timeout_s: int = 1800, poll_s: float =
 
 
 def run_errors(mcp: MindMcp, run_id: str) -> dict[str, Any]:
-    """The run log's error lines, with every Mind cell reference turned into its Excel address."""
+    """The  run log's  error lines, with every Mind cell reference turned into its Excel address."""
     if not run_id:
         return {"log": "", "lines": [], "cells": []}
     log = str(mcp.call("get_run_log", runId=run_id))
@@ -340,7 +340,7 @@ def run_errors(mcp: MindMcp, run_id: str) -> dict[str, Any]:
     return {"log": log[-6000:], "lines": lines[:50], "cells": cells}
 
 
-# ---- 1 + 2 together: run, then read the loop and compare with the macro ------------------------------
+# ---- 1 + 2 together: run, then read the loop and compare  with the macro ------------------------------
 def _same(a: Any, b: Any) -> bool:
     import math
 
@@ -358,7 +358,7 @@ def _same(a: Any, b: Any) -> bool:
 
 def check_loop(project: str, source: str | None = None, loop: str | None = None, expected: list[list[Any]] | None = None,
                expect_size: int | None = None, do_run: bool = True, save: bool = False) -> dict[str, Any]:
-    """Open `project`, run it (by default), read the loop's size and every instance of the `source`
+    """Open  `project`, run  it (by default), read the loop's size and every instance of the `source`
     block (Sheet!A1:J1, the cells MM_RESULT reads), compare instance k with the macro's pass k."""
     from .formula_utils import num_to_col, parse_ref
 

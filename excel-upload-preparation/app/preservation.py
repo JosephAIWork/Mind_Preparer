@@ -1,12 +1,12 @@
-"""Package-part comparison: a pure before/after diff of two OOXML zip
+"""Package-part  comparison: a  pure before/after diff of two OOXML zip
 packages. Used by scripts/compare_packages.py. This is inspection only (no
 mutation).
 
 Per instructions/preservation.md, differences should be classified as
 AUTHORIZED_CHANGE / EXPECTED_RECALCULATION_CHANGE / METADATA_CHANGE /
-UNAUTHORIZED_CHANGE / UNVERIFIABLE_CHANGE. This comparison has no change-set
+UNAUTHORIZED_CHANGE / UNVERIFIABLE_CHANGE. This comparison has  no change-set
 context to know what was *authorized*, so every changed/added/removed part
-is reported as UNVERIFIABLE_CHANGE -- an honest default, not a guess.
+is  reported as UNVERIFIABLE_CHANGE -- an honest  default, not a guess.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-# Parts that commonly change on save even with no logical edits (e.g. calc chain,
+# Parts  that commonly  change on save even with no logical edits (e.g. calc chain,
 # last-saved metadata) -- flagged as METADATA_CHANGE rather than UNVERIFIABLE_CHANGE.
 METADATA_PART_PREFIXES = ("docProps/", "xl/calcChain.xml")
 

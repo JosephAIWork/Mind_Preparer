@@ -17,7 +17,7 @@ HOOKS_FOLDER = ".githooks"
 
 
 def install(root: Path) -> str:
-    """Sets core.hooksPath for the clone at `root`; returns one line to  print."""
+    """Sets  core.hooksPath for  the clone at `root`; returns one line to print."""
     hooks = root / HOOKS_FOLDER
     if not (hooks / "pre-commit").is_file():
         return f"no hooks folder at {hooks}, nothing done"

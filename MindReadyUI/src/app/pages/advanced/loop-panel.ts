@@ -8,15 +8,15 @@ import { plainWhy, splitNotes } from "../../core/plain-words";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
 
-/** The box a loop still needs an answer in: the cell for the number of passes, the first value, the last,
- *  or both bounds ("range": the plan knows them but cannot run with them, e.g. the last before the first). */
+/** The  box a  loop still needs an answer in: the cell for the number of passes, the first value, the last,
+ *  or both bounds ("range": the plan knows them but cannot run with them, e.g.  the last before the first). */
 export type LoopAnswerKey = "count_cell" | "first" | "last" | "range";
 
-/** The Mind loop tab: one sentence that says what the macro runs, one button that builds it. The choices
- *  (each loop's own name, runs from / to, a cell for the number of passes; the macro; the two options;
- *  Preview) sit behind the fold "Change the choices"; what gets written behind "What gets written"; the
- *  plan's notes behind "Notes" (Prep's blockers above Build it). A loop that still needs one answer shows
- *  only that box, above the folds. The choices start from the store's (the Instances tab follows them,
+/** The  Mind loop  tab: one sentence that says what the macro runs, one button that builds it. The choices
+ *  (each loop's own name, runs from / to, a cell for the number of passes; the  macro; the two options;
+ *  Preview) sit behind the fold "Change the choices";  what gets written behind "What gets  written"; the
+ *  plan's notes behind "Notes" (Prep's blockers  above Build it). A loop that still needs one answer shows
+ *  only  that box, above the folds. The choices  start from the store's (the Instances tab follows them,
  *  so coming back from it keeps the answers). */
 @Component({
   selector: "mr-loop-panel",
@@ -24,7 +24,7 @@ export type LoopAnswerKey = "count_cell" | "first" | "last" | "range";
   imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule, ShowMeLink],
   templateUrl: "./loop-panel.html",
   styleUrl: "./panels.scss",
-  // the macro dropdown, styled like the panel's text inputs (as the instances panel's key dropdown)
+  // the  macro dropdown,  styled like the panel's text inputs (as the instances panel's key dropdown)
   styles: [
     `.field select { font: inherit; font-size: 0.875rem; color: var(--cds-text-primary, #161616); background: var(--cds-field-01, #f4f4f4); border: 0; border-bottom: 1px solid var(--cds-border-strong-01, #8d8d8d); padding: 0.5rem 0.75rem; min-width: 14rem; }`,
   ],
@@ -33,7 +33,7 @@ export class LoopPanel implements OnInit, OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
 
-  /** each loop's own choices, by driver cell */
+  /** each  loop's own  choices, by driver cell */
   readonly picks = signal<Record<string, LoopChoice>>({});
   /** the macro whose loops are built; empty = the plan's own (the first macro with a loop) */
   readonly macro = signal("");
@@ -52,7 +52,7 @@ export class LoopPanel implements OnInit, OnDestroy {
   readonly writtenOpen = signal(false);
   readonly notesOpen = signal(false);
   readonly whatOpen = signal(false);
-  /** the last build wrote the loop: "Done. Next: Run in Mind" */
+  /** the last build wrote the  loop: "Done. Next: Run in Mind" */
   readonly built = signal(false);
   private stop: (() => void) | null = null;
 
@@ -61,13 +61,13 @@ export class LoopPanel implements OnInit, OnDestroy {
     return !!p && p.found && p.operation_count > 0 && p.loops.some((l) => l.status === "ready");
   });
 
-  /** The loops of the macro this plan builds (another macro's loops are listed in the fold only). */
+  /** The loops of the macro this  plan builds (another macro's loops are  listed in the fold only). */
   readonly ownLoops = computed(() => (this.plan()?.loops ?? []).filter((l) => !l.other_macro));
 
-  /** The loops that still need one answer, each with the box that is missing. */
+  /** The loops that  still need one answer, each with the box that is missing. */
   readonly needsAnswer = computed(() => this.ownLoops().filter((l) => l.status === "needs_decision" && !!l.driver && !!this.missingKey(l)));
 
-  /** One sentence in plain words: what the macro runs, and that Mind can do the same. */
+  /** One  sentence in plain words: what the macro  runs, and that Mind can do the same. */
   readonly sentence = computed(() => {
     const p = this.plan();
     if (!p || !p.found) return "";
@@ -96,7 +96,7 @@ export class LoopPanel implements OnInit, OnDestroy {
   /** How many things the build writes, for the fold's title: every operation (the cleared cells are operations too). */
   readonly writtenCount = computed(() => this.plan()?.operation_count ?? 0);
 
-  /** The plan's own notes: Prep's blockers (shown above Build it) and the rest (behind "Notes"). */
+  /** The plan's own notes: Prep's blockers  (shown above Build it) and the rest (behind "Notes"). */
   readonly notes = computed(() => splitNotes(this.plan()?.notes));
 
   ngOnInit(): void {
@@ -152,14 +152,14 @@ export class LoopPanel implements OnInit, OnDestroy {
     this.picks.update((all) => ({ ...all, [driver]: { ...all[driver], [key]: v } }));
   }
 
-  /** the box for the number of passes shows when the loop asks for one, or one was typed */
+  /** the box for the number of passes shows when  the loop asks for one,  or one was typed */
   wantsCount(l: LoopPlanLoop): boolean {
     return /count cell/i.test(l.why ?? "") || !!this.pick(l, "count_cell") || !!l.suggested_count_cell;
   }
 
-  /** The one box a loop that needs an answer is missing: the cell for the number of passes when its
+  /** The one box a  loop that needs  an answer  is missing: the cell for the number of passes when its
    *  why asks for one, else the first or the last value the plan does not know; "range" (both bounds)
-   *  when the plan knows them and still cannot run (the last before the first, a bound it cannot use). */
+   *  when the plan  knows them and still cannot run (the last before the first,  a bound it cannot use). */
   missingKey(l: LoopPlanLoop): LoopAnswerKey | null {
     if (l.status !== "needs_decision") return null;
     if (/count cell/i.test(l.why ?? "") || l.suggested_count_cell) return "count_cell";
@@ -168,7 +168,7 @@ export class LoopPanel implements OnInit, OnDestroy {
     return "range";
   }
 
-  /** The missing box's label: the loop's own why, in plain words, else what the box is for. */
+  /** The missing  box's label: the loop's own why, in  plain words, else what the box is for. */
   answerLabel(l: LoopPlanLoop): string {
     const key = this.missingKey(l);
     const why = this.plainWhy(l.why ?? "");
@@ -176,14 +176,14 @@ export class LoopPanel implements OnInit, OnDestroy {
     return key === "count_cell" ? `${l.name}: a cell for the number of passes` : key === "first" ? `${l.name} runs from` : key === "range" ? `${l.name} runs from / to` : `${l.name} runs to`;
   }
 
-  /** The missing box's greyed-in words. */
+  /** The missing box's greyed-in  words. */
   answerPlaceholder(l: LoopPlanLoop): string {
     const key = this.missingKey(l);
     if (key === "count_cell") return l.suggested_count_cell || "Sheet!A1 (an empty cell)";
     return "a number, or a cell (Sheet!A1)";
   }
 
-  /** The plan's why with its jargon said plainly (core/plain-words). */
+  /** The plan's why with its jargon said  plainly (core/plain-words). */
   plainWhy(why: string): string {
     return plainWhy(why);
   }
@@ -274,7 +274,7 @@ export class LoopPanel implements OnInit, OnDestroy {
     return status === "ready" ? "chip chip--ok" : status === "needs_decision" ? "chip chip--warn" : status === "nothing_to_do" ? "chip" : "chip chip--error";
   }
 
-  /** The status in plain words: "left as is" is not an error, the model keeps what it has there. */
+  /** The status in plain words: "left as is" is not an  error, the model keeps what it has there. */
   statusText(status: string): string {
     return status === "ready" ? "ready" : status === "needs_decision" ? "needs one answer" : status === "nothing_to_do" ? "nothing to do" : "left as is";
   }

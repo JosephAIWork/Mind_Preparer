@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifies a workbook recalculates cleanly through the trusted Excel COM
+"""Verifies  a workbook  recalculates cleanly through the trusted Excel COM
 adapter (app/recalc.py) -- same mechanism as recalculate_workbook.py, framed
 as a yes/no check rather than "perform and report". Always works on a fresh
 copy, never the original.

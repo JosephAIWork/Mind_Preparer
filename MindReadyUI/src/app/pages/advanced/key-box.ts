@@ -3,7 +3,7 @@ import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { AssistantKey } from "../../core/models";
 
-/** The AI gateway key: a box to paste it in while none is saved; once saved, its last 4 characters and Replace.
+/** The  AI gateway  key: a box to paste it in while none is saved; once saved, its last 4 characters and Replace.
  *  `onlyWhenMissing` (main screen): nothing at all while a key is saved. */
 @Component({
   selector: "mr-key-box",
@@ -21,7 +21,7 @@ export class KeyBox implements OnInit {
   readonly draft = signal("");
   readonly saving = signal(false);
   readonly error = signal("");
-  /** after a save: what to tell the user (shown even with onlyWhenMissing) */
+  /** after  a save:  what to tell the user (shown even with onlyWhenMissing) */
   readonly done = signal("");
 
   ngOnInit(): void {

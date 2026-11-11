@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Let the app run itself against real Milliman Mind until everything looks
+"""Let  the app  run itself against real Milliman Mind until everything looks
 good and the numbers match (app/mind_loop.py). No person and no assistant is
 in the loop while it runs.
 
     python scripts/run_in_mind.py model.xlsm
-    python scripts/run_in_mind.py model.xlsm --work-dir runs\\model --max-iterations 4
+    python scripts/run_in_mind.py model.xlsm --work-dir runs\\model  --max-iterations 4
     python scripts/run_in_mind.py model.xlsm --no-run          # convert only, no model run
-    python scripts/run_in_mind.py model.xlsm --skip-mind       # local gates only (no browser)
+    python scripts/run_in_mind.py  model.xlsm --skip-mind       # local gates only (no  browser)
     python scripts/run_in_mind.py model.xlsm --enable fix_broken_refs
 
-Needs: Excel (the prep and the numbers gate go through it), a Mind session
-(`python -m app.mind_client check` -> authenticated: true), and the AI key
+Needs: Excel (the  prep and the numbers gate go through it), a Mind session
+(`python  -m app.mind_client check` -> authenticated: true), and  the AI key
 saved in the web app for assistant grid names (optional; deterministic names
 otherwise). Writes <work-dir>/loop_report.json after every iteration.
 Exit code: 0 converged, 1 stuck/exhausted, 2 bad input.

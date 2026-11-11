@@ -1,43 +1,43 @@
-"""Mind instances -- the macro's run loop as one copy of the model per key.
+"""Mind  instances --  the macro's run loop as one copy of the model per key.
 
 A model that runs one policy at a time has a macro that sets a row number, recalculates and adds
-the pass's results to a block (one block per group, product, tariff ...). The Mind loop
-(app.loop_builder) writes that loop as MM_LOOP / MM_RESULT in one workbook. This module writes it
-as Mind *instances*: one copy of the model per value of a key column of the model-point table, a
+the  pass's results to a block (one block per group, product, tariff  ...). The Mind loop
+(app.loop_builder) writes that  loop as MM_LOOP / MM_RESULT in one  workbook. This module writes it
+as Mind *instances*: one copy of the  model per value of a key column  of the model-point table, a
 loop inside each copy over that copy's rows, and a second small MAIN workbook (the one workbook
 Mind never copies) that holds the keys and reads every copy's results. Both files go to one Mind
 project.
 
 What the plan does to the model (a hand-built prototype of the same transformation converted, ran
-and matched the macro's sums by key in a real Mind project on 2026-10-28; this builder's own
+and matched the macro's sums by key in a  real Mind project on 2026-10-28; this builder's own
 output converted and ran there on 2026-10-29, 0 differences from Excel's sums by key):
 - the model-point table (the range the loop driver indexes through INDEX(range, driver, ...))
   becomes a split grid: a key column as its first column holding every row's key, the header
   "Instance key", the title "#<Name> /InstanceSplit" directly above it, an empty row above the
   title (rows and the column are inserted when needed; in each copy Mind keeps the rows whose
-  key is the copy's key). Filled columns touching the table on its left are part of the grid in
-  Mind's eyes, so the key column goes before them too;
+  key is the  copy's key). Filled columns touching  the table on its left are part  of the grid  in
+  Mind's eyes,  so the key column goes before them too;
 - the loop's count cell gets =COUNTA(<the key column>): each copy counts its own rows;
-- a free cell gets the biggest count (the loop size), and the driver cell
-  =MM_LOOPINSTANCE("<loop>", <loop size cell>, <count cell>): 1..count in every copy (plus the
-  header row when the indexed range starts on it, so every pass reads a data row);
-- every formula cell of the block the macro copies out on every pass becomes
+- a free cell gets the biggest count (the loop  size), and the driver cell
+  =MM_LOOPINSTANCE("<loop>", <loop size cell>, <count cell>): 1..count  in every copy (plus the
+  header row  when the indexed range starts on it,  so every pass reads a data row);
+- every formula cell of  the block the macro copies out on  every pass becomes
   =MM_RESULT(<the cell of the calculation sheet it reads>): the sum over the copy's loop, which
   is what the macro's accumulation gave;
 - the macro's paste area is emptied, and a free cell shows the copy's key (MM_INSTANCEKEY).
 
 The main workbook: sheet "Instances" with "#<key> instances /InstanceKeys" (header = the model's
-file name, one row per key), sheet "Summary" with "#Results by <key>" (one row per key, one
+file name, one row per key), sheet "Summary" with "#Results by <key>" (one  row per key, one
 column per row of the output block, MM_INSTANCE by key) and "#All copies" (the whole block as plain
 links to the model, with a Total row: in Mind a plain reference to a copied workbook is the sum over
 the copies -- checked in a real Mind project on 29 October 2026, the prototype's main workbook).
 
 Copies from loops (build_instance_plan(..., loops=[...])): for a macro that runs the whole model once
-per scenario and cohort, one copy per combination of the chosen loops' values; each copy reads its
-values from a small split grid, the macro's other loops stay MM_LOOPs inside every copy (checked in
+per scenario and cohort, one copy per combination of the chosen loops'  values; each copy reads its
+values  from a small split grid, the macro's  other loops stay  MM_LOOPs inside  every copy (checked in
 Mind on 10 November 2026: 24 copies of an IFRS 17 tool, each equal to Excel with its drivers set).
 
-    python -m app.instance_builder <workbook.xlsm> [--json] [--key K] [--keys all] [--name N] [--loops A,B] [--results Sheet!A1:B9]
+    python -m app.instance_builder <workbook.xlsm> [--json] [--key K] [--keys all]  [--name N] [--loops A,B] [--results Sheet!A1:B9]
 """
 from __future__ import annotations
 
@@ -56,31 +56,31 @@ ACTION_ID = "mind_instances"
 RULE_ID = "INST-001"
 KEY_HEADER = "Instance key"
 SPLIT_FLAG = "/InstanceSplit"
-SAMPLE_ROWS = 5000  # rows of the table read to find the key candidates
-MIN_DISTINCT, MAX_DISTINCT = 2, 200  # distinct values a key column holds
-MAX_MAIN_CELLS = 30_000  # formulas one grid of the main workbook holds at most
-MAX_LEFT_COLUMNS = 10  # filled columns left of the table the plan takes into the grid at most
+SAMPLE_ROWS = 5000  # rows  of the  table read to find the key candidates
+MIN_DISTINCT, MAX_DISTINCT = 2, 200  # distinct  values a  key column holds
+MAX_MAIN_CELLS = 30_000  # formulas  one grid  of the main workbook holds at most
+MAX_LEFT_COLUMNS = 10  # filled  columns left  of the table the plan takes into the grid at most
 KEY_WORDS_RE = re.compile(r"tariff|product|group|portfolio|segment|class|category|type|country|fund|treaty|cohort", re.I)
-# the macro's own key: WorksheetFunction.VLookup(<loop variable>, Range("<table>"), k, ...) -> column k of the table
+# the  macro's own  key: WorksheetFunction.VLookup(<loop variable>, Range("<table>"), k, ...) -> column k of the table
 _VLOOKUP_RE = re.compile(r"""VLookup\(\s*(?P<var>[A-Za-z_]\w*)\s*,\s*(?:(?:Worksheets|Sheets)\(\s*"(?P<sheet>[^"]+)"\s*\)\s*\.\s*)?Range\(\s*"(?P<rng>[^"]+)"\s*\)(?:\.Value2?)?\s*,\s*(?P<k>\d+)""", re.I)
-# the list of keys the macro runs through: WorksheetFunction.Match(<key>, Range("<list>"), 0)
+# the  list of  keys the macro runs through: WorksheetFunction.Match(<key>, Range("<list>"), 0)
 _MATCH_RE = re.compile(r"""Match\(\s*[^,()]+?\s*,\s*(?:(?:Worksheets|Sheets)\(\s*"(?P<sheet>[^"]+)"\s*\)\s*\.\s*)?Range\(\s*"(?P<rng>[^"]+)"\s*\)""", re.I)
 
 
-# --- small helpers --------------------------------------------------------------------------------
+# ---  small helpers  --------------------------------------------------------------------------------
 def _op(op: str, sheet: str, **kw: Any) -> dict[str, Any]:
     return {"op": op, "action_id": ACTION_ID, "rule_id": RULE_ID, "sheet": sheet, **kw}
 
 
 def _plain(text: Any, default: str = "Key") -> str:
-    """A header as a grid title can carry it: no '#', '/' or '&' (Mind reads them as a title or a flag)."""
+    """A  header as  a grid title can carry it: no '#', '/' or '&' (Mind reads them as a title or a flag)."""
     s = re.sub(r"[#/&]+", " ", str(text or ""))
     s = re.sub(r"\s+", " ", s).strip()
     return s or default
 
 
 def _safe_stem(text: Any, default: str = "model") -> str:
-    """A file stem of letters, digits and underscores (Mind reads the /InstanceKeys header as a file name)."""
+    """A  file stem  of letters, digits and underscores (Mind reads the /InstanceKeys header as a file name)."""
     s = re.sub(r"[^A-Za-z0-9_]+", "_", str(text or "")).strip("_")
     return s or default
 
@@ -96,7 +96,7 @@ def _empty(v: Any) -> bool:
 
 
 def _xref(file: str, sheet: str, ref: str) -> str:
-    """'[model.xlsm]Sheet'!$A$1: a reference to another workbook in the same folder."""
+    """'[model.xlsm]Sheet'!$A$1:  a reference  to another workbook in the same folder."""
     return f"'[{file}]{sheet.replace(chr(39), chr(39) * 2)}'!{ref}"
 
 
@@ -105,7 +105,7 @@ def _abs(sheet: str, col: int, row: int) -> str:
 
 
 def _norm_arg(arg: str) -> str:
-    """A formula argument as a comparable text: no '$', no quotes, upper case."""
+    """A  formula argument  as a comparable text: no '$', no quotes, upper case."""
     s = arg.strip().replace("$", "")
     if s.startswith("@"):
         s = s[1:]
@@ -116,7 +116,7 @@ def _norm_arg(arg: str) -> str:
 
 
 def _resolve_range(arg: str, default_sheet: str, names: Any) -> tuple[str, dict[str, Any], str | None] | None:
-    """(sheet, parsed range, defined name) for a literal range or a defined name, else None."""
+    """(sheet,  parsed range,  defined name) for a literal range or a defined name, else None."""
     a = arg.strip()
     if a.startswith("@"):
         a = a[1:]
@@ -135,7 +135,7 @@ def _resolve_range(arg: str, default_sheet: str, names: Any) -> tuple[str, dict[
 
 # --- the loop ----------------------------------------------------------------------------------------
 def _pick_loop(loop_plan: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str]:
-    """The loop the instances are built on: the first counter loop of the loop plan that has a
+    """The  loop the  instances are built on: the first counter loop of the loop plan that has a
     count cell. -> (loop entry or None, a note when it cannot be used, the plan's status)."""
     if not loop_plan.get("found"):
         return None, "No run loop in the macros: nothing to build.", "not_built"
@@ -154,11 +154,11 @@ def _pick_loop(loop_plan: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
                 "(1, 2, 3 ...) in a cell and reads a cell that holds the count."), "needs_decision"
 
 
-# --- the table -----------------------------------------------------------------------------------
+# ---  the table -----------------------------------------------------------------------------------
 def _find_table(analysis: dict[str, Any], le: dict[str, Any], names: Any) -> dict[str, Any] | None:
-    """The model-point table: the union of the INDEX (else OFFSET) ranges whose row argument is the
+    """The  model-point table:  the union of the INDEX (else OFFSET) ranges whose row argument is the
     loop driver -- its defined name, or its address with or without '$' -- on the sheet most of
-    those formulas read. None when no formula indexes a range by the driver."""
+    those  formulas read. None when no formula indexes a range by the  driver."""
     wb0 = analysis["workbooks"][0]
     drv_sheet, drv_ref = _split(str(le.get("driver") or ""))
     if not drv_sheet or not parse_ref(drv_ref):
@@ -186,8 +186,8 @@ def _find_table(analysis: dict[str, Any], le: dict[str, Any], names: Any) -> dic
                 sheet, r, name = got
                 if fn == "OFFSET":
                     if r["r1"] != r["r2"]:
-                        continue  # OFFSET from a block: not a row picked by the driver
-                    r = {**r, "r1": r["r1"] + 1, "r2": 1_048_576, "whole_column": True}  # the rows below the anchor
+                        continue  # OFFSET from a block: not a  row picked by the driver
+                    r = {**r, "r1": r["r1"] + 1, "r2": 1_048_576, "whole_column": True}  # the rows below  the anchor
                 hits.setdefault(sheet, []).append({"r": r, "name": name, "fn": fn, "at": f"{f['sheet']}!{f['cell']}"})
     if not hits:
         return None
@@ -208,7 +208,7 @@ def _find_table(analysis: dict[str, Any], le: dict[str, Any], names: Any) -> dic
 
 
 def _profile(analysis: dict[str, Any], sheet: str, row: int, c1: int, c2: int) -> tuple[int, int, int]:
-    """(text cells, number cells, filled cells) in a row, over the table's first twelve columns."""
+    """(text  cells, number  cells, filled cells) in a row, over the table's first twelve columns."""
     texts = nums = filled = 0
     for c in range(c1, min(c2, c1 + 11) + 1):
         v = _held(analysis, sheet, c, row)
@@ -223,7 +223,7 @@ def _profile(analysis: dict[str, Any], sheet: str, row: int, c1: int, c2: int) -
 
 
 def _header_rows(analysis: dict[str, Any], sheet: str, r1: int, c1: int, c2: int) -> tuple[int | None, int]:
-    """(header row, first data row): the header is the text row directly above the first row the
+    """(header  row, first  data row): the header is the text row directly above the first row the
     driver indexes, or that first row itself when it is text above numbers."""
     if r1 >= 2:
         t, n, _ = _profile(analysis, sheet, r1 - 1, c1, c2)
@@ -237,7 +237,7 @@ def _header_rows(analysis: dict[str, Any], sheet: str, r1: int, c1: int, c2: int
 
 
 def _row_empty(analysis: dict[str, Any], sheet: str, row: int, c1: int, c2: int, ignore: tuple[int, int] | None = None) -> bool:
-    """Is the row empty across the columns (an ignored cell aside)?"""
+    """Is  the row  empty across the columns (an ignored cell aside)?"""
     if row < 1:
         return True
     for c in range(c1, c2 + 1):
@@ -249,7 +249,7 @@ def _row_empty(analysis: dict[str, Any], sheet: str, row: int, c1: int, c2: int,
 
 
 def _column_empty(analysis: dict[str, Any], sheet: str, col: int, r1: int, r2: int) -> bool:
-    """Is the column empty over rows r1..r2? (read from the analysis copy's own cells, so an empty
+    """Is  the column  empty over rows r1..r2? (read from the analysis copy's own cells, so an empty
     column costs one lookup per row)"""
     from .inventory import open_cached
 
@@ -263,9 +263,9 @@ def _column_empty(analysis: dict[str, Any], sheet: str, col: int, r1: int, r2: i
 
 
 def _filled_columns_left(analysis: dict[str, Any], sheet: str, c1: int, r1: int, r2: int) -> int:
-    """How many columns directly left of column c1 hold something over rows r1..r2 (the table's
+    """How  many columns  directly left of column c1 hold something over rows r1..r2 (the table's
     header and data rows). In Mind, cells touching a grid are part of it: the key column has to go
-    before them, or it is not the grid's first column and the split keys on the wrong column."""
+    before  them, or it is not the grid's first column and the  split keys on the wrong column."""
     n = 0
     while c1 - n - 1 >= 1 and n < MAX_LEFT_COLUMNS and not _column_empty(analysis, sheet, c1 - n - 1, r1, r2):
         n += 1
@@ -273,7 +273,7 @@ def _filled_columns_left(analysis: dict[str, Any], sheet: str, c1: int, r1: int,
 
 
 def _scan_candidates(copy_path: str, sheet: str, c1: int, c2: int, first_row: int, stop: int) -> dict[str, Any]:
-    """One pass over the first SAMPLE_ROWS rows of the table (openpyxl read_only): per column, is it
+    """One  pass over  the first SAMPLE_ROWS rows of the table (openpyxl read_only): per column, is it
     text, how many distinct values, how many filled rows."""
     import openpyxl
 
@@ -311,7 +311,7 @@ def _scan_candidates(copy_path: str, sheet: str, c1: int, c2: int, first_row: in
 
 
 def _read_column(copy_path: str, sheet: str, c1: int, c2: int, col: int, first_row: int, stop: int) -> tuple[list[Any], int]:
-    """(the values of one column of the table, the table's last filled row), read whole."""
+    """(the  values of  one column of the table, the table's last filled row), read whole."""
     import openpyxl
 
     values: list[Any] = []
@@ -345,7 +345,7 @@ def _vba_text(analysis: dict[str, Any]) -> str:
 
 
 def _macro_key_column(vba: str, loop_var: str, table: dict[str, Any], names: Any) -> int | None:
-    """The column the macro itself looks the key up in: VLookup(<loop var>, Range("<table>"), k) over
+    """The  column the  macro itself looks the key up in: VLookup(<loop var>, Range("<table>"), k) over
     a range that overlaps the table -> that range's k-th column."""
     for m in _VLOOKUP_RE.finditer(vba):
         if m.group("var").lower() != str(loop_var or "").lower():
@@ -363,7 +363,7 @@ def _macro_key_column(vba: str, loop_var: str, table: dict[str, Any], names: Any
 
 
 def _macro_key_list(analysis: dict[str, Any], vba: str, table: dict[str, Any], names: Any) -> list[Any] | None:
-    """The list of keys the macro runs through (Match(<key>, Range("<list>"), 0)): its texts, in order."""
+    """The  list of  keys the macro runs through (Match(<key>, Range("<list>"), 0)): its texts, in order."""
     from .inventory import values_cell
 
     for m in _MATCH_RE.finditer(vba):
@@ -391,7 +391,7 @@ def _macro_key_list(analysis: dict[str, Any], vba: str, table: dict[str, Any], n
 
 
 def _choose_key(table: dict[str, Any], headers: dict[int, Any], candidates: list[int], macro_col: int | None, user_key: Any) -> tuple[int | None, str, str | None]:
-    """(the key column, how it was chosen, a note when the user's key was not found)."""
+    """(the  key column,  how it was chosen, a note when the user's key was not found)."""
     if user_key not in (None, ""):
         want = str(user_key).strip()
         for c in range(table["c1"], table["c2"] + 1):
@@ -414,7 +414,7 @@ def _choose_key(table: dict[str, Any], headers: dict[int, Any], candidates: list
 
 # --- free cells and shifting -----------------------------------------------------------------------
 def _free_row(analysis: dict[str, Any], sheet: str, near_row: int, c1: int, c2: int, avoid: list[tuple[int, int, int, int]]) -> int:
-    """A row near `near_row` that is empty, with empty rows above and below, across columns c1..c2,
+    """A  row near  `near_row` that is empty, with empty rows above and below, across columns c1..c2,
     and outside the rectangles to avoid (r1, c1, r2, c2): the loop size and the copy's key go there."""
     _max_col, max_row = _sheet_max(analysis, sheet)
 
@@ -436,7 +436,7 @@ def _free_row(analysis: dict[str, Any], sheet: str, near_row: int, c1: int, c2: 
 
 
 class _Shift:
-    """Addresses after the plan's inserts on the table sheet: rows from `at` move down by `rows`,
+    """Addresses  after the  plan's inserts on the table sheet: rows from `at` move down by `rows`,
     columns from `col` move right by one."""
 
     def __init__(self, sheet: str, at: int, rows: int, col: int | None):
@@ -471,19 +471,19 @@ class _Shift:
         return False
 
 
-# --- the plan --------------------------------------------------------------------------------------
+# ---  the plan --------------------------------------------------------------------------------------
 def build_instance_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, loop_plan: dict[str, Any] | None = None, key: Any = None, keys: str = "present",
                         model_name: str | None = None, loops: list[str] | None = None, results: str | None = None) -> dict[str, Any]:
-    """The Mind instances for the macro's run loop: what goes where, with the operations that write it.
+    """The  Mind instances  for the macro's run loop: what goes where, with the operations that write it.
 
     Two ways to make the copies:
-    - by a key column of the model-point table (the default): one copy per key, a loop inside each
-      copy over the copy's own rows. `key`: the key column -- a header text or a column letter of the
-      table (default: the macro's own lookup column, else a header that names a group, else the text
-      column with the fewest distinct values). `keys`: "present" = the key values that have rows;
+    - by a key column of the model-point table (the default): one copy  per key, a loop inside each
+      copy over the copy's own rows.  `key`: the key column -- a  header text or a column letter of  the
+      table (default: the macro's own lookup column, else a header that  names a group, else the text
+      column with  the fewest distinct values). `keys`: "present" = the key values that have rows;
       "all" = every value of the list the macro runs through, when it can be found.
     - by loops (`loops`: loop names or driver cells of the Mind loop plan): one copy per combination
-      of the values of those loops -- a scenario x a cohort for instance. Each copy reads its own
+      of the values of those loops -- a scenario x a cohort for instance. Each copy reads  its own
       values from a small split grid; the macro's other loops stay MM_LOOPs inside every copy.
       `results`: the block the main workbook shows for every copy (default: the formula block of the
       model's output sheet).
@@ -515,7 +515,7 @@ def build_instance_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, 
 
 def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, loop_plan: dict[str, Any] | None = None, key: Any = None, keys: str = "present",
                       model_name: str | None = None) -> dict[str, Any]:
-    """The copies by a key column of the model-point table (see build_instance_plan)."""
+    """The  copies by  a key column of the model-point table (see build_instance_plan)."""
     from .grids import all_grids, grid_containing
     from .loop_builder import build_loop_plan
     from .model_map import _Names
@@ -564,7 +564,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     sheet, c1, c2 = table["sheet"], table["c1"], table["c2"]
     header_row, first_row = _header_rows(analysis, sheet, table["r1"], c1, c2)
     # filled columns touching the table on its left belong to the grid in Mind's eyes: the table
-    # starts there, so the key column is inserted before them (and the title sits above it)
+    # starts there, so the  key column is inserted before them (and the title sits above  it)
     n_left = _filled_columns_left(analysis, sheet, c1, header_row or first_row, max(table["r2"], first_row))
     if n_left:
         notes.append(f"{n_left} filled column(s) left of the table ({num_to_col(c1 - n_left)}{'' if n_left == 1 else ':' + num_to_col(c1 - 1)}) touch it, so Mind reads them as part of the grid: "
@@ -574,7 +574,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     copy_path = str(wb0["copy_path"])
     scan = _scan_candidates(copy_path, sheet, c1, c2, first_row, table["r2"])
     headers = {c: _held(analysis, sheet, c, header_row) for c in range(c1, c2 + 1)} if header_row else {}
-    sampled = table["r2"] - first_row + 1 > SAMPLE_ROWS  # the counts come from the first SAMPLE_ROWS rows
+    sampled = table["r2"] - first_row + 1 > SAMPLE_ROWS  # the counts come from the first  SAMPLE_ROWS rows
     candidates = [{"column": num_to_col(c), "header": _json_value(headers.get(c)), "distinct": scan["distinct"][c], "sampled": sampled} for c in scan["candidates"]]
     vba = _vba_text(analysis)
     macro_col = _macro_key_column(vba, str(le.get("loop_var") or ""), table, names)
@@ -627,11 +627,11 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
                      "rows": rows, "columns": c2 - c1 + 1, "name": table["name"], "indexed_by": table["cells"]}
     for cand in candidates:
         if cand["column"] == num_to_col(key_col):
-            cand.update(distinct=len(present), sampled=False)  # the chosen column was read whole
+            cand.update(distinct=len(present), sampled=False)  # the chosen  column was read whole
     plan["key"] = {"column": num_to_col(key_col), "header": key_header, "distinct": len(present), "counts": counts, "candidates": candidates, "chosen_by": chosen_by, "missing": missing,
                    "values": [_json_value(v) for v in key_values]}
-    # MM_LOOPINSTANCE counts 1..count in every copy. INDEX(range, i) reads row i of the range: when
-    # the range starts on the header row (the macro ran 2..n), the driver adds that row, so every
+    # MM_LOOPINSTANCE counts 1..count in every copy. INDEX(range, i)  reads row i of the range: when
+    # the  range starts on the header row (the macro ran 2..n), the driver adds that row, so every
     # pass reads a data row; the macro's own first row beyond that is not kept (every row joins)
     rows_before = max(0, first_row - table["r1"])  # range rows above the first data row (1 when the header row is inside the range)
     first_n, last_n = le.get("first"), le.get("last")
@@ -645,7 +645,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     elif isinstance(first_n, int) and first_n - 1 - rows_before < 0:
         notes.append(f"The macro's first pass ({first_n}) read the table's header row: in the copies the loop starts at the first data row.")
 
-    # --- the layout: the key column first, a title with an empty row above it -----------------------
+    # --- the layout: the key column first, a title with an empty row  above it -----------------------
     insert_col = key_col != c1
     grids_here = [g for g in all_grids(analysis) if g.get("sheet") == sheet]
     g = grid_containing(grids_here, first_row, c1)
@@ -771,7 +771,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     plan["loop"].update({"max_cell": f"{_qs(cnt_sheet)}!{num_to_col(max_c)}{max_r}", "count_cell": f"{_qs(cnt_sheet)}!{num_to_col(cnt_c)}{cnt_r}", "formula": drv_formula, "count_formula": count_formula,
                          "key_cell": None, "driver": f"{_qs(drv_sheet)}!{num_to_col(drv_c)}{drv_r}", "offset": rows_before})
 
-    # --- the output block: the sum over the copy's loop -------------------------------------------------
+    # --- the  output block: the sum over  the copy's loop -------------------------------------------------
     written: set[tuple[str, str]] = set()
     block_for_main: dict[str, Any] | None = None
     for f_sheet, fr, o in out_blocks:
@@ -779,7 +779,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
         left_alone: list[str] = []
         example = None
         src_sheet = None
-        box: tuple[int, int, int, int] | None = None  # the cells written: (first col, first row, last col, last row), as the workbook is today
+        box: tuple[int, int, int, int] | None = None  # the cells written: (first  col, first row,  last col,  last row), as the workbook is today
         for col, row in _cells_of(f_sheet, fr["ref"]):
             held = _held(analysis, f_sheet, col, row)
             if not (isinstance(held, str) and held.startswith("=")):
@@ -823,7 +823,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     if not out_blocks:
         notes.append("The macro copies no block out on every pass: the model's results stay where the calculation puts them (read them with MM_RESULT or MM_INSTANCE).")
 
-    # --- the paste area: emptied, as the macro does before a run ------------------------------------------
+    # --- the paste area: emptied, as the macro  does before a run ------------------------------------------
     from .inventory import open_cached
 
     try:
@@ -851,14 +851,14 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
         area = f"{_qs(c['sheet'])}!{num_to_col(c['c1'])}{c['r1']}:{num_to_col(c['c2'])}{c['r2']}"
         plan["clears"].append({"area": area, "cells": n, "status": "ready", "over": over, "why": f"{over} more filled cells were left (limit {MAX_CLEARS})" if over else None})
         plan["counts"]["cleared"] += n
-        # cells outside the block that read the paste area are left as they are
+        # cells outside the block that read the  paste area are left as they  are
         want = c["sheet"].lower()
         for f in wb0.get("formulas") or []:
             if (f["sheet"], str(f["cell"]).upper()) in block_cells:
                 continue
             formula = str(f.get("formula") or "")
             if f["sheet"] != c["sheet"] and want not in formula.lower():
-                continue  # another sheet's formula reads this area only by naming the sheet
+                continue  # another sheet's formula reads this area only  by naming the sheet
             for r in cell_refs_in_formula(formula):
                 if (r.get("sheet") or f["sheet"]) != c["sheet"]:
                     continue
@@ -879,7 +879,7 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
     ops.append(_op("set_formula", cnt_sheet, cell=f"{num_to_col(kv_c)}{max_r}", before=None, after=key_formula, note=f"the copy's {word} (in Excel: the first key)"))
     plan["loop"]["key_cell"] = f"{_qs(cnt_sheet)}!{num_to_col(kv_c)}{max_r}"
 
-    # --- after the inserts: the operations that write the table sheet, or read it, wait for them ---------------
+    # --- after the  inserts: the operations that write the table  sheet, or read it, wait for them ---------------
     if sh.any:
         for o in ops:
             if o["op"] in ("insert_row", "insert_column", "remove_validation"):
@@ -925,15 +925,15 @@ def _build_table_plan(analysis: dict[str, Any], model_map: dict[str, Any], *, lo
 
 
 # --- copies from loops: one copy per combination of the values of one or more loops ------------------
-LOOP_COPY_KINDS = ("counter", "list")  # a driver that takes the loop value itself, or the items of a list
+LOOP_COPY_KINDS = ("counter", "list")  # a  driver that  takes the loop value itself, or the items of a list
 MAX_COPIES = 1000
 PARAMS_NAME = "Instance values"
 _PART_RE = re.compile(r"[A-Za-z0-9.\-]{1,24}")
 
 
 def loop_options(loop_plan: dict[str, Any]) -> list[dict[str, Any]]:
-    """The loops of the Mind loop plan, each with whether copies can be made from it: a ready loop whose
-    one driver cell takes the loop value itself (a counter) or the items of a list."""
+    """The  loops of  the Mind loop plan, each with whether copies can be made from it: a ready loop whose
+    one driver cell takes the loop value itself (a counter) or the items of a  list."""
     out: list[dict[str, Any]] = []
     for le in loop_plan.get("loops") or []:
         usable = le.get("status") == "ready" and le.get("kind") in LOOP_COPY_KINDS and len(le.get("cells") or []) == 1
@@ -956,8 +956,8 @@ def _matches(le: dict[str, Any], w: str) -> bool:
 
 
 def pick_loop_plan(loop_plans: list[dict[str, Any]], wanted: list[str]) -> dict[str, Any]:
-    """Of the Mind loop plans of a model's macros (one each: Excel runs each macro on its own), the one
-    whose own loops hold every loop asked for; else the first (the plan then says the loops are of
+    """Of  the Mind  loop plans of a model's macros (one each: Excel runs each macro on its own), the one
+    whose own loops hold every loop asked for; else the first (the plan then says  the loops are of
     different macros)."""
     for lp in loop_plans:
         own = [le for le in lp.get("loops") or [] if not le.get("other_macro")]
@@ -967,7 +967,7 @@ def pick_loop_plan(loop_plans: list[dict[str, Any]], wanted: list[str]) -> dict[
 
 
 def loop_options_of(loop_plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """loop_options over the loop plans of every macro: each loop as its own macro's plan has it, in the
+    """loop_options  over the  loop plans of every macro: each loop as its own macro's plan has it, in the
     order of the first plan's loops."""
     first = loop_plans[0].get("loops") or []
     own: dict[str, dict[str, Any]] = {}
@@ -979,7 +979,7 @@ def loop_options_of(loop_plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _loop_values(analysis: dict[str, Any], le: dict[str, Any]) -> list[Any] | None:
-    """The values the loop's driver takes, in the macro's order: a counter's first..last, a list's items."""
+    """The  values the  loop's driver takes, in the macro's order: a counter's first..last, a list's items."""
     if le.get("kind") == "counter" and isinstance(le.get("first"), int) and isinstance(le.get("last"), int):
         return list(range(le["first"], le["last"] + 1))
     if le.get("kind") == "list" and le.get("cells"):
@@ -1005,7 +1005,7 @@ def _loop_values(analysis: dict[str, Any], le: dict[str, Any]) -> list[Any] | No
 
 
 def _key_part(name: str, value: Any, k: int) -> str:
-    """One loop's part of a copy's key: the loop's name and its value ('Scenario0', 'CohortRng2021'), or
+    """One  loop's part  of a copy's key: the loop's name and its value ('Scenario0', 'CohortRng2021'), or
     the value's position when the value is long or holds other characters ('GroupName3')."""
     if isinstance(value, bool):
         value = int(value)
@@ -1016,9 +1016,9 @@ def _key_part(name: str, value: Any, k: int) -> str:
 
 
 def _key_parts(name: str, values: list[Any]) -> list[str]:
-    """One loop's parts of the copies' keys, one per value, all different: by value when that gives
+    """One  loop's parts  of the copies' keys, one per value, all different: by value when that gives
     different parts, else by position for every value of the loop ('Scenario1', 'Scenario2', ...) --
-    a value written by its position could meet a value equal to that position, and a list may repeat a
+    a value written by  its position could meet a value equal to that position, and  a list may repeat a
     value."""
     parts = [_key_part(name, v, k) for k, v in enumerate(values, 1)]
     if len(set(parts)) == len(parts):
@@ -1035,9 +1035,9 @@ def _same_formula(a: Any, b: Any) -> bool:
 
 
 def _results_block(analysis: dict[str, Any], model_map: dict[str, Any], results: str | None, notes: list[str]) -> dict[str, Any] | None:
-    """The block the main workbook shows for every copy: the range asked for, else the biggest run of
+    """The  block the  main workbook shows for every copy: the range asked for, else the biggest run of
     consecutive formula rows on the model's output sheet (the sheet with the most formulas among the
-    sheets the model map names as outputs). Its headers are the text row above it."""
+    sheets the  model map names as outputs). Its headers are the text row  above it."""
     wb0 = analysis["workbooks"][0]
     sheetnames = {s["name"] for s in wb0.get("sheets") or []}
     chosen_by = "user"
@@ -1051,7 +1051,7 @@ def _results_block(analysis: dict[str, Any], model_map: dict[str, Any], results:
     else:
         chosen_by = "outputs"
         sheet = None
-        best: tuple[int, int, int, int, int] | None = None  # (cells, first row, last row, first col, last col)
+        best: tuple[int, int, int, int, int] | None = None  # (cells, first row, last row,  first col, last col)
         for s in sorted((model_map.get("outputs") or {}).get("sheets") or [], key=lambda x: -(x.get("formulas") or 0)):
             rows: dict[int, set[int]] = {}
             for f in wb0.get("formulas") or []:
@@ -1094,12 +1094,12 @@ def _results_block(analysis: dict[str, Any], model_map: dict[str, Any], results:
 
 def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_plan: dict[str, Any], wanted: list[str], *, results: str | None = None,
                       model_name: str | None = None) -> dict[str, Any]:
-    """One copy per combination of the values of the loops asked for (see build_instance_plan).
+    """One  copy per  combination of the values of the loops asked for (see build_instance_plan).
 
     In the model: a split grid "#Instance values /InstanceSplit" below the used range of the first
-    loop's sheet -- the key and the loops' values, one row per copy (in each copy Mind keeps the copy's
-    row); each of those loops' driver cell reads its value from it with =INDEX(<column>,1); the
-    macro's other ready loops are written as MM_LOOPs (as the Mind loop plan has them), so they run
+    loop's sheet -- the key and  the loops' values, one row per copy (in each copy Mind  keeps the copy's
+    row); each of those  loops' driver cell reads its value from  it with =INDEX(<column>,1); the
+    macro's other ready loops are written as MM_LOOPs  (as the Mind loop plan has them),  so they run
     inside every copy; a cell shows the copy's key (MM_INSTANCEKEY). The main workbook lists the keys
     and shows the results block of every copy, one row per copy and row of the block (MM_INSTANCE)."""
     from itertools import product
@@ -1162,7 +1162,7 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
         notes.append("Two copies would get the same key: the copies cannot be told apart.")
         return plan
 
-    # --- where the split grid goes: below the used range of the first loop's sheet ---------------------
+    # --- where the split grid goes: below the used range of the first  loop's sheet ---------------------
     p_sheet, p_ref = _split(str(chosen[0]["driver"]))
     first_drv = parse_ref(p_ref) if p_sheet else None
     if not first_drv:
@@ -1250,7 +1250,7 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
     if any(le.get("macro") for le in chosen):
         notes.append("Every copy computes. If the macro skips some passes, or writes out only some of them, read only the copies it would keep.")
 
-    # --- the main workbook: the keys, and the results block of every copy ---------------------------------
+    # --- the main workbook: the keys, and the results block of every copy  ---------------------------------
     word = " and ".join(names)
     res = _results_block(analysis, model_map, results, notes)
     main.update(keys=keys, key_header=word, model_stem=model_stem, block=res)
@@ -1291,14 +1291,14 @@ def _build_loops_plan(analysis: dict[str, Any], model_map: dict[str, Any], loop_
 
 # --- the main workbook -------------------------------------------------------------------------------
 def write_main_workbook(plan: dict[str, Any], model_path: str | Path, main_path: str | Path) -> dict[str, Any]:
-    """Write the main workbook next to the model, through Excel: the keys grid, the results by key,
-    and the whole block as plain links (in Mind: the sum over the copies). Keys are written as they
-    are (a text key stays text). `model_path` must be named plan["main"]["model_file"] and sit in the folder
-    `main_path` goes to, so Excel stores the references as a file of the same folder."""
+    """Write  the main  workbook next to the model, through Excel: the keys grid, the results by key,
+    and the whole block as plain links (in Mind: the sum over the copies). Keys are written as  they
+    are (a text key stays text). `model_path` must be named plan["main"]["model_file"]  and sit in the folder
+    `main_path` goes  to, so Excel stores the references as  a file of the same folder."""
     from .excel_com import close_quietly, excel_session, excel_text, open_workbook
 
     main = plan.get("main") or {}
-    # the long form of both paths: Excel stores the link as the bare file name only when the model and the
+    # the long form of both paths:  Excel stores the link as the bare  file name only when the model and the
     # main workbook sit in the same folder spelled the same way (a short 8.3 name such as SOMEUS~1 differs)
     model_path, main_path = Path(model_path).resolve(), Path(main_path).resolve()
     if model_path.name != main.get("model_file"):
@@ -1343,7 +1343,7 @@ def write_main_workbook(plan: dict[str, Any], model_path: str | Path, main_path:
             summ.Name = "Summary"
             row = 2
             if block and main.get("layout") == "by_key_rows":
-                # copies made from loops: one row per copy and row of the block, each cell what that copy
+                # copies made from  loops: one row per copy and row of the block, each cell what that copy
                 # computes there (MM_INSTANCE by key); no sum over the copies (it would add scenarios up)
                 b = block
                 summ.Range(f"B{row}").Value2 = (f"What each copy computes in {b['sheet']}!{b['ref']}, one row per copy and row of that block. "
@@ -1419,7 +1419,7 @@ def write_main_workbook(plan: dict[str, Any], model_path: str | Path, main_path:
 
 
 def zip_for_mind(model_path: str | Path, main_path: str | Path, zip_path: str | Path) -> Path:
-    """Both files in one zip, stored flat (the two files the user uploads to one Mind project)."""
+    """Both  files in  one zip, stored flat (the two files the user uploads to one Mind project)."""
     zip_path = Path(zip_path)
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:

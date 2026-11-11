@@ -1,12 +1,12 @@
-"""Turn the output of scripts/run_usecases.py into a readable report.
+"""Turn  the output  of scripts/run_usecases.py into a readable report.
 
     python scripts/usecase_report.py <run dir | use-case dir> [...] [--title "..."] [--out report.md]
 
 A run directory contributes every use case in it that finished; a use-case
-directory (the one holding result.json) contributes itself. First one table
-for all of them, then one section per workbook: what each step of the flow
-did and how long it took, what the comparison with the original said, what
-the automatic fixer wrote (the biggest kinds of error, with the reason and
+directory (the one  holding result.json) contributes itself. First one table
+for all of them, then  one section per workbook: what each  step of the flow
+did and how long  it took, what the comparison with the original said, what
+the automatic  fixer wrote (the biggest kinds of error,  with the reason and
 one before -> after), what it left for a person, and what still blocks the
 workbook in the app's own verdict.
 """
@@ -158,7 +158,7 @@ def main() -> int:
         else:
             cases += sorted(d for d in p.iterdir() if d.is_dir() and (d / "result.json").exists())
     loaded = [(d, _load(d / "result.json")) for d in cases]
-    finished = [(d, r) for d, r in loaded if r and r.get("total_seconds")]  # a run stopped half-way has no total
+    finished = [(d, r) for d, r in loaded if r and r.get("total_seconds")]  # a  run stopped  half-way has no total
     lines = [f"## {args.title}", ""] + TABLE_HEAD + [table_row(r) for _, r in finished] + [""]
     for d, r in finished:
         lines += section(r, _load(d / "autofix_result.json"), _load(d / "readiness_snapshot.json"))
