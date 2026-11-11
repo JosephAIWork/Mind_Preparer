@@ -2,12 +2,12 @@ import { Component, OnInit, inject, signal } from "@angular/core";
 import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "./api.service";
 import { FeedbackService } from "./feedback.service";
-import { FeedbackMessage } from "./models";
+import { AiUsage, FeedbackMessage, aiUsageLine } from "./models";
 import { SessionStore } from "./session.store";
 
-/** The dialog behind "Send feedback": an optional note, the message prepared and shown (codes only,
+/** The  dialog behind  "Send feedback": an optional note, the message prepared and shown (codes only,
  *  nothing from the workbook), then one click that copies it and opens an email to the address the
- *  backend gives (`feedback.email` in the settings). A file is saved only when asked (Save as a file). */
+ *  backend gives (`feedback.email`  in the settings). A file is saved only when asked (Save  as a file). */
 @Component({
   selector: "mr-feedback-dialog",
   standalone: true,
@@ -40,7 +40,12 @@ export class FeedbackDialog implements OnInit {
     return (event.target as HTMLTextAreaElement).value;
   }
 
-  /** Step 1: the message from the backend (the assistant may take a few seconds), shown to be read. */
+  /** 1.14.1: under the message,  what the assistant used on the open  workbook (the message holds the same line). */
+  aiLine(u: AiUsage): string {
+    return aiUsageLine(u);
+  }
+
+  /** Step 1: the message from  the backend (the assistant may take a  few seconds), shown to be read. */
   async prepare(): Promise<void> {
     if (this.busy()) return;
     this.busy.set(true);

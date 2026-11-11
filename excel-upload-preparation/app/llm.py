@@ -1,28 +1,39 @@
-"""LLM abstraction over the shared Milliman APIM Claude gateway.
+"""LLM  abstraction over  the shared Milliman APIM Claude gateway.
 
 Two uses, both advisory:
 
 * `suggest_formula_fix` -- one-shot "suggest a fix" for a formula finding
   (UI button). Never applied automatically. Output
   is always tagged evidence=RECOMMENDATION.
-* `chat_completion` -- multi-turn conversation used by the
+* `chat_completion` -- multi-turn conversation used by  the
   workbook chatbot (app/chat_context.py). The model only ever *answers*;
-  every workbook change still goes through the reviewable prep plan
-  (app/prep.py) and the user's explicit approval.
+  every workbook change still  goes through the reviewable prep plan
+  (app/prep.py)  and the user's explicit approval.
 
-Credentials: the gateway key the user pasted in the web app, saved encrypted
-for their Windows account (app/ai_key.py).
+Credentials: the gateway  key the user pasted in the web app, saved encrypted
+for their  Windows account (app/ai_key.py).
 
-The gateway and the model come from settings.yaml (`MIND_READY_MODEL` overrides the model), and
+The gateway and the model  come from settings.yaml (`MIND_READY_MODEL` overrides the model), and
 `chat_completion(..., on_delta=)` streams the reply (server-sent events) so
 the web app can show the text as it is written (`MIND_READY_STREAM=0`
 turns streaming off).
+
+Token count (1.14.1): every completed call -- streamed or not -- reports its
+tokens to the usage sink of the current context (`usage_scope`, a contextvar),
+when one is set. The server sets one per workbook around  every step that may
+ask the assistant (the chat, a suggestion, the grid namer, the finder, Fix all
+issues, the stand-ins, Run in Mind; `under_usage_scope` for the threads they
+run in), so the session's `ai_usage` holds the tokens and calls the assistant
+spent on that workbook since it was uploaded. The accounting never breaks a
+call: a sink that fails is printed and the reply is returned as it was.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
+from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
 from . import ai_key
@@ -36,10 +47,10 @@ except ImportError:
 
 DEFAULT_AZURE_ENDPOINT = SETTINGS.ai_endpoint
 # /claude/invocations stopped answering (200 + empty body, 2026-09-16); the
-# native Anthropic Messages passthrough takes a top-level "system" param.
+# native  Anthropic Messages passthrough takes a  top-level "system" param.
 CLAUDE_APIM_PATH = "/anthropic/v1/messages"
-# Measured through the gateway 2026-09-24 (same ~150-word answer): Sonnet 4.6
-# 7.7 s, Sonnet 5 6.2 s, Opus 4.8 6.7 s; no Haiku on the gateway.
+# Measured through the gateway 2026-09-24  (same ~150-word answer):  Sonnet 4.6
+# 7.7  s, Sonnet 5 6.2 s, Opus 4.8 6.7 s; no Haiku on the gateway.
 DEFAULT_MODEL_ID = os.environ.get("MIND_READY_MODEL", SETTINGS.ai_model)
 
 
@@ -50,10 +61,10 @@ def find_api_key() -> tuple[str, str] | None:
 
 
 def check_api_key(key: str, timeout: int = 30) -> tuple[bool, str | None]:
-    """Ask the gateway whether it accepts `key`, with the smallest possible request. (False, why)
-    only when the gateway refuses the key (401 / 403); (True, None) when it answers anything else,
-    since the gateway checks the key before the model sees the request; (True, note) when the
-    gateway could not be reached, so the key is kept unchecked."""
+    """Ask the gateway whether it accepts `key`, with the  smallest possible request. (False, why)
+    only when the gateway refuses the key  (401 / 403); (True, None) when  it answers anything else,
+    since the gateway checks  the key before the model sees the request; (True, note) when  the
+    gateway could not be reached, so the  key is kept unchecked."""
     try:
         import requests
 
@@ -74,20 +85,104 @@ def llm_available() -> bool:
     return find_api_key() is not None
 
 
+# --- token count per workbook ---------------------------------------------------------------
+USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+# the gateway's names for the four counts (Anthropic Messages; the OpenAI-shaped body has two)
+_GATEWAY_USAGE_KEYS = {
+    "input_tokens": ("input_tokens", "prompt_tokens"),
+    "output_tokens": ("output_tokens", "completion_tokens"),
+    "cache_read_tokens": ("cache_read_input_tokens",),
+    "cache_write_tokens": ("cache_creation_input_tokens",),
+}
+# the sink the current context reports to: (usage of one completed call) -> None, or None
+_USAGE_SINK: contextvars.ContextVar[Callable[[dict[str, int]], None] | None] = contextvars.ContextVar("mind_ready_usage_sink", default=None)
+
+
+def empty_usage() -> dict[str, int]:
+    """{calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0}."""
+    return {"calls": 0, **{k: 0 for k in USAGE_KEYS}}
+
+
+def usage_of(raw: dict[str, Any] | None) -> dict[str, int]:
+    """The four counts of one call from the gateway's `usage` object (missing or odd values count  0)."""
+    raw = raw or {}
+    out: dict[str, int] = {}
+    for key, names in _GATEWAY_USAGE_KEYS.items():
+        value = next((raw.get(n) for n in names if raw.get(n) is not None), 0)
+        try:
+            out[key] = max(0, int(value))
+        except (TypeError, ValueError):
+            out[key] = 0
+    return out
+
+
+def add_usage(total: dict[str, int], usage: dict[str, int]) -> dict[str, int]:
+    """One more call with `usage` added to `total` (a dict of the empty_usage shape), in place."""
+    total["calls"] = int(total.get("calls") or 0) + 1
+    for key in USAGE_KEYS:
+        total[key] = int(total.get(key) or 0) + int(usage.get(key) or 0)
+    return total
+
+
+def total_tokens(usage: dict[str, Any] | None) -> int:
+    """Input + output tokens (cache reads and writes are part of the input count: not added again)."""
+    usage = usage or {}
+    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+
+
+def usage_line(usage: dict[str, Any] | None) -> str:
+    """The one sentence the screens and the feedback message show: "AI used: 12,340 tokens in 7 calls",
+    or "AI not used yet on this workbook" before the first call."""
+    calls = int((usage or {}).get("calls") or 0)
+    if calls <= 0:
+        return "AI not used yet on this workbook"
+    return f"AI used: {total_tokens(usage):,} tokens in {calls} call{'' if calls == 1 else 's'}"
+
+
+@contextmanager
+def usage_scope(sink: Callable[[dict[str, int]], None] | None) -> Iterator[None]:
+    """Every call completed inside the block reports its usage to `sink` (None: to no one)."""
+    token = _USAGE_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _USAGE_SINK.reset(token)
+
+
+def under_usage_scope(sink: Callable[[dict[str, int]], None] | None, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """`fn` run under `usage_scope(sink)`: the target of a thread  (a new thread starts with  no context
+    of its own, so the scope  of the request  that started  it does not reach it)."""
+    def run(*args: Any, **kwargs: Any) -> Any:
+        with usage_scope(sink):
+            return fn(*args, **kwargs)
+    return run
+
+
+def _record_usage(raw: dict[str, Any] | None) -> None:
+    """One completed call to the current sink, if any; a sink that fails never breaks the call."""
+    sink = _USAGE_SINK.get()
+    if sink is None:
+        return
+    try:
+        sink(usage_of(raw))
+    except Exception as exc:
+        print(f"The token count could not be kept: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+
+
 def _text_block(text: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
 
 
 def _takes_temperature(model_id: str) -> bool:
     """Sonnet 5 answers 400 "`temperature` is deprecated for this model"
-    (2026-09-24); the 4.x models still accept it."""
+    (2026-09-24); the  4.x models still accept it."""
     return model_id.startswith(("claude-sonnet-4", "claude-opus-4"))
 
 
-# Sonnet 5 thinks before it answers by default. Measured 2026-09-24 on a real
-# chat turn (3k input tokens, max_tokens 1200): ~885 thinking tokens, ~9 s of
-# silence (thinking is not streamed through the gateway), then the answer ran
-# out of room -- stop_reason max_tokens, cut off or empty. With effort "low"
+# Sonnet 5 thinks before it answers by  default. Measured 2026-09-24 on a real
+# chat  turn (3k input tokens, max_tokens 1200): ~885  thinking tokens, ~9 s of
+# silence (thinking is not streamed through the  gateway), then the answer ran
+# out of room  -- stop_reason max_tokens, cut off or empty. With effort "low"
 # it answered at once (no thinking block), complete, in ~4.5 s. Newer models
 # get `output_config.effort` (env MIND_READY_EFFORT, "" = model default) and
 # extra room so a turn that does think still has space for its answer.
@@ -109,7 +204,7 @@ class StreamInterrupted(Exception):
 
 
 def _sse_data(resp: Any) -> Iterator[dict[str, Any]]:
-    """The decoded JSON of every `data:` line of an SSE body (event-name and
+    """The decoded  JSON of every `data:` line of an SSE body (event-name and
     blank lines skipped). Lines are read as BYTES and decoded as UTF-8 here:
     requests' text decoding follows the Content-Type charset and splits on
     Unicode separators such as U+2028 inside the model's text (ported from
@@ -167,8 +262,8 @@ TRUNCATED_NOTE = "\n\n_(The answer was cut off at the length limit.)_"
 
 
 def _finish(text: str, stop_reason: str | None, on_delta: Callable[[str], None] | None) -> dict[str, Any]:
-    """The result dict; says so when the model returned nothing or was cut off
-    (never a silently truncated answer)."""
+    """The result dict; says so when the model returned nothing  or was cut off
+    (never a  silently truncated answer)."""
     if not text.strip():
         return {"available": True, "text": None, "message": f"The model returned no text (stop_reason {stop_reason or 'unknown'})."}
     if stop_reason == "max_tokens":
@@ -188,15 +283,15 @@ def chat_completion(
     on_delta: Callable[[str], None] | None = None,
     effort: str | None = None,
 ) -> dict[str, Any]:
-    """Send a multi-turn conversation (`messages`: [{role: user|assistant,
-    content: str}, ...]) through the gateway's Anthropic Messages
+    """Send a multi-turn conversation (`messages`:  [{role: user|assistant,
+    content: str},  ...]) through  the gateway's Anthropic Messages
     passthrough (system as the top-level `system` param). Returns
     {available, text, message}. With `on_delta` the reply is streamed and
-    every text chunk is passed to it as it arrives; a gateway that answers a
-    streamed request with plain JSON is read the old way. `temperature` is
-    only sent to models that accept it (see `_takes_temperature`); `effort`
-    replaces MIND_READY_EFFORT for this call (a task that needs the model to
-    think, such as reading a macro: app/stand_in_inputs.py)."""
+    every text chunk is passed to it as it arrives; a gateway  that answers a
+    streamed request with plain JSON is read the old  way. `temperature` is
+    only sent to models  that accept it (see `_takes_temperature`); `effort`
+    replaces MIND_READY_EFFORT  for this call (a task that needs the model to
+    think, such  as reading a macro: app/stand_in_inputs.py)."""
     found = find_api_key()
     if found is None:
         return {"available": False, "text": None, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
@@ -223,7 +318,7 @@ def chat_completion(
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout, **({"stream": True} if stream else {}))
         rejected = [k for k in ("temperature", "output_config") if k in payload and k in (resp.text or "")] if resp.status_code == 400 else []
         if rejected:
-            # A model that refuses one of the tuning params (not yet known to
+            # A model that  refuses one of the tuning params (not yet known to
             # _takes_temperature / _takes_effort): drop it and ask once more.
             for k in rejected:
                 payload.pop(k)
@@ -236,9 +331,11 @@ def chat_completion(
             finally:
                 resp.close()
             meter_usage("Mind Ready", model_id, usage)
+            _record_usage(usage)
             return _finish(text, stop_reason, on_delta)
         body = resp.json()
         meter("Mind Ready", body, model_id)
+        _record_usage(body.get("usage") if isinstance(body, dict) else None)
         text = _body_text(body)
         if text is None:
             return {"available": True, "text": None, "message": f"Unrecognized response shape: {list(body.keys())}"}
@@ -269,7 +366,7 @@ FORMULA_LINE_RE = re.compile(r"^\s*(=[^\n]+?)\s*$", re.MULTILINE)
 
 def extract_formula(text: str | None) -> str | None:
     """The first line of an answer that is a complete '=...' formula, if any
-    (used to pre-fill -- never to auto-apply -- the formula replacement box)."""
+    (used to pre-fill -- never to  auto-apply -- the formula replacement box)."""
     if not text:
         return None
     for m in FORMULA_LINE_RE.finditer(text):

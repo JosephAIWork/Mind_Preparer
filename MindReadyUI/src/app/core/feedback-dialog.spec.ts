@@ -104,4 +104,30 @@ describe("the Send feedback dialog", () => {
     expect(step).toContain("An email to someone@example.com should be open.");
     expect(page.textContent).not.toContain("Tel Aviv");
   });
+
+  it("shows what the assistant used on the open workbook under the message (1.14.1), nothing without a workbook", async () => {
+    // the backend's answer carries the open workbook's count; the message text holds the same line
+    message.aiUsage = { calls: 7, input_tokens: 12000, output_tokens: 340, cache_read_tokens: 0, cache_write_tokens: 0 };
+    try {
+      const { page, dialog, detect } = await draw(null);
+      dialog.note.set("Works well");
+      await dialog.prepare();
+      await detect();
+      const line = page.querySelector('[data-test="fb-ai-usage"]');
+      expect(line?.textContent?.trim()).toBe("AI used: 12,340 tokens in 7 calls");
+      expect(line?.previousElementSibling?.className).toBe("fb__message");
+      message.aiUsage = { calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
+      dialog.back();
+      await dialog.prepare();
+      await detect();
+      expect(page.querySelector('[data-test="fb-ai-usage"]')?.textContent?.trim()).toBe("AI not used yet on this workbook");
+    } finally {
+      message.aiUsage = null;
+    }
+    const { page, dialog, detect } = await draw(null);
+    dialog.note.set("Works well");
+    await dialog.prepare();
+    await detect();
+    expect(page.querySelector('[data-test="fb-ai-usage"]')).toBeNull();
+  });
 });

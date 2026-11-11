@@ -1,4 +1,4 @@
-/** Types shared with the FastAPI backend (app/web/server.py). Subset of FigmaOutput/src/types.ts. */
+/** Types  shared with  the FastAPI backend (app/web/server.py). Subset of FigmaOutput/src/types.ts. */
 
 export type Status = "PASS" | "WARNING" | "ERROR" | "REQUIRES_USER_INPUT" | "NOT_SUPPORTED";
 export type Mode = "plan" | "prep_loops" | "fix_formulas" | "structure_fix";
@@ -82,7 +82,7 @@ export interface ReadinessBlocking {
   status: Status;
   message: string;
   location?: Record<string, unknown>;
-  fix: "prep" | "prep_skipped" | "assistant" | "outside_inputs";  // outside_inputs: the "Outside files" card brings them in
+  fix: "prep" | "prep_skipped" | "assistant" | "outside_inputs";  // outside_inputs:  the "Outside files" card brings them in
   action_id?: string | null;
   sites?: unknown;
 }
@@ -100,8 +100,8 @@ export interface Readiness {
   next_step?: { screen: string; label: string; detail?: string; rule_id?: string; rule_name?: string | null } | null;
 }
 
-/** GET /api/plain-codes: the plain words for every code the screens show -- each rule's name
- *  (rules/plain_names.yaml) and what each of Excel's error values means (app/plain_codes.py). */
+/** GET /api/plain-codes: the plain words  for every code the screens show  -- each rule's name
+ *  (rules/plain_names.yaml) and what each  of Excel's error values means (app/plain_codes.py). */
 export interface PlainCodesGlossary {
   rules: Record<string, string>;
   errors: Record<string, string>;
@@ -117,12 +117,12 @@ export interface PrepProgress {
 
 export interface ScanStatus {
   state: "pending" | "idle" | "running" | "ready" | "error";
-  /** the stage running now (app/progress.py: convert, copy, load, inventory, names, rules, report, plan) */
+  /** the stage running now (app/progress.py: convert,  copy, load, inventory, names, rules, report, plan) */
   stage?: string | null;
   title?: string | null;
   message?: string | null;
   fraction?: number | null;
-  /** 0..1 over the whole scan */
+  /** 0..1  over the whole scan */
   overall?: number;
   /** the stages already finished, with their seconds */
   stages?: { stage: string; seconds: number }[];
@@ -152,16 +152,38 @@ export interface SessionStart {
   /** the upload's model workbook and the input files picked with it (several files picked at once) */
   main?: string;
   inputs?: InputFile[];
-  /** 1.14.0: the last recalculation of the current version, when a saved workbook is opened again */
+  /** 1.14.0: the last recalculation of the current version,  when a saved workbook is opened again */
   recalc?: RecalcResult | null;
+  /** 1.14.1: the tokens and calls the assistant spent on this workbook since it was uploaded */
+  aiUsage?: AiUsage | null;
 }
 
-/** 1.14.0: one line of the main screen's "Recent workbooks" list (GET /api/saved-workbooks): a session
+/** 1.14.1: what the assistant used on one workbook (GET /api/sessions/{id}/ai-usage): every completed
+ *  call, whichever step made it (the chat, a suggestion, the grid namer, Fix all issues, the stand-ins,
+ *  Run in Mind); saved with the workbook. Input and output are shown together; the parts stay here. */
+export interface AiUsage {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
+/** The one sentence the screens show for it: "AI used: 12,340 tokens in 7 calls" (input + output),  or
+ *  "AI not used yet on  this workbook" before the first call (the  server's `line` says  the same). */
+export function aiUsageLine(u: AiUsage | null | undefined): string {
+  const calls = u?.calls ?? 0;
+  if (calls <= 0) return "AI not used yet on this workbook";
+  const tokens = (u?.input_tokens ?? 0) + (u?.output_tokens ?? 0);
+  return `AI used: ${tokens.toLocaleString("en-US")} tokens in ${calls} ${calls === 1 ? "call" : "calls"}`;
+}
+
+/** 1.14.0:  one line of the main screen's "Recent workbooks" list (GET /api/saved-workbooks): a session
  *  kept in the data folder, to open again after a restart of the app. */
 export interface SavedWorkbook {
   id: string;
   name: string;
-  /** seconds since 1970, as the server keeps them */
+  /** seconds since 1970, as the server  keeps them */
   uploaded_at: number | null;
   last_opened: number | null;
   versions: number;
@@ -189,9 +211,9 @@ export interface ApplyResult {
   status: string;
   method?: string;
   output_name?: string;
-  /** The operations written (the backend sends the list; some routes send a count). */
+  /** The operations written (the backend sends the list; some routes  send a count). */
   applied: Operation[] | number;
-  /** The operations Excel refused, each with its `error`. */
+  /** The operations Excel refused,  each with its `error`. */
   failed: (Operation & { error?: string })[] | number;
   verified_opens_in_excel?: boolean | null;
   warnings?: string[];
@@ -208,8 +230,8 @@ export function failedCount(r: ApplyResult | null | undefined): number {
   return Array.isArray(f) ? f.length : Number(f) || 0;
 }
 
-/** Room for the reason of one refused change: the server says it as a plain sentence with Excel's own
- *  words in brackets ('Excel refused the action (a protected sheet, ...) (Excel said: "...")'), up to
+/** Room for the reason  of one refused change: the server says it as a plain  sentence with Excel's own
+ *  words in brackets ('Excel  refused the action (a protected sheet, ...) (Excel said: "...")'), up to
  *  about 170 characters for the common refusals -- all of it is shown. */
 const REASON_MAX = 200;
 
@@ -223,7 +245,7 @@ export function clipAtWord(text: string, max: number): string {
 }
 
 /** The first refusals, as "Sheet!A1: reason". Refusals with the same reason say it once ("S!B5, S!B6:
- *  reason": a protected sheet refuses every change the same way), and a longer reason is cut after a
+ *  reason": a protected sheet refuses  every change the same way), and a longer reason is cut after a
  *  whole word. */
 export function failedText(r: ApplyResult | null | undefined, max = 3): string {
   const f = r?.failed;
@@ -354,15 +376,15 @@ export interface LoopPlan {
   operations?: LoopPlanOperation[];
   operation_count: number;
   notes?: string[];
-  /** Prep's blocking items that are not formulas (a lone text cell, a pivot table), still open for this version */
+  /** Prep's blocking items that are not formulas (a lone text cell, a pivot table), still  open for this version */
   prep_blockers?: { id: string; title: string; count: number; rule_ids?: string[] }[];
   counts?: { loop_cells?: number; result_cells?: number; cleared?: number; extra?: number; repairs?: number };
   how_it_runs?: string;
-  /** the formula repairs Prep still had for this version: written with the loop (written = false: only named) */
+  /** the formula  repairs Prep still had for this version:  written with the  loop (written  = false: only named) */
   repairs?: { id: string; title: string; count: number; written: boolean }[];
   /** the macro whose loops this plan builds */
   macro?: string | null;
-  /** every macro with loops, when there are two or more: Excel runs each on its own, the plan builds one at a time */
+  /** every macro with loops, when there are two or more: Excel runs each on its own, the plan builds one at a  time */
   macros?: { name: string; loops: string[]; chosen: boolean }[];
 }
 
@@ -372,18 +394,18 @@ export interface LoopChoices {
   last?: string;
   count_cell?: string;
   clear_old?: boolean;
-  /** the old X2:X6 ranges instead of MM_COLUMN / MM_ROW that follow the table */
+  /** the old X2:X6 ranges instead of MM_COLUMN / MM_ROW that follow  the table */
   fixed_ranges?: boolean;
-  /** each loop's own choices, by driver cell */
+  /** each loop's own choices, by  driver cell */
   loops?: Record<string, LoopChoice>;
-  /** the macro whose loops are built (default: the first macro with a loop) */
+  /** the macro whose loops are built  (default: the first macro with a loop) */
   macro?: string;
 }
 
 // ---- Mind instances (app/instance_builder.py) ------------------------------------------------
 export type InstanceStatus = "ready" | "needs_decision" | "not_built";
 
-/** The run loop every copy shares: MM_LOOPINSTANCE in the driver, COUNTA in the count cell, the biggest count in the max cell. */
+/** The  run loop every copy shares: MM_LOOPINSTANCE in  the driver, COUNTA in the count cell, the biggest count in the max cell. */
 export interface InstancePlanLoop {
   name?: string;
   driver?: string;
@@ -414,7 +436,7 @@ export interface InstanceKeyCandidate {
   sampled?: boolean;
 }
 
-/** The macro's paste area: emptied, because the copies' results live in the block. */
+/** The macro's paste  area: emptied, because the copies' results live in the block. */
 export interface InstancePlanClear {
   area: string;
   cells: number;
@@ -467,11 +489,11 @@ export interface InstancePlanMainGrid {
   rows?: number;
   cols?: number;
   what?: string;
-  /** set on the per-copy grids entry: how many grids of that shape (one per key) */
+  /** set on the per-copy grids entry: how many grids of that shape  (one per key) */
   count?: number;
 }
 
-/** The second, small workbook: the keys and the results, saved next to the model. */
+/** The second, small  workbook: the keys and the results, saved  next to the  model. */
 export interface InstancePlanMain {
   file: string;
   model_file: string;
@@ -479,7 +501,7 @@ export interface InstancePlanMain {
   grids: InstancePlanMainGrid[];
 }
 
-/** A loop of the Mind loop plan, and whether copies can be made from its values (a counter, or a list). */
+/** A loop  of the Mind loop plan, and whether copies can be made from its values (a counter, or a list). */
 export interface InstanceLoopOption {
   name: string;
   driver?: string;
@@ -492,7 +514,7 @@ export interface InstanceLoopOption {
   why?: string | null;
 }
 
-/** A loop the copies are made from: its driver now reads the copy's value from the split grid. */
+/** A loop the copies are made from: its driver now reads the copy's  value from the split grid. */
 export interface InstanceCopiesFrom {
   name: string;
   driver?: string;
@@ -502,13 +524,13 @@ export interface InstanceCopiesFrom {
   formula?: string;
 }
 
-/** GET .../mind-instances-plan: the macro's run loop as Mind instances, one copy of the model per key value. */
+/** GET .../mind-instances-plan: the macro's run loop as  Mind instances, one copy of the  model per key value. */
 export interface InstancePlan {
   found: boolean;
   status: InstanceStatus;
-  /** "table": one copy per key of the model-point table; "loops": one copy per combination of the chosen loops' values */
+  /** "table": one copy per  key of the model-point table; "loops": one copy per combination of  the chosen loops' values */
   mode?: "table" | "loops";
-  /** every loop of the Mind loop plan, usable or not for copies */
+  /** every loop of the  Mind loop plan, usable or not for copies */
   loop_options?: InstanceLoopOption[];
   copies_from?: InstanceCopiesFrom[];
   /** the macro's other loops: they stay MM_LOOPs inside every copy */
@@ -533,7 +555,7 @@ export interface InstancePlan {
   how_it_runs?: string;
 }
 
-/** The user's choices: the key column (a header text or a column letter) and which keys the main workbook lists. */
+/** The user's choices: the  key column (a header text or a column letter) and which keys the main workbook lists. */
 export interface InstanceChoices {
   key?: string;
   /** "present" = only the key values that have rows (default); "all" = every value of the list the macro reads */
@@ -546,8 +568,8 @@ export interface InstanceChoices {
   macro?: string;
 }
 
-/** POST .../mind-instances-plan/apply: the Apply outcome, the plan (without operations), the zip's URL and the two file names. */
-/** POST .../mind-instances-plan/apply: `download` is null when the zip was not made (a change refused, the main workbook failed); `warnings` say why. */
+/** POST .../mind-instances-plan/apply: the Apply  outcome, the plan (without operations),  the zip's URL and the two file  names. */
+/** POST .../mind-instances-plan/apply: `download`  is null  when the zip was not made (a change refused, the main workbook failed); `warnings` say why. */
 export type InstancesOutcome = Omit<ApplyOutcome, "plan"> & { plan: InstancePlan; download: string | null; files: string[]; warnings?: string[] };
 
 // ---- Where instances could help (app/instance_finder.py) ---------------------------------------
@@ -563,7 +585,7 @@ export interface FinderEvidence {
   vba?: string[];
 }
 
-/** The grouping column of a P1 dimension: "Use as the key" fills the builder with `column`. */
+/** The  grouping column of a P1 dimension: "Use as the key" fills  the builder with `column`. */
 export interface FinderKey {
   sheet: string;
   column: string;
@@ -574,7 +596,7 @@ export interface FinderKey {
   biggest?: { value: string | number; rows: number };
   smallest?: { value: string | number; rows: number };
   balance?: number;
-  /** key value -> number of rows (at most 12 keys, then "…": how many more) */
+  /** key value ->  number of rows (at most 12 keys,  then "…": how many more) */
   counts?: Record<string, number>;
   type?: string;
   keyed_formulas?: number;
@@ -585,7 +607,7 @@ export interface FinderKey {
   literals_are_values?: number;
 }
 
-/** A repeated block: its copies along rows, columns or sheets, and how alike they are. */
+/** A repeated block: its copies along rows,  columns or sheets, and how alike they  are. */
 export interface FinderBlock {
   sheet: string;
   axis: "rows" | "columns" | "sheets";
@@ -639,7 +661,7 @@ export interface FinderEdits {
   branches?: { count: number; action: string } | null;
 }
 
-/** One dimension: a thing the model repeats over (a key column, a list, copies of a block or a sheet). */
+/** One dimension: a thing the model repeats over (a key column, a list, copies of a block or a  sheet). */
 export interface FinderDimension {
   id: string;
   rank: number;
@@ -722,14 +744,14 @@ export interface AppHealth {
   frontend?: string;
   /** a shared copy's last working day, "2026-12-15" (null: no end date, the developer version) */
   expires?: string | null;
-  /** 0 on the last day */
+  /** 0  on the last day */
   days_left?: number | null;
-  /** past the date: every other call answers 410 with `expired_message` */
+  /** past the  date: every other call answers 410 with  `expired_message` */
   expired?: boolean;
   expired_message?: string | null;
 }
 
-/** GET/POST /api/assistant-key: never the key itself. `message`: saved but not checked (gateway unreachable). */
+/** GET/POST /api/assistant-key: never  the key  itself. `message`: saved but not checked (gateway unreachable). */
 export interface AssistantKey {
   saved: boolean;
   last4: string | null;
@@ -829,7 +851,7 @@ export interface RecalcCell {
   preexisting?: boolean;
 }
 
-/** What the assistant is asked about: a finding, or one recalculation error. */
+/** What the assistant is asked about:  a finding, or one recalculation error. */
 export interface FixTarget {
   kind?: "finding" | "recalc" | "recalc-group";
   rule_id: string;
@@ -872,7 +894,7 @@ export interface MindLoopOptions {
   skipMind?: boolean;
   enable?: string[];
   disable?: string[];
-  /** The changes to make before uploading; [] uploads the version as it is. */
+  /** The changes to make before uploading;  [] uploads the version as it  is. */
   actions?: string[];
 }
 
@@ -914,7 +936,7 @@ export interface MindRunOptionsInfo {
   estimate: MindRunEstimate;
 }
 
-/** The Mind sign-in the app's own browser profile keeps (GET/POST /api/mind/sign-in). */
+/** The Mind sign-in the app's own browser  profile keeps (GET/POST /api/mind/sign-in). */
 export interface MindSignIn {
   state: "idle" | "waiting" | "checking" | "done" | "failed";
   message: string | null;
@@ -1146,7 +1168,7 @@ export interface AutoFixLeft {
   tried: boolean;
 }
 
-/** The steps of "Do everything", in order ("outside" only when the model's macros open outside files). */
+/** The steps  of "Do everything", in order ("outside" only  when the model's macros open outside files). */
 export type ChainStepId = "outside" | "fixAll" | "prepare" | "loop" | "recalc";
 
 /** 1.11.6: GET .../estimate -- how long "Do everything" may take, per step (seconds). */
@@ -1172,10 +1194,12 @@ export interface FeedbackMessage {
   email: string;
   file_name: string;
   assistant: boolean;
+  /** 1.14.1: the open workbook's count (null without one); the same line is in `text` */
+  aiUsage?: AiUsage | null;
 }
 
 // ---- outside input files: a model whose macros open other files (app/outside_inputs.py) --------------
-/** One row of the model's import table (a cell that holds an outside file's path), with the picked file. */
+/** One row of the model's import  table (a cell that holds an outside file's path), with the picked file. */
 export interface OutsideInputRow {
   /** "Sheet!A1": the cell that holds the path */
   cell: string;
@@ -1194,8 +1218,8 @@ export interface OutsideInputRow {
   candidates: string[];
 }
 
-/** The outside files the workbook's macros open, matched with the files picked with it
- *  (in the scan answer and GET /api/sessions/{id}; null when the macros open none). */
+/** The outside files the  workbook's macros open, matched with  the files picked with it
+ *  (in the scan  answer and GET  /api/sessions/{id}; null  when the macros open none). */
 export interface OutsideInputs {
   imports: boolean;
   macro: string | null;
@@ -1208,12 +1232,12 @@ export interface OutsideInputs {
   extra: string[];
   /** one plain sentence: "6 of 6 input files matched." */
   summary: string;
-  /** the current version has the files brought in: by a bring-in that finished, with the files picked now */
+  /** the current version has the files brought in: by  a bring-in that finished, with the files picked now */
   brought_in: boolean;
-  /** why not, when the current line went through a bring-in that no longer counts ("the input files
-   *  changed since they were brought in", "the last bring-in did not finish"); null otherwise */
+  /** why not, when  the current line went through a  bring-in that no longer counts ("the input  files
+   *  changed since they were brought in", "the last bring-in did not  finish"); null otherwise */
   brought_in_reason?: string | null;
-  /** the Mind inputs (/Input grids) the bring-in made for the current line */
+  /** the Mind inputs (/Input grids)  the bring-in made for the current line */
   mind_inputs?: string[];
   /** the matched files the assistant made (stand-ins from the model's own numbers): best results come
    *  with the actual files */
@@ -1244,7 +1268,7 @@ export interface OutsideImportReport {
   macro: string;
   seconds: number | null;
   files: OutsideImportFile[];
-  /** areas put back from the upload: the macro cleared them for a file nobody picked */
+  /** areas put back from the  upload: the macro cleared them for a file nobody picked */
   kept: { sheet: string; ref: string }[];
   /** the message boxes the macro showed, answered by the app */
   dialogs: { title?: string; message?: string; buttons?: string[]; pressed?: string | null }[];
@@ -1284,28 +1308,28 @@ export interface OutsideRunResult {
   /** one plain line: "6 outside files brought in; 6 Mind inputs made (IN_BBA_01, ...); no computed value changed." */
   summary: string;
   /** the comparison of every computed value before and after the Mind inputs: `ran` false when it
-   *  could not run (the values were NOT checked); null when it was not asked for */
+   *  could not run (the values were NOT  checked); null when it was  not asked for */
   numbers?: { ran?: boolean; clean?: boolean | null; verdict?: string; counts?: Record<string, number> } | null;
-  /** what the user should know, in plain words (a file not picked, an area that stays inside the model) */
+  /** what the user should know,  in plain words  (a file  not picked, an area that stays inside the model) */
   notes?: string[];
   /** the stand-in files the assistant made first (when the user had none): how the macro reads a file,
-   *  the rows left without one, and each attempt's outcome */
+   *  the rows left without one, and  each attempt's outcome */
   standIns?: { ok: boolean; explain?: string | null; files?: string[]; left_out?: string[]; attempts?: { n: number; problem: string | null; details?: string[] }[] } | null;
 }
 
-/** GET .../outside-inputs: the background job that brings the outside files in. */
+/** GET .../outside-inputs: the background job that brings the outside  files in. */
 export interface OutsideRunStatus {
   outsideInputs: OutsideInputs | null;
   running: boolean;
-  /** idle | running | done | error */
+  /** idle | running | done  | error */
   state?: string;
-  /** the versions the job made (also when it stopped half-way) */
+  /** the versions the job made (also  when it stopped half-way) */
   versions?: string[];
-  /** the stage in words ("Running the workbook's import macro") */
+  /** the stage in words ("Running the workbook's import  macro") */
   stage: string | null;
   result: OutsideRunResult | null;
   error: string | null;
-  /** the latest progress line of the stage, and the seconds since the job started */
+  /** the latest progress line of the stage,  and the seconds since the job started */
   message?: string | null;
   elapsed_s?: number;
   /** the stand-in files the assistant made (or tried to): each try's outcome, also when it failed */
@@ -1315,7 +1339,7 @@ export interface OutsideRunStatus {
   waiting?: boolean;
   /** while it waits: the files the model's macro opens, which are there, what each fills */
   needed?: OutsideNeededFile[] | null;
-  /** the stages the job went through, in order (waiting | start | stand_ins | import | scan | ... | done | stopped) */
+  /** the stages  the job went through, in order (waiting | start | stand_ins | import | scan | ... | done | stopped) */
   stages?: string[];
 }
 
@@ -1332,7 +1356,7 @@ export interface OutsideNeededFile {
 }
 
 /** The box under Do everything while it waits for the input files: how many are missing, which, and
- *  the ways on (pick them; with an AI key, let the assistant make stand-ins). */
+ *  the ways  on (pick them; with an  AI key, let the assistant make stand-ins). */
 export function outsideWaitingLine(files: { name: string; present: boolean }[], assistant: boolean): string {
   const missing = files.filter((f) => !f.present).map((f) => f.name);
   if (!missing.length) return "Every input file is there: press Go on.";
@@ -1340,7 +1364,7 @@ export function outsideWaitingLine(files: { name: string; present: boolean }[], 
   return `Do everything is waiting for ${missing.length} input file${one ? "" : "s"}: ${nameList(missing, 6)}. Pick ${one ? "it" : "them"}${assistant ? ", or let the assistant make stand-ins" : ""}.`;
 }
 
-/** The model workbook itself (the main file of an upload). */
+/** The  model workbook itself  (the main  file of an upload). */
 export const WORKBOOK_FILE_RE = /\.(xlsx|xlsm|xlsb)$/i;
 /** What a model's input file may be (INPUT_FILE_EXTENSIONS of app/outside_inputs.py). */
 export const INPUT_FILE_RE = /\.(xlsx|xlsm|xlsb|xls|csv|txt|prn)$/i;
@@ -1352,12 +1376,12 @@ export function nameList(names: string[], max = 3): string {
   return names.slice(0, max).join(", ") + (names.length > max ? ` and ${names.length - max} more` : "");
 }
 
-/** How the server compares two file names (NFKC: full-width （１） = (1); case ignored). */
+/** How the server compares two  file names (NFKC: full-width （１） = (1); case ignored). */
 function sameName(name: string): string {
   return name.normalize("NFKC").toLowerCase().trim();
 }
 
-/** Why these input files cannot be sent (not an Excel or text file, the same name twice), or "". */
+/** Why these input  files cannot be sent (not an  Excel or text file, the same name  twice), or "". */
 export function inputFilesProblem(names: string[]): string {
   const bad = names.filter((n) => !INPUT_FILE_RE.test(n));
   if (bad.length) return `${nameList(bad)} ${bad.length === 1 ? "is not an Excel or text file" : "are not Excel or text files"}: pick .xlsx, .xlsm, .xlsb, .xls, .csv or .txt files.`;
@@ -1370,7 +1394,7 @@ export function inputFilesProblem(names: string[]): string {
   return "";
 }
 
-/** Why the files picked on the upload screen cannot be sent, or "": one workbook (as before), or the
+/** Why the files picked on the upload screen cannot  be sent, or "": one workbook (as  before), or the
  *  model workbook together with its input files (the server finds which one is the model). */
 export function pickedFilesProblem(names: string[]): string {
   if (names.length <= 1) return names.length && !WORKBOOK_FILE_RE.test(names[0]) ? "Choose an .xlsx, .xlsm or .xlsb workbook." : "";
@@ -1384,7 +1408,7 @@ export function outsideRowLabel(r: OutsideInputRow): string {
 }
 
 /** The outcome of "Bring in the outside files" in plain words, and whether Do everything may go on.
- *  It stops when the model's macro did not read every picked file (a file it did not open, or a
+ *  It stops when the model's macro did not read every picked  file (a file it did not open, or a
  *  question the app answered No), or when a computed value changed (values must never change) --
  *  in red -- and, in amber, when the comparison of the computed values could not run (`unchecked`:
  *  the files are in, the user goes on on purpose). An area that stays inside the model is reported,
@@ -1414,7 +1438,7 @@ export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" |
       : declined
         ? `The import macro asked a question and the app answered ${answer(declined.pressed)}, so it may have stopped early`
         : "The import macro stopped early";
-  // the server's notes say in words what the reports hold; without them, the reports are read here
+  // the server's notes say in words what  the reports hold; without them,  the reports are read here
   const own = [
     imp?.error ? `the macro said: ${imp.error.slice(0, 120)}` : "",
     imp?.kept?.length ? `the model keeps its own data in ${nameList(imp.kept.map((k) => `${k.sheet}!${k.ref}`))} (no file picked)` : "",
@@ -1434,7 +1458,7 @@ export function outsideOutcome(r: OutsideRunResult): { ok: boolean; tone: "ok" |
   return { ok: !stopped && !changed && !unchecked, tone, line, detail, unchecked };
 }
 
-/** The first clause of a message from the server, for a one-line status (the whole message goes in the
+/** The first clause  of a message  from the  server, for a one-line status (the whole message goes in the
  *  details): it ends at the first ". " or "; " outside quotes, and is cut at about 160 characters. */
 export function firstClause(text: string, max = 160): string {
   const t = (text ?? "").trim();
@@ -1452,9 +1476,9 @@ export function firstClause(text: string, max = 160): string {
   return out.length > max ? out.slice(0, max - 1).trimEnd() + "…" : out;
 }
 
-/** The label of the card's button that brings the outside files in: "Try again" after a run that
- *  failed, the matched files only when some are missing, "Bring in again" when the current line was
- *  brought in before (files changed since, or that bring-in did not finish). */
+/** The label  of the card's button that brings the outside files in: "Try  again" after a run that
+ *  failed, the  matched files only when some are missing,  "Bring in again" when the current line was
+ *  brought in before (files  changed since, or that bring-in did not  finish). */
 export function outsideButtonLabel(o: OutsideInputs, failed: boolean): string {
   if (failed) return "Try again";
   if (o.matched && o.missing.length) return `Bring in the ${o.matched} matched file${o.matched === 1 ? "" : "s"}`;
@@ -1473,7 +1497,7 @@ export function outsideSkipReason(o: OutsideInputs | null, unchecked = false): s
   return "";
 }
 
-/** The warning while stand-ins the assistant made are in use, or "": they reproduce the numbers the
+/** The warning while stand-ins the  assistant made are in use, or "": they reproduce the numbers the
  *  model holds, but the actual files are what the model was built for. */
 export function outsideStandInLine(o: OutsideInputs | null): string {
   const n = o?.stand_ins?.length ?? 0;
@@ -1495,8 +1519,8 @@ export function outsideReasonLine(o: OutsideInputs | null): string {
 }
 
 /** "Bring in the outside files" when the server's estimate has no such step, with the measures of
- *  app/estimate.py: the model's own import macro and the making of the Mind inputs each start Excel,
- *  open and save the workbook; each new version is scanned again; the numbers check opens both. */
+ *  app/estimate.py: the model's own import macro and the making  of the Mind inputs each  start Excel,
+ *  open and save the workbook; each  new version is  scanned again;  the numbers check opens both. */
 export function outsideStepEstimate(basis: Partial<ChainEstimate["basis"]> | undefined, standIns = false): ChainEstimateStep {
   const mb = Math.max(0, basis?.file_mb ?? 0);
   const scan = basis?.scan_s && basis.scan_s > 0 ? basis.scan_s : 30;
@@ -1504,7 +1528,7 @@ export function outsideStepEstimate(basis: Partial<ChainEstimate["basis"]> | und
   const save = 10 + 0.18 * mb;
   const fixed = 2 * (open + save) + 10 + 2 * (open + 10 + save) + 0.2 * scan; // import, Mind inputs, numbers check
   // stand-ins: the assistant reads the macro (1-3 min a try, up to 3 tries), the files are built, the
-  // macro runs once more on them and every computed value is compared
+  // macro runs once more on  them and every computed value is compared
   const made = standIns ? { low: 90 + 2 * (open + save), mid: 240 + 3 * (open + save), high: 3 * 300 + 6 * (open + save) } : { low: 0, mid: 0, high: 0 };
   return {
     id: "outside",
@@ -1517,7 +1541,7 @@ export function outsideStepEstimate(basis: Partial<ChainEstimate["basis"]> | und
   };
 }
 
-/** The chain's estimate with the outside step in it when that step will run and the server did not count it. */
+/** The chain's estimate with the  outside step in it when that  step will run and the server did  not count it. */
 export function withOutsideStep(e: ChainEstimate | null, include: boolean, standIns = false): ChainEstimate | null {
   if (!e || !include || e.steps.some((s) => s.id === "outside")) return e;
   const step = outsideStepEstimate(e.basis, standIns);
@@ -1529,8 +1553,8 @@ export function withOutsideStep(e: ChainEstimate | null, include: boolean, stand
 }
 
 
-// ---- next quarter's Mind input files (POST / GET .../next-quarter-inputs) ---------------------------
-/** One file of the zip: the grid it fills in Mind and the picked file it came from. */
+// ---- next quarter's Mind input files (POST / GET  .../next-quarter-inputs) ---------------------------
+/** One file of the zip: the  grid it fills in Mind and the picked file it came from. */
 export interface NextQuarterFile {
   /** the name Mind's Inputs window matches: the grid's name (IN_BBA_01.csv, or .txt when TAB-separated) */
   file: string;
@@ -1542,7 +1566,7 @@ export interface NextQuarterFile {
   rows: number;
   cols: number;
   separator?: string;
-  /** values that differ from the files made when the outside files were brought in (null: nothing to compare with) */
+  /** values that differ from the files made when the outside files were brought in  (null: nothing to compare with) */
   changed?: number | null;
 }
 
@@ -1569,7 +1593,7 @@ export interface NextQuarterStatus {
   available: boolean;
   why_not?: string | null;
   running: boolean;
-  /** idle | running | done | error */
+  /** idle | running |  done | error */
   state?: string;
   stage: string | null;
   message?: string | null;
@@ -1578,12 +1602,12 @@ export interface NextQuarterStatus {
   error: string | null;
 }
 
-/** What the Next quarter part of the Outside files card says before anything is picked. */
+/** What the Next  quarter part of the Outside files card  says before anything  is picked. */
 export const NEXT_QUARTER_LEAD =
   "Raw input files cannot go into Mind directly. Mind takes one file per input grid, shaped like the grid. " +
   "Pick the new quarter's raw files: the app runs the model's own import macro on them and gives you the files for Mind's Inputs window. No new model upload.";
 
-/** One line per file of the zip: which grid it fills and what it was made from. */
+/** One  line per file of the zip: which grid it fills and what it was made from. */
 export function nextQuarterLines(r: NextQuarterResult): string[] {
   const count = (n: number) => n.toLocaleString("en-US");
   return (r.files ?? []).map((f) => {
@@ -1593,7 +1617,7 @@ export function nextQuarterLines(r: NextQuarterResult): string[] {
   });
 }
 
-/** The outcome in words: the server's summary, and the notes (a raw file recognised, a grid left out). */
+/** The outcome in words: the server's summary, and the notes (a raw file recognised, a grid  left out). */
 export function nextQuarterOutcome(r: NextQuarterResult): { tone: "ok" | "warn" | "error"; line: string; detail: string } {
   if (!r.ok) return { tone: "error", line: firstClause(r.error ?? "") || "No Mind input file was made", detail: r.error ?? "" };
   const left = (r.not_in_zip ?? []).map((x) => `${x.grid}: ${x.why}`);

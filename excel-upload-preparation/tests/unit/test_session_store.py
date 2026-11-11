@@ -363,3 +363,21 @@ def test_a_workbook_open_in_another_copy_of_the_app_is_left_alone(client, data_f
     assert sid in session_store._HELD  # ours again
     assert client.delete(f"/api/saved-workbooks/{sid}").status_code == 200
     assert not folder.exists()
+
+
+def test_the_assistants_token_count_is_saved_with_the_state_and_an_old_file_starts_at_zero(client, data_folder, plain_grid_xlsx):
+    """1.14.1: `ai_usage` travels with the state file; a file written before it existed opens with an empty count."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    s.ai_usage.update(calls=3, input_tokens=900, output_tokens=100, cache_read_tokens=50, cache_write_tokens=0)
+    server._save(s)
+    path = session_store.folder_of(sid) / session_store.STATE_FILE
+    assert json.loads(path.read_text(encoding="utf-8"))["ai_usage"] == {"calls": 3, "input_tokens": 900, "output_tokens": 100, "cache_read_tokens": 50, "cache_write_tokens": 0}
+    _restart()
+    loaded, _autofix = session_store.load(sid, server.Session)
+    assert loaded.ai_usage == {"calls": 3, "input_tokens": 900, "output_tokens": 100, "cache_read_tokens": 50, "cache_write_tokens": 0}
+    state = json.loads(path.read_text(encoding="utf-8"))
+    del state["ai_usage"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    loaded, _autofix = session_store.load(sid, server.Session)
+    assert loaded.ai_usage == {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}

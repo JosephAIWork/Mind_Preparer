@@ -1214,3 +1214,18 @@ def test_a_session_lives_in_the_data_folder_and_its_state_says_where_it_went(cli
     res = client.get(f"/api/sessions/{sid}")
     assert res.status_code == 404 and res.json()["detail"] == "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen."
     assert client.get("/api/sessions/never-there").json()["detail"] == "unknown session never-there"
+
+
+def test_the_session_answers_carry_the_assistants_token_count(client, flagged_model_broken_xlsx, monkeypatch):
+    """1.14.1: GET /api/sessions/{id} and GET .../ai-usage say how many tokens the assistant used on
+    this workbook (tests/unit/test_ai_usage.py proves the counting itself)."""
+    from app import llm
+
+    sid = _upload(client, flagged_model_broken_xlsx)["sessionId"]
+    empty = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    assert client.get(f"/api/sessions/{sid}").json()["aiUsage"] == empty
+    assert client.get(f"/api/sessions/{sid}/ai-usage").json() == {"aiUsage": empty, "line": "AI not used yet on this workbook"}
+    # a chat whose call reports its usage (the fake stands where the gateway's answer is read)
+    monkeypatch.setattr(chat_context, "chat_completion", lambda messages, system_prompt, **kw: (llm._record_usage({"input_tokens": 1200, "output_tokens": 40}) or {"available": True, "text": "Fine.", "message": None}))
+    assert client.post(f"/api/sessions/{sid}/chat", json={"history": [], "question": "hi"}).json()["text"] == "Fine."
+    assert client.get(f"/api/sessions/{sid}/ai-usage").json() == {"aiUsage": {**empty, "calls": 1, "input_tokens": 1200, "output_tokens": 40}, "line": "AI used: 1,240 tokens in 1 call"}

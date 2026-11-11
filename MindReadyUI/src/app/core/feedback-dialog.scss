@@ -30,6 +30,12 @@
     margin: 0;
   }
 
+  &__ai {
+    @include type.type-style("helper-text-01");
+    color: theme.$text-helper;
+    margin: 0;
+  }
+
   &__text,
   &__steps {
     @include type.type-style("body-01");

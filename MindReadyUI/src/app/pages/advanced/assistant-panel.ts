@@ -1,18 +1,18 @@
 import { CommonModule } from "@angular/common";
-import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
+import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
 import { ChangeStack } from "../../core/change-stack";
 import { CodeName } from "../../core/code-name";
-import { ChatMessage, FixTarget, Proposal, Version, appliedCount, failedCount, failedText } from "../../core/models";
+import { ChatMessage, FixTarget, Proposal, Version, aiUsageLine, appliedCount, failedCount, failedText } from "../../core/models";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 import { chatIsAppWords } from "../../core/show-me";
 import { ShowMeLink } from "../../core/show-me-link";
 import { KeyBox } from "./key-box";
 
-/** The assistant: questions about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
+/** The  assistant: questions  about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
 @Component({
   selector: "mr-assistant-panel",
   standalone: true,
@@ -20,7 +20,7 @@ import { KeyBox } from "./key-box";
   templateUrl: "./assistant-panel.html",
   styleUrl: "./panels.scss",
 })
-export class AssistantPanel implements OnDestroy {
+export class AssistantPanel implements OnInit, OnDestroy {
   private api = inject(ApiService);
   readonly store = inject(SessionStore);
   readonly stack = inject(ChangeStack);
@@ -31,7 +31,7 @@ export class AssistantPanel implements OnDestroy {
   readonly phase = signal("");
   readonly partial = signal("");
   readonly proposal = signal<Proposal | null>(null);
-  /** The version the proposal was made on: an Apply from the list above may make a newer one meanwhile. */
+  /** The version the proposal was made on: an Apply from the list above may  make a newer one meanwhile. */
   private proposalVersion: Version | null = null;
   readonly applying = signal(false);
   readonly fraction = signal<number | null>(null);
@@ -40,7 +40,9 @@ export class AssistantPanel implements OnDestroy {
   private stop: (() => void) | null = null;
 
   readonly target = computed(() => this.store.fixTarget());
-  /** Only the app's own words in the chat get a "Show me", never the assistant's free text. */
+  /** 1.14.1: "AI used: 12,340 tokens in 7  calls" on this workbook, or "AI  not used yet on this workbook". */
+  readonly usageLine = computed(() => aiUsageLine(this.store.aiUsage()));
+  /** Only the  app's own words in the chat get a "Show me", never  the assistant's free text. */
   readonly appWords = chatIsAppWords;
   readonly prompts = computed(() => {
     const t = this.target();
@@ -49,8 +51,23 @@ export class AssistantPanel implements OnDestroy {
     return ["Propose a fix", "Why does Mind reject this?", "What is the smallest change?"];
   });
 
+  ngOnInit(): void {
+    void this.refreshUsage();
+  }
+
   ngOnDestroy(): void {
     this.stop?.();
+  }
+
+  /** The count from the  server (a step in a job -- Fix all issues, the grid namer -- adds to it too). */
+  async refreshUsage(): Promise<void> {
+    const id = this.store.sessionId();
+    if (!id) return;
+    try {
+      this.store.aiUsage.set((await this.api.aiUsage(id)).aiUsage);
+    } catch {
+      // the line keeps what it had
+    }
   }
 
   /** A recalculation error in words: "#REF! at Calc!B7 and 3 cells alike: the formula points at a cell
@@ -62,7 +79,7 @@ export class AssistantPanel implements OnDestroy {
     return `${t.error || "the error"}${where ? " at " + where : ""}${n}${meaning ? ": " + meaning : ""}`;
   }
 
-  /** What follows a finding's code and name: where, the error, the cells alike. */
+  /** What follows a finding's code and name: where, the error, the cells  alike. */
   whereText(t: FixTarget): string {
     const where = [t.sheet, t.cell].filter(Boolean).join("!");
     const n = t.cells?.length ? ` and ${t.cells.length} cells alike` : "";
@@ -110,6 +127,7 @@ export class AssistantPanel implements OnDestroy {
       this.streaming.set(false);
       this.phase.set("");
       this.partial.set("");
+      void this.refreshUsage();
     }
   }
 

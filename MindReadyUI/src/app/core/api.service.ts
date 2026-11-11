@@ -4,10 +4,10 @@ import { firstValueFrom } from "rxjs";
 import { ExpiryService } from "./expiry";
 import { FeedbackService } from "./feedback.service";
 import {
-  AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NextQuarterStatus, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SavedWorkbook, ScanStatus, SessionStart, SheetCells, Version,
+  AiUsage, AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NextQuarterStatus, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SavedWorkbook, ScanStatus, SessionStart, SheetCells, Version,
 } from "./models";
 
-/** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
+/** Calls  to the  Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
 @Injectable({ providedIn: "root" })
 export class ApiService {
   private http = inject(HttpClient);
@@ -28,17 +28,22 @@ export class ApiService {
     return firstValueFrom(this.http.get<PlainCodesGlossary>(`${this.base}/plain-codes`));
   }
 
-  /** Whether an AI gateway key is saved, and its last 4 characters (the key itself never comes back). */
+  /** Whether an AI gateway key is  saved, and its last 4 characters (the key itself never comes  back). */
   assistantKey(): Promise<AssistantKey> {
     return firstValueFrom(this.http.get<AssistantKey>(`${this.base}/assistant-key`));
   }
 
-  /** Checked with the gateway, then saved encrypted for this Windows user; a refused key is not saved. */
+  /** Checked with the gateway, then saved  encrypted for this Windows user; a refused  key is not saved. */
   saveAssistantKey(key: string): Promise<AssistantKey> {
     return firstValueFrom(this.http.post<AssistantKey>(`${this.base}/assistant-key`, { key }));
   }
 
-  /** The Send feedback message: the incident `ref` (null from the header), the user's note. */
+  /** 1.14.1: the tokens and calls the assistant spent  on this workbook since it was uploaded. */
+  aiUsage(id: string): Promise<{ aiUsage: AiUsage; line: string }> {
+    return firstValueFrom(this.http.get<{ aiUsage: AiUsage; line: string }>(`${this.s(id)}/ai-usage`));
+  }
+
+  /** The  Send feedback message: the incident `ref` (null from the header), the user's note. */
   feedback(body: { ref: string | null; note: string; useAssistant: boolean; sessionId: string | null }): Promise<FeedbackMessage> {
     return firstValueFrom(this.http.post<FeedbackMessage>(`${this.base}/feedback`, body));
   }
@@ -56,7 +61,7 @@ export class ApiService {
   }
 
   /** Adds (or replaces, by name) the model's input files; the server matches them again, no new scan
-   *  (the readiness, when sent, says the new counts). */
+   *  (the readiness, when  sent, says the new counts). */
   addInputs(id: string, files: File[]): Promise<{ inputs: InputFile[]; outsideInputs: OutsideInputs | null; readiness?: Readiness | null }> {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
@@ -75,30 +80,30 @@ export class ApiService {
   }
 
   /** 1.14.0: go on after the wait for the input files: with every file picked, or with the assistant's
-   *  stand-ins for the missing ones (`makeStandIns`). 409 says what is still missing. */
+   *  stand-ins for the missing ones (`makeStandIns`). 409 says  what is still missing. */
   continueOutsideInputs(id: string, makeStandIns = false): Promise<{ running: boolean; state?: string }> {
     return firstValueFrom(this.http.post<{ running: boolean; state?: string }>(`${this.s(id)}/outside-inputs/continue`, makeStandIns ? { makeStandIns: true } : {}));
   }
 
-  /** 1.14.0: end the wait for the input files (nothing was changed). */
+  /** 1.14.0: end  the wait for the input files (nothing  was changed). */
   stopOutsideInputs(id: string): Promise<{ running: boolean; state: string }> {
     return firstValueFrom(this.http.post<{ running: boolean; state: string }>(`${this.s(id)}/outside-inputs/stop`, {}));
   }
 
-  /** Where that job is (stage), and its result or error once it has ended. */
+  /** Where that  job is  (stage), and its result or error once it has ended. */
   outsideInputs(id: string): Promise<OutsideRunStatus> {
     return firstValueFrom(this.http.get<OutsideRunStatus>(`${this.s(id)}/outside-inputs`));
   }
 
   /** Starts making next quarter's Mind input files from the new quarter's raw input files (a background
-   *  job: the model's own import macro on a copy, then one file per Mind input grid, in a zip). */
+   *  job: the model's own import macro on  a copy, then one file per Mind input grid, in a  zip). */
   startNextQuarter(id: string, files: File[]): Promise<{ running: boolean; raw: string[]; grid_files: { file: string; grid: string }[]; notes: string[] }> {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
     return firstValueFrom(this.http.post<{ running: boolean; raw: string[]; grid_files: { file: string; grid: string }[]; notes: string[] }>(`${this.s(id)}/next-quarter-inputs`, form));
   }
 
-  /** The grids next quarter's files fill, and where that job is (its result or error once it has ended). */
+  /** The grids next quarter's files fill,  and where that job is (its result  or error once it has ended). */
   nextQuarter(id: string): Promise<NextQuarterStatus> {
     return firstValueFrom(this.http.get<NextQuarterStatus>(`${this.s(id)}/next-quarter-inputs`));
   }
@@ -111,7 +116,7 @@ export class ApiService {
     return firstValueFrom(this.http.get<SessionStart>(this.s(id)));
   }
 
-  /** 1.14.0: the workbooks kept in the data folder (the main screen's "Recent workbooks"), last opened first. */
+  /** 1.14.0: the workbooks kept in the  data folder (the main screen's "Recent workbooks"),  last opened first. */
   async savedWorkbooks(): Promise<SavedWorkbook[]> {
     const out = await firstValueFrom(this.http.get<{ workbooks: SavedWorkbook[] }>(`${this.base}/saved-workbooks`));
     return out.workbooks ?? [];
@@ -137,7 +142,7 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ pivot_mode: PivotMode; plan: PrepAction[]; readiness: Readiness | null }>(`${this.s(id)}/pivot-mode`, { mode }));
   }
 
-  /** 1.11.6: how long "Do everything" may take (loop=false when the chain will skip the loop). */
+  /** 1.11.6: how long "Do  everything" may take (loop=false when the chain will skip the loop). */
   estimate(id: string, loop: boolean): Promise<ChainEstimate> {
     return firstValueFrom(this.http.get<ChainEstimate>(`${this.s(id)}/estimate`, { params: new HttpParams().set("loop", String(loop)) }));
   }
@@ -208,7 +213,7 @@ export class ApiService {
     return `${this.s(id)}/mind-instances/download`;
   }
 
-  /** Where instances or a loop would help, ranked (nothing written); `assistant` adds the assistant's explanation on top. Slow: up to two minutes on a big model. */
+  /** Where instances or a loop would help,  ranked (nothing written); `assistant` adds  the assistant's explanation on top. Slow: up  to two minutes  on a  big model. */
   instanceFinder(id: string, assistant = false, refresh = false): Promise<{ version_id: string; finder: FinderResult }> {
     const params = new HttpParams().set("assistant", assistant ? "1" : "0").set("refresh", refresh ? "1" : "0");
     return firstValueFrom(this.http.get<{ version_id: string; finder: FinderResult }>(`${this.s(id)}/instance-finder`, { params }));
@@ -255,7 +260,7 @@ export class ApiService {
     return firstValueFrom(this.http.post<MindSignIn>(`${this.base}/mind/sign-in`, stop ? { stop: true } : {}));
   }
 
-  /** What Run in Mind will upload, the changes it can make first, what must finish first, the time estimate. */
+  /** What Run in Mind will  upload, the changes it can make first, what must finish first,  the time estimate. */
   mindLoopOptions(id: string, o: { useAssistant: boolean; runModel: boolean }): Promise<MindRunOptionsInfo> {
     const params = new HttpParams().set("use_assistant", String(o.useAssistant)).set("run_model", String(o.runModel));
     return firstValueFrom(this.http.get<MindRunOptionsInfo>(`${this.s(id)}/mind-loop/options`, { params }));
@@ -266,7 +271,7 @@ export class ApiService {
     return firstValueFrom(this.http.get<MindLoopStatus>(`${this.s(id)}/mind-loop`, { params }));
   }
 
-  /** The assistant's streamed answer (NDJSON over a POST body): `onEvent` gets phases and text deltas, the promise the whole reply. */
+  /** The assistant's streamed answer  (NDJSON over a POST body): `onEvent` gets  phases and text deltas, the promise the whole reply. */
   async chatStream(id: string, history: ChatMessage[], question: string, focus: FixTarget | undefined, onEvent: (ev: ChatStreamEvent) => void): Promise<ChatReply> {
     const body = {
       history: history.map((m) => ({ role: m.role, content: m.content, note: m.note ?? false })),
@@ -279,7 +284,7 @@ export class ApiService {
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => null);
       this.feedbackBox.report(err?.incident, err?.problem);
-      this.expiry.noteAnswer(res.status, err); // fetch, not HttpClient: the interceptor does not see this one
+      this.expiry.noteAnswer(res.status, err); // fetch, not HttpClient:  the interceptor does not see this one
       throw new Error(typeof err?.detail === "string" ? err.detail : `${res.status} ${res.statusText}`);
     }
     const reader = res.body.getReader();
@@ -331,7 +336,7 @@ export class ApiService {
   }
 }
 
-/** The text of a failed call, as the backend's `detail` when it sent one. */
+/** The  text of a failed call, as the backend's `detail` when it sent one. */
 export function errorText(e: unknown): string {
   const err = e as { error?: { detail?: unknown }; message?: string; status?: number };
   const detail = err?.error?.detail;

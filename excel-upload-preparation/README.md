@@ -44,7 +44,9 @@ the two honest cases below.
   from (a text caption on top of a key column, or the empty cell above); what cannot be titled
   without moving or overwriting a cell is reported with what to do by hand.
 - **Send feedback** (1.14.0): the button, the box and the guide name no team; the reply still comes
-  back to the address in `settings.yaml`.
+  back to the address in `settings.yaml`. The message (1.14.1) says what the assistant used on the open
+  workbook, in its log part: "AI used: 12,340 tokens in 7 calls"; the dialog shows the same line under
+  the message.
 - **Plainer screens for the loop and the instances** (1.13.0): Advanced > Mind loop opens with
   one sentence ("The macro runs Scenario 0 to 3 and Cohort 2021 to 2026. Mind can do the same.")
   and one button, **Build it**; the choices and what gets written are folded away, and a loop that
@@ -331,6 +333,16 @@ the two honest cases below.
   a fresh copy, the file is verified and re-analyzed, and the conversation
   continues on the changed workbook. Needs the gateway key, pasted once
   in the web app (saved encrypted for the Windows user, `app/ai_key.py`).
+  The app counts what the assistant uses per workbook (1.14.1): every
+  completed call -- the chat, a suggestion, the grid namer, the finder, Fix
+  all issues, the stand-ins, Run in Mind -- adds its tokens and one call to
+  the open session (`app/llm.py` `usage_scope`, a context variable the
+  server sets around every step that may ask the assistant; the jobs' threads
+  run under it too). The count is saved with the workbook and shown under
+  Advanced > Assistant and in the feedback message: "AI used: 12,340 tokens
+  in 7 calls" (input + output together; the parts -- input, output, cache
+  read, cache write -- are in `GET /api/sessions/{id}/ai-usage`), or "AI not
+  used yet on this workbook".
 - **Web app** (1.6.0): the Figma-built React front-end in
   `../MindReadyUI` served by `app/web/server.py` (FastAPI) -- an Angular 22 +
   Carbon app with Mind's own look (1.11.0; the React app in `FigmaOutput` is

@@ -213,3 +213,14 @@ def test_a_stage_error_carries_the_innermost_stage():
             with stage("inner_stage"):
                 raise RuntimeError("x")
     assert info.value.mind_ready_stage == "inner_stage"
+
+
+def test_the_message_says_how_many_tokens_the_assistant_used_on_the_workbook():
+    """1.14.1: one line in the log part, from the open workbook's count; none without a workbook."""
+    used = {"calls": 7, "input_tokens": 12000, "output_tokens": 340, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    msg = feedback.compose(None, "Works well", None, None, ai_usage=used)
+    assert "\n  AI used: 12,340 tokens in 7 calls\n" in msg["text"] and msg["aiUsage"] == used
+    fresh = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    assert "\n  AI not used yet on this workbook\n" in feedback.compose(None, "Works well", ai_usage=fresh)["text"]
+    none = feedback.compose(None, "Works well")
+    assert "AI used" not in none["text"] and "AI not used" not in none["text"] and none["aiUsage"] is None

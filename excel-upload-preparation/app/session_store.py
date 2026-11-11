@@ -1,26 +1,26 @@
-"""Saved workbooks: a session's files and state kept on disk between runs of the app.
+"""Saved  workbooks: a  session's files and state kept on disk between runs of the app.
 
 Each session lives in `SETTINGS.data_folder / "sessions" / <session id>` (its work folder: the
-upload, every version, the analysis copies, the recalculations, the Mind inputs, the instances zip,
-with the same layout the %TEMP% folder had) next to one `state.json` that holds everything the
-`Session` dataclass (app/web/server.py) can save: the versions and their files, the plan, the
-recalculation, the plans of the Mind loop and the instances, the bring-in and next-quarter results,
+upload, every version, the analysis copies, the  recalculations, the Mind inputs, the instances zip,
+with the same layout the  %TEMP% folder had) next to one  `state.json` that holds everything the
+`Session` dataclass (app/web/server.py)  can save: the versions and their files, the plan, the
+recalculation, the  plans of the Mind loop and the  instances, the bring-in and next-quarter results,
 the grid names, the settings chosen -- and, apart, the two big objects: `result.json`, the last check
 result (the whole analysis: tens of MB on a big model), and `plan.json`, the plan (every formula fix as an
 operation: 60 MB on the anonymized IFRS 17 tool), each written only when the server replaced that object
-since the last save (`s.result` and `s.plan` are set whole by a scan or a re-plan, never changed in
+since the last save  (`s.result` and `s.plan` are set whole by a scan or a re-plan, never changed in
 place). Locks, threads and live job state are not saved: a job that was running when the app stopped shows as
 stopped when the session is opened again, with the sentence `CLOSED_WHILE_RUNNING`.
 
 Two copies of the app (two ports, the same data folder) never work on the same session: the copy
 that holds a session in memory keeps `open.lock` locked (the OS releases it when the process ends,
-however it ends); the other copy's list leaves that workbook out and its Reopen / Remove answer 409
+however it ends);  the other copy's list leaves  that workbook out and its Reopen /  Remove answer 409
 (`held_elsewhere`).
 
-`save(s)` is called by the server after every step that changes a session's state; it never raises
-(a save must not break the step: the problem is printed and the step's answer goes out as before).
-`load(session_id, Session)` reads the folder back into a `Session`; `list_saved()` reads the state
-files alone (no session is loaded); `remove(session_id)` deletes the folder. The app loads nothing at
+`save(s)`  is called  by the server after every step that changes a session's state; it never raises
+(a save must not break the step: the problem is printed and the step's answer goes out as  before).
+`load(session_id, Session)` reads the folder back into a `Session`; `list_saved()` reads  the state
+files alone (no session is  loaded); `remove(session_id)` deletes the folder. The app  loads nothing at
 start: the screens show the list and wait (docs/SAVED_WORKBOOKS.md).
 """
 from __future__ import annotations
@@ -34,15 +34,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.llm import empty_usage
 from app.settings import SETTINGS
 
 STATE_FILE = "state.json"
-RESULT_FILE = "result.json"  # the last check result, apart: big, and it changes only at a scan
+RESULT_FILE = "result.json"  # the  last check result, apart: big, and it  changes only at a scan
 PLAN_FILE = "plan.json"  # the plan, apart: big, and it changes only at a scan or a re-plan
 # the Session fields kept in a file of their own, (field, file name): written only when the server has
 # replaced the object (identity), so a step that keeps it rewrites the small state file alone
 _APART = (("result", RESULT_FILE), ("plan", PLAN_FILE))
-LOCK_FILE = "open.lock"  # locked by the copy of the app that holds the session in memory
+LOCK_FILE = "open.lock"  # locked by the copy of the app that holds the session  in memory
 CLOSED_WHILE_RUNNING = "The app was closed while this ran."
 # Do everything was waiting for the input files when the app closed (1.14.0, outside_run "waiting_for_inputs")
 CLOSED_WHILE_WAITING = "The app was closed while Do everything waited for the input files. Pick them, then press Do everything again."
@@ -52,7 +53,7 @@ _APART_SAVED: dict[tuple[str, str], Any] = {}  # (session id, field) -> the obje
 _HELD: dict[str, int] = {}  # session id -> the open file descriptor of its lock (this copy of the app holds it)
 _LOCK_AT = 4096  # the byte locked, past the text that names the holder (a read of the text never touches it)
 
-# The Session fields saved as they are (JSON-safe already) ...
+# The Session fields saved as they are (JSON-safe  already) ...
 _PLAIN_FIELDS = (
     "mode", "versions", "current_version_id", "last_delta", "recalc", "recalc_version_id",
     "grid_names", "created_at", "size", "ignore_sheets", "pivot_mode", "pending", "scan", "plan_history",
@@ -60,13 +61,14 @@ _PLAIN_FIELDS = (
     "outside_inputs", "outside_run", "next_quarter", "brought_in_files", "instance_finder",
     "instance_finder_version_id", "instance_finder_assistant", "instance_plan_default",
     "instance_plan_default_version_id", "name", "last_opened",
+    "ai_usage",  # the tokens and calls  the assistant spent on the workbook (1.14.1)
 )
-# ... the fields that hold a path (kept relative to the session's folder when inside it; the Mind
+# ...  the fields that  hold a  path (kept relative to the session's folder when inside it; the Mind
 # inputs folders are held as text in the Session, the others as Paths) ...
 _PATH_FIELDS = ("recalc_path", "instances_zip", "mind_inputs_dir")
 _PATH_DICT_FIELDS = ("paths", "files", "mind_inputs_dirs")
 _TEXT_PATHS = ("mind_inputs_dir", "mind_inputs_dirs")
-# ... and the live job states: "running" cannot survive a restart
+# ... and the live job states: "running"  cannot survive a restart
 _JOB_FIELDS = ("scan", "apply_status", "outside_run", "next_quarter")
 
 
@@ -75,7 +77,7 @@ def valid_id(session_id: str) -> bool:
 
 
 def sessions_root() -> Path:
-    """`SETTINGS.data_folder` is read at call time: the tests point it at a folder of their own."""
+    """`SETTINGS.data_folder` is read at call time: the tests  point it at a folder of  their own."""
     return Path(SETTINGS.data_folder) / "sessions"
 
 
@@ -86,20 +88,20 @@ def folder_of(session_id: str) -> Path:
 
 
 def new_folder(session_id: str) -> Path:
-    """The work folder of a new session (made, empty)."""
+    """The work folder of a new  session (made, empty)."""
     folder = folder_of(session_id)
     folder.mkdir(parents=True, exist_ok=False)
     return folder
 
 
-# --- which copy of the app holds a session ---------------------------------------------------------
+# --- which copy of the app holds a session  ---------------------------------------------------------
 def _holder_text() -> bytes:
     port = os.environ.get("MIND_READY_PORT") or getattr(SETTINGS, "port", "") or ""
     return json.dumps({"pid": os.getpid(), "port": str(port)}).encode("utf-8")
 
 
 def _try_lock(fd: int) -> bool:
-    """Lock the session's lock file through `fd` (no wait); False when another process holds it."""
+    """Lock the session's lock file through `fd`  (no wait); False when another process holds it."""
     try:
         if os.name == "nt":
             import msvcrt
@@ -140,7 +142,7 @@ def hold(session_id: str) -> bool:
 
 
 def release(session_id: str) -> None:
-    """The session is no longer held by this copy of the app (removed, or let go)."""
+    """The session is no longer held  by this copy of the app (removed, or let go)."""
     fd = _HELD.pop(session_id, None)
     if fd is not None:
         try:
@@ -219,9 +221,9 @@ def _stopped(job: dict[str, Any] | None) -> dict[str, Any]:
     return job
 
 
-# --- the state file -----------------------------------------------------------------------------
+# ---  the state file -----------------------------------------------------------------------------
 def to_state(s: Any, autofix: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Everything of `s` that can be saved, JSON-safe, paths relative to the session's folder."""
+    """Everything of  `s` that can be saved, JSON-safe, paths  relative to the  session's folder."""
     folder = Path(s.work_dir)
     state: dict[str, Any] = {"id": s.id, "saved_at": time.time()}
     for name in _PLAIN_FIELDS:
@@ -236,22 +238,22 @@ def to_state(s: Any, autofix: dict[str, Any] | None = None) -> dict[str, Any]:
     state["original_environment"] = None if s.original_environment is None else [[k[0], k[1], v] for k, v in s.original_environment.items()]
     state["baselines"] = {k: {**b, "ref_formulas": _pack_pairs(b.get("ref_formulas"))} for k, b in (s.baselines or {}).items()}
     state["original_baseline"] = next((k for k, b in (s.baselines or {}).items() if b is s.original_baseline), None) if s.original_baseline is not None else None
-    # the automatic fixer's state lives next to the sessions in the server (AUTOFIX): its public part
+    # the  automatic fixer's state lives next to the sessions in the server (AUTOFIX): its public part
     state["autofix"] = None if autofix is None else {k: v for k, v in autofix.items() if k != "stop"}
     for name, file_name in _APART:  # the check result and the plan, apart (None: nothing to read)
         state[f"{name}_file"] = file_name if getattr(s, name, None) else None
-    return state  # written with default=str: dates, Paths and openpyxl values as text
+    return state  # written with default=str: dates, Paths and openpyxl  values as text
 
 
 def apply_state(s: Any, state: dict[str, Any]) -> dict[str, Any] | None:
-    """Fill `s` (a Session made with its id, folder and mode) from a state dict; returns the saved
-    automatic-fixer state (None when there was none), stopped when it was running."""
+    """Fill `s` (a Session made with its id, folder  and mode) from a state dict;  returns the saved
+    automatic-fixer state (None when there  was none), stopped when it was running."""
     folder = Path(s.work_dir)
     for name in _PLAIN_FIELDS:
         if name in state and name != "mode":
             setattr(s, name, state[name])
     for name, _file_name in _APART:
-        if name in state:  # a state file written before that object had a file of its own
+        if name in state:  # a state file written before  that object had a file of its  own
             setattr(s, name, state[name])
         elif state.get(f"{name}_file"):
             data = _read_json(folder / str(state[f"{name}_file"]), (dict, list))
@@ -275,6 +277,9 @@ def apply_state(s: Any, state: dict[str, Any]) -> dict[str, Any] | None:
         setattr(s, name, _stopped(getattr(s, name, None)))
     if not s.scan:
         s.scan = {}
+    # a state file written before the count existed, or one with an odd value: the count starts again
+    kept = getattr(s, "ai_usage", None)
+    s.ai_usage = {**empty_usage(), **{k: int(v) for k, v in kept.items() if isinstance(v, (int, float))}} if isinstance(kept, dict) else empty_usage()
     autofix = state.get("autofix")
     return _stopped(autofix) if autofix else None
 
@@ -289,7 +294,7 @@ def _write_whole(folder: Path, name: str, text: str) -> Path:
 
 def save(s: Any, autofix: dict[str, Any] | None = None) -> Path | None:
     """Write the session's state file -- and the check result's or the plan's own file when the
-    server replaced that object since the last save (a scan, a re-plan; an Apply without a re-scan, a
+    server replaced that object since the last save (a scan, a re-plan; an Apply without a  re-scan, a
     grid name, a reopen keep them): on a big model each of those files is tens of MB and takes
     seconds, the state file stays small. Never raises (the problem is printed)."""
     try:
@@ -328,8 +333,8 @@ def read_state(session_id: str) -> dict[str, Any] | None:
 
 
 def load(session_id: str, session_cls: Any) -> tuple[Any, dict[str, Any] | None] | None:
-    """A Session built from its folder, with the saved automatic-fixer state; None when there is no
-    saved session of that id."""
+    """A Session built from  its folder, with the saved  automatic-fixer state; None when there is no
+    saved  session of that  id."""
     state = read_state(session_id)
     if state is None:
         return None
@@ -337,7 +342,7 @@ def load(session_id: str, session_cls: Any) -> tuple[Any, dict[str, Any] | None]
     autofix = apply_state(s, state)
     for name, _file_name in _APART:
         obj = getattr(s, name, None)
-        if obj and name not in state:  # read from its own file: not written again until replaced
+        if obj and name not in state:  # read from  its own file: not written again until replaced
             _APART_SAVED[(session_id, name)] = obj  # (from a state file of the first shape: written at the next save)
     return s, autofix
 
@@ -377,8 +382,8 @@ def summary_of(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_saved() -> list[dict[str, Any]]:
-    """What is on disk, the last opened first; a folder without a readable state file is skipped, and
-    so is a session another copy of the app (another port) holds open: it is that copy's to show."""
+    """What is on disk, the last  opened first; a folder without a readable state file is skipped,  and
+    so is a session another copy  of the app (another port) holds open:  it is that copy's to show."""
     root = sessions_root()
     if not root.is_dir():
         return []
@@ -396,7 +401,7 @@ def list_saved() -> list[dict[str, Any]]:
 
 
 def remove(session_id: str) -> bool:
-    """Delete the session's folder; True when there was one. A file still open (an Excel that was not
+    """Delete the session's folder; True when  there was one. A file still open  (an Excel that was not
     released) leaves the folder behind for the next remove: the state file goes first, so the list
     never shows it again."""
     if not valid_id(session_id):
