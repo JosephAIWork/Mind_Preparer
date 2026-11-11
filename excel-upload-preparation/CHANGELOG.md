@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Comment spacing kept consistent by a pre-commit hook (`tools/comment_spacing.py`,
+  `tools/install_hooks.py`, `.githooks/pre-commit`).
+
+### The app shows how many tokens its assistant used
+
+- **"AI used: 12,340 tokens in 7 calls"**, counted per workbook. Every completed call of the
+  assistant -- the chat (plain or streamed), a suggestion on a finding, the grid namer, the instance
+  finder's explanation, Fix all issues' advisor, the stand-in input files, next quarter's files, Run in
+  Mind's grid names, the feedback's opening lines -- adds its tokens (input, output, cache read, cache
+  write) and one call to the open session. One mechanism for all of them: `app/llm.py` keeps a usage
+  sink in a context variable (`usage_scope`); the server sets it around every step that may ask the
+  assistant (`_ai_scope` in the request's thread, `_ai_thread` for the jobs' threads, which start with
+  no context of their own). The accounting never breaks a call: a sink that fails is printed and the
+  reply returned as it was; a failed call counts nothing. The count is saved with the workbook at once
+  (`ai_usage` in the state file; a file from before opens with an empty count) and comes back after a
+  restart. Shown under Advanced > Assistant, by the AI key box, with what it counts ("Tokens the
+  assistant used on this workbook since it was uploaded."), read again after each chat turn; in the
+  Send feedback dialog under the message, and in the message's log part; "AI not used yet on this
+  workbook" before the first call. Input and output are shown together; the parts stay in the data
+  (`aiUsage` in `GET /api/sessions/{id}` and after Reopen, `GET /api/sessions/{id}/ai-usage` with the
+  line, `aiUsage` in the `POST /api/feedback` answer). (`app/llm.py`, `app/web/server.py`,
+  `app/session_store.py`, `app/feedback.py`, `tests/unit/test_ai_usage.py` -- a fake gateway answering
+  with a `usage` object, plain and streamed, so the real `chat_completion` is what is proven --
+  `test_web_api.py`, `test_session_store.py`, `test_feedback.py`; `MindReadyUI` `core/models.ts`
+  `aiUsageLine`, `core/api.service.ts`, `core/session.store.ts`, `pages/advanced/assistant-panel.*`,
+  `core/feedback-dialog.*`, `core/ai-usage.spec.ts`, `core/feedback-dialog.spec.ts`.)
+
 ### Grid titles: a formula caption is replaced by the title (noted as an open issue)
 
 - **A table whose caption is a formula gets its title after all** (Joseph, 11 November 2026). A key
