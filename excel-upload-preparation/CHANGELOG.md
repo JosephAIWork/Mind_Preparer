@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.14.1 (12 November 2026): the assistant's token count, grid titles for formula captions, comment spacing
 
-- Comment spacing kept consistent by a pre-commit hook (`tools/comment_spacing.py`,
-  `tools/install_hooks.py`, `.githooks/pre-commit`).
+The night of 11/12 November: the items of Joseph's note for tonight, each built generally (the
+anonymized IFRS 17 tool is one test case; synthetic workbooks in the tests are the proof), then a
+review of the night's changes with every confirmed finding fixed (the last part of this section).
 
 ### The app shows how many tokens its assistant used
 
@@ -17,10 +18,9 @@
   no context of their own). The accounting never breaks a call: a sink that fails is printed and the
   reply returned as it was; a failed call counts nothing. The count is saved with the workbook at once
   (`ai_usage` in the state file; a file from before opens with an empty count) and comes back after a
-  restart. Shown under Advanced > Assistant, by the AI key box, with what it counts ("Tokens the
-  assistant used on this workbook since it was uploaded."), read again after each chat turn; in the
-  Send feedback dialog under the message, and in the message's log part; "AI not used yet on this
-  workbook" before the first call. Input and output are shown together; the parts stay in the data
+  restart. Shown under Advanced > Assistant, by the AI key box, with one plain sentence on what a token
+  and a call are, read again after each chat turn; and in the Send feedback message's log part; "AI
+  not used yet on this workbook" before the first call. Input and output are shown together; the parts stay in the data
   (`aiUsage` in `GET /api/sessions/{id}` and after Reopen, `GET /api/sessions/{id}/ai-usage` with the
   line, `aiUsage` in the `POST /api/feedback` answer). (`app/llm.py`, `app/web/server.py`,
   `app/session_store.py`, `app/feedback.py`, `tests/unit/test_ai_usage.py` -- a fake gateway answering
@@ -33,23 +33,50 @@
 
 - **A table whose caption is a formula gets its title after all** (Joseph, 11 November 2026). A key
   column with a caption on top and the block beside it are one table, titled into the caption cell;
-  when that cell holds a formula (`Result_CF!A1` on the IFRS 17 tool, `="実行中のシナリオ　["&Ctrl_01!$C$27&"]"`)
-  1.14.0 left the table under "could not name". Now the cell loses its formula and gets '#' + the text
+  when that cell holds a formula (`="Running scenario ["&E1&"]"`, say) 1.14.0 left the table under
+  "could not name". Now the cell loses its formula and gets '#' + the text
   the formula last showed (the value Excel stored for it, from the inventory's cached values) + the
   flags, for the automatic namer, the Grid Namer's own name and the assistant's name alike. The
   action's note says plainly: "this cell held a formula (…); it is replaced by the title. Open issue:
   if the caption must stay a formula, leave an empty row above the table instead." When the formula's
-  last value is empty or an error, the title is made up from the surroundings as for an empty cell.
+  last value is empty, an error or not text, the table is reported instead (see the review fixes below).
   Nothing else in the title rules changes: no row is ever inserted, and a caption cell something reads
   is still refused with the reader named. (`app/prep.py` `_caption_shown`, `_title_site`,
   `plan_create_grid_titles`; `app/grids.py` docstring; `docs/RUN_IN_MIND_NAMING.md`, `README.md`;
   `tests/unit/test_grid_titles_never_move_cells.py`: the formula caption replaced with the cached text,
-  an empty or error cached value -> the made-up title, the Grid Namer's name replaces it too, a read
+  an empty, error or number cached value -> the table reported, the Grid Namer's name replaces it too, a read
   caption still refused.) Proven on the anonymized IFRS 17 model: 408 title operations, 0 row inserts,
-  one operation on Result_CF (A1 -> `#実行中のシナリオ　[3]`), nothing reads A1 (the app's index and a
-  brute-force pass over 110,194 formulas and names: 0), both copies recalculated in Excel: 506,746 cells
+  one operation on its formula-caption table (the caption cell -> '#' + the text it showed), nothing
+  reads that cell (the app's index and a brute-force pass over 110,194 formulas and names: 0), both copies recalculated in Excel: 506,746 cells
   compared, 0 differences with the plan's writes allowed; the app's numbers check over 110,174 formula
-  cells reports exactly one change, A1 itself, no longer a formula (`%LOCALAPPDATA%\MindReady\iteration_1_14_1\namer\`).
+  cells reports exactly one change, that cell itself, no longer a formula (`%LOCALAPPDATA%\MindReady\iteration_1_14_1\namer\`).
+
+### Comment spacing
+
+- Comment spacing kept consistent by a pre-commit hook (`tools/comment_spacing.py`,
+  `tools/install_hooks.py`, `.githooks/pre-commit`).
+
+### Review fixes (12 November)
+
+- **Fix all issues' assistant calls are counted.** The advisor asks the gateway from a thread pool, and
+  a pool's threads start with no context: its calls reached no usage sink, so the heaviest spender in
+  the app counted nothing. Each batch now runs in a copy of the caller's context
+  (`app/autofix_advisor.py`; `tests/unit/test_ai_usage.py`).
+- **No made-up name over a formula caption.** When a formula caption's last value is empty, an error
+  or not text (a workbook never calculated, a year), the table is reported with what to do --
+  recalculate the workbook and name it again, or leave an empty row above the table by hand --
+  instead of losing its formula to a name made from the surroundings; a literal year in that cell was
+  protected already (`app/prep.py`, `app/grids.py`; `tests/unit/test_grid_titles_never_move_cells.py`).
+- **A caption cell an INDIRECT or a 3-D reference may read is refused**, text or formula, naming the
+  reader: the index pins such readers to a sheet, not to a cell, and a title there could change what
+  they read -- the rule the fixer's moves followed already (`app/prep.py`).
+- **The Assistant tab says what a token and a call are** in one plain sentence beside the count; the
+  Send feedback dialog shows the token line once, inside the message, not again under it
+  (`MindReadyUI` `pages/advanced/assistant-panel.html`, `core/feedback-dialog.*`, the two specs).
+- The formula-caption rule is stated with a synthetic example, before the list of "could not name"
+  reasons (`docs/RUN_IN_MIND_NAMING.md`, `README.md`).
+- The comment-spacing hook works on the staged copies and leaves a partial commit alone; the tool's
+  rule starts again at every top-level block, so a diff stays within what was edited.
 
 ## 1.14.0 (11 November 2026): saved workbooks, Do everything asks for the input files, skipped sheets, grid titles, Send feedback
 

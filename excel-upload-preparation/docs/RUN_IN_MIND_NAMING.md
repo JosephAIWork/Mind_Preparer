@@ -195,6 +195,28 @@ new names. Run **one** pass, then handle what is left by hand.
 
 ## What the app cannot name, and why
 
+**A caption that is a formula is replaced by the title (1.14.1, Joseph's
+decision of 11 November 2026).** A key column with a caption on top and the
+block beside it are one table; its title goes into the caption cell ('#' + the
+caption's own text). When that caption is a formula (`="Running scenario
+["&E1&"]"`, say), the cell loses its formula and gets '#' + the text the
+formula last showed (the value Excel stored for it) plus the flags, for the
+automatic namer, the Grid Namer's name and the assistant's name alike. The
+action's note says so: *"this cell held a formula (…); it is replaced by the
+title. Open issue: if the caption must stay a formula, leave an empty row above
+the table instead."* The table is not listed under "could not name".
+**Open issue**: the title is a frozen copy of what the formula showed; if the
+caption must keep following its formula, leave an empty row above the table by
+hand and name it again. The table *is* reported, formula or not, when something
+reads the caption cell ("the caption above it (A1) is read by …"), when an
+INDIRECT builds addresses on the sheet or a 3-D reference spans it (the reader
+cannot be pinned to one cell), and when the formula's last value is empty, an
+error or not text -- a workbook never calculated, a year, a date: "recalculate
+the workbook and name it again, or leave an empty row above the table by hand".
+Nothing is ever inserted. Only a text caption counts as a caption: a year, a
+date or TRUE above a key column is a value something may read, so the two stay
+apart and nothing is written over it.
+
 The reasons printed under `blocked` are worth understanding — they are design
 limits, not bugs. Since **1.14.0 a title never moves a cell**: up to 1.13.0 the
 app inserted a row (or cells over the grid's own columns) when the cell above
@@ -215,26 +237,6 @@ Mind reads a title from, directly above the grid's top-left cell, or nowhere:
   decision for a human — the app will not restructure a table to win a name.
 - **“starts on row 1, so there is no cell above it for a title”** — insert an
   empty row above it by hand, then name it again.
-- **A caption that is a formula is replaced (1.14.1, Joseph's decision of 11
-  November 2026)** — a key column with a caption on top and the block beside
-  it are one table; its title goes into the caption cell ('#' + the caption's
-  own text). When that caption is a formula (`Result_CF!A1` on the IFRS 17
-  tool: `="実行中のシナリオ　["&Ctrl_01!$C$27&"]"`), the cell loses its
-  formula and gets '#' + the text the formula last showed (the value Excel
-  stored for it) plus the flags, for the automatic namer, the Grid Namer's
-  name and the assistant's name alike. The action's note says so: *“this cell
-  held a formula (…); it is replaced by the title. Open issue: if the caption
-  must stay a formula, leave an empty row above the table instead.”* The
-  table is no longer listed under "could not name". When the formula's last
-  value is empty or an error, the title is made up from the surroundings as
-  for an empty cell. A caption cell something reads is still refused (“the
-  caption above it (A1) is read by …”), formula or not; nothing is ever
-  inserted. **Open issue**: the title is a frozen copy of what the formula
-  showed; if the caption must keep following its formula, leave an empty row
-  above the table by hand and name it again.
-  Only a text caption counts: a year, a date or TRUE above a key column is a
-  value something may read, so the two stay apart and nothing is written
-  over it.
 - **“a title in B3 would touch B2 ('…') right above it, and Mind would read
   the two as one grid”** — a lone text or a grid ends right above the title
   cell, and Mind reads on from it through the title into the grid. Leave an

@@ -22,12 +22,19 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.14.0)
+## Current status (1.14.1)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
 
+- **The assistant's token count** (1.14.1): "AI used: 12,340 tokens in 7 calls", per workbook; every
+  completed call counts (the chat, a suggestion, the grid namer, the instance finder, Fix all issues'
+  advisor, the stand-in files, Run in Mind), the count is saved with the workbook, and it shows under
+  Advanced > Assistant (with what a token and a call are) and in the Send feedback message.
+- **A formula caption is replaced by the title** (1.14.1, an open issue by Joseph's decision): the
+  cell gets '#' + the text the formula last showed; when that text is unknown (never calculated, an
+  error, a number) or an INDIRECT / 3-D reference may read the cell, the table is reported instead.
 - **Workbooks are kept between sessions** (1.14.0, `docs/SAVED_WORKBOOKS.md`): every session's
   files live in the data folder with a small state file (and the check result in a file of its
   own); the main screen's **Recent workbooks** list reopens one where it was, or removes it. Nothing
@@ -45,8 +52,7 @@ the two honest cases below.
   without moving or overwriting a cell is reported with what to do by hand.
 - **Send feedback** (1.14.0): the button, the box and the guide name no team; the reply still comes
   back to the address in `settings.yaml`. The message (1.14.1) says what the assistant used on the open
-  workbook, in its log part: "AI used: 12,340 tokens in 7 calls"; the dialog shows the same line under
-  the message.
+  workbook, in its log part: "AI used: 12,340 tokens in 7 calls".
 - **Plainer screens for the loop and the instances** (1.13.0): Advanced > Mind loop opens with
   one sentence ("The macro runs Scenario 0 to 3 and Cohort 2021 to 2026. Mind can do the same.")
   and one button, **Build it**; the choices and what gets written are folded away, and a loop that
@@ -260,8 +266,9 @@ the two honest cases below.
   belongs to another grid or a cell something reads is reported under
   "could not name" with what to do by hand; a caption cell that holds a
   formula is replaced by the title (1.14.1: '#' + the text the formula last
-  showed, the note says the formula went -- an open issue; an empty or error
-  value falls back to the made-up name); a lone label beside the title cell
+  showed, the note says the formula went -- an open issue; when that text is
+  unknown, or an INDIRECT / 3-D reference may read the cell, the table is
+  reported instead); a lone label beside the title cell
   is moved into the title only when the title was made from its own text. When the surroundings say nothing
   the heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can
   then ask the APIM assistant for a context-aware name instead (one batched
