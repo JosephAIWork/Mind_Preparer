@@ -254,9 +254,12 @@ the two honest cases below.
   `grids._merge_key_columns`; the caption must be text -- a year or a date
   above a key column is never overwritten). **No cell is ever moved for a title** (1.14.0;
   up to 1.13.0 a row was inserted when the cell above was taken, which pushed
-  a key column out of line with its rows): a formula in the caption cell, a
-  grid on row 1 or a cell above that belongs to another grid is reported under
-  "could not name" with what to do by hand; a lone label beside the title cell
+  a key column out of line with its rows): a grid on row 1, a cell above that
+  belongs to another grid or a cell something reads is reported under
+  "could not name" with what to do by hand; a caption cell that holds a
+  formula is replaced by the title (1.14.1: '#' + the text the formula last
+  showed, the note says the formula went -- an open issue; an empty or error
+  value falls back to the made-up name); a lone label beside the title cell
   is moved into the title only when the title was made from its own text. When the surroundings say nothing
   the heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can
   then ask the APIM assistant for a context-aware name instead (one batched

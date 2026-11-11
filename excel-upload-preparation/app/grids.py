@@ -1,18 +1,18 @@
-"""Mind-style grid detection and grid-title / flag parsing.
+"""Mind-style  grid detection  and grid-title / flag parsing.
 
 Source: KB "General structure and guidelines" (basic-model-design): sheets
 are read left to right, top to bottom; on a non-empty cell not already in a
-grid, Mind looks right and down until it finds an empty cell and creates a
-grid of that size; an alone text cell is ignored; a first row made only of
-strings is the header row; the grid name is a cell starting with '#' above
-the grid ('#GridName /Flag1 /Flag2'), otherwise the grid is 'untitled' plus
+grid, Mind looks right and  down until it finds an empty cell and creates a
+grid of  that size; an alone text cell  is ignored; a first row made only  of
+strings is the header row; the grid name is a cell  starting with '#' above
+the grid ('#GridName /Flag1  /Flag2'), otherwise the grid is 'untitled' plus
 its first-cell coordinates. Flags are '/Name' tokens in that title cell (or,
 for a few documented ones, in a header cell: /HideRows, /InstanceSelect,
 &&HideColumn, &hide).
 
 This is a faithful re-implementation of the documented algorithm, not a
 guess -- but it is still this app's reading of the doc, so findings built on
-it are labeled INFERENCE where they depend on grid *boundaries* and
+it are labeled INFERENCE where they depend on  grid *boundaries* and
 DETERMINISTIC_FINDING where they only depend on a title cell's own text.
 
 A merged cell occupies every cell of its range. Mind reads a header
@@ -21,8 +21,8 @@ model failed with "the array formula ... exceeds the grid size. Ensure that
 the column headers cover the entire array formula" at the first column past
 the merge); reading the merge as one cell would hide that.
 
-One reading of its own (1.14.0): a key column with a caption on top, beside the
-block that reads it, is one table with the caption cell as the place for its
+One reading of its own (1.14.0): a key column  with a caption on top,  beside the
+block that reads it, is one  table with the  caption cell  as the place for its
 title (`_merge_key_columns`). Mind reads two untitled grids there today and one
 grid once the title is written; the app reads the one table from the start.
 """
@@ -35,10 +35,10 @@ from typing import Any
 from .formula_utils import num_to_col, ref_text
 
 TITLE_PREFIX = "#"
-# Excel error *values* are stored as text that also begins with '#'. They are
-# results, not grid titles: reading '#N/A' in a data table as a title makes the
-# app believe a title is trapped inside the grid (STR-001) and, worse, offer to
-# insert a row through a real data table to "free" it.
+# Excel error *values*  are stored as text that also begins with '#'. They are
+# results,  not grid titles: reading '#N/A' in  a data table as a title makes  the
+# app believe a title is trapped inside the grid (STR-001) and,  worse, offer to
+# insert a row through a  real data table to "free" it.
 ERROR_LITERALS = frozenset(
     {
         "#N/A", "#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#NULL!", "#NUM!",
@@ -99,7 +99,7 @@ def is_occupied(value: Any) -> bool:
 
 
 def parse_flags(text: str) -> list[dict[str, Any]]:
-    """'/Group.(My group).0.1 /Input' -> [{'name': 'group', 'raw': ..., 'args': ['My group','0','1']}, {'name': 'input', ...}]"""
+    """'/Group.(My group).0.1 /Input' ->  [{'name': 'group', 'raw': ..., 'args': ['My group','0','1']}, {'name': 'input', ...}]"""
     flags = []
     for m in FLAG_RE.finditer(text or ""):
         args: list[str] = []
@@ -203,7 +203,7 @@ def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple
 
 
 def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: int, width: int, height: int, title_cell: tuple[int, int] | None) -> dict[str, Any]:
-    """The grid record for the block `ar, ac` of `width` x `height` cells (with its title cell, if any)."""
+    """The grid record for the block `ar, ac` of `width` x `height` cells (with its  title cell, if any)."""
     header_values = [json_safe(occupied.get((ar, ac + i))) for i in range(width)]
     header_is_all_text = all(isinstance(v, str) and not v.startswith("=") for v in header_values)
     inner_titles = [
@@ -259,22 +259,23 @@ def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: in
 
 
 def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], grids: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A key column and the block beside it are one table.
+    """A key  column and the block beside it are  one table.
 
-    The shape (the IFRS 17 tool's Result_CF, 2026-11-10): a caption in A1, the keys of each row in
+    The shape  (the IFRS  17 tool's Result_CF, 2026-11-10): a caption in A1, the keys of each row in
     A2:A8 (the sheet names its lookups use) and the block B2:CI8 that reads them. Mind, and the
-    detection above, read two untitled grids: the column A1:A8 (the caption on top, nothing to its
-    right) and B2:CI8. A title written for one of them moved its cells and left the keys out of line
-    with their rows. With a title in the caption cell Mind reads one grid, A2:CI8, so the app reads
+    detection above,  read two untitled grids: the column A1:A8 (the caption on top,  nothing to its
+    right) and B2:CI8. A  title written for one of them moved  its cells and left the keys out of line
+    with their rows.  With a title in the caption cell  Mind reads one grid, A2:CI8, so the app reads
     them as one table from the start: the key column's cells on the block's rows plus the block, the
     caption cell kept apart as `caption_cell` / `caption_value` (the place for the title).
 
     Tight, so two lists that only touch are never joined: both grids untitled; the column one cell
-    wide, directly left of the block; the column starts exactly one row above the block (the caption)
-    and ends on the block's last row; and the caption is text (a formula counts: it is reported, not
-    replaced) -- never a number, a date or a switch that a title would overwrite. What the column's
+    wide, directly left of the block; the  column starts exactly one row above the block (the caption)
+    and ends on the block's last row; and the caption is text (a formula counts: the title replaces it
+    with the text it last showed, prep._caption_shown) -- never a number, a date or a switch that a
+    title would overwrite. What the column's
     cells hold is not looked at: once the caption cell holds a title Mind reads one grid whatever they
-    are, and the keys may be formulas the block no longer reads (after FRM-007 rewrote its INDIRECT,
+    are, and the keys may be formulas the block no longer reads (after FRM-007  rewrote its INDIRECT,
     say)."""
     out: list[dict[str, Any]] = []
     taken: set[int] = set()
@@ -296,7 +297,7 @@ def _merge_key_columns(sheet_name: str, occupied: dict[tuple[int, int], Any], gr
             continue
         col, r1 = k["first_col"], g["first_row"]
         caption = occupied.get((k["first_row"], col))
-        if not (isinstance(caption, str) and caption.strip()):  # a year, a date, TRUE: not a caption, and a title would destroy it
+        if not (isinstance(caption, str) and caption.strip()):  # a year, a  date, TRUE: not a caption, and a  title would destroy  it
             out.append(k)
             continue
         table = _grid(sheet_name, occupied, r1, col, g["n_cols"] + 1, g["n_rows"], None)

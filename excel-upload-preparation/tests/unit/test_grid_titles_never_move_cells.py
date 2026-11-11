@@ -5,11 +5,18 @@ tool's Result_CF that pushed the key column (A1:A8, read as a grid of its own) o
 block beside it (B2:CI8) stayed, so every key sat beside the wrong row. Now: a key column with a
 caption on top and the block that reads it are ONE table (grids._merge_key_columns); the title goes
 into the caption cell ('#' + its text) or the empty cell above the top-left cell, never anywhere that
-needs a row insert; a formula caption, a grid starting on row 1 and a taken cell above are reported
-under "could not name" with what to do by hand. The apply path still carries out an old plan's
-insert_row."""
+needs a row insert; a grid starting on row 1 and a taken cell above are reported under "could not
+name" with what to do by hand. A formula caption (Result_CF's A1 on the IFRS 17 tool) is replaced by
+the title since 1.14.1 (Joseph, 11 November 2026): the cell loses its formula and gets '#' + the text
+the formula last showed (the workbook's cached value), the action's note says so and calls it an open
+issue; an empty or error cached value falls back to the made-up title. The apply path still carries
+out an old plan's insert_row."""
 from __future__ import annotations
 
+import html
+import re
+import shutil
+import zipfile
 from pathlib import Path
 
 import openpyxl
@@ -153,14 +160,75 @@ def test_an_empty_cell_above_gets_the_made_up_title(tmp_path):
     assert not skipped
 
 
-def test_a_formula_caption_is_reported_not_replaced(tmp_path):
-    formula_caption = {**RESULT_CF, "A1": '="Running scenario ["&E1&"]"', "E1": "Base"}
-    analysis = _analysis(tmp_path, {"R": formula_caption})
+CAPTION_FORMULA = '="Running scenario ["&E1&"]"'
+FORMULA_CAPTION = {**RESULT_CF, "A1": CAPTION_FORMULA, "E1": "Base"}
+
+
+def _plant_cached_value(path: Path, sheet: str, cell: str, text: str, kind: str = "str") -> Path:
+    """What Excel saves for a formula cell and openpyxl does not: the value it last computed
+    (`<c t="str"><f>..</f><v>text</v></c>`; kind "e" for an error such as #N/A)."""
+    wb = openpyxl.load_workbook(path)
+    member = f"xl/worksheets/sheet{wb.sheetnames.index(sheet) + 1}.xml"
+    wb.close()
+    tmp = path.with_suffix(".tmp")
+    with zipfile.ZipFile(path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == member:
+                xml = data.decode("utf-8")
+                patched = re.sub(rf'<c r="{cell}"><f>(.*?)</f><v></v></c>', lambda m: f'<c r="{cell}" t="{kind}"><f>{m.group(1)}</f><v>{html.escape(text)}</v></c>', xml, count=1)
+                assert patched != xml, f"{sheet}!{cell} is not a formula cell without a cached value"
+                data = patched.encode("utf-8")
+            zout.writestr(item, data)
+    shutil.move(tmp, path)
+    return path
+
+
+def _analysis_with_cached(tmp_path: Path, sheets: dict[str, dict[str, object]], sheet: str, cell: str, text: str, kind: str = "str") -> dict:
+    path = _plant_cached_value(_wb(tmp_path / "m.xlsx", sheets), sheet, cell, text, kind)
+    return build_analysis(path, tmp_path / "w", "t")
+
+
+def test_a_formula_caption_is_replaced_by_the_title_made_from_the_text_it_showed(tmp_path):
+    """Joseph, 11 November 2026: Result_CF's caption formula goes; A1 gets '#' + the text Excel last
+    computed for it. The note says so and calls it an open issue; nothing is inserted; the table is
+    no longer under "could not name"."""
+    analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION}, "R", "A1", "Running scenario [Base]")
     assert [g["ref"] for g in all_grids(analysis) if g["sheet"] == "R"] == ["A2:C5"]
+    assert prep.values_cell(analysis, "R", 1, 1) == "Running scenario [Base]"  # the planted cached value is read
     ops, skipped = _titles(analysis)
-    assert not [o for o in ops if o["sheet"] == "R"]
-    mine = [s for s in skipped if s.startswith("R!A2:C5")]
-    assert len(mine) == 1 and mine[0].startswith('R!A2:C5: the cell above it, A1, holds a formula (="Running scenario ["&E1&"]")') and "Move that formula somewhere else by hand" in mine[0], skipped
+    mine = [o for o in ops if o["sheet"] == "R"]
+    assert [(o["op"], o["cell"], o["before"], o["after"]) for o in mine] == [("set_value", "A1", CAPTION_FORMULA, "#Running scenario [Base]")]
+    note = mine[0]["note"]
+    assert note.startswith("name from the caption above at A1; this cell held a formula (" + CAPTION_FORMULA + "); it is replaced by the title"), note
+    assert "key column A1:A5" in note and "block B2:C5" in note
+    assert "Open issue: if the caption must stay a formula, leave an empty row above the table instead" in note, note
+    assert not any(o["op"] == "insert_row" for o in ops)
+    assert not [s for s in skipped if s.startswith("R!A2:C5")], skipped
+    # ... but a caption cell something reads through is still refused, formula or not
+    analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION, "T": {"A1": "=R!A1"}}, "R", "A1", "Running scenario [Base]")
+    ops, skipped = _titles(analysis)
+    assert not [o for o in ops if o["sheet"] == "R"], ops
+    assert any(s.startswith("R!A2:C5: the caption above it (A1) is read by T!A1") for s in skipped), skipped
+
+
+def test_a_formula_caption_whose_last_value_is_empty_or_an_error_gets_the_made_up_title(tmp_path):
+    # no cached value at all (a workbook never calculated)
+    analysis = _analysis(tmp_path, {"R": FORMULA_CAPTION})
+    assert prep.values_cell(analysis, "R", 1, 1) in (None, "")
+    ops, skipped = _titles(analysis)
+    mine = [o for o in ops if o["sheet"] == "R"]
+    assert [(o["op"], o["cell"], o["before"]) for o in mine] == [("set_value", "A1", CAPTION_FORMULA)]
+    made_up = mine[0]["after"]
+    assert made_up.startswith("#") and made_up != "#Running scenario [Base]" and "Running scenario" not in made_up, made_up
+    assert "name from" in mine[0]["note"] and "the caption above" not in mine[0]["note"] and "this cell held a formula" in mine[0]["note"], mine[0]["note"]
+    assert not any(o["op"] == "insert_row" for o in ops) and not [s for s in skipped if s.startswith("R!A2:C5")]
+    # the last value was an error
+    analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION}, "R", "A1", "#N/A", kind="e")
+    assert prep.values_cell(analysis, "R", 1, 1) == "#N/A"
+    ops, _ = _titles(analysis)
+    mine = [o for o in ops if o["sheet"] == "R"]
+    assert [(o["cell"], o["after"]) for o in mine] == [("A1", made_up)]
 
 
 def test_nothing_is_ever_inserted_for_a_title(tmp_path):
@@ -222,10 +290,12 @@ def test_the_grid_namer_follows_the_same_rule(tmp_path):
     # selecting the caption cell alone names the table too
     out = prep.plan_named_areas(analysis, [{"sheet": "R", "ref": "A1", "name": "Result Cashflows", "flags": []}])
     assert [o["cell"] for o in out["ops"]] == ["A1"]
-    # a formula caption is refused with the reason, for the user's name as for the automatic one
-    analysis = _analysis(tmp_path, {"R": {**RESULT_CF, "A1": '="Running scenario ["&E1&"]"', "E1": "Base"}})
-    out = prep.plan_named_areas(analysis, [{"sheet": "R", "ref": "B3", "name": "Result Cashflows", "flags": []}])
-    assert not out["ops"] and any("holds a formula" in s for s in out["skipped"]), out["skipped"]
+    # a formula caption is replaced by the user's name too, with the same note (1.14.1)
+    analysis = _analysis_with_cached(tmp_path, {"R": FORMULA_CAPTION}, "R", "A1", "Running scenario [Base]")
+    out = prep.plan_named_areas(analysis, [{"sheet": "R", "ref": "B3", "name": "Result Cashflows", "flags": ["Input"]}])
+    assert [(o["op"], o["cell"], o["before"], o["after"]) for o in out["ops"]] == [("set_value", "A1", CAPTION_FORMULA, "#Result Cashflows /Input")]
+    assert out["ops"][0]["note"].startswith("user-chosen name and flags; this cell held a formula (" + CAPTION_FORMULA + "); it is replaced by the title") and "Open issue" in out["ops"][0]["note"], out["ops"][0]["note"]
+    assert out["named"] == ["R!A2:C5"] and out["inserted_rows"] == {} and not [s for s in out["skipped"] if s.startswith("R!")], out["skipped"]
 
 
 def test_an_old_plan_with_a_row_insert_is_still_ordered_and_resolved():

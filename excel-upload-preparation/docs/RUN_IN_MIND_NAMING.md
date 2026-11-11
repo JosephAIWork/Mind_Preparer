@@ -215,12 +215,23 @@ Mind reads a title from, directly above the grid's top-left cell, or nowhere:
   decision for a human — the app will not restructure a table to win a name.
 - **“starts on row 1, so there is no cell above it for a title”** — insert an
   empty row above it by hand, then name it again.
-- **“the cell above it, A1, holds a formula (…) and the title would replace
-  it (the key column A1:A8 and the block B2:CI8 are one table)”** — a key
-  column with a caption on top and the block beside it are one table; its
-  title goes into the caption cell ('#' + the caption's own text). A caption
-  that is a formula is left alone: move it somewhere else by hand, then name
-  the table again (or name it in the Grid Namer once the formula is gone).
+- **A caption that is a formula is replaced (1.14.1, Joseph's decision of 11
+  November 2026)** — a key column with a caption on top and the block beside
+  it are one table; its title goes into the caption cell ('#' + the caption's
+  own text). When that caption is a formula (`Result_CF!A1` on the IFRS 17
+  tool: `="実行中のシナリオ　["&Ctrl_01!$C$27&"]"`), the cell loses its
+  formula and gets '#' + the text the formula last showed (the value Excel
+  stored for it) plus the flags, for the automatic namer, the Grid Namer's
+  name and the assistant's name alike. The action's note says so: *“this cell
+  held a formula (…); it is replaced by the title. Open issue: if the caption
+  must stay a formula, leave an empty row above the table instead.”* The
+  table is no longer listed under "could not name". When the formula's last
+  value is empty or an error, the title is made up from the surroundings as
+  for an empty cell. A caption cell something reads is still refused (“the
+  caption above it (A1) is read by …”), formula or not; nothing is ever
+  inserted. **Open issue**: the title is a frozen copy of what the formula
+  showed; if the caption must keep following its formula, leave an empty row
+  above the table by hand and name it again.
   Only a text caption counts: a year, a date or TRUE above a key column is a
   value something may read, so the two stay apart and nothing is written
   over it.

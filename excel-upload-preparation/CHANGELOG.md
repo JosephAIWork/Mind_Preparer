@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Grid titles: a formula caption is replaced by the title (noted as an open issue)
+
+- **A table whose caption is a formula gets its title after all** (Joseph, 11 November 2026). A key
+  column with a caption on top and the block beside it are one table, titled into the caption cell;
+  when that cell holds a formula (`Result_CF!A1` on the IFRS 17 tool, `="実行中のシナリオ　["&Ctrl_01!$C$27&"]"`)
+  1.14.0 left the table under "could not name". Now the cell loses its formula and gets '#' + the text
+  the formula last showed (the value Excel stored for it, from the inventory's cached values) + the
+  flags, for the automatic namer, the Grid Namer's own name and the assistant's name alike. The
+  action's note says plainly: "this cell held a formula (…); it is replaced by the title. Open issue:
+  if the caption must stay a formula, leave an empty row above the table instead." When the formula's
+  last value is empty or an error, the title is made up from the surroundings as for an empty cell.
+  Nothing else in the title rules changes: no row is ever inserted, and a caption cell something reads
+  is still refused with the reader named. (`app/prep.py` `_caption_shown`, `_title_site`,
+  `plan_create_grid_titles`; `app/grids.py` docstring; `docs/RUN_IN_MIND_NAMING.md`, `README.md`;
+  `tests/unit/test_grid_titles_never_move_cells.py`: the formula caption replaced with the cached text,
+  an empty or error cached value -> the made-up title, the Grid Namer's name replaces it too, a read
+  caption still refused.) Proven on the anonymized IFRS 17 model: 408 title operations, 0 row inserts,
+  one operation on Result_CF (A1 -> `#実行中のシナリオ　[3]`), nothing reads A1 (the app's index and a
+  brute-force pass over 110,194 formulas and names: 0), both copies recalculated in Excel: 506,746 cells
+  compared, 0 differences with the plan's writes allowed; the app's numbers check over 110,174 formula
+  cells reports exactly one change, A1 itself, no longer a formula (`%LOCALAPPDATA%\MindReady\iteration_1_14_1\namer\`).
+
 ## 1.14.0 (11 November 2026): saved workbooks, Do everything asks for the input files, skipped sheets, grid titles, Send feedback
 
 The night of 10/11 November: the five items of Joseph's note, in his order, each built generally and
