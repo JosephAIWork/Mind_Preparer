@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 
-USECASES = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady" / "autofix" / "usecases"
+DATA = Path(os.environ.get("MIND_READY_DATA") or (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady"))  # MIND_READY_DATA: another data folder
+USECASES = DATA / "autofix" / "usecases"
 
 
 def _local_json(name: str) -> dict[str, Any]:

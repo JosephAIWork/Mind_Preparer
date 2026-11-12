@@ -892,7 +892,7 @@ def test_plan_mind_inputs_names_are_unique_ascii_whatever_the_sheet_name():
 
 
 # --- the whole chain on the Tokyo fake data (Excel) ---------------------------------------------------------
-FAKE = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady" / "tokyo_inputs_2026-11-09"
+FAKE = Path(os.environ.get("MIND_READY_DATA") or (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady")) / "tokyo_inputs_2026-11-09"
 FAKE_MAIN = FAKE / "SBI_IFRS17_Anonymized_original.xlsm"
 FAKE_INPUTS = FAKE / "fake_inputs" / "2026_1Q" / "IF_当期末（非金融前提変更後）"
 needs_tokyo = pytest.mark.skipif(
