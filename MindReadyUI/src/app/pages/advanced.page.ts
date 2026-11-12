@@ -48,7 +48,7 @@ export class AdvancedPage {
 
   readonly readinessKind = computed(() => {
     const r = this.store.readiness();
-    return !r ? "info" : r.state === "ready" ? "success" : r.state === "unverified" ? "warning" : "error";
+    return !r ? "info" : r.state === "ready" ? "success" : r.state === "unverified" ? (r.recalc?.ran ? "warning" : "info") : "error";
   });
   readonly readinessDetail = computed(() => {
     const r = this.store.readiness();

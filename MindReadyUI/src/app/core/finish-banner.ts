@@ -11,6 +11,8 @@ export interface FinishState {
   text: string;
   /** why Upload to Mind is greyed ("" when it is not) */
   reason: string;
+  /** blocking problems are left (a warning colour); false for a step still to do (calm colour) */
+  problem?: boolean;
 }
 
 /** The  banner's words  for a verdict: acceptable, blocked (how many blocking problems are left), or
@@ -19,13 +21,14 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
   if (!r) return null;
   if (r.state === "ready") return { acceptable: true, text: "The check is finished. The workbook can be uploaded to Mind.", reason: "" };
   if (r.state === "unverified") {
-    return { acceptable: false, text: "The check is not finished: the recalculation has not run yet.", reason: "Press Go first: the recalculation finishes the check." };
+    return { acceptable: false, text: "One step left: the recalculation has not run yet.", reason: "Press Go first: the recalculation finishes the check." };
   }
   const n = r.blocking_count;
   return {
     acceptable: false,
     text: `${n} blocking problem${n === 1 ? " is" : "s are"} left.`,
     reason: "Not possible while blocking problems are left.",
+    problem: true,
   };
 }
 
@@ -38,7 +41,7 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
   standalone: true,
   template: `
     @if (state(); as s) {
-      <section class="finish" [class.finish--stop]="!s.acceptable" data-show-me="finish-banner">
+      <section class="finish" [class.finish--stop]="!s.acceptable" [class.finish--problem]="s.problem" data-show-me="finish-banner">
         <p class="finish__text" role="status">{{ s.text }}</p>
         <div class="finish__buttons">
           <button type="button" class="cds--btn cds--btn--primary cds--btn--lg finish__upload" data-show-me="finish-upload" (click)="upload()" [disabled]="!s.acceptable || running()" [title]="s.reason">
@@ -78,6 +81,9 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
         margin: 1rem 0;
       }
       .finish--stop {
+        border-left-color: var(--cds-support-info, #0043ce);
+      }
+      .finish--problem {
         border-left-color: var(--cds-support-warning, #f1c21b);
       }
       .finish__text {

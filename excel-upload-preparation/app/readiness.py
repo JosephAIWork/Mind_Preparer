@@ -122,7 +122,7 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
         headline = f"Not acceptable by Mind yet: {len(blocking)} blocking problem(s)"
     elif not rc["ran"]:
         state = "unverified"
-        headline = "Acceptable by Mind, not verified: run the Excel recalculation"
+        headline = "One step left: the Excel recalculation has not run yet"
     elif not rc["clean"]:
         state = "unverified"
         headline = f"Acceptable by Mind, but the recalculation found {rc['new_errors']} new formula error(s)"

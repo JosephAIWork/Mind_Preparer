@@ -286,7 +286,7 @@ export class HomePage implements OnDestroy {
   readonly readinessKind = computed(() => {
     const r = this.store.readiness();
     if (!r) return "info";
-    return r.state === "ready" ? "success" : r.state === "unverified" ? "warning" : "error";
+    return r.state === "ready" ? "success" : r.state === "unverified" ? (r.recalc?.ran ? "warning" : "info") : "error";
   });
   readonly readinessTitle = computed(() => this.store.readiness()?.headline ?? "");
   readonly readinessDetail = computed(() => {
