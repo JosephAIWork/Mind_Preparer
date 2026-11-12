@@ -102,8 +102,12 @@ def main() -> int:
     if outside:
         chain["outsideInputs"] = {k: outside.get(k) for k in ("macro", "matched", "missing", "extra", "summary", "brought_in")}
         say("outside files:", outside.get("summary"))
-        if not outside.get("brought_in"):
-            # as Do everything: missing files are made  by the assistant (stand-ins from the model's own numbers)
+        # the screen's skip rule (outsideSkipReason): nothing names  the files, or no macro brings them in -> their data  stays inside the model
+        skip = ("No cell names the files the macro opens" if not outside.get("rows") else "Which macro brings the outside files in is not clear" if not outside.get("macro") else "")
+        if skip and not outside.get("brought_in"):
+            say("skipping the outside files:", skip + ": their data stays inside the model")
+        if not outside.get("brought_in") and not skip:
+            # as Do everything:  missing files are made by the assistant  (stand-ins from the model's own numbers)
             stand_ins = bool(outside.get("missing")) and bool(outside.get("assistant"))
             r = requests.post(f"{B}/sessions/{sid}/outside-inputs/run", json={"standIns": True} if stand_ins else {}, timeout=300)
             say("bring in the outside files:", r.status_code, r.text[:200])
@@ -147,9 +151,9 @@ def main() -> int:
             full = requests.get(f"{B}/sessions/{sid}/auto-fix", params={"full": "1"}, timeout=300).json()
             res = full.get("result") or {}
             left = res.get("left") or []
-            # "unchanged" with no  error left is fine: the workbook  already recalculated clean (a client model had  no error)
+            # "unchanged" with no error left is  fine: the workbook already recalculated clean (a  client model had no error)
             ok = res.get("status") == "clean" or (res.get("status") in ("partial", "unchanged") and not left and (res.get("errors_after") or 0) == 0)
-            # 1.11.6, as the main screen: errors the workbook already had  (no regression, no Stop) let the chain  go on
+            # 1.11.6, as the main screen: errors the workbook already had (no regression, no Stop) let the chain go on
             ok = ok or (res.get("status") in ("partial", "stuck", "unchanged") and not res.get("stopped") and not res.get("regression_cells"))
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])

@@ -2,6 +2,10 @@
 
 ## 1.15.0 (13 November 2026): Basic, Custom and Advanced screens, Remove all, range-read and numbers-check fixes, a copy of the project that stands on its own
 
+### Also
+
+- `scripts/night_chain.py` now skips the outside-files step the way the screen does when no cell names the files (or no macro brings them in): their data stays inside the model, and the chain goes on instead of stopping (found on Phoenix).
+
 ### Three screens
 
 - **Basic, Custom, Advanced** in the header. **Basic** is the new first screen: the upload box, one tick
