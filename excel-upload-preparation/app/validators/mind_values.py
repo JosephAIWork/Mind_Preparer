@@ -1084,7 +1084,7 @@ _FULL_NAME_RE = re.compile(r"^(?P<folder>.*[\\/])\[(?P<file>[^\]]+)\](?P<sheet>.
 
 
 def _same_length(text: str, size: int) -> str:
-    """`text` cut or padded with its last letter to exactly `size` characters (a length that formulas
+    """`text`  cut or  padded with its last letter to exactly `size` characters (a length that formulas
     built on the value -- LEN, MID, FIND -- may depend on stays the same)."""
     return (text + "_" * max(0, size - len(text)))[:size] if text else text
 
@@ -1104,10 +1104,10 @@ def _neutral_folder(folder: str) -> str:
 
 
 def neutral_environment_text(formula: str, value: Any) -> tuple[Any, str | None]:
-    """What a CELL("filename") / INFO("directory") formula is frozen to instead of the model owner's own
+    """What  a CELL("filename")  / INFO("directory") formula is frozen to instead of the model owner's own
     path and file name (a client's network path must not be written into the prepared workbook):
-    -> (the neutral text, a plain description) or (value, None) when the value carries no path or file name.
-    The text stays text and keeps its length; every number stays as it was."""
+    -> (the neutral text, a  plain description) or (value, None) when the value carries no path  or file name.
+    The text stays text  and keeps its length; every number stays  as it was."""
     if not isinstance(value, str) or not value:
         return value, None
     low = (formula or "").lower()

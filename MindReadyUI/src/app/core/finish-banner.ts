@@ -3,9 +3,9 @@ import { ApiService, errorText } from "./api.service";
 import { MindLoopOptions, MindLoopStatus, MindSignIn, Readiness } from "./models";
 import { SessionStore } from "./session.store";
 
-/** What the end-of-check banner says and allows, from the readiness verdict (1.15.0). */
+/** What  the end-of-check  banner says and allows, from the readiness verdict (1.15.0). */
 export interface FinishState {
-  /** the workbook can go to Mind */
+  /** the  workbook can  go to Mind */
   acceptable: boolean;
   /** the one line */
   text: string;
@@ -13,7 +13,7 @@ export interface FinishState {
   reason: string;
 }
 
-/** The banner's words for a verdict: acceptable, blocked (how many blocking problems are left), or
+/** The  banner's words  for a verdict: acceptable, blocked (how many blocking problems are left), or
  *  not yet verified by a recalculation. */
 export function finishState(r: Readiness | null | undefined): FinishState | null {
   if (!r) return null;
@@ -29,10 +29,10 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
   };
 }
 
-/** The end-of-check banner of the Basic screen: the verdict in one line, with two big buttons.
+/** The  end-of-check banner  of the Basic screen: the verdict in one line, with two big buttons.
  *  "Upload to Mind" does what Run in Mind (Advanced) does: upload, convert, run, read back; when the
- *  Mind sign-in is missing it asks for it first. "Download" gives the current version, as
- *  "Download this version" does. Not acceptable: Download stays, Upload is greyed with its reason. */
+ *  Mind sign-in is  missing it asks for it first. "Download" gives the current version,  as
+ *  "Download this version" does. Not acceptable:  Download stays, Upload is greyed with its  reason. */
 @Component({
   selector: "mr-finish-banner",
   standalone: true,
@@ -110,7 +110,7 @@ export class FinishBanner implements OnDestroy {
   private api = inject(ApiService);
   private store = inject(SessionStore);
 
-  /** the verdict, from the page */
+  /** the  verdict, from  the page */
   readonly readiness = input<Readiness | null | undefined>(null);
   /** the current version's download address */
   readonly downloadUrl = input<string | null>(null);
@@ -161,7 +161,7 @@ export class FinishBanner implements OnDestroy {
     }
   }
 
-  /** Opens the Edge window; when the sign-in is done the upload starts by itself. */
+  /** Opens the Edge window; when the sign-in is done  the upload starts by itself. */
   async openSignIn(): Promise<void> {
     try {
       this.signIn.set(await this.api.startMindSignIn());
@@ -190,7 +190,7 @@ export class FinishBanner implements OnDestroy {
     }, 2000);
   }
 
-  /** The same call as Run in Mind: the changes it ticks by default, 4 rounds at most, the model run, the assistant naming grids. */
+  /** The same call as Run in Mind:  the changes it ticks by default,  4 rounds at most, the model run,  the assistant naming grids. */
   private async start(id: string): Promise<void> {
     this.progress.set("Starting the upload…");
     try {
@@ -225,7 +225,7 @@ export class FinishBanner implements OnDestroy {
         return;
       }
     } catch {
-      /* the next look tries again */
+      /* the next look  tries again */
     }
     this.timer = setTimeout(() => void this.poll(id, next), 2000);
   }

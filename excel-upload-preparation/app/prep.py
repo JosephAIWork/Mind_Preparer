@@ -381,7 +381,7 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
     rects: dict[str, list[tuple[int, int, int, int, str]]] = {}
     whole_cols: dict[str, dict[int, str]] = {}
     whole_rows: dict[str, dict[int, str]] = {}
-    lookup_cols: dict[str, dict[int, str]] = {}  # the whole-column / whole-row reads whose function sees text cells
+    lookup_cols: dict[str, dict[int, str]] = {}  # the whole-column  / whole-row reads whose function sees text  cells
     lookup_rows: dict[str, dict[int, str]] = {}
     positional: dict[str, str] = {}
     text_addressed: dict[str, str] = {}
@@ -408,7 +408,7 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
             sheet = ref.get("sheet") or home
             if not sheet:
                 continue
-            # a 3-D  reference reads the same cells on every  sheet of its range
+            # a 3-D reference reads the same cells on every sheet of  its range
             for sheet in spans.get(sheet.lower(), [sheet]):
                 if ref.get("whole_column"):
                     cols = whole_cols.setdefault(sheet, {})
@@ -425,7 +425,7 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
                 else:
                     rects.setdefault(sheet, []).append((ref["r1"], ref["r2"], ref["c1"], ref["c2"], owner))
     index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows, "lookup_cols": lookup_cols, "lookup_rows": lookup_rows, "positional": positional, "text_addressed": text_addressed}
-    _REF_INDEX_CACHE.clear()  # one workbook at a time is plenty
+    _REF_INDEX_CACHE.clear()  # one workbook at a time is  plenty
     _REF_INDEX_CACHE[key] = index
     return index
 
@@ -434,9 +434,9 @@ _TEXT_SEEING_RE = re.compile(r"\b(MATCH|XMATCH|INDEX|VLOOKUP|HLOOKUP|LOOKUP|XLOO
 
 
 def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int, text_only: bool = False) -> str | None:
-    """The  formula (or  name) that reads this cell, else None.  text_only: a whole-column or whole-row
+    """The  formula (or  name) that reads this cell, else None. text_only: a whole-column or whole-row
     reference counts only when its function looks at text cells (a lookup, MATCH, INDEX, COUNTA ...);
-    Excel's SUM / AVERAGE / MIN / MAX skip text, so a title in such a range changes no result."""
+    Excel's SUM / AVERAGE /  MIN / MAX skip text, so a title in such a  range changes no result."""
     cols, rows = ("lookup_cols", "lookup_rows") if text_only else ("whole_cols", "whole_rows")
     owner = index.get(cols, {}).get(sheet, {}).get(col) or index.get(rows, {}).get(sheet, {}).get(row)
     if owner:
@@ -444,8 +444,8 @@ def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int, text_on
     rects = index["rects"].get(sheet)
     if not rects:
         return None
-    # The first rectangle (in reading order) that holds the cell, from the few in its band of
-    # rows instead of all of them (a large workbook  asks thousands of questions of a million rectangles)
+    # The first rectangle  (in reading order) that holds the cell,  from the few in its band of
+    # rows instead of all of  them (a large workbook asks thousands of  questions of a million rectangles)
     blocks, tall = _row_blocks(index, sheet, rects)
     best = None
     for i in blocks.get(row // _BLOCK_ROWS, ()):
@@ -1627,8 +1627,8 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
 
 
 def _range_reader(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str | None:
-    """The formula (or a name some formula uses) whose range holds this cell; a defined name no formula
-    or other name uses (a macro's) reads nothing, as for the lone text cells themselves (Mind runs no macro)."""
+    """The  formula (or  a name some formula uses) whose range holds this cell; a defined name no formula
+    or other name uses (a macro's) reads nothing, as for the lone text cells themselves (Mind runs  no macro)."""
     index = reference_index(analysis)
     owner = referenced_by(index, sheet, row, col, text_only=True)
     if not owner or not owner.startswith("name "):
@@ -1661,7 +1661,7 @@ def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, An
         if cell_value(analysis, s["sheet"], row, first) is not None or grid_containing(grids, row, first) or cell_value(analysis, s["sheet"], row + 1, first) is not None:
             return None
         if _range_reader(analysis, s["sheet"], row, first):
-            return None  # the empty label cell lies inside a range a formula reads
+            return None  # the empty label cell  lies inside a range a formula reads
         return _op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(first, row), before=None, after=f"Value in {s['cell']}",
                    note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just under the grid {g['ref']}, whose labels in column "
                         f"{num_to_col(first)} stop one row above; with a label beside it the grid takes this row and Mind imports the cell with it")

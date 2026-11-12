@@ -142,7 +142,7 @@ export class ApiService {
     return firstValueFrom(this.http.get<ScanStatus>(`${this.s(id)}/status`));
   }
 
-  /** 1.11.7: what Prep does with the pivot tables; the plan comes back made again with it. */
+  /** 1.11.7: what Prep does with the pivot tables; the plan comes  back made again with it. */
   setPivotMode(id: string, mode: PivotMode): Promise<{ pivot_mode: PivotMode; plan: PrepAction[]; readiness: Readiness | null }> {
     return firstValueFrom(this.http.post<{ pivot_mode: PivotMode; plan: PrepAction[]; readiness: Readiness | null }>(`${this.s(id)}/pivot-mode`, { mode }));
   }
@@ -182,7 +182,7 @@ export class ApiService {
     for (const [k, v] of Object.entries(o)) {
       if (v === undefined || v === "" || v === false) continue;
       if (k === "loops") {
-        if (Object.keys(v as object).length) params = params.set(k, JSON.stringify(v)); // each  loop's choices, as JSON
+        if (Object.keys(v as object).length) params = params.set(k, JSON.stringify(v)); // each loop's choices, as JSON
         continue;
       }
       params = params.set(k, String(v));
@@ -213,12 +213,12 @@ export class ApiService {
     return firstValueFrom(this.http.post<InstancesOutcome>(`${this.s(id)}/mind-instances-plan/apply`, { ...o, reanalyze: true }));
   }
 
-  /** The zip with both files (the model copy and the main workbook); 404 until something was written. */
+  /** The zip with both files (the model copy and the main workbook); 404 until something  was written. */
   mindInstancesDownloadUrl(id: string): string {
     return `${this.s(id)}/mind-instances/download`;
   }
 
-  /** Where instances or a loop would help, ranked (nothing written); `assistant` adds the assistant's explanation on top. Slow:  up to two minutes on  a big model. */
+  /** Where instances or a  loop would help, ranked (nothing written); `assistant`  adds the assistant's  explanation on  top. Slow: up to two minutes on a big model. */
   instanceFinder(id: string, assistant = false, refresh = false): Promise<{ version_id: string; finder: FinderResult }> {
     const params = new HttpParams().set("assistant", assistant ? "1" : "0").set("refresh", refresh ? "1" : "0");
     return firstValueFrom(this.http.get<{ version_id: string; finder: FinderResult }>(`${this.s(id)}/instance-finder`, { params }));
@@ -254,18 +254,18 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ state: string; work_dir?: string }>(`${this.s(id)}/mind-loop`, opts));
   }
 
-  /** The Mind sign-in; `check` also  loads Mind (headless)  to see  whether it still works. */
+  /** The Mind sign-in; `check` also loads Mind (headless) to see whether it still works. */
   mindSignIn(check = false): Promise<MindSignIn> {
     const params = new HttpParams().set("check", String(check));
     return firstValueFrom(this.http.get<MindSignIn>(`${this.base}/mind/sign-in`, { params }));
   }
 
-  /** Open the Edge window to sign in to Mind (or `stop` closes it). */
+  /** Open the Edge window to sign in to Mind  (or `stop` closes it). */
   startMindSignIn(stop = false): Promise<MindSignIn> {
     return firstValueFrom(this.http.post<MindSignIn>(`${this.base}/mind/sign-in`, stop ? { stop: true } : {}));
   }
 
-  /** What Run in Mind will upload, the changes it can make first, what must finish first,  the time estimate. */
+  /** What Run in Mind will upload, the changes  it can make first, what must  finish first, the time estimate. */
   mindLoopOptions(id: string, o: { useAssistant: boolean; runModel: boolean }): Promise<MindRunOptionsInfo> {
     const params = new HttpParams().set("use_assistant", String(o.useAssistant)).set("run_model", String(o.runModel));
     return firstValueFrom(this.http.get<MindRunOptionsInfo>(`${this.s(id)}/mind-loop/options`, { params }));
@@ -276,7 +276,7 @@ export class ApiService {
     return firstValueFrom(this.http.get<MindLoopStatus>(`${this.s(id)}/mind-loop`, { params }));
   }
 
-  /** The assistant's streamed answer (NDJSON over a POST body):  `onEvent` gets phases and text deltas,  the promise the whole reply. */
+  /** The assistant's streamed  answer (NDJSON over a POST body): `onEvent` gets phases and text  deltas, the promise the whole reply. */
   async chatStream(id: string, history: ChatMessage[], question: string, focus: FixTarget | undefined, onEvent: (ev: ChatStreamEvent) => void): Promise<ChatReply> {
     const body = {
       history: history.map((m) => ({ role: m.role, content: m.content, note: m.note ?? false })),
@@ -289,7 +289,7 @@ export class ApiService {
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => null);
       this.feedbackBox.report(err?.incident, err?.problem);
-      this.expiry.noteAnswer(res.status, err); // fetch, not HttpClient:  the interceptor does not see this one
+      this.expiry.noteAnswer(res.status, err); // fetch, not  HttpClient: the interceptor does not see this one
       throw new Error(typeof err?.detail === "string" ? err.detail : `${res.status} ${res.statusText}`);
     }
     const reader = res.body.getReader();

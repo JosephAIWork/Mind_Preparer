@@ -159,18 +159,18 @@ export class RecentWorkbooks {
   /** Basic screen: the list is closed until clicked open (Custom shows it open, as before). */
   readonly collapsible = input(false);
   readonly open = signal(false);
-  /** "Remove all N saved workbooks?" asked; the removal under way; what was kept, in words */
+  /** "Remove all  N saved workbooks?" asked; the removal under way; what was kept,  in words */
   readonly askingAll = signal(false);
   readonly busyAll = signal(false);
   readonly note = signal("");
-  /** The saved workbook, loaded again: the page shows it (a pending one goes to the sheet  choice). */
+  /** The saved workbook, loaded again:  the page shows it (a pending one  goes to the sheet choice). */
   readonly opened = output<SessionStart | PendingUpload>();
 
   constructor() {
     void this.refresh();
   }
 
-  /** The list as the server has it now (an older server  without the route: no list). */
+  /** The list as the server has it  now (an older server without the route:  no list). */
   async refresh(): Promise<void> {
     try {
       this.rows.set(await this.api.savedWorkbooks());
@@ -179,7 +179,7 @@ export class RecentWorkbooks {
     }
   }
 
-  /** "10 Nov  2026, 14:05 · 3 versions", "· not  checked yet" for an upload never scanned. */
+  /** "10 Nov 2026, 14:05 · 3 versions", "· not checked yet" for an upload never scanned. */
   metaText(r: SavedWorkbook): string {
     const parts = [whenText(r.last_opened ?? r.uploaded_at), `${r.versions} version${r.versions === 1 ? "" : "s"}`];
     if (!r.has_result) parts.push("not checked yet");
@@ -195,7 +195,7 @@ export class RecentWorkbooks {
       this.opened.emit(started);
     } catch (e) {
       this.error.set(`Could not open ${r.name}: ${errorText(e)}`);
-      void this.refresh(); // gone meanwhile: the list says  so
+      void this.refresh(); // gone meanwhile: the list says so
     } finally {
       this.busyId.set(null);
     }

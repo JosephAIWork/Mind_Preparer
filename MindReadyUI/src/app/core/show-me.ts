@@ -300,8 +300,8 @@ export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
 };
 
 /** The  steps from  the screen the user is on (`here`) to the place: a click on Basic, Custom or Advanced when the
- *  place is on the other screen, a click on the Advanced tab, then the  place itself. Whether the user is
- *  already on that screen or tab  is checked again as each step  comes up (ShowMeService). */
+ *  place is on the other screen, a click on the Advanced tab, then  the place itself. Whether the user is
+ *  already on that screen or  tab is checked again as each  step comes up (ShowMeService). */
 export function planShowMe(request: ShowMeRequest, here: ShowMePage): ShowMeStep[] {
   const ways = SHOW_ME_PLACES[request.id];
   if (!ways?.length) return [];

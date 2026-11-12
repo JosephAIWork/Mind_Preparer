@@ -11,16 +11,16 @@ Every build starts with a fresh compiler cache (the old one is wiped, see the zi
 is not shorter; Nuitka's own downloads (the C compiler) are reused.
 
 --onefile makes one file instead, <out dir>/MindReady.exe, to share as a link: it unpacks itself the
-first time it starts (into %LOCALAPPDATA%\\MindReady-program\\<version and build time>, so later
+first time it starts (into %LOCALAPPDATA%\\MindReady-program\\<version and build  time>, so later
 starts are quick) and reads a settings.yaml placed next to it (mind_ready_app.py).
 
-A copy to share stops working after an  end date (docs/SHARING.md, app/expiry.py): --expires is the
+A copy to share stops working after an end date (docs/SHARING.md, app/expiry.py): --expires is the
 last day it works, local time (by default 15 December 2026), --contact the person its message tells
 to ask for a new copy. Both go into a small file EXPIRY next to VERSION in the package. A copy that
 never stops needs --no-expiry, said explicitly.
 
-The package takes the screens as built in MindReadyUI/dist: build them first (npx ng build in
-MindReadyUI). A copy with an end date is never built from screens made before the end date was  added
+The package takes the screens as built in MindReadyUI/dist: build them first  (npx ng build in
+MindReadyUI). A  copy with an end date is never  built from screens  made before  the end date was added
 (they could not show it).
 """
 from __future__ import annotations

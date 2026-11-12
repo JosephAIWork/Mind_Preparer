@@ -1371,16 +1371,16 @@ def open_saved_workbook(session_id: str) -> dict[str, Any]:
 
 
 def _remove_saved(session_id: str) -> bool:
-    """Remove one saved workbook (folder and session in memory); True when a folder was there. Raises
-    409 while a step still runs on it (Run in Mind too) or when another copy of the app holds it."""
+    """Remove  one saved  workbook (folder and session in memory); True when a folder was there. Raises
+    409 while a step still runs on it (Run in Mind too) or when another copy of the app  holds it."""
     s = SESSIONS.get(session_id)
     if s is not None:
         busy = _busy_with(s)
         if (MIND_LOOPS.get(session_id) or {}).get("state") == "running":  # not in _busy_with: Run in Mind checks that itself
             busy = "Run in Mind is still running"
-        if busy and busy != "the workbook has not been analysed yet":  # an  upload never scanned may go; a  running step may not
+        if busy and busy != "the workbook has not been analysed yet":  # an upload  never scanned may go; a running  step may not
             raise HTTPException(status_code=409, detail=f"Not removed: {busy}. Wait for it to finish, then remove it.")
-        excel_worker.release(session_id)  # an Excel that holds  a version open would keep the folder
+        excel_worker.release(session_id)  # an Excel that holds a  version open would keep the folder
         SESSIONS.pop(session_id, None)
         AUTOFIX.pop(session_id, None)
     else:
@@ -1402,10 +1402,10 @@ def remove_saved_workbook(session_id: str) -> dict[str, Any]:
 
 @app.delete("/api/saved-workbooks")
 def remove_all_saved_workbooks() -> dict[str, Any]:
-    """Remove every saved workbook (1.15.0, the list's "Remove all"), except the ones another running
+    """Remove  every saved  workbook (1.15.0, the list's "Remove all"), except the ones another running
     copy of the app holds open (the open.lock rule: they are not even in the list) and the ones a step
-    is still running on here. Answers how many were removed and how many were kept, with the
-    kept ones' names and why."""
+    is  still running on here. Answers how many were removed and how  many were kept, with the
+    kept ones'  names and why."""
     removed = 0
     kept: list[dict[str, str]] = []
     for row in session_store.list_saved():
@@ -1414,7 +1414,7 @@ def remove_all_saved_workbooks() -> dict[str, Any]:
             _remove_saved(sid)
             removed += 1
         except HTTPException as e:
-            if e.status_code == 404:  # gone meanwhile: nothing to keep, nothing removed by us
+            if e.status_code == 404:  # gone meanwhile: nothing to keep,  nothing removed by us
                 continue
             kept.append({"id": sid, "name": str(row.get("name") or ""), "why": str(e.detail)})
     return {"removed": removed, "kept": len(kept), "kept_workbooks": kept}

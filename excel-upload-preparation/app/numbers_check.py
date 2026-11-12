@@ -44,15 +44,15 @@ class Moves:
 
     def __init__(self, batches: Iterable[Iterable[dict[str, Any]]] = ()):
         self.batches: list[dict[str, Any]] = []
-        # formulas a title replaced ON PURPOSE (a formula caption above a table, 1.14.1): (batches before, sheet, row, col)
+        # formulas a title replaced ON PURPOSE (a formula caption above  a table, 1.14.1): (batches before, sheet, row, col)
         self._replaced_raw: list[tuple[int, str, int, int]] = []
         self._replaced: set[tuple[str, int, int]] | None = None
-        # the neutral path / file name texts Prep wrote in place of CELL("filename") (FRM-012): the model
-        # owner's own location is not kept, so a text built on them differs from the original only by that
+        # the neutral path /  file name texts Prep wrote in  place of CELL("filename") (FRM-012): the model
+        # owner's own  location is not kept, so a text built on them differs  from the original only by that
         self.neutral_texts: list[str] = []
         for ops in batches:
             rows: dict[str, list[int]] = {}
-            banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns
+            banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts  that shift only some columns
             cols: dict[str, list[int]] = {}
             renames: dict[str, str] = {}
             for op in ops:
@@ -97,10 +97,10 @@ class Moves:
         return (sheet, row, col) in self._replaced
 
     def forward(self, sheet: str, row: int, col: int, start: int = 0) -> tuple[str, int, int]:
-        """An original cell ->  the same cell in the prepared version. Inside one
-        Apply the rows  are inserted bottom-up at the coordinates  of the version
-        it started from, so a  row moves down by one for every insert at or above  it (an insert that
-        shifts only some columns:  when the cell's column is one of them)."""
+        """An original cell -> the same cell  in the prepared version. Inside one
+        Apply the rows are inserted bottom-up at the coordinates of the version
+        it started from, so a row moves down by one for every insert at or above it (an insert that
+        shifts only some columns: when the cell's column is one of them)."""
         for b in self.batches[start:]:
             row += bisect.bisect_right(b["rows"].get(sheet, ()), row) + sum(1 for k, c1, c2 in b.get("banded", {}).get(sheet, ()) if k <= row and c1 <= col <= c2)
             col += bisect.bisect_right(b["cols"].get(sheet, ()), col)
