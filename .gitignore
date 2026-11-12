@@ -34,8 +34,6 @@ __pycache__/
 venv/
 
 # --- node (the built dist/ IS committed so a clone runs without Node) ---
-FigmaOutput/node_modules/
-FigmaOutput/.vite/
 
 # --- logs ---
 *.log

@@ -1,6 +1,0 @@
-version: 1.0.0
-operations:
-  - id: preserve-output-extension
-    deterministic: true
-    approval_required: false
-    constraints: [source_copy_only, no_content_loss]

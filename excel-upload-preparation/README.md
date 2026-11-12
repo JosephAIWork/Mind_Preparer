@@ -352,8 +352,8 @@ the two honest cases below.
   used yet on this workbook".
 - **Web app** (1.6.0): the Figma-built React front-end in
   `../MindReadyUI` served by `app/web/server.py` (FastAPI) -- an Angular 22 +
-  Carbon app with Mind's own look (1.11.0; the React app in `FigmaOutput` is
-  retired, `MIND_READY_DIST` can still point at its `dist`). The main screen
+  Carbon app with Mind's own look (1.11.0; the earlier React app is
+  retired and no longer part of this repository). The main screen
   is three one-click buttons (Fix all issues, Fix the formulas, Build the
   Mind loop) and a download; everything else -- findings, Prep actions,
   Recalculate, Mind loop choices, the Mind instances and where instances could

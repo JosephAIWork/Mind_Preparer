@@ -1,8 +1,0 @@
-version: 1.0.0
-validators:
-  - rule_id: FILE-001
-    implementation: validators.file.ensure_source_immutable
-  - rule_id: LOOP-002
-    implementation: validators.loop.equal_range_lengths
-  - rule_id: READY-001
-    implementation: validators.recalculation.successful_recalculation
