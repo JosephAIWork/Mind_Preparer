@@ -224,3 +224,23 @@ def test_referenced_by_finds_the_first_reader_as_the_plain_scan_does():
             row, col = rng.randint(1, 40000), rng.randint(1, 36)
             plain = next((o for r1, r2, c1, c2, o in rects if r1 <= row <= r2 and c1 <= col <= c2), None)
             assert referenced_by(index, "S", row, col) == plain
+
+
+def test_no_lone_text_title_inside_a_range_an_index_match_reads(tmp_path):
+    """Prep 'title lone text cells' wrote '#<name> value' into empty cells of Parameters!C36:C119
+    that =INDEX(Parameters!$C$36:$C$119, MATCH(..)) reads (an IFRS risk model, 2026-11-12): the lookup
+    then returned the title.  An empty cell inside a read range is refused, the reader named;
+    a lone text cell whose empty cell above lies outside every read range is still titled."""
+    path = _wb(tmp_path / "p.xlsx", {
+        "Parameters": {"B36": "Key", "B40": "Rate :", "C41": "text A",
+                       "B50": "Other :", "C51": "text B", "E10": "Name :", "F11": "text C"},
+        "Calc": {"A1": "=INDEX(Parameters!$C$36:$C$60,MATCH(\"k\",Parameters!$B$36:$B$60,0))",
+                 "A2": "=Parameters!C41", "A3": "=Parameters!C51", "A4": "=Parameters!F11"},
+    })
+    analysis = build_analysis(path, tmp_path / "w", "t")
+    ops, skipped = prep.plan_title_lone_text_cells(analysis, {"findings": []})
+    titled = {o["cell"] for o in ops if o["sheet"] == "Parameters"}
+    assert "C40" not in titled and "C50" not in titled, ops
+    assert any("Parameters!C41" in s and "could not name" in s and "Calc!A1" in s for s in skipped), skipped
+    assert any("Parameters!C51" in s and "Calc!A1" in s for s in skipped), skipped
+    assert "F10" in titled, (ops, skipped)  # outside every read range: still titled

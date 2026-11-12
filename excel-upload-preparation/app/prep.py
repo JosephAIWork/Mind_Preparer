@@ -1609,6 +1609,26 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
     return ops, skipped
 
 
+def _range_reader(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str | None:
+    """The formula (or a name some formula uses) whose range holds this cell; a defined name no formula
+    or other name uses (a macro's) reads nothing, as for the lone text cells themselves (Mind runs no macro)."""
+    index = reference_index(analysis)
+    owner = referenced_by(index, sheet, row, col)
+    if not owner or not owner.startswith("name "):
+        return owner
+    wb = analysis["workbooks"][0]
+    key = ("used_names", id(analysis))
+    used = _USED_NAMES.get(key)
+    if used is None:
+        _USED_NAMES.clear()
+        text = " ".join(str(f.get("formula") or "") for f in wb.get("formulas", [])) + " " + " ".join(str(d.get("value") or "") for d in wb.get("defined_names", []))
+        used = _USED_NAMES[key] = {m.lower() for m in re.findall(r"[A-Za-z_][\w.]*", text)}
+    return owner if owner[5:].strip().lower() in used else None
+
+
+_USED_NAMES: dict[Any, set[str]] = {}
+
+
 def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int) -> dict[str, Any] | None:
     """A  lone cell  right under a grid whose first column -- its labels -- stops one row above
     (Base!J414 = 'N' under I406:J413, labels in I, I414 empty; 2026-10-26): a label in that first
@@ -1623,6 +1643,8 @@ def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, An
             return None
         if cell_value(analysis, s["sheet"], row, first) is not None or grid_containing(grids, row, first) or cell_value(analysis, s["sheet"], row + 1, first) is not None:
             return None
+        if _range_reader(analysis, s["sheet"], row, first):
+            return None  # the empty label cell lies inside a range a formula reads
         return _op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(first, row), before=None, after=f"Value in {s['cell']}",
                    note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just under the grid {g['ref']}, whose labels in column "
                         f"{num_to_col(first)} stop one row above; with a label beside it the grid takes this row and Mind imports the cell with it")
@@ -1708,6 +1730,12 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
             else:
                 where = "on the first row, no cell above for a title" if row == 1 else f"the cell above ({ref_text(col, row - 1)}) is taken"
                 skipped.append(f"{s['sheet']}!{s['cell']}: {where}, and a range or a name over several cells reads it (it cannot move) -- by hand")
+            continue
+        # an empty cell inside a range some formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
+        # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
+        range_reader = _range_reader(analysis, s["sheet"], row - 1, col)
+        if range_reader:
+            skipped.append(f"{s['sheet']}!{s['cell']}: could not name it -- the empty cell above ({ref_text(col, row - 1)}) lies inside a range {range_reader} reads, and a title there would change that result -- by hand")
             continue
         ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(col, row - 1), before=None, after=title(s, row, col),
                        note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
