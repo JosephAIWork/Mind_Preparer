@@ -235,11 +235,12 @@ def test_a_formula_that_asks_excel_about_itself_is_frozen_to_what_it_shows(tmp_p
     assert f["status"] == "ERROR" and {s["cell"] for s in f["observed"]["sites"]} == {"C2", "C5"}
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["freeze_environment_formulas"]
     by = {o["cell"]: o for o in a["operations"]}
-    assert by["C5"]["after"] == '="env.xlsx"' and by["C2"]["after"].startswith('="') and by["C2"]["after"].endswith('\\"')
+    assert by["C5"]["after"] == '="mod.xlsx"' and by["C2"]["after"].startswith(r'="C:\Fol') and by["C2"]["after"].endswith('\\"')
+    assert "neutral" in by["C5"]["note"] and str(tmp_path) not in by["C2"]["after"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED" and not out["failed"]
-    res = compare_workbooks(src, Path(out["output_path"]), Moves())
-    assert res["clean"] is True and res["counts"]["same"] == 4
+    res = compare_workbooks(src, Path(out["output_path"]), Moves([a["operations"]]))  # the plan's own log: it names the neutral texts
+    assert res["clean"] is True and res["counts"]["same"] == 4, res["samples"]
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-012")["status"] == "PASS"
 
 
@@ -273,7 +274,7 @@ def test_frm012_never_writes_the_apps_working_folder_and_prefers_the_originals_v
     # what the original upload shows (the user's own Excel saved it) wins
     analysis["original_environment_values"] = {"Saved paths!C2": "L:\\Models\\", "Saved paths!C5": "model v1.xlsx"}
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["freeze_environment_formulas"]
-    assert {o["cell"]: o["after"] for o in a["operations"]} == {"C2": '="L:\\Models\\"', "C5": '="model v1.xlsx"'}
+    assert {o["cell"]: o["after"] for o in a["operations"]} == {"C2": '="C:\\Folder\\"', "C5": '="model___.xlsx"'}
 
 
 @needs_excel
@@ -285,16 +286,19 @@ def test_the_server_freezes_cell_filename_to_what_the_original_upload_shows(tmp_
     from app.web import server
 
     src = _environment_workbook(tmp_path / "user folder")
-    shown = str(tmp_path / "user folder") + "\\"
+    from app.validators.mind_values import neutral_environment_text
+
+    shown = neutral_environment_text('=CELL("filename")', str(tmp_path / "user folder") + "\\")[0]
+    assert str(tmp_path) not in shown
     client = TestClient(server.app)
     with open(src, "rb") as fh:
         body = client.post("/api/sessions", files={"file": (src.name, fh, "application/octet-stream")}, data={"mode": "plan"}).json()
     plan = {a["id"]: a for a in body["plan"]}["freeze_environment_formulas"]
-    assert {o["cell"]: o["after"] for o in plan["operations"]} == {"C2": f'="{shown}"', "C5": '="env.xlsx"'}
+    assert {o["cell"]: o["after"] for o in plan["operations"]} == {"C2": f'="{shown}"', "C5": '="mod.xlsx"'}
     out = client.post(f"/api/sessions/{body['sessionId']}/apply", json={"operations": [{"op": "insert_row", "sheet": "Saved paths", "row": 1}], "reanalyze": True}).json()
     assert out["result"]["status"] == "APPLIED"
     plan = {a["id"]: a for a in out["plan"]}["freeze_environment_formulas"]
-    assert {o["cell"]: o["after"] for o in plan["operations"]} == {"C3": f'="{shown}"', "C6": '="env.xlsx"'}
+    assert {o["cell"]: o["after"] for o in plan["operations"]} == {"C3": f'="{shown}"', "C6": '="mod.xlsx"'}
     assert all("original upload" in o["note"] for o in plan["operations"])
 
 
@@ -321,7 +325,7 @@ def test_an_error_cell_kept_on_purpose_stays_an_error_in_mind(tmp_path):
     assert a["count"] == 1
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED"
-    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    res = compare_workbooks(src, Path(out["output_path"]), Moves([a["operations"]]))  # the plan's own log: it names the neutral texts
     assert res["clean"] is True and res["counts"]["error_to_error"] == 1 and res["counts"]["good_to_other"] == 0
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-013")["status"] == "PASS"
 
@@ -350,7 +354,7 @@ def test_a_blank_text_inside_a_range_in_array_arithmetic_is_named_in_the_test(tm
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["guard_blank_arithmetic"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED"
-    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    res = compare_workbooks(src, Path(out["output_path"]), Moves([a["operations"]]))  # the plan's own log: it names the neutral texts
     assert res["clean"] is True
     # a second round finds nothing more to guard (1.8.11: the first trial doubled the test)
     again = build_analysis(Path(out["output_path"]), tmp_path / "w2", "r2")
@@ -382,7 +386,7 @@ def test_an_isnumber_or_iserror_guard_counts_like_iferror(tmp_path):
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["guard_blank_arithmetic"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED" and len(out["applied"]) == 2
-    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    res = compare_workbooks(src, Path(out["output_path"]), Moves([a["operations"]]))  # the plan's own log: it names the neutral texts
     assert res["clean"] is True
 
 
@@ -419,7 +423,7 @@ def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin
     a = {x["id"]: x for x in plan_actions(analysis, {"findings": [f]})}["empty_cells_as_zero"]
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED"
-    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    res = compare_workbooks(src, Path(out["output_path"]), Moves([a["operations"]]))  # the plan's own log: it names the neutral texts
     assert res["clean"] is True
 
 
@@ -493,7 +497,24 @@ def test_frm_014_rewrite_keeps_excel_values(tmp_path):
     assert a["count"] == 3
     out = apply_operations(src, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED"
-    res = compare_workbooks(src, Path(out["output_path"]), Moves())
+    res = compare_workbooks(src, Path(out["output_path"]), Moves([a["operations"]]))  # the plan's own log: it names the neutral texts
     assert res["clean"] is True and res["counts"]["good_to_other"] == 0
     assert _finding(build_analysis(Path(out["output_path"]), tmp_path / "after", "a"), "FRM-014")["status"] == "PASS"
 
+
+
+def test_cell_filename_text_is_frozen_to_a_neutral_text_of_the_same_length():
+    """U1 (1.15.0): the model owner's own network path and file name are not written into the prepared workbook."""
+    from app.validators.mind_values import neutral_environment_text as neutral
+
+    f = '=CELL("filename",A1)'
+    unc = r"\\srv\team\Client X" + "\\"
+    folder, note = neutral(f, unc)
+    assert folder.startswith(r"C:\Folder") and folder.endswith("\\") and len(folder) == len(unc) and "Client" not in folder and "folder" in note
+    name, note = neutral(f, "Client X model 2025.xlsm")
+    assert name.startswith("model") and name.endswith(".xlsm") and len(name) == len("Client X model 2025.xlsm") and "file name" in note
+    full, _ = neutral(f, r"D:\Clients\X\[Client X.xlsx]Sheet1")
+    assert full.endswith("Sheet1") and "Client" not in full and "[" in full and "]" in full
+    assert neutral(f, "plain text") == ("plain text", None)       # no path, no file name: untouched
+    assert neutral('=INFO("osversion")', "Windows (32-bit) NT 10.00") == ("Windows (32-bit) NT 10.00", None)
+    assert neutral(f, 12.5) == (12.5, None)                       # numbers stay as they are

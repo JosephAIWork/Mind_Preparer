@@ -1079,6 +1079,53 @@ _ENV_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
 _APP_FOLDER_MARK = "\\mind_ready_"
 
 
+_FILE_EXT_RE = re.compile(r"\.(xlsx|xlsm|xlsb|xls|xltx|xltm)$", re.IGNORECASE)
+_FULL_NAME_RE = re.compile(r"^(?P<folder>.*[\\/])\[(?P<file>[^\]]+)\](?P<sheet>.*)$", re.DOTALL)
+
+
+def _same_length(text: str, size: int) -> str:
+    """`text` cut or padded with its last letter to exactly `size` characters (a length that formulas
+    built on the value -- LEN, MID, FIND -- may depend on stays the same)."""
+    return (text + "_" * max(0, size - len(text)))[:size] if text else text
+
+
+def _neutral_file_name(name: str) -> str:
+    m = _FILE_EXT_RE.search(name)
+    ext = m.group(0) if m else ""
+    stem = _same_length("model", max(1, len(name) - len(ext))) if ext else _same_length("model", len(name))
+    return stem + ext
+
+
+def _neutral_folder(folder: str) -> str:
+    sep = "\\" if "\\" in folder or ":" in folder[:3] else "/"
+    trailing = sep if folder[-1:] in ("\\", "/") else ""
+    body = _same_length("C:" + sep + "Folder", max(1, len(folder) - len(trailing)))
+    return body + trailing
+
+
+def neutral_environment_text(formula: str, value: Any) -> tuple[Any, str | None]:
+    """What a CELL("filename") / INFO("directory") formula is frozen to instead of the model owner's own
+    path and file name (a client's network path must not be written into the prepared workbook):
+    -> (the neutral text, a plain description) or (value, None) when the value carries no path or file name.
+    The text stays text and keeps its length; every number stays as it was."""
+    if not isinstance(value, str) or not value:
+        return value, None
+    low = (formula or "").lower()
+    if "filename" not in low and "directory" not in low:
+        return value, None
+    full = _FULL_NAME_RE.match(value)
+    if full:
+        out = _neutral_folder(full["folder"]) + "[" + _neutral_file_name(full["file"]) + "]" + full["sheet"]
+        return out, f"a neutral folder and file name ({out!r}) instead of the real path and file name"
+    if "\\" in value or "/" in value or value[1:3] in (":\\", ":/"):
+        out = _neutral_folder(value)
+        return out, f"a neutral folder ({out!r}) instead of the real folder path"
+    if _FILE_EXT_RE.search(value):
+        out = _neutral_file_name(value)
+        return out, f"a neutral file name ({out!r}) instead of the real file name"
+    return value, None
+
+
 def in_app_folder(value: Any) -> bool:
     return isinstance(value, str) and _APP_FOLDER_MARK in value.lower()
 

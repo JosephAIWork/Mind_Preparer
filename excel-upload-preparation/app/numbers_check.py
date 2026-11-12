@@ -47,6 +47,9 @@ class Moves:
         # formulas a title replaced ON PURPOSE (a formula caption above a table, 1.14.1): (batches before, sheet, row, col)
         self._replaced_raw: list[tuple[int, str, int, int]] = []
         self._replaced: set[tuple[str, int, int]] | None = None
+        # the neutral path / file name texts Prep wrote in place of CELL("filename") (FRM-012): the model
+        # owner's own location is not kept, so a text built on them differs from the original only by that
+        self.neutral_texts: list[str] = []
         for ops in batches:
             rows: dict[str, list[int]] = {}
             banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns
@@ -63,6 +66,10 @@ class Moves:
                     cols.setdefault(op["sheet"], []).append(col_to_num(str(op["column"])))
                 elif kind == "rename_sheet":
                     renames[op["sheet"]] = op["after"]
+                elif kind in ("set_formula", "set_array_formula") and op.get("rule_id") == "FRM-012" and "neutral" in str(op.get("note") or ""):
+                    after = str(op.get("after") or "")
+                    if after.startswith('="') and after.endswith('"') and len(after) > 4:
+                        self.neutral_texts.append(after[2:-1].replace('""', '"'))
                 elif kind == "set_value" and str(op.get("before") or "").startswith("=") and str(op.get("after") or "").startswith("#"):
                     from .formula_utils import parse_ref
                     at = parse_ref(str(op.get("cell") or "").replace("$", ""))
@@ -72,6 +79,16 @@ class Moves:
                 v.sort()
             if rows or banded or cols or renames:
                 self.batches.append({"rows": rows, "banded": banded, "cols": cols, "renames": renames})
+
+    def neutralized(self, value: Any) -> Any:
+        """A text with the neutral path / file name texts of the plan named as <folder> / <file> (as _without_location does)."""
+        if not self.neutral_texts or not isinstance(value, str):
+            return value
+        for text in sorted(set(self.neutral_texts), key=len, reverse=True):
+            token = "<file>" if text.lower().endswith((".xlsx", ".xlsm", ".xlsb", ".xls", ".xltx", ".xltm")) else "<folder>"
+            # a folder's closing separator stays outside the token (the location stripper leaves it too)
+            value = value.replace(text if token == "<file>" else text.rstrip("\\/"), token)
+        return value
 
     def is_replaced(self, sheet: str, row: int, col: int) -> bool:
         """True for a cell of the PREPARED version whose formula the plan replaced by a title on purpose."""
@@ -235,7 +252,7 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
                 kind = "error_to_error" if _is_error(v1) else "error_to_good"
             elif _is_error(v1):
                 kind = "good_to_error"
-            elif _same(v0, v1, NUMERIC_TOL) or (isinstance(v0, str) and isinstance(v1, str) and _without_location(v0, original) == _without_location(v1, prepared)):
+            elif _same(v0, v1, NUMERIC_TOL) or (isinstance(v0, str) and isinstance(v1, str) and _without_location(v0, original) == _without_location(moves.neutralized(v1), prepared)):
                 kind = "same"
             else:
                 kind = "good_to_other"

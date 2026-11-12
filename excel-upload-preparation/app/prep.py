@@ -1572,7 +1572,7 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
     held the app's temporary folder, and the save folder built from it came out empty), and such a
     value is never written."""
     from .external_links import _literal
-    from .validators.mind_values import environment_formulas, in_app_folder
+    from .validators.mind_values import environment_formulas, in_app_folder, neutral_environment_text
 
     ops, skipped = [], []
     try:
@@ -1600,7 +1600,11 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
         if in_app_folder(value):
             skipped.append(f"{where}: shows the app's working folder, not the user's own: by hand")
             continue
+        value, neutral = neutral_environment_text(s["formula"], value)
         note = f"{', '.join(s['calls'])} asks Excel about itself; the value {whose} shows is written in its place (as a formula, so the numbers check still follows the cell)"
+        if neutral:
+            note = (f"{', '.join(s['calls'])} asks Excel about itself; the value {whose} shows is a location, so {neutral} is written in its place (text, same length; "
+                    "as a formula, so the numbers check still follows the cell). The model owner's own path and file name are not kept in the prepared workbook")
         if s.get("array"):
             # a single-cell  array formula: written back as a one-cell array so Excel accepts the overwrite
             ops.append(_op("set_array_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
