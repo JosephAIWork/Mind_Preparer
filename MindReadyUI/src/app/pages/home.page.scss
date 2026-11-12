@@ -520,3 +520,22 @@
     color: theme.$text-helper;
   }
 }
+
+// Basic screen: one tick box, one Go button, one short line
+.basic {
+  display: flex;
+  align-items: center;
+  gap: $spacing-07;
+  flex-wrap: wrap;
+  margin: $spacing-05 0;
+
+  &__tick {
+    margin: 0;
+  }
+
+  &__line {
+    @include type.type-style("body-02");
+    color: theme.$text-secondary;
+    margin-bottom: $spacing-05;
+  }
+}

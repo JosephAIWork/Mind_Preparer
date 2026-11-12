@@ -1,6 +1,6 @@
 import { CommonModule } from "@angular/common";
 import { Component, OnDestroy, computed, effect, inject, signal } from "@angular/core";
-import { Router, RouterLink } from "@angular/router";
+import { ActivatedRoute, Router, RouterLink } from "@angular/router";
 import { ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../core/api.service";
 import {
@@ -8,6 +8,7 @@ import {
   appliedCount, failedCount, failedText, firstClause, inputFilesProblem, isPending, nameList, nextQuarterLines, nextQuarterOutcome, outsideAddLine, outsideButtonLabel, outsideOutcome, outsideReasonLine, outsideRowLabel, outsideSkipReason, outsideStandInLine,
   outsideWaitingLine, pickedFilesProblem, withOutsideStep,
 } from "../core/models";
+import { FinishBanner } from "../core/finish-banner";
 import { PlainCodes, meaningsText } from "../core/plain-codes";
 import { ReadinessBanner } from "../core/readiness-banner";
 import { SessionStore } from "../core/session.store";
@@ -115,15 +116,21 @@ function stoppedWhere(id: StepId, r: ActionState): string {
 @Component({
   selector: "mr-home",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner, RecentWorkbooks],
+  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner, FinishBanner, RecentWorkbooks],
   templateUrl: "./home.page.html",
   styleUrl: "./home.page.scss",
 })
 export class HomePage implements OnDestroy {
   private api = inject(ApiService);
   private router = inject(Router);
+  private route = inject(ActivatedRoute, { optional: true });
   private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
+
+  /** 1.15.0: Basic (route "", the default screen: upload, one tick box, Go) or Custom (route "custom": everything the main screen had). */
+  readonly basic: boolean = this.route?.snapshot?.data?.["mode"] === "basic";
+  /** Basic's one tick box: the loop step runs only when this is on (and the workbook has a loop). */
+  readonly buildLoop = signal(true);
 
   readonly phase = signal<Phase>("idle");
   readonly scan = signal<ScanStatus | null>(null);
@@ -191,7 +198,7 @@ export class HomePage implements OnDestroy {
   readonly steps = signal<Step[]>([]);
   /** Ticked:  once an uploaded workbook is read, Do  everything starts by itself -- and a big workbook is
    *  read whole, without stopping to ask which sheets to leave out. */
-  readonly autoRun = signal(readAutoRun());
+  readonly autoRun = signal(this.basic ? false : readAutoRun());
   readonly chainRunning = signal(false);
   readonly chainLine = signal("");
   /** 1.11.6: the estimate for "Do everything" (shown before the click) and the countdown while it runs */
@@ -378,6 +385,7 @@ export class HomePage implements OnDestroy {
       const id = this.store.sessionId();
       const version = this.store.currentVersion()?.id;
       this.loopPlan(); // whether the loop step runs changes the estimate
+      this.buildLoop();
       if (id && version && !this.chainRunning()) void this.loadEstimate(id);
     });
   }
@@ -386,7 +394,7 @@ export class HomePage implements OnDestroy {
     // only the latest request counts: an older answer (made before the loop plan arrived) may come last
     const seq = ++this.estimateSeq;
     try {
-      const e = await this.api.estimate(id, this.canBuildLoop());
+      const e = await this.api.estimate(id, this.canBuildLoop() && this.loopWanted());
       if (seq === this.estimateSeq) this.estimate.set(e);
     } catch {
       if (seq === this.estimateSeq) this.estimate.set(null); // an older server without the estimate: nothing  shown
@@ -1181,6 +1189,22 @@ export class HomePage implements OnDestroy {
     return !!p && p.loops.some((l) => l.first === 1 && (l.notes ?? []).some((n) => /header/i.test(n)));
   }
 
+  /** Basic: the loop step is wanted only while its box is ticked; Custom always wants it. */
+  loopWanted(): boolean {
+    return !this.basic || this.buildLoop();
+  }
+
+  /** Basic's one short line: the step going on now, else how the last Go ended (in Basic's words). */
+  readonly basicLine = computed(() => {
+    if (this.chainRunning()) {
+      const list = this.steps().filter((s) => s.state !== "skipped");
+      const now = this.chainStep();
+      if (!now) return "Working…";
+      return `Step ${list.findIndex((s) => s.id === now.id) + 1} of ${list.length}: ${now.label}…`;
+    }
+    return this.chainLine().replace(/\bpress Do everything again\b/gi, "press Go again").replace(/\bDo everything\b/g, "Go");
+  });
+
   canBuildLoop(): boolean {
     const p = this.loopPlan();
     return !!p && p.found && p.operation_count > 0 && p.loops.some((l) => l.status === "ready");
@@ -1277,6 +1301,10 @@ export class HomePage implements OnDestroy {
             this.setStep(step.id, { state: "skipped", line: why });
             continue;
           }
+        }
+        if (step.id === "loop" && this.canBuildLoop() && !this.loopWanted()) {
+          this.setStep(step.id, { state: "skipped", line: "Left out: the box was not ticked" });
+          continue;
         }
         if (step.id === "loop" && !this.canBuildLoop()) {
           this.setStep(step.id, { state: "skipped", line: this.loopPlan()?.found ? "The loop needs one answer first (Advanced › Mind loop)" : "No run loop in this workbook" });

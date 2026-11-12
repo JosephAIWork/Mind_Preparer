@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component, inject, output, signal } from "@angular/core";
+import { Component, inject, input, output, signal } from "@angular/core";
 import { ApiService, errorText } from "../core/api.service";
 import { PendingUpload, SavedWorkbook, SessionStart } from "../core/models";
 
@@ -15,7 +15,15 @@ import { PendingUpload, SavedWorkbook, SessionStart } from "../core/models";
   template: `
     @if (rows().length) {
       <section class="recent" data-show-me="recent-workbooks">
-        <h2 class="recent__title">Recent workbooks</h2>
+        @if (collapsible()) {
+          <!-- Basic screen: the list waits closed until it is clicked open -->
+          <button type="button" class="recent__toggle" data-show-me="recent-workbooks-toggle" (click)="toggleOpen()" [attr.aria-expanded]="open()">
+            {{ open() ? "Hide" : "Show" }} recent workbooks ({{ rows().length }})
+          </button>
+        } @else {
+          <h2 class="recent__title">Recent workbooks</h2>
+        }
+        @if (!collapsible() || open()) {
         <p class="recent__lead">Kept on this computer, with every version and result. Reopen one to go on where you left it.</p>
         <ul class="recent__list">
           @for (r of rows(); track r.id) {
@@ -39,6 +47,21 @@ import { PendingUpload, SavedWorkbook, SessionStart } from "../core/models";
             </li>
           }
         </ul>
+        <div class="recent__all">
+          @if (askingAll()) {
+            <span class="recent__ask" role="group" aria-label="Remove all saved workbooks?">
+              <span class="recent__all-question">Remove all {{ rows().length }} saved workbooks?</span>
+              <button type="button" class="cds--btn cds--btn--danger cds--btn--sm recent__all-yes" (click)="confirmRemoveAll()" [disabled]="busyAll() || busyId() !== null">{{ busyAll() ? "Removing…" : "Yes" }}</button>
+              <button type="button" class="cds--btn cds--btn--ghost cds--btn--sm recent__all-no" (click)="keepAll()" [disabled]="busyAll()">No</button>
+            </span>
+          } @else {
+            <button type="button" class="cds--btn cds--btn--ghost cds--btn--sm recent__all-remove" (click)="askRemoveAll()" [disabled]="busyId() !== null">Remove all</button>
+          }
+        </div>
+        }
+        @if (note()) {
+          <p class="recent__note">{{ note() }}</p>
+        }
         @if (error()) {
           <p class="recent__error">{{ error() }}</p>
         }
@@ -97,6 +120,26 @@ import { PendingUpload, SavedWorkbook, SessionStart } from "../core/models";
         gap: 0.5rem;
         flex-shrink: 0;
       }
+      .recent__toggle {
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        color: var(--cds-link-primary, #0f62fe);
+      }
+      .recent__all {
+        display: flex;
+        justify-content: flex-end;
+        padding-top: 0.5rem;
+        border-top: 1px solid var(--cds-border-subtle-01, #e0e0e0);
+      }
+      .recent__note {
+        color: var(--cds-text-secondary, #525252);
+        font-size: 0.875rem;
+        margin: 0.5rem 0 0;
+      }
       .recent__error {
         color: var(--cds-text-error, #da1e28);
         font-size: 0.875rem;
@@ -113,6 +156,13 @@ export class RecentWorkbooks {
   /** the row being opened or removed: every button waits meanwhile */
   readonly busyId = signal<string | null>(null);
   readonly error = signal("");
+  /** Basic screen: the list is closed until clicked open (Custom shows it open, as before). */
+  readonly collapsible = input(false);
+  readonly open = signal(false);
+  /** "Remove all N saved workbooks?" asked; the removal under way; what was kept, in words */
+  readonly askingAll = signal(false);
+  readonly busyAll = signal(false);
+  readonly note = signal("");
   /** The saved workbook, loaded again: the page shows it (a pending one goes to the sheet  choice). */
   readonly opened = output<SessionStart | PendingUpload>();
 
@@ -148,6 +198,42 @@ export class RecentWorkbooks {
       void this.refresh(); // gone meanwhile: the list says  so
     } finally {
       this.busyId.set(null);
+    }
+  }
+
+  toggleOpen(): void {
+    this.open.update((o) => !o);
+  }
+
+  askRemoveAll(): void {
+    if (this.busyId() || this.busyAll()) return;
+    this.error.set("");
+    this.note.set("");
+    this.askingId.set(null);
+    this.askingAll.set(true);
+  }
+
+  keepAll(): void {
+    this.askingAll.set(false);
+  }
+
+  /** Removes every saved workbook the server lets go of (not the ones another running copy of the app holds). */
+  async confirmRemoveAll(): Promise<void> {
+    if (this.busyAll() || this.busyId()) return;
+    this.busyAll.set(true);
+    try {
+      const out = await this.api.removeAllSavedWorkbooks();
+      this.note.set(
+        out.kept
+          ? `Removed ${out.removed}. ${out.kept} kept: ${out.kept === 1 ? "it is" : "they are"} open in another copy of the app or still running.`
+          : "",
+      );
+    } catch (e) {
+      this.error.set(`Could not remove the saved workbooks: ${errorText(e)}`);
+    } finally {
+      await this.refresh();
+      this.busyAll.set(false);
+      this.askingAll.set(false);
     }
   }
 

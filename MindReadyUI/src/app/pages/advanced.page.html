@@ -1,14 +1,15 @@
 <section class="page">
   @if (!store.loaded()) {
     <h1 class="page-title">Advanced</h1>
-    <p class="page-lead">No workbook is loaded. <a routerLink="/">Load one on the main screen.</a></p>
+    <p class="page-lead">No workbook is loaded. <a routerLink="/">Load one on the Basic screen.</a></p>
   } @else {
     <header class="head">
       <div>
         <h1 class="page-title">Advanced</h1>
         <p class="page-lead">{{ store.summary()?.file_name }} · {{ store.currentVersion()?.label }}</p>
       </div>
-      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }" data-show-me="link-main">Back to the main screen</a>
+      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }" data-show-me="link-basic">Back to Basic</a>
+      <a cdsButton="ghost" size="md" routerLink="/custom" [queryParams]="{ session: store.sessionId() }" data-show-me="link-custom">Custom</a>
     </header>
 
     @if (store.readiness(); as r) {

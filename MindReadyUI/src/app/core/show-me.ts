@@ -7,12 +7,12 @@ import { AdvancedTab } from "./session.store";
  *  name them, and the  clicks that lead there.
  *
  *  Elements are found by  their `data-show-me` words, never by their text: the header's links
- *  (`nav-main`, `nav-advanced`), the links on the pages themselves (`link-main`, `link-advanced`), each
+ *  (`nav-basic`, `nav-custom`, `nav-advanced`), the links on the pages themselves (`link-basic`, `link-custom`, `link-advanced`), each
  *  Advanced tab (`tab-<tab>`) and each place below. One element may carry several words, space
  *  separated ("ask ask-FRM-009"). See excel-upload-preparation/docs/SHOW_ME.md. */
 
-/** The two screens: the main screen (route "") and Advanced (route "advanced"). */
-export type ShowMePage = "main" | "advanced";
+/** The three screens (1.15.0): Basic (route ""), Custom (route "custom", the old main screen) and Advanced (route "advanced"). */
+export type ShowMePage = "basic" | "custom" | "advanced";
 
 /** The  places a  "Show me" leads to. */
 export type ShowMeId =
@@ -128,7 +128,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
     },
   ],
   "recalc-run": [
-    { page: "main", targets: [{ el: "main-recalc", text: "Click Recalculate" }] },
+    { page: "custom", targets: [{ el: "main-recalc", text: "Click Recalculate" }] },
     { page: "advanced", tab: "recalc", targets: [{ el: "recalc-run", text: "Recalculate here" }] },
   ],
   "recalc-errors": [
@@ -159,16 +159,24 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "instances-choice": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-choice", text: "Tick a loop or pick a column here" }] }],
   "instances-build": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-build", text: "Click Build it" }] }],
   "instances-result": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-result", text: "What the build did is here, with the download" }] }],
-  "outside-card": [{ page: "main", targets: [OUTSIDE_CARD] }],
-  "outside-add": [{ page: "main", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
-  "outside-bring-in": [{ page: "main", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
-  "do-everything": [{ page: "main", targets: [{ el: "do-everything", text: "Click Do everything" }] }],
+  "outside-card": [{ page: "custom", targets: [OUTSIDE_CARD] }],
+  "outside-add": [{ page: "custom", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
+  "outside-bring-in": [{ page: "custom", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
+  "do-everything": [
+    { page: "basic", targets: [{ el: "do-everything", text: "Click Go" }] },
+    { page: "custom", targets: [{ el: "do-everything", text: "Click Do everything" }] },
+  ],
   // the box is drawn only while  Do everything waits for the input files: the picker first, else the box
-  "outside-waiting": [{ page: "main", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "Do everything waits here for the input files" }] }],
+  "outside-waiting": [
+    { page: "basic", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "The check waits here for the input files" }] },
+    { page: "custom", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "Do everything waits here for the input files" }] },
+  ],
   // the list is drawn only while a saved workbook exists and no workbook is open (the idle main screen)
-  "recent-workbooks": [{ page: "main", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
+  "recent-workbooks": [{ page: "basic", targets: [{ el: "recent-workbooks", text: "Open the list of recent workbooks, then Reopen" }] },
+    { page: "custom", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
   download: [
-    { page: "main", targets: [{ el: "download", text: "Download the file here" }] },
+    { page: "basic", targets: [{ el: "download", text: "Download the file here" }] },
+    { page: "custom", targets: [{ el: "download", text: "Download the file here" }] },
     { page: "advanced", tab: "mind", targets: [{ el: "mind-run", text: "Send it to Mind here" }] },
   ],
 };
@@ -274,20 +282,24 @@ export function showMeForStep(step: ShowMeNextStep | null | undefined): ShowMeRe
 
 /** The  links to  each screen: the header's, else the one on the page itself. Below 66rem (a window
  *  snapped to half a screen, a laptop at 125 %) Carbon hides the header's links and the  app has no side
- *  menu, so the page's own link is the  way: "Advanced" at the foot of  the main screen, "Back to the
- *  main screen"  at the top of Advanced. */
+ *  menu, so the page's own link is the  way: "Advanced" at the foot of  the Custom screen, "Back to Basic"
+ *  and "Custom"  at the top of Advanced. */
 export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
   advanced: [
     { el: "nav-advanced", text: "Click Advanced" },
     { el: "link-advanced", text: "Click Advanced" },
   ],
-  main: [
-    { el: "nav-main", text: "Click Main" },
-    { el: "link-main", text: "Click Back to the main screen" },
+  basic: [
+    { el: "nav-basic", text: "Click Basic" },
+    { el: "link-basic", text: "Click Back to Basic" },
+  ],
+  custom: [
+    { el: "nav-custom", text: "Click Custom" },
+    { el: "link-custom", text: "Click Custom" },
   ],
 };
 
-/** The  steps from  the screen the user is on (`here`) to the place: a click on Advanced or Main when the
+/** The  steps from  the screen the user is on (`here`) to the place: a click on Basic, Custom or Advanced when the
  *  place is on the other screen, a click on the Advanced tab, then the  place itself. Whether the user is
  *  already on that screen or tab  is checked again as each step  comes up (ShowMeService). */
 export function planShowMe(request: ShowMeRequest, here: ShowMePage): ShowMeStep[] {

@@ -17,6 +17,7 @@
         <input type="file" multiple [accept]="pickAccept" (change)="onFileInput($event)" hidden />
       </label>
     </div>
+    @if (!basic) {
     <label class="autorun">
       <input type="checkbox" [checked]="autoRun()" (change)="setAutoRun($any($event.target).checked)" />
       <span>
@@ -24,17 +25,22 @@
         <span class="autorun__hint">No stops: every sheet is read, then every step runs. Keep the computer awake: if it sleeps, the run waits.</span>
       </span>
     </label>
+    }
     @if (uploadError()) {
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
-    <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+    @if (!basic) {
+      <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+    }
     @if (store.restartNotice()) {
       <!-- 1.14.0: the server let go of the workbook the page had (the app was restarted): it is in the list below -->
       <p class="chain__text" data-show-me="restart-notice"><strong>{{ store.restartNotice() }}</strong><mr-show-me [text]="store.restartNotice()"></mr-show-me></p>
     }
     <!-- the workbooks kept in the data folder (only when there is at least one); nothing opens by itself -->
-    <mr-recent-workbooks (opened)="openSaved($event)"></mr-recent-workbooks>
-    <mr-key-box [onlyWhenMissing]="true"></mr-key-box>
+    <mr-recent-workbooks [collapsible]="basic" (opened)="openSaved($event)"></mr-recent-workbooks>
+    @if (!basic) {
+      <mr-key-box [onlyWhenMissing]="true"></mr-key-box>
+    }
   } @else if (phase() === "choose" && pending(); as p) {
     <h1 class="page-title">A big workbook</h1>
     <p class="page-lead">{{ p.size.message }} Leaving sheets out makes the scan shorter; {{ p.size.estimate_text ? "the whole file takes about " + p.size.estimate_text + "." : "" }}</p>
@@ -91,6 +97,31 @@
       </div>
     </header>
 
+    @if (basic) {
+      <!-- Basic: one tick box, one Go button, one short progress line, then the end-of-check banner -->
+      <div class="basic" data-show-me="basic-go">
+        <label class="autorun basic__tick">
+          <input type="checkbox" [checked]="buildLoop()" (change)="buildLoop.set($any($event.target).checked)" [disabled]="chainRunning()" />
+          <span>Build the Mind loop</span>
+        </label>
+        @if (!chainRunning()) {
+          <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Go again" : "Go" }}</button>
+        } @else if (outsideWaiting()) {
+          <button cdsButton="primary" size="lg" class="basic__go" disabled>Waiting for the input files</button>
+        } @else {
+          <button cdsButton="primary" size="lg" class="basic__go" disabled>Running…</button>
+        }
+      </div>
+      @if (basicLine(); as line) {
+        <p class="basic__line" role="status">{{ line }}</p>
+      }
+      @if (outsideWaiting()) {
+        <ng-container *ngTemplateOutlet="waiting"></ng-container>
+      }
+      @if (store.readiness() && !chainRunning() && !outsideWaiting()) {
+        <mr-finish-banner [readiness]="store.readiness()" [downloadUrl]="downloadUrl()"></mr-finish-banner>
+      }
+    } @else {
     @if (store.readiness(); as r) {
       <mr-readiness-banner [kind]="readinessKind()" [headline]="readinessTitle()" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
     }
@@ -264,29 +295,7 @@
         }
       </div>
       @if (outsideWaiting()) {
-        <!-- 1.14.0: Do everything stopped at its first step and asks for the input files: one box, nothing runs -->
-        <div class="chain__waiting outside" data-show-me="outside-waiting">
-          <p class="chain__text"><strong>{{ waitingLine() }}</strong></p>
-          <ul class="outside__rows">
-            @for (f of waitingFiles(); track f.name) {
-              <li class="outside__row" [class.outside__row--missing]="!f.present">
-                <bdi class="outside__file">{{ f.name }}</bdi>
-                <span class="outside__note">{{ f.present ? "picked" : "missing" }}</span>
-                @if (f.fills) { <span class="outside__note">(fills <bdi>{{ f.fills }}</bdi>)</span> }
-              </li>
-            }
-          </ul>
-          <div class="outside__buttons">
-            <button cdsButton="tertiary" size="md" data-show-me="outside-waiting-pick" (click)="waitPicker.click()" [disabled]="addingInputs()">{{ addingInputs() ? "Adding…" : "Pick the files" }}</button>
-            <input #waitPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
-            <button cdsButton="primary" size="md" data-show-me="outside-waiting-go-on" (click)="goOn()" [disabled]="!canGoOn() || goingOn()" [title]="canGoOn() ? 'Brings the files in, then the other steps follow' : 'Pick every file first'">{{ goingOn() ? "Going on…" : "Go on" }}</button>
-            @if (canMakeStandIns()) {
-              <button cdsButton="secondary" size="md" (click)="goOn(true)" [disabled]="goingOn()" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
-            }
-            <button cdsButton="danger--tertiary" size="md" (click)="stopWaiting()">Stop</button>
-          </div>
-          @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
-        </div>
+        <ng-container *ngTemplateOutlet="waiting"></ng-container>
       }
       @if (steps().length) {
         <ol class="chain__steps">
@@ -372,8 +381,35 @@
     <p class="advanced-link">
       Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }" data-show-me="link-advanced">Advanced</a>.
     </p>
+    }
   }
 </section>
+
+<ng-template #waiting>
+        <!-- 1.14.0: Do everything stopped at its first step and asks for the input files: one box, nothing runs -->
+        <div class="chain__waiting outside" data-show-me="outside-waiting">
+          <p class="chain__text"><strong>{{ waitingLine() }}</strong></p>
+          <ul class="outside__rows">
+            @for (f of waitingFiles(); track f.name) {
+              <li class="outside__row" [class.outside__row--missing]="!f.present">
+                <bdi class="outside__file">{{ f.name }}</bdi>
+                <span class="outside__note">{{ f.present ? "picked" : "missing" }}</span>
+                @if (f.fills) { <span class="outside__note">(fills <bdi>{{ f.fills }}</bdi>)</span> }
+              </li>
+            }
+          </ul>
+          <div class="outside__buttons">
+            <button cdsButton="tertiary" size="md" data-show-me="outside-waiting-pick" (click)="waitPicker.click()" [disabled]="addingInputs()">{{ addingInputs() ? "Adding…" : "Pick the files" }}</button>
+            <input #waitPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
+            <button cdsButton="primary" size="md" data-show-me="outside-waiting-go-on" (click)="goOn()" [disabled]="!canGoOn() || goingOn()" [title]="canGoOn() ? 'Brings the files in, then the other steps follow' : 'Pick every file first'">{{ goingOn() ? "Going on…" : "Go on" }}</button>
+            @if (canMakeStandIns()) {
+              <button cdsButton="secondary" size="md" (click)="goOn(true)" [disabled]="goingOn()" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
+            }
+            <button cdsButton="danger--tertiary" size="md" (click)="stopWaiting()">Stop</button>
+          </div>
+          @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
+        </div>
+</ng-template>
 
 <ng-template #result let-s="s" let-which="which" let-bare="bare">
   @if (s.running) {

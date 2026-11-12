@@ -232,7 +232,7 @@ describe("Show me: the readiness verdict's next step", () => {
 
 describe("Show me: the clicks to a place", () => {
   it("goes through Advanced and the tab from the main screen, through the tab only on Advanced", () => {
-    expect(planShowMe({ id: "prep-apply" }, "main")).toEqual([
+    expect(planShowMe({ id: "prep-apply" }, "custom")).toEqual([
       // the header's link, else the page's own (Carbon hides the header's below 66rem)
       { kind: "page", page: "advanced", targets: [{ el: "nav-advanced", text: "Click Advanced" }, { el: "link-advanced", text: "Click Advanced" }] },
       { kind: "tab", tab: "prep", targets: [{ el: "tab-prep", text: "Click Prep actions" }] },
@@ -241,8 +241,8 @@ describe("Show me: the clicks to a place", () => {
     expect(planShowMe({ id: "prep-apply" }, "advanced").map((s) => s.kind)).toEqual(["tab", "place"]);
     expect(planShowMe({ id: "outside-card" }, "advanced")[0]).toEqual({
       kind: "page",
-      page: "main",
-      targets: [{ el: "nav-main", text: "Click Main" }, { el: "link-main", text: "Click Back to the main screen" }],
+      page: "custom",
+      targets: [{ el: "nav-custom", text: "Click Custom" }, { el: "link-custom", text: "Click Custom" }],
     });
   });
 
@@ -253,7 +253,7 @@ describe("Show me: the clicks to a place", () => {
     ]);
     expect(planShowMe({ id: "prep-action" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-list"]);
     expect(planShowMe({ id: "stack-apply" }, "advanced")).toEqual([{ kind: "place", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }]);
-    expect(planShowMe({ id: "stack-apply" }, "main").map((s) => s.kind)).toEqual(["page", "place"]);
+    expect(planShowMe({ id: "stack-apply" }, "custom").map((s) => s.kind)).toEqual(["page", "place"]);
   });
 
   it("leads to the Mind loop tab's places: the answer box else the fold, the Build it button, the result", () => {
@@ -268,7 +268,7 @@ describe("Show me: the clicks to a place", () => {
         ],
       },
     ]);
-    expect(planShowMe({ id: "loop-build" }, "main").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
+    expect(planShowMe({ id: "loop-build" }, "custom").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
     expect(planShowMe({ id: "loop-build" }, "advanced")[1].targets).toEqual([{ el: "loop-build", text: "Click Build it" }]);
     expect(planShowMe({ id: "loop-result" }, "advanced")[1].targets[0].el).toBe("loop-result");
   });
@@ -278,7 +278,7 @@ describe("Show me: the clicks to a place", () => {
       { kind: "tab", tab: "instances", targets: [{ el: "tab-instances", text: "Click Instances" }] },
       { kind: "place", targets: [{ el: "instances-choice", text: "Tick a loop or pick a column here" }] },
     ]);
-    expect(planShowMe({ id: "instances-build" }, "main").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
+    expect(planShowMe({ id: "instances-build" }, "custom").map((s) => s.kind)).toEqual(["page", "tab", "place"]);
     expect(planShowMe({ id: "instances-build" }, "advanced")[1].targets).toEqual([{ el: "instances-build", text: "Click Build it" }]);
     expect(planShowMe({ id: "instances-result" }, "advanced")[1].targets[0].el).toBe("instances-result");
     // "Advanced › Instances" is not "Advanced › Mind loop": the two tabs are told apart
@@ -287,9 +287,9 @@ describe("Show me: the clicks to a place", () => {
   });
 
   it("takes the way on the screen the user is on when there are two", () => {
-    expect(planShowMe({ id: "recalc-run" }, "main")).toEqual([{ kind: "place", targets: [{ el: "main-recalc", text: "Click Recalculate" }] }]);
+    expect(planShowMe({ id: "recalc-run" }, "custom")).toEqual([{ kind: "place", targets: [{ el: "main-recalc", text: "Click Recalculate" }] }]);
     expect(planShowMe({ id: "recalc-run" }, "advanced").map((s) => s.targets[0].el)).toEqual(["tab-recalc", "recalc-run"]);
-    expect(planShowMe({ id: "download" }, "main").map((s) => s.targets[0].el)).toEqual(["download"]);
+    expect(planShowMe({ id: "download" }, "custom").map((s) => s.targets[0].el)).toEqual(["download"]);
     expect(planShowMe({ id: "download" }, "advanced").map((s) => s.targets[0].el)).toEqual(["tab-mind", "mind-run"]);
   });
 
@@ -424,10 +424,10 @@ describe("Show me: the pointer", () => {
     vi.advanceTimersByTime(SHOW_ME_AFTER_CLICK_MS);
     expect(showMe.pointer()).toMatchObject({ el: tab, text: "Click Prep actions" });
 
-    draw("nav-main", { width: 0, height: 0 });
-    const back = draw("link-main"); // "Back to the main screen" at the top of Advanced
+    draw("nav-custom", { width: 0, height: 0 });
+    const back = draw("link-custom"); // "Custom" at the top of Advanced
     showMe.start({ id: "outside-card" });
-    expect(showMe.pointer()).toMatchObject({ el: back, text: "Click Back to the main screen", last: false });
+    expect(showMe.pointer()).toMatchObject({ el: back, text: "Click Custom", last: false });
   });
 
   it("points at the rule's own row, else at any finding", async () => {

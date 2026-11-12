@@ -3,7 +3,8 @@
 } @else {
   <cds-header name="Mind Ready" [brand]="brand">
     <cds-header-navigation>
-      <cds-header-item data-show-me="nav-main" routerLink="/" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current" [routerLinkActiveOptions]="{ exact: true }">Main</cds-header-item>
+      <cds-header-item data-show-me="nav-basic" routerLink="/" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current" [routerLinkActiveOptions]="{ exact: true }">Basic</cds-header-item>
+      <cds-header-item data-show-me="nav-custom" routerLink="/custom" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current">Custom</cds-header-item>
       <cds-header-item data-show-me="nav-advanced" routerLink="/advanced" [queryParams]="sessionQuery()" routerLinkActive="cds--header__menu-item--current">Advanced</cds-header-item>
     </cds-header-navigation>
     <cds-header-global>

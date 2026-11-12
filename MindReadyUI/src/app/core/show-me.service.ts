@@ -90,7 +90,8 @@ export class ShowMeService {
   /** The screen the user is on,  from the router's address ("/advanced?session=..." is Advanced). */
   page(): ShowMePage {
     const path = this.router.url.split(/[?#]/)[0].replace(/\/+$/, "");
-    return path === "/advanced" || path.startsWith("/advanced/") ? "advanced" : "main";
+    if (path === "/advanced" || path.startsWith("/advanced/")) return "advanced";
+    return path === "/custom" || path.startsWith("/custom/") ? "custom" : "basic";
   }
 
   /** Step `i`, looked for now (`delay` 0) or after the click's effects (`delay` ms), then every

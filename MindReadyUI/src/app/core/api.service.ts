@@ -133,6 +133,11 @@ export class ApiService {
     return firstValueFrom(this.http.delete<{ removed: boolean; id: string }>(`${this.base}/saved-workbooks/${encodeURIComponent(id)}`));
   }
 
+  /** 1.15.0: removes every saved workbook except those another running copy of the app holds (or a step is running on). */
+  removeAllSavedWorkbooks(): Promise<{ removed: number; kept: number; kept_workbooks?: { id: string; name: string; why: string }[] }> {
+    return firstValueFrom(this.http.delete<{ removed: number; kept: number; kept_workbooks?: { id: string; name: string; why: string }[] }>(`${this.base}/saved-workbooks`));
+  }
+
   scanStatus(id: string): Promise<ScanStatus> {
     return firstValueFrom(this.http.get<ScanStatus>(`${this.s(id)}/status`));
   }
