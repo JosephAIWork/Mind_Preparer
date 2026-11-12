@@ -381,6 +381,8 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
     rects: dict[str, list[tuple[int, int, int, int, str]]] = {}
     whole_cols: dict[str, dict[int, str]] = {}
     whole_rows: dict[str, dict[int, str]] = {}
+    lookup_cols: dict[str, dict[int, str]] = {}  # the whole-column / whole-row reads whose function sees text cells
+    lookup_rows: dict[str, dict[int, str]] = {}
     positional: dict[str, str] = {}
     text_addressed: dict[str, str] = {}
     wb = analysis["workbooks"][0]
@@ -393,6 +395,7 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
             sources.append((val if val.startswith("=") else "=" + val, None, f"name {d.get('name')}"))
     for formula, home, owner in sources:
         spans: dict[str, list[str]] = {}
+        sees_text = bool(_TEXT_SEEING_RE.search(formula))
         if ":" in formula and "!" in formula:
             for label, sheets in _three_d_sheets(formula, order):
                 spans[label.lower()] = sheets
@@ -411,21 +414,31 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
                     cols = whole_cols.setdefault(sheet, {})
                     for c in range(ref["c1"], ref["c2"] + 1):
                         cols.setdefault(c, owner)
+                        if sees_text:
+                            lookup_cols.setdefault(sheet, {}).setdefault(c, owner)
                 elif ref.get("whole_row"):
                     rows = whole_rows.setdefault(sheet, {})
                     for r in range(ref["r1"], ref["r2"] + 1):
                         rows.setdefault(r, owner)
+                        if sees_text:
+                            lookup_rows.setdefault(sheet, {}).setdefault(r, owner)
                 else:
                     rects.setdefault(sheet, []).append((ref["r1"], ref["r2"], ref["c1"], ref["c2"], owner))
-    index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows, "positional": positional, "text_addressed": text_addressed}
+    index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows, "lookup_cols": lookup_cols, "lookup_rows": lookup_rows, "positional": positional, "text_addressed": text_addressed}
     _REF_INDEX_CACHE.clear()  # one workbook at a time is plenty
     _REF_INDEX_CACHE[key] = index
     return index
 
 
-def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int) -> str | None:
-    """The  formula (or  name) that reads this cell, else None."""
-    owner = index["whole_cols"].get(sheet, {}).get(col) or index["whole_rows"].get(sheet, {}).get(row)
+_TEXT_SEEING_RE = re.compile(r"\b(MATCH|XMATCH|INDEX|VLOOKUP|HLOOKUP|LOOKUP|XLOOKUP|COUNTA|COUNTBLANK|OFFSET|INDIRECT|FILTER|SORT|UNIQUE|TEXTJOIN|CONCAT|CONCATENATE)\s*\(", re.I)
+
+
+def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int, text_only: bool = False) -> str | None:
+    """The  formula (or  name) that reads this cell, else None.  text_only: a whole-column or whole-row
+    reference counts only when its function looks at text cells (a lookup, MATCH, INDEX, COUNTA ...);
+    Excel's SUM / AVERAGE / MIN / MAX skip text, so a title in such a range changes no result."""
+    cols, rows = ("lookup_cols", "lookup_rows") if text_only else ("whole_cols", "whole_rows")
+    owner = index.get(cols, {}).get(sheet, {}).get(col) or index.get(rows, {}).get(sheet, {}).get(row)
     if owner:
         return owner
     rects = index["rects"].get(sheet)
@@ -1617,7 +1630,7 @@ def _range_reader(analysis: dict[str, Any], sheet: str, row: int, col: int) -> s
     """The formula (or a name some formula uses) whose range holds this cell; a defined name no formula
     or other name uses (a macro's) reads nothing, as for the lone text cells themselves (Mind runs no macro)."""
     index = reference_index(analysis)
-    owner = referenced_by(index, sheet, row, col)
+    owner = referenced_by(index, sheet, row, col, text_only=True)
     if not owner or not owner.startswith("name "):
         return owner
     wb = analysis["workbooks"][0]

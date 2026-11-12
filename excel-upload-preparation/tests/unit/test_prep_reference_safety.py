@@ -244,3 +244,25 @@ def test_no_lone_text_title_inside_a_range_an_index_match_reads(tmp_path):
     assert any("Parameters!C41" in s and "could not name" in s and "Calc!A1" in s for s in skipped), skipped
     assert any("Parameters!C51" in s and "Calc!A1" in s for s in skipped), skipped
     assert "F10" in titled, (ops, skipped)  # outside every read range: still titled
+
+
+def test_whole_column_read_refuses_a_title_only_when_the_function_sees_text(tmp_path):
+    """SUM(Parameters!C:C) skips text, so a title in an empty cell of column C changes nothing: allowed.
+    MATCH / INDEX on C:C look at text cells: refused. A cell range read keeps refusing as before."""
+    path = _wb(tmp_path / "w.xlsx", {
+        "Parameters": {"B40": "Rate :", "C41": "text A", "B50": "Other :", "C51": "text B"},
+        "Calc": {"A1": "=SUM(Parameters!C:C)", "A2": "=Parameters!C41", "A3": "=Parameters!C51",
+                 "A4": "=INDEX(Parameters!E:E,MATCH(\"k\",Parameters!E:E,0))"},
+    })
+    analysis = build_analysis(path, tmp_path / "w", "t")
+    ops, skipped = prep.plan_title_lone_text_cells(analysis, {"findings": []})
+    titled = {o["cell"] for o in ops if o["sheet"] == "Parameters"}
+    assert {"C40", "C50"} <= titled, (ops, skipped)
+    path2 = _wb(tmp_path / "w2.xlsx", {
+        "Parameters": {"B40": "Rate :", "C41": "text A"},
+        "Calc": {"A1": "=MATCH(\"k\",Parameters!C:C,0)", "A2": "=Parameters!C41"},
+    })
+    analysis2 = build_analysis(path2, tmp_path / "w2", "t")
+    ops2, skipped2 = prep.plan_title_lone_text_cells(analysis2, {"findings": []})
+    assert not any(o["cell"] == "C40" for o in ops2), ops2
+    assert any("Parameters!C41" in s and "could not name" in s for s in skipped2), skipped2
