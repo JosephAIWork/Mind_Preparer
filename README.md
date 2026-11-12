@@ -34,10 +34,10 @@ pip install -r requirements.txt
 ## Start
 
 Double-click `excel-upload-preparation\run_mind_ready_web.bat`. A server window opens and then the app
-opens in your browser at <http://localhost:8600>. The browser tab shows the version, for example
-*Mind Ready Beta 1.12.0*.
+opens in your browser at the address the server window prints (by default <http://localhost:8600>: the port is the
+`port` line in `settings.yaml`). The browser tab shows the version, for example *Mind Ready Beta <version>*.
 
-To stop the app, close the server window. If port 8600 is taken, change `port` in the settings (below).
+To stop the app, close the server window. If that port is taken, change `port` in `settings.yaml` (below).
 
 The app runs only on your machine (`127.0.0.1`). Nothing is sent anywhere except the assistant's
 questions to the AI gateway and, when you choose it, your workbook to Mind.

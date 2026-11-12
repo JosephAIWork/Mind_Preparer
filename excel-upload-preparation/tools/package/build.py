@@ -7,7 +7,8 @@ The build venv holds requirements.txt and nuitka (nothing else,  so nothing else
 fetches its own C compiler  the first time. The result is  <out dir>/MindReady/, the folder to zip:
 MindReady.exe plus  what the app reads next to it (rules, references, config, settings.yaml,  VERSION)
 and the built screens in ui/ (run  `npx ng build --configuration production` in MindReadyUI first).
-A second build reuses Nuitka's compile cache and is much shorter.
+Every build starts with a fresh compiler cache (the old one is wiped, see the zig-cache note below), so a second build
+is not shorter; Nuitka's own downloads (the C compiler) are reused.
 
 --onefile makes one file instead, <out dir>/MindReady.exe, to share as a link: it unpacks itself the
 first time it starts (into %LOCALAPPDATA%\\MindReady-program\\<version and build time>, so later

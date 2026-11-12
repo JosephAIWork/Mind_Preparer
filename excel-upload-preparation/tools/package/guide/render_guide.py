@@ -41,7 +41,7 @@ def main() -> int:
         )
         browser.close()
     filled.unlink()
-    print(out)
+    print(f"Guide written to: {out}")
     return 0
 
 

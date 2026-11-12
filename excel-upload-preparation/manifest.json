@@ -1,6 +1,6 @@
 {
   "name": "excel-upload-preparation",
-  "version": "1.11.0",
+  "version": "1.14.1",
   "ruleSetVersion": "1.2.0",
   "schemaVersion": "1.0.0",
   "entrypoint": "SKILL.md",
@@ -34,6 +34,6 @@
     "backend": "app/web/server.py",
     "frontend": "../MindReadyUI",
     "launcher": "run_mind_ready_web.bat",
-    "port": 8600
+    "portSetting": "settings.yaml, key port (the default is set there)"
   }
 }
