@@ -381,3 +381,41 @@ def test_the_assistants_token_count_is_saved_with_the_state_and_an_old_file_star
     path.write_text(json.dumps(state), encoding="utf-8")
     loaded, _autofix = session_store.load(sid, server.Session)
     assert loaded.ai_usage == {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+
+
+def test_remove_all_removes_every_saved_workbook(client, data_folder, plain_grid_xlsx):
+    a = _upload(client, plain_grid_xlsx)["sessionId"]
+    b = _upload(client, plain_grid_xlsx)["sessionId"]
+    _restart()  # one reopened, one only on disk
+    assert client.post(f"/api/saved-workbooks/{a}/open").status_code == 200
+    res = client.delete("/api/saved-workbooks")
+    assert res.status_code == 200
+    assert res.json() == {"removed": 2, "kept": 0, "kept_workbooks": []}
+    assert not (data_folder / "sessions" / a).exists() and not (data_folder / "sessions" / b).exists()
+    assert client.get("/api/saved-workbooks").json()["workbooks"] == []
+    assert a not in server.SESSIONS
+    # nothing left: still an answer, not an error
+    assert client.delete("/api/saved-workbooks").json() == {"removed": 0, "kept": 0, "kept_workbooks": []}
+
+
+def test_remove_all_keeps_a_workbook_another_copy_holds_and_one_that_is_running(client, data_folder, plain_grid_xlsx):
+    held = _upload(client, plain_grid_xlsx)["sessionId"]
+    busy = _upload(client, plain_grid_xlsx)["sessionId"]
+    plain = _upload(client, plain_grid_xlsx)["sessionId"]
+    server.SESSIONS[busy].outside_run = {"state": "running", "stage": "import", "started": time.time()}
+    folder = data_folder / "sessions" / held
+    session_store.release(held)
+    server.SESSIONS.pop(held, None)
+    fd = os.open(str(folder / "open.lock"), os.O_RDWR)
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, b'{"pid": 1, "port": "8600"}' + b" " * 170)
+        assert session_store._try_lock(fd)
+        res = client.delete("/api/saved-workbooks").json()
+        # the other copy's workbook is not even listed (not counted as kept); the running one is kept
+        assert res["removed"] == 1 and res["kept"] == 1
+        assert res["kept_workbooks"][0]["id"] == busy and "still being brought in" in res["kept_workbooks"][0]["why"]
+        assert not (data_folder / "sessions" / plain).exists()
+        assert folder.is_dir() and (data_folder / "sessions" / busy).is_dir()
+    finally:
+        os.close(fd)

@@ -1370,11 +1370,9 @@ def open_saved_workbook(session_id: str) -> dict[str, Any]:
     return session_state(s.id)
 
 
-@app.delete("/api/saved-workbooks/{session_id}")
-def remove_saved_workbook(session_id: str) -> dict[str, Any]:
-    """Remove  a saved  workbook from this computer: its folder (every version and result) and the
-    session in memory. Refused while a step still runs on it (Run in Mind too), and when another
-    copy of the  app holds it."""
+def _remove_saved(session_id: str) -> bool:
+    """Remove one saved workbook (folder and session in memory); True when a folder was there. Raises
+    409 while a step still runs on it (Run in Mind too) or when another copy of the app holds it."""
     s = SESSIONS.get(session_id)
     if s is not None:
         busy = _busy_with(s)
@@ -1390,7 +1388,36 @@ def remove_saved_workbook(session_id: str) -> dict[str, Any]:
     existed = session_store.remove(session_id) if session_store.valid_id(session_id) else False
     if not existed and s is None:
         raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")
+    return True
+
+
+@app.delete("/api/saved-workbooks/{session_id}")
+def remove_saved_workbook(session_id: str) -> dict[str, Any]:
+    """Remove  a saved  workbook from this computer: its folder (every version and result) and the
+    session in memory. Refused while a step still runs on it (Run in Mind too), and when another
+    copy of the  app holds it."""
+    _remove_saved(session_id)
     return {"removed": True, "id": session_id}
+
+
+@app.delete("/api/saved-workbooks")
+def remove_all_saved_workbooks() -> dict[str, Any]:
+    """Remove every saved workbook (1.15.0, the list's "Remove all"), except the ones another running
+    copy of the app holds open (the open.lock rule: they are not even in the list) and the ones a step
+    is still running on here. Answers how many were removed and how many were kept, with the
+    kept ones' names and why."""
+    removed = 0
+    kept: list[dict[str, str]] = []
+    for row in session_store.list_saved():
+        sid = row["id"]
+        try:
+            _remove_saved(sid)
+            removed += 1
+        except HTTPException as e:
+            if e.status_code == 404:  # gone meanwhile: nothing to keep, nothing removed by us
+                continue
+            kept.append({"id": sid, "name": str(row.get("name") or ""), "why": str(e.detail)})
+    return {"removed": removed, "kept": len(kept), "kept_workbooks": kept}
 
 
 @app.get("/api/sessions/{session_id}")
