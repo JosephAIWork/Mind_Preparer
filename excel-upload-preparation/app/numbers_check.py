@@ -44,6 +44,9 @@ class Moves:
 
     def __init__(self, batches: Iterable[Iterable[dict[str, Any]]] = ()):
         self.batches: list[dict[str, Any]] = []
+        # formulas a title replaced ON PURPOSE (a formula caption above a table, 1.14.1): (batches before, sheet, row, col)
+        self._replaced_raw: list[tuple[int, str, int, int]] = []
+        self._replaced: set[tuple[str, int, int]] | None = None
         for ops in batches:
             rows: dict[str, list[int]] = {}
             banded: dict[str, list[tuple[int, int, int]]] = {}  # row inserts that shift only some columns
@@ -60,17 +63,28 @@ class Moves:
                     cols.setdefault(op["sheet"], []).append(col_to_num(str(op["column"])))
                 elif kind == "rename_sheet":
                     renames[op["sheet"]] = op["after"]
+                elif kind == "set_value" and str(op.get("before") or "").startswith("=") and str(op.get("after") or "").startswith("#"):
+                    from .formula_utils import parse_ref
+                    at = parse_ref(str(op.get("cell") or "").replace("$", ""))
+                    if at and not at.get("whole_column") and not at.get("whole_row"):
+                        self._replaced_raw.append((len(self.batches), str(op["sheet"]), at["r1"], at["c1"]))
             for v in list(rows.values()) + list(cols.values()):
                 v.sort()
             if rows or banded or cols or renames:
                 self.batches.append({"rows": rows, "banded": banded, "cols": cols, "renames": renames})
 
-    def forward(self, sheet: str, row: int, col: int) -> tuple[str, int, int]:
+    def is_replaced(self, sheet: str, row: int, col: int) -> bool:
+        """True for a cell of the PREPARED version whose formula the plan replaced by a title on purpose."""
+        if self._replaced is None:
+            self._replaced = {self.forward(sh, r, c, start=n) for n, sh, r, c in self._replaced_raw}
+        return (sheet, row, col) in self._replaced
+
+    def forward(self, sheet: str, row: int, col: int, start: int = 0) -> tuple[str, int, int]:
         """An original cell ->  the same cell in the prepared version. Inside one
         Apply the rows  are inserted bottom-up at the coordinates  of the version
         it started from, so a  row moves down by one for every insert at or above  it (an insert that
         shifts only some columns:  when the cell's column is one of them)."""
-        for b in self.batches:
+        for b in self.batches[start:]:
             row += bisect.bisect_right(b["rows"].get(sheet, ()), row) + sum(1 for k, c1, c2 in b.get("banded", {}).get(sheet, ()) if k <= row and c1 <= col <= c2)
             col += bisect.bisect_right(b["cols"].get(sheet, ()), col)
             sheet = b["renames"].get(sheet, sheet)
@@ -191,7 +205,7 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
         said = plain_error(exc, with_type=True)
         return {"ran": False, "clean": None, "verdict": f"The numbers could not be compared: {said[:300]}", "counts": {}, "regressions": []}
 
-    counts = {"compared": 0, "same": 0, "good_to_error": 0, "good_to_other": 0, "error_to_good": 0, "error_to_error": 0, "missing": 0, "missing_good": 0, "volatile_skipped": 0}
+    counts = {"compared": 0, "same": 0, "good_to_error": 0, "good_to_other": 0, "error_to_good": 0, "error_to_error": 0, "missing": 0, "missing_good": 0, "replaced_on_purpose": 0, "volatile_skipped": 0}
     samples: dict[str, list[dict[str, Any]]] = {"good_to_error": [], "good_to_other": [], "error_to_good": [], "missing": []}
     by_sheet: dict[str, dict[str, int]] = {}
     regressions: list[tuple[str, int, int, Any]] = []
@@ -200,6 +214,10 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
         for (row, col), (v0, vol0) in cells.items():
             s1, r1, c1 = moves.forward(sheet, row, col)
             got = after.get(s1, {}).get((r1, c1))
+            if got is None and not _is_error(v0) and moves.is_replaced(s1, r1, c1):
+                # a formula caption the plan replaced by its title on purpose: expected, not a lost formula
+                counts["replaced_on_purpose"] += 1
+                continue
             if got is None:
                 # the formula is gone: Prep replaced it by a value on purpose (a dead #REF! formula), or cleared it
                 counts["missing"] += 1
@@ -241,6 +259,8 @@ def compare_workbooks(original: Path, prepared: Path, moves: Moves, progress: Ca
         )
     else:
         verdict = f"The preparation changed no computed value ({counts['compared']:,} formula cells compared with the original)."
+    if counts["replaced_on_purpose"]:
+        verdict += f" {counts['replaced_on_purpose']:,} formula caption(s) were replaced by their title on purpose (expected)."
     return {
         "ran": True, "clean": changed == 0, "verdict": verdict, "counts": counts, "by_sheet": by_sheet, "samples": samples,
         "moves": moves.summary(), "seconds": round(time.time() - t0, 1), "regressions": regressions,
