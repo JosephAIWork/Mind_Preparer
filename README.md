@@ -77,7 +77,7 @@ assistant, Run in Mind, and every version made so far.
 The assistant (grid names from context, the chat, explaining and suggesting fixes) uses the Milliman AI
 gateway with your own key. The app does **not** need it for the main steps.
 
-When no key is saved, the main screen and **Advanced > Assistant** show a box to paste it in. The app
+When no key is saved, the Custom screen and **Advanced > Assistant** show a box to paste it in. The app
 first checks the key with the gateway and does not save a key the gateway refuses. It saves the key
 encrypted for your Windows account in the app's data folder (`%LOCALAPPDATA%\MindReady` unless the
 settings say otherwise), so only you on this machine can read

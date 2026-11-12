@@ -8,7 +8,7 @@ import { SessionStore } from "./session.store";
 
 // ---- 1.14.0: a session the restart closed: the page lets go of it, the main screen says so above the list ----
 
-const SENTENCE = "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen.";
+const SENTENCE = "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the Basic screen.";
 
 const started: SessionStart = {
   sessionId: "old1",

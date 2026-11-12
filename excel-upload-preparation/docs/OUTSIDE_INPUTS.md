@@ -132,7 +132,7 @@ macro opens were not picked, it **stops and asks**:
    /api/sessions/{id}/outside-inputs` then says `waiting: true` and lists `needed`: every file the
    macro opens, by the name the model expects (else its key, else its cell), whether a picked file is
    there for it, and the sheet it fills; `message` is "Waiting for 2 input files: BBA_05, VFA_01".
-2. The main screen shows **one box** under Do everything: "Do everything is waiting for 2 input
+2. The Custom screen shows **one box** under Do everything: "Do everything is waiting for 2 input
    files: BBA_05, VFA_01. Pick them, or let the assistant make stand-ins." with the list, **Pick the
    files**, **Go on** (greyed out until every file is there, and while its request is on its way),
    **Make them with AI** (only when an AI key is saved and a file is still missing) and **Stop**. The

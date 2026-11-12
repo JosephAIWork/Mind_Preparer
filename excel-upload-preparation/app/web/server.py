@@ -259,7 +259,7 @@ def _session(session_id: str) -> Session:
     if s is None:
         # saved  on disk  but not in memory (the app was restarted): nothing reopens by itself
         if session_store.valid_id(session_id) and session_store.read_state(session_id) is not None:
-            raise HTTPException(status_code=404, detail="This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen.")
+            raise HTTPException(status_code=404, detail="This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the Basic screen.")
         raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
     return s
 
@@ -1772,7 +1772,7 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
     if s.outside_inputs and _brought_in_state(s)[1] == _FILES_CHANGED:
         # the version (and its Mind inputs) hold the data of the files picked before: never uploaded as current
         raise HTTPException(status_code=409, detail="The input files changed since they were brought in: Run in Mind would use the data of the old files. "
-                                                    "Bring them in again first (the Outside files card on the main screen, or Do everything), then run in Mind.")
+                                                    "Bring them in again first (the Outside files card on the Custom screen, or Go on the Basic screen), then run in Mind.")
     # the outside files made Mind inputs for this line: uploaded through Mind's Inputs window after
     # the model is added and before the run (checked before the loop is registered as running)
     inputs_dir = _mind_inputs_dir_for(s)

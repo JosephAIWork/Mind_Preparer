@@ -54,7 +54,7 @@ describe("the three screens: routes and Show me", () => {
     expect(planShowMe({ id: "recent-workbooks" }, "basic").map((s) => s.kind)).toEqual(["place"]);
     expect(planShowMe({ id: "recent-workbooks" }, "custom").map((s) => s.kind)).toEqual(["place"]);
     // the server's sentence about a closed session still leads to the list
-    expect(showMeFor("Open it again from Recent workbooks on the main screen.")?.id).toBe("recent-workbooks");
+    expect(showMeFor("Open it again from Recent workbooks on the Basic screen.")?.id).toBe("recent-workbooks");
   });
 });
 

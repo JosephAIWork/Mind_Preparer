@@ -1,7 +1,7 @@
 # Saved workbooks (1.14.0)
 
 The app keeps every workbook it was given, with every version and result, so a restart of the app or a
-new browser window loses nothing. The main screen's **Recent workbooks** list opens one again where it
+new browser window loses nothing. The Basic and Custom screens' **Recent workbooks** list opens one again where it
 was.
 
 ## What the user sees
@@ -21,11 +21,11 @@ was.
 - On start the app shows the list and waits: nothing reopens by itself. Any call about a workbook the
   restart closed (a tab still on `/?session=<id>`, a button pressed on an old page) answers "This
   workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the
-  main screen.": the page lets go of the workbook and the main screen shows that sentence above the
+  Custom screen.": the page lets go of the workbook and the Custom screen shows that sentence above the
   Recent workbooks list, with a Show me to the list.
 - A job that was running when the app was closed (Fix all issues, Bring in the outside files, next
   quarter's files, a scan) shows as stopped after the reopen, with "The app was closed while this ran."
-  What it had finished before (a version it made) is there; the Fix all issues tile on the main screen
+  What it had finished before (a version it made) is there; the Fix all issues tile on the Custom screen
   says "Stopped: the app was closed while it ran" and names that version.
 - A workbook uploaded but never checked is scanned after Reopen without starting Do everything,
   whatever "Do everything right after the upload" says (that box is for uploads).
@@ -110,7 +110,7 @@ list order and a stray folder; a failed save never breaks the step; every odd sh
 own written only when it changes (and the first shape still opens); a workbook another copy of the app
 holds is left alone; Remove waits for Run in Mind. Screens:
 `MindReadyUI/src/app/core/recent-workbooks.spec.ts` (the list hidden when empty, Reopen loads, Remove
-asks then removes; the main screen opens a saved workbook where it was, never starts Do everything
+asks then removes; the Custom screen opens a saved workbook where it was, never starts Do everything
 after a Reopen, says that a Fix all issues the restart cut was stopped), `core/restart.spec.ts` (a 404
-for a workbook the restart closed lets go of it and keeps the sentence for the main screen) and
+for a workbook the restart closed lets go of it and keeps the sentence for the Custom screen) and
 `show-me.spec.ts`.

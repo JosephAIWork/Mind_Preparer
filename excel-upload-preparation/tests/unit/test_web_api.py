@@ -1212,7 +1212,7 @@ def test_a_session_lives_in_the_data_folder_and_its_state_says_where_it_went(cli
     assert client.get(f"/api/sessions/{sid}").json()["recalc"]["message"] == "clean"
     server.SESSIONS.pop(sid)  # the app was restarted: the file is there, the session is not
     res = client.get(f"/api/sessions/{sid}")
-    assert res.status_code == 404 and res.json()["detail"] == "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen."
+    assert res.status_code == 404 and res.json()["detail"] == "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the Basic screen."
     assert client.get("/api/sessions/never-there").json()["detail"] == "unknown session never-there"
 
 

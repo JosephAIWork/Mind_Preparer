@@ -37,7 +37,7 @@ the two honest cases below.
   error, a number) or an INDIRECT / 3-D reference may read the cell, the table is reported instead.
 - **Workbooks are kept between sessions** (1.14.0, `docs/SAVED_WORKBOOKS.md`): every session's
   files live in the data folder with a small state file (and the check result in a file of its
-  own); the main screen's **Recent workbooks** list reopens one where it was, or removes it. Nothing
+  own); the Custom screen's **Recent workbooks** list reopens one where it was, or removes it. Nothing
   reopens by itself; two copies of the app on one data folder leave each other's open workbooks alone.
 - **Do everything stops and asks for the input files** (1.14.0, `docs/OUTSIDE_INPUTS.md`): when
   files the macro opens were not picked, one box under Do everything waits -- Pick the files, Go on,
@@ -353,7 +353,7 @@ the two honest cases below.
 - **Web app** (1.6.0): the Figma-built React front-end in
   `../MindReadyUI` served by `app/web/server.py` (FastAPI) -- an Angular 22 +
   Carbon app with Mind's own look (1.11.0; the earlier React app is
-  retired and no longer part of this repository). The main screen
+  retired and no longer part of this repository). The Custom screen
   is three one-click buttons (Fix all issues, Fix the formulas, Build the
   Mind loop) and a download; everything else -- findings, Prep actions,
   Recalculate, Mind loop choices, the Mind instances and where instances could
@@ -375,7 +375,7 @@ folder and project prefix, MM for Excel add-in): `settings.yaml`; the AI key is 
 
 Saved workbooks (1.14.0): every workbook the app is given is kept in the data folder
 (`<data folder>\sessions\<id>\`, with every version, result and plan in a state file written after each
-step), so a restart of the app or a new browser window loses nothing. The main screen's **Recent
+step), so a restart of the app or a new browser window loses nothing. The **Recent
 workbooks** list (under the upload box, only when something is saved) opens one again where it was --
 Reopen -- or deletes it -- Remove, asked once in place. Nothing reopens by itself; a job that was
 running when the app was closed shows as stopped. `docs/SAVED_WORKBOOKS.md`, `app/session_store.py`,

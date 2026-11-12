@@ -13,7 +13,7 @@ to the words. It starts a pointer: one arrow with a short bubble at the next thi
 - Steps the user is already past are skipped: already on Advanced, the tab already open.
 - In a window narrower than 66rem (a browser snapped to half a screen, a laptop at 125 %) Carbon
   hides the header's Main and Advanced, and the app has no side menu: the arrow then points at the
-  page's own link ("Advanced" at the foot of the main screen, "Back to the main screen" on Advanced).
+  page's own link ("Advanced" at the foot of the Custom screen, "Back to Basic" on Advanced).
 - **Esc**, **Got it**, a click on the place itself, or a click anywhere else ends it. A double
   click does not (its second click is not "a click elsewhere"), nor a click again on what was just
   clicked while the screen changes.
@@ -29,7 +29,7 @@ to the words. It starts a pointer: one arrow with a short bubble at the next thi
 
 | Words in the app | Show me leads to |
 |---|---|
-| The banner's next step (main screen and Advanced) | by its `screen` (below) |
+| The banner's next step (Custom screen and Advanced) | by its `screen` (below) |
 | "Check them under Advanced › Deliver (Check the numbers)" | Deliver: Check the numbers |
 | "Pivot tables (…). Change it in Advanced › Prep actions." | Prep actions: the pivot tables choice |
 | "Fix that under Advanced › Prep actions" (Do everything stopped) | Prep actions: Apply |
@@ -37,12 +37,12 @@ to the words. It starts a pointer: one arrow with a short bubble at the next thi
 | "The loop needs a decision first (Advanced › Mind loop)", "loop(s) need(s) one answer / a decision" | Mind loop: the answer a loop still needs, else the fold "Change the choices" |
 | "Build it under Advanced › Mind loop", "click Build it" (unless the sentence names Advanced › Instances), "the loop's result" | Mind loop: the Build it button, the result line |
 | "Advanced › Instances", "Build it under Advanced › Instances", "click Build it" with Advanced › Instances named in the same sentence, "the copies' result" | Instances: the question "Make one copy per...", the Build it button, the result line |
-| "Add … on the Outside files card (Add files)" | main screen: Add files |
-| "See the Outside files card above" | main screen: the Outside files card |
-| "Bring them in again first (the Outside files card …)" (Run in Mind) | main screen: the card's button that brings the files in |
+| "Add … on the Outside files card (Add files)" | Custom screen: Add files |
+| "See the Outside files card above" | Custom screen: the Outside files card |
+| "Bring them in again first (the Outside files card …)" (Run in Mind) | Custom screen: the card's button that brings the files in |
 | "paste an AI key under Advanced › Assistant" (server; the chat's "(no answer: …)") | Assistant: the AI key box |
 | "added to the Prep plan" (Grid Namer) | Prep actions: Apply |
-| A finding's "Use Bring in the outside files" (INP-010) | main screen: the card's button that brings the files in |
+| A finding's "Use Bring in the outside files" (INP-010) | Custom screen: the card's button that brings the files in |
 | A finding's "The Prep action '…'" (FRM, REF, STR rules) | Prep actions: the card of the action that repairs that rule, else the list |
 | A finding's "by hand or with the assistant" | on the Findings row: none (its own "Ask the assistant" is next to it); in Prep's "By hand" list: that rule's "Ask the assistant" |
 | "Apply them with the others from the list at the top of this page" (Prep), "(applied with the others from the top of the page)" (the assistant's note) | Advanced, above the tabs: Apply all |
@@ -56,11 +56,11 @@ The readiness verdict's next step (`app/readiness.py`, `_next_step`) is read by 
 
 | `screen` | Show me leads to |
 |---|---|
-| `outside-inputs` | main screen: the Outside files card's button |
+| `outside-inputs` | Custom screen: the Outside files card's button |
 | `prep` | Advanced › Prep actions: Apply |
 | `findings` (with `rule_id`) | Advanced › Findings: "Ask the assistant" on that rule's row |
-| `recalculate` | "Recalculate in Excel": the main screen's Recalculate (on the main screen) or Advanced › Recalculate; "Review the new formula errors": the list |
-| `reports` | "Download or send to Mind": Download this version (main screen) or Advanced › Run in Mind |
+| `recalculate` | "Recalculate in Excel": the Custom screen's Recalculate (on the Custom screen) or Advanced › Recalculate; "Review the new formula errors": the list |
+| `reports` | "Download or send to Mind": Download this version (Custom screen) or Advanced › Run in Mind |
 
 "Fix that under Advanced", which named no tab, now says which one: Prep actions after the formulas
 and the structure, Mind loop after the loop, Recalculate after Recalculate. Fix all issues has no tab
@@ -93,8 +93,8 @@ All in `MindReadyUI/src/app/core/`:
   out a place already next to the text (the next place it names counts); `[unless]="…"` hides it
   when a text shown next to it already leads to the same place.
 
-Elements are found by their `data-show-me` words, never by their text: `nav-main`, `nav-advanced`
-(the header), `link-main`, `link-advanced` (the pages' own links, for a narrow window), `tab-<tab>`
+Elements are found by their `data-show-me` words, never by their text: `nav-basic`, `nav-custom`, `nav-advanced`
+(the header), `link-basic`, `link-custom`, `link-advanced` (the pages' own links, for a narrow window), `tab-<tab>`
 for each Advanced tab, and the places (`prep-apply`, `prep-for-<rule>` on each Prep action's card,
 `prep-list`, `prep-pivots`, `stack-apply`, `deliver-numbers`, `assistant-key`, `ask`, `ask-<rule>`,
 `findings-list`, `recalc-run`, `recalc-errors`, `main-recalc`, `loop-choices`, `mind-run`,

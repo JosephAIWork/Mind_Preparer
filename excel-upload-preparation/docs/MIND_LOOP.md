@@ -102,7 +102,7 @@ recalculated clean), in a sandbox project:
   captions (`_complete_header`).
 - The loop written on the untouched original is refused by Mind: 15 formula compilation errors, all
   `SUMIFS('<policy table>'!#REF!, ...)` on a check sheet, the broken references the app's REF-001 fix
-  repairs. The loop needs the fixed workbook, which is what the main screen's buttons produce.
+  repairs. The loop needs the fixed workbook, which is what the Custom screen's buttons produce.
 
 Scripts: `scripts/mind_loop_probe.py` (upload, logs, run, parts), `scripts/mind_loop_compare.py`
 (Mind's rows vs the macro's values), `scripts/mind_ask.py` (Mind's AI Assistant),
@@ -175,7 +175,7 @@ A loop written on a version Prep has not repaired yet would go to Mind with form
 otherwise. On the Tokyo tool (2026-11-09) that made every formula of six calculation sheets NaN: their
 B3 reads the sheet name through `CELL("filename")`, which Mind answers with the workbook's name alone
 (see MIND_VS_EXCEL.md). The loop plan therefore takes Prep's plan for the same version and writes the
-formula repairs it still has with the loop (`loop_builder.FORMULA_REPAIRS`: the main screen's "Fix the
+formula repairs it still has with the loop (`loop_builder.FORMULA_REPAIRS`: the Custom screen's "Fix the
 formulas" set, among them FRM-012's CELL / INFO freeze and FRM-014's OFFSET ranges). A cell the loop
 writes keeps the loop. The plan lists them (`repairs`, a note, a line under What gets written on the loop tab);
 `repairs: false` on the API leaves them out and the note says Mind will compute other values. In Do

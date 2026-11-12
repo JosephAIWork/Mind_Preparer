@@ -58,7 +58,7 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
   },
   { where: "Do everything: Fix all issues did not run", text: 'Stopped at "Fix all issues": Not started. Press Do everything again.', id: "do-everything" },
   // 1.14.0: a session the restart closed (app/web/server.py `_session`): the saved workbook is in the list
-  { where: "a session closed by a restart", text: "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the main screen.", id: "recent-workbooks" },
+  { where: "a session closed by a restart", text: "This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the Basic screen.", id: "recent-workbooks" },
   {
     where: "Do everything: Fix all issues, the comparison did not run",
     text: 'Stopped at "Fix all issues": The errors left could not be checked against the original (the comparison did not run). Check the numbers under Advanced › Deliver, then press Do everything again.',
@@ -135,7 +135,7 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
   },
   {
     where: "server: Run in Mind after the input files changed",
-    text: "The input files changed since they were brought in: Run in Mind would use the data of the old files. Bring them in again first (the Outside files card on the main screen, or Do everything), then run in Mind.",
+    text: "The input files changed since they were brought in: Run in Mind would use the data of the old files. Bring them in again first (the Outside files card on the Custom screen, or Go on the Basic screen), then run in Mind.",
     id: "outside-bring-in",
   },
   { where: "the Do everything button itself", text: "press Do everything", id: "do-everything" },

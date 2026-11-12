@@ -51,7 +51,7 @@ Start: double-click MindReady.exe. A window opens (close it to stop Mind Ready) 
 your browser at http://localhost:8600.
 
 Settings (port, folders, the Mind and AI addresses): settings.yaml in this folder. Restart after a change.
-The AI key: pasted in the app the first time (main screen, or Advanced > Assistant); it is saved for
+The AI key: pasted in the app the first time (Custom screen, or Advanced > Assistant); it is saved for
 your Windows account, not in this folder.
 
 Needs: Windows, desktop Excel, the MM for Excel add-in; Microsoft Edge for Run in Mind.

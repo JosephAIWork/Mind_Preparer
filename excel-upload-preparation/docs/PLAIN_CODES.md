@@ -64,7 +64,7 @@ The meaning is given **once**, never after every occurrence:
 - once under the Model map's cell window (and in each error cell's tooltip, under its formula; a
   '#Title' cell, which the window marks too, has no meaning);
 - once under the numbers-check samples (Deliver);
-- once after the cells "Fix all issues" left for a person (main screen).
+- once after the cells "Fix all issues" left for a person (Custom screen).
 
 The screens get the glossary from `GET /api/plain-codes` (`{"rules": {...}, "errors": {...}}`),
 loaded once at start (`MindReadyUI/src/app/core/plain-codes.ts`): they keep no list of their own.
