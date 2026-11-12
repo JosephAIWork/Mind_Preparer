@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.15.0 (13 November 2026): Basic, Custom and Advanced screens, Remove all, range-read and numbers-check fixes, a copy of the project that stands on its own
+
+### Three screens
+
+- **Basic, Custom, Advanced** in the header. **Basic** is the new first screen: the upload box, one tick
+  box "Build the Mind loop", one **Go** button that runs the steps of Do everything one after the other
+  (each with its check, stopping at the first check that fails), one progress line and the Recent workbooks
+  list, closed until you click it. **Custom** is the former main screen, unchanged. **Advanced** is as before,
+  with a link back to Basic and one to Custom.
+- **The end of the check says what to do next** (Basic). "The check is finished. The workbook can be uploaded to
+  Mind." with **Upload to Mind** and **Download**; or "N blocking problems are left." with Download only and
+  Upload greyed with the reason; or "The check is not finished" (nothing recalculated yet), Upload greyed:
+  "Press Go first". **Upload to Mind** checks the Mind sign-in, opens the sign-in window when it is missing and
+  then goes on by itself, runs the workbook in Mind and shows the stage and the result.
+- **Show me** knows the three screens: the places that were on the main screen now point to Custom, and to the
+  Go button, the list and Download on Basic.
+- **Remove all** in the Recent workbooks list removes every saved workbook after one question ("Remove all N saved
+  workbooks?"). A workbook another running copy of the app holds, or one with a step running, is kept, and a note
+  says so. (`DELETE /api/saved-workbooks`.)
+
+### Fixes
+
+- **A title is never written into an empty cell that a formula reads.** Prep wrote a "#name value" title into empty
+  cells of a range an INDEX/MATCH read, which changed ten computed values of a risk model. Such a table is now
+  reported ("could not name it -- the empty cell above lies inside a range <the reader> reads") and left as it
+  is. A whole-column or whole-row reference counts only when its function looks at text cells (lookups, MATCH, INDEX,
+  COUNTA); SUM, AVERAGE, MIN and MAX skip text, so a title in such a range is still allowed.
+- **The numbers check counts a replaced caption as expected.** A formula caption that Prep replaced by its title on
+  purpose is no longer reported as a lost formula; the check says it was expected, and Do everything and Fix all
+  issues stop on it no more. Other lost formulas are still reported.
+- **CELL("filename") is frozen to a neutral text.** The folder and file name written in its place are neutral
+  (same length, same separators), not the model owner's own path; every number stays the same.
+- **Documents and package files no longer carry old versions and ports** (manifest, SKILL.md, README); a test keeps
+  VERSION, manifest.json and SKILL.md equal. The guide lists Run in Mind from the exe as done (it needs
+  Microsoft Edge on the computer) and its steps name Basic and Custom. "Main screen" in the app's texts now says
+  Basic or Custom.
+
+### The project copy
+
+- The new copy of the project (its own folder) leaves out the retired Figma front end, the original-skill
+  leftovers and the internal notes; its tests find their local files through `MIND_READY_DATA`, and the app is
+  pointed at its data by `MIND_READY_SETTINGS`.
+
 ## 1.14.1 (12 November 2026): the assistant's token count, grid titles for formula captions, comment spacing
 
 The night of 11/12 November: the items of Joseph's note for tonight, each built generally (the

@@ -54,7 +54,7 @@ server window names the line.
 
 1. **Open a workbook** (`.xlsx`, `.xlsm` or `.xlsb`). For a large file the app first asks whether to
    skip some sheets. Skipped sheets are left exactly as they are.
-2. Click **Do everything**. It runs four steps, each followed by its check, and stops at the first check
+2. Click **Go** on the Basic screen (**Do everything** on the Custom screen). It runs four steps, each followed by its check, and stops at the first check
    that fails:
    - **Fix all issues**: finds the cells where errors start, gives each a value to fall back on, and
      undoes any fix that changed a value that was correct. Errors it cannot fix are listed with the

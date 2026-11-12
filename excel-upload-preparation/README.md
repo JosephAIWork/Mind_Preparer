@@ -22,11 +22,17 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.14.1)
+## Current status (1.15.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Three screens** (1.15.0): **Basic** (upload, one tick box, **Go**, the end-of-check message with
+  **Upload to Mind** and **Download**), **Custom** (the former main screen) and **Advanced**; **Remove all**
+  empties the Recent workbooks list (keeping what another copy or a running step holds).
+- **Safer Prep** (1.15.0): no title is written into an empty cell a formula reads; the numbers check
+  expects a caption replaced on purpose; CELL("filename") is frozen to a neutral path.
 
 - **The assistant's token count** (1.14.1): "AI used: 12,340 tokens in 7 calls", per workbook; every
   completed call counts (the chat, a suggestion, the grid namer, the instance finder, Fix all issues'
