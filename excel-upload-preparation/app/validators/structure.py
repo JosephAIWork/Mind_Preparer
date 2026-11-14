@@ -427,6 +427,40 @@ def _reader_in_use(index: dict[str, Any], used: Any, sheet: str, row: int, col: 
     return None
 
 
+_N_WRAPPED: dict[Any, set[str]] = {}
+
+
+def _wrapped_in_n(analysis: dict[str, Any], owner: str) -> bool:
+    """True  when the  reading formula is as a whole N(...) (Palermo 'Non-economic assumptions'!C61 =
+    N(VLOOKUP(tariff, B6:S47, ...)), 2026-11-14): N() turns a text into 0, exactly what Mind's empty
+    cell gives, so Mind and Excel agree whether  or not the lone text cell is imported."""
+    key = id(analysis)
+    done = _N_WRAPPED.get(key)
+    if done is None:
+        _N_WRAPPED.clear()
+        done = _N_WRAPPED[key] = set()
+        for f in analysis["workbooks"][0].get("formulas", []):
+            t = f.get("formula")
+            if isinstance(t, str):
+                t = t.strip().replace(" ", "").upper()
+                if t.startswith("=N(") and t.endswith(")") and _balanced(t[3:-1]):
+                    done.add(f"{f['sheet']}!{f['cell']}")
+    return owner in done
+
+
+def _balanced(body: str) -> bool:
+    """The  parenthesis opened  by N( closes only at the very end (not N(a)+N(b))."""
+    depth, quote = 0, False
+    for ch in body:
+        if ch == '"':
+            quote = not quote
+        elif not quote:
+            depth += (ch == "(") - (ch == ")")
+            if depth < 0:
+                return False
+    return depth == 0 and not quote
+
+
 def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
     """STR-008:  a text  cell with nothing around it (no grid, no title above, no label beside it)
     that a formula reads. Mind imports grids; a text cell standing alone is not in the model,
@@ -455,6 +489,8 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
         if owner and owner.startswith("name "):
             used = used or _names_in_use(analysis)
             owner = _reader_in_use(index, used, lab["sheet"], lab["row"], lab["col"])
+        if owner and _wrapped_in_n(analysis, owner):
+            continue  # =N(VLOOKUP(...)): N() of a text is 0 and of a blank is 0, so a lost cell changes nothing
         if owner:
             sites.append({"sheet": lab["sheet"], "cell": lab["cell"], "text": str(lab["text"])[:80], "read_by": owner})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites)}

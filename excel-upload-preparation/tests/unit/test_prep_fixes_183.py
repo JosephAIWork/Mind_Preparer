@@ -286,3 +286,27 @@ def test_a_lone_cell_with_no_room_above_moves_and_what_reads_it_follows(tmp_path
     assert compare_workbooks(p, done, Moves())["clean"] is True
     after = build_analysis(done, tmp_path / "after", "a")
     assert [s["cell"] for s in _finding(after, "STR-008")["observed"]["sites"]] == ["P1"]
+
+
+def test_a_lone_text_read_only_through_n_is_not_a_blocker(tmp_path):
+    """2026-11-14 (Palermo 'Non-economic assumptions'!C61 =N(VLOOKUP(...B6:S47...))): N() of a text is 0, the same as
+    Mind's empty cell, so a lone text inside the lookup range changes no result; a plain VLOOKUP still blocks."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "A"
+    ws["B2"], ws["C2"] = "Tariff", "Fee"
+    ws["B3"], ws["C3"] = "T1", 5
+    ws["B4"], ws["C4"] = "T2", 7
+    ws["H3"] = "Y"                                          # a text standing alone, inside the lookup range below
+    ws["A10"] = '=N(VLOOKUP("T1",$B$3:$H$4,7,FALSE))'
+    p = tmp_path / "n.xlsx"
+    wb.save(p)
+    wb.close()
+    assert _finding(build_analysis(p, tmp_path / "w", "n"), "STR-008")["status"] == "PASS"
+    wb = openpyxl.load_workbook(p)
+    wb["A"]["A10"] = '=VLOOKUP("T1",$B$3:$H$4,7,FALSE)'
+    q = tmp_path / "plain.xlsx"
+    wb.save(q)
+    wb.close()
+    f = _finding(build_analysis(q, tmp_path / "w2", "p"), "STR-008")
+    assert f["status"] == "ERROR" and {s["cell"] for s in f["observed"]["sites"]} == {"H3"}

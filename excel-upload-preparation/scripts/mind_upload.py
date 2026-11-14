@@ -34,29 +34,39 @@ from app.mind_client import (  # noqa: E402
 )
 
 
-def read_deterministic_differences(page) -> list[str]:
+def read_deterministic_differences(page) -> list[str] | None:
     """After  "Upload successful  (with warnings)": Display Logs -> the "Deterministic Differences" tab ->
-    every line "<wb> > <sheet> > <cell>: Excel value: x Mind value: y"."""
+    every line "<wb> > <sheet> > <cell>: Excel value: x Mind value: y".
+    None = the list could not be read (no button,  no tab, a click timed out): NOT the same as an  empty list,
+    which means Mind agrees with  Excel (Phoenix 1.15.0, 2026-11-13: "0 differences" had  been printed for a page
+    that said "Upload successful with warnings" --  the old code returned [] for every  failure)."""
     from app.mind_client import body_text, screenshot
 
     btn = page.get_by_role("button", name=re.compile(r"Display Logs|View logs|Display Error Logs", re.I))
     if not btn.count():
-        return []
+        return None
     try:
         btn.first.click(timeout=8000)
     except Exception:
-        return []
+        return None
     time.sleep(3)
     tab = page.get_by_role("tab", name=re.compile(r"Deterministic", re.I))
     if not tab.count():
         tab = page.get_by_text(re.compile(r"Deterministic Differences", re.I))
     if not tab.count():
-        return []
-    tab.first.click(timeout=8000)
-    time.sleep(3)
-    lines = [ln.strip() for ln in body_text(page).splitlines() if "Mind value" in ln]
-    # "Hide Logs" only: the window's "Close" comes first and closes  it WITHOUT adding the templates,
-    # so --run then found no Run button  (Tokyo instances, 10 November 2026)
+        return None
+    try:
+        tab.first.click(timeout=8000)
+    except Exception:
+        return None
+    lines: list[str] = []
+    for _ in range(10):  # a long list takes a while to draw
+        time.sleep(3)
+        lines = [ln.strip() for ln in body_text(page).splitlines() if "Mind value" in ln]
+        if lines:
+            break
+    # "Hide Logs" only: the window's "Close" comes first and closes it WITHOUT adding the templates,
+    # so --run then found no Run button (Tokyo instances, 10 November 2026)
     try:
         page.get_by_role("button", name=re.compile(r"^\s*Hide Logs\s*$", re.I)).first.click(timeout=4000)
     except Exception:
