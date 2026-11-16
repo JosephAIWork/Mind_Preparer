@@ -96,7 +96,7 @@ export interface Readiness {
   manual_blocking_count: number;
   optional_count: number;
   prep?: { blocking_ops: number; optional_ops: number };
-  recalc?: { ran: boolean; clean: boolean; version_id?: string; formula_errors?: number; new_errors?: number; preexisting_errors?: number; addin_gap_errors?: number; message?: string } | null;
+  recalc?: { ran: boolean; clean: boolean; version_id?: string; formula_errors?: number; new_errors?: number; preexisting_errors?: number; addin_gap_errors?: number; message?: string; loop_note?: string } | null;
   next_step?: { screen: string; label: string; detail?: string; rule_id?: string; rule_name?: string | null } | null;
 }
 

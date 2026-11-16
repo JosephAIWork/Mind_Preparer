@@ -98,14 +98,14 @@
     </header>
 
     @if (basic) {
-      <!-- Basic: one tick box, one Go button, one short progress line, then the end-of-check banner -->
+      <!-- Basic: one tick box, one Start button, one short progress line, then the end-of-check banner -->
       <div class="basic" data-show-me="basic-go">
         <label class="autorun basic__tick">
           <input type="checkbox" [checked]="buildLoop()" (change)="buildLoop.set($any($event.target).checked)" [disabled]="chainRunning()" />
           <span>Build the Mind loop</span>
         </label>
         @if (!chainRunning()) {
-          <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Go again" : "Go" }}</button>
+          <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Start again" : "Start" }}</button>
         } @else if (outsideWaiting()) {
           <button cdsButton="primary" size="lg" class="basic__go" disabled>Waiting for the input files</button>
         } @else {
@@ -124,6 +124,7 @@
     } @else {
     @if (store.readiness(); as r) {
       <mr-readiness-banner [kind]="readinessKind()" [headline]="readinessTitle()" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
+      <mr-recalc-now kind="primary" size="md" [disabled]="busy()"></mr-recalc-now>
     }
 
     <!-- Outside files: the model's macros open other files -->

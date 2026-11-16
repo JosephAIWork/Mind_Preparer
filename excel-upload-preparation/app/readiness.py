@@ -97,7 +97,17 @@ def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, An
     }
 
 
-def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc: dict[str, Any] | None, version_id: str) -> dict[str, Any]:
+LOOP_ERRORS_NOTE = (
+    "These errors may come from the Mind loop, not from the preparation: once the loop is built, Excel computes the "
+    "loop's first value (for example the first policy), which the original never computed. The same cells would show "
+    "for that value in the original model. Check the results in Mind."
+)
+
+
+def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc: dict[str, Any] | None, version_id: str, loop_built: bool = False) -> dict[str, Any]:
+    """loop_built:  a Mind  loop was written into this version or one before it (16 Nov 2026, Palermo: the
+    loop step put =MM_LOOP(...) where a stored policy row 6000 was, Excel then computed policy 1, whose
+    projection  runs past the mortality table: 667 #N/A cells counted as new  against the original)."""
     findings = report.get("findings", [])
     blocking, optional = [], []
     for f in findings:
@@ -126,6 +136,8 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
     elif not rc["clean"]:
         state = "unverified"
         headline = f"Acceptable by Mind, but the recalculation found {rc['new_errors']} new formula error(s)"
+        if loop_built:
+            rc["loop_note"] = LOOP_ERRORS_NOTE
     else:
         state = "ready"
         headline = "Acceptable by Mind: no blocking problem and a clean Excel recalculation" + (f" ({rc['preexisting_errors']} error cell(s) already in the original)" if rc["preexisting_errors"] else "")
@@ -176,7 +188,10 @@ def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -
                 "rule_id": first["rule_id"], "rule_name": rule_name(first["rule_id"])}
     if state == "unverified":
         if rc["ran"]:
-            return {"screen": "recalculate", "label": "Review the new formula errors", "detail": f"{rc['new_errors']} cell(s) not in error in the original"}
+            detail = f"{rc['new_errors']} cell(s) not in error in the original"
+            if rc.get("loop_note"):
+                detail += ". " + rc["loop_note"]
+            return {"screen": "recalculate", "label": "Review the new formula errors", "detail": detail}
         return {"screen": "recalculate", "label": "Recalculate in Excel", "detail": "the only way the app can call the file ready"}
     return {"screen": "reports", "label": "Download or send to Mind", "detail": None}
 

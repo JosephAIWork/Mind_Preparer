@@ -243,7 +243,18 @@ class Session:
         """The verdict for the current  version (None before the first analysis)."""
         if not self.result:
             return None
-        return compute_readiness(self.result["validation_report"], self.plan, self.recalc, self.current_version_id)
+        return compute_readiness(self.result["validation_report"], self.plan, self.recalc, self.current_version_id, loop_built=self.loop_built())
+
+    def loop_built(self) -> bool:
+        """A Mind  loop was written into the current version or one of its  parents."""
+        by_id = {v.get("id"): v for v in self.versions}
+        v, seen = by_id.get(self.current_version_id), set()
+        while v and v.get("id") not in seen:
+            if v.get("source") == "loop":
+                return True
+            seen.add(v.get("id"))
+            v = by_id.get(v.get("parent"))
+        return False
 
     @property
     def current_path(self) -> Path:

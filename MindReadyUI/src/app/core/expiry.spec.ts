@@ -156,9 +156,9 @@ describe("the shell and the end date", () => {
     return fixture.nativeElement as HTMLElement;
   }
 
-  it("says 'Works until' quietly in the header", async () => {
+  it("no longer says 'Works until' in the header (16 Nov 2026), and says nothing more before the last 7 days", async () => {
     const page = await draw(health({ expires: "2026-12-15", days_left: 20, expired: false }));
-    expect(page.querySelector(".shell__until")?.textContent?.trim()).toBe("Works until 15 Dec 2026");
+    expect(page.querySelector(".shell__until")).toBeNull();
     expect(page.querySelector(".shell__soon")).toBeNull();
     expect(page.querySelector("mr-expired-notice")).toBeNull();
   });
@@ -166,7 +166,7 @@ describe("the shell and the end date", () => {
   it("adds the gentle line in the last 7 days", async () => {
     const page = await draw(health({ expires: "2026-12-15", days_left: 3, expired: false }));
     expect(page.querySelector(".shell__soon")?.textContent?.trim()).toBe("This copy stops working on 15 Dec 2026.");
-    expect(page.querySelector(".shell__until")?.textContent?.trim()).toBe("Works until 15 Dec 2026");
+    expect(page.querySelector(".shell__until")).toBeNull();
   });
 
   it("shows nothing about it in the developer version", async () => {

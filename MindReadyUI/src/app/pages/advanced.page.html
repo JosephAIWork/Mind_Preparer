@@ -14,6 +14,7 @@
 
     @if (store.readiness(); as r) {
       <mr-readiness-banner [kind]="readinessKind()" [headline]="r.headline" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
+      <mr-recalc-now kind="primary" size="md"></mr-recalc-now>
     }
 
     <mr-stack-bar></mr-stack-bar>

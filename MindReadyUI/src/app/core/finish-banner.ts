@@ -1,6 +1,7 @@
 import { Component, OnDestroy, computed, inject, input, signal } from "@angular/core";
 import { ApiService, errorText } from "./api.service";
 import { MindLoopOptions, MindLoopStatus, MindSignIn, Readiness } from "./models";
+import { RecalcNow } from "./recalc-now";
 import { SessionStore } from "./session.store";
 
 /** What  the end-of-check  banner says and allows, from the readiness verdict (1.15.0). */
@@ -21,7 +22,12 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
   if (!r) return null;
   if (r.state === "ready") return { acceptable: true, text: "The check is finished. The workbook can be uploaded to Mind.", reason: "" };
   if (r.state === "unverified") {
-    return { acceptable: false, text: "One step left: the recalculation has not run yet.", reason: "Press Go first: the recalculation finishes the check." };
+    if (r.recalc?.ran) {
+      const n = r.recalc.new_errors ?? r.recalc.formula_errors ?? 0;
+      // 16  Nov 2026:  after the Mind loop the errors usually come from the loop's first value -- said in plain words
+      return { acceptable: false, text: `The recalculation found ${n} new formula error${n === 1 ? "" : "s"}.`, reason: r.recalc.loop_note || "The list is under Advanced › Recalculate." };
+    }
+    return { acceptable: false, text: "One step left: the recalculation has not run yet.", reason: "Press Recalculate: it finishes the check." };
   }
   const n = r.blocking_count;
   return {
@@ -39,11 +45,13 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
 @Component({
   selector: "mr-finish-banner",
   standalone: true,
+  imports: [RecalcNow],
   template: `
     @if (state(); as s) {
       <section class="finish" [class.finish--stop]="!s.acceptable" [class.finish--problem]="s.problem" data-show-me="finish-banner">
         <p class="finish__text" role="status">{{ s.text }}</p>
         <div class="finish__buttons">
+          <mr-recalc-now [disabled]="running()"></mr-recalc-now>
           <button type="button" class="cds--btn cds--btn--primary cds--btn--lg finish__upload" data-show-me="finish-upload" (click)="upload()" [disabled]="!s.acceptable || running()" [title]="s.reason">
             {{ running() ? "Uploading…" : "Upload to Mind" }}
           </button>

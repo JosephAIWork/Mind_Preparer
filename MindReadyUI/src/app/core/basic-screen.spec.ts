@@ -1,4 +1,5 @@
 import { TestBed } from "@angular/core/testing";
+import { onlyRecalcLeft } from "./recalc-now";
 import { ActivatedRoute, provideRouter } from "@angular/router";
 import type { HomePage } from "../pages/home.page";
 import type { RecentWorkbooks } from "../pages/recent-workbooks";
@@ -74,8 +75,25 @@ describe("the end-of-check banner", () => {
   it("says the check is not finished when no recalculation verified the workbook", () => {
     const s = finishState(readiness("unverified"));
     expect(s?.acceptable).toBe(false);
-    expect(s?.reason).toContain("Press Go");
+    expect(s?.reason).toContain("Press Recalculate");
     expect(finishState(null)).toBeNull();
+  });
+
+  it("says how many new errors the recalculation found, and where they come from after a loop (16 Nov 2026)", () => {
+    const r = readiness("unverified");
+    const ran = { ...r, recalc: { ran: true, clean: false, new_errors: 667, formula_errors: 667, loop_note: "These errors may come from the Mind loop" } };
+    expect(finishState(ran)).toMatchObject({ acceptable: false, text: "The recalculation found 667 new formula errors.", reason: "These errors may come from the Mind loop" });
+    const plain = { ...r, recalc: { ran: true, clean: false, new_errors: 1 } };
+    expect(finishState(plain)?.text).toBe("The recalculation found 1 new formula error.");
+    expect(finishState(plain)?.reason).toContain("Advanced");
+  });
+
+  it("offers Recalculate only when the recalculation is the one thing left", () => {
+    expect(onlyRecalcLeft(readiness("unverified"))).toBe(true);
+    expect(onlyRecalcLeft({ ...readiness("unverified"), recalc: { ran: true, clean: false } })).toBe(false);
+    expect(onlyRecalcLeft(readiness("blocked", 1))).toBe(false);
+    expect(onlyRecalcLeft(readiness("ready"))).toBe(false);
+    expect(onlyRecalcLeft(null)).toBe(false);
   });
 });
 
@@ -169,7 +187,7 @@ describe("the Basic screen", () => {
     expect(ran).toEqual(["fixAll", "prepare"]);
     expect(page.steps().map((s) => s.state)).toEqual(["done", "failed", "waiting", "waiting"]);
     expect(page.basicLine()).toMatch(/^Stopped at "Fix the formulas and the structure"/);
-    expect(page.basicLine()).toContain("press Go again.");
+    expect(page.basicLine()).toContain("press Start again.");
     expect(page.basicLine()).not.toContain("Do everything");
   });
 

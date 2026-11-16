@@ -9,9 +9,8 @@
     </cds-header-navigation>
     <cds-header-global>
       <button class="shell__feedback" (click)="feedback.open()">Send feedback</button>
-      @if (expiry.until(); as until) {
-        <span class="shell__until">{{ until }}</span>
-      }
+      <!-- 16 Nov 2026: no quiet "Works until" here any more; the end date still holds, and the "ends soon"
+           and "stopped" messages below still say it before and after -->
       <span class="shell__version">{{ version() ? "v" + version() : "" }}{{ rules() ? " · " + rules() + " rules" : "" }}</span>
     </cds-header-global>
   </cds-header>
