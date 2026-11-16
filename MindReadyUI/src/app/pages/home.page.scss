@@ -533,9 +533,32 @@
     margin: 0;
   }
 
+  // 16 Nov 2026 (night): while Start runs the button holds the moving dots and "Working". It stays greyed
+  // (it cannot be clicked), but its word is dark enough to read: Carbon's greyed text is too pale for that.
+  & &__go--working {
+    align-items: center;
+    justify-content: flex-start;
+    gap: $spacing-03;
+
+    &:disabled {
+      color: theme.$text-primary;
+    }
+  }
+
   &__line {
     @include type.type-style("body-02");
     color: theme.$text-secondary;
+    margin-bottom: $spacing-05;
+  }
+
+  // one short sentence a line: the step, the time left, the disclaimer
+  &__sentence {
+    display: block;
+  }
+
+  // the bar under the line while Start runs
+  &__bar {
+    max-width: 32rem;
     margin-bottom: $spacing-05;
   }
 }

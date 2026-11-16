@@ -109,11 +109,24 @@
         } @else if (outsideWaiting()) {
           <button cdsButton="primary" size="lg" class="basic__go" disabled>Waiting for the input files</button>
         } @else {
-          <button cdsButton="primary" size="lg" class="basic__go" disabled>Running…</button>
+          <!-- 16 Nov 2026 (night): the moving dots on the button, so the screen never looks frozen (it was a plain grey "Running…") -->
+          <button cdsButton="primary" size="lg" class="basic__go basic__go--working" disabled>
+            <mr-thinking aria-hidden="true"></mr-thinking>
+            <span>Working</span>
+          </button>
         }
       </div>
-      @if (basicLine(); as line) {
-        <p class="basic__line" role="status">{{ line }}</p>
+      @if (basicLine()) {
+        <!-- one short sentence a line: the step, the time left, the disclaimer (not when the step runs late) -->
+        <p class="basic__line" role="status">
+          @for (sentence of basicLines(); track $index) {
+            <span class="basic__sentence">{{ sentence }}</span>
+          }
+        </p>
+      }
+      @if (basicBar(); as bar) {
+        <!-- 16 Nov 2026 (night): how far Start is; it only moves while there is no time estimate yet -->
+        <mr-run-bar class="basic__bar" [percent]="bar.percent"></mr-run-bar>
       }
       @if (outsideWaiting()) {
         <ng-container *ngTemplateOutlet="waiting"></ng-container>
