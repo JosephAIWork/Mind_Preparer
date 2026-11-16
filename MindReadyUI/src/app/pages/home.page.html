@@ -193,6 +193,7 @@
           @if (s.running) {
             <div class="action__progress">
               <cds-progress-bar [label]="s.line" [helperText]="s.detail" [max]="100"></cds-progress-bar>
+              @if (aiWords(s.line + " " + s.detail)) { <mr-thinking text="The assistant is making the missing files"></mr-thinking> }
             </div>
           } @else if (s.line) {
             <div class="outside__result">

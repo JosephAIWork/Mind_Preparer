@@ -8,9 +8,11 @@ import { PlainCodesGlossary } from "./models";
  *  Excel report use (rules/plain_names.yaml, app/plain_codes.py), so the screens keep no  list of their
  *  own. Until it has loaded -- or when it  cannot -- a code shows alone  and nothing else changes. */
 
-/** "FRM-009 · an empty  cell is compared with a number"; the code alone when it  has no name. */
+/** A code for a  screen, in plain words: "an empty cell is compared with a  number" for a rule, "the
+ *  lookup found nothing  (#N/A)" for an Excel error value; the code alone when it has no name. */
 export function ruleLabel(code: string, name?: string | null): string {
-  return name ? `${code} · ${name}` : code;
+  if (!name) return code;
+  return code.trim().startsWith("#") ? `${name} (${code})` : name;
 }
 
 /** The  error values  a text quotes, each once, in the order they first appear. */

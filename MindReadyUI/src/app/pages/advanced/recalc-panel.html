@@ -12,7 +12,7 @@
 
   @if (result(); as r) {
     <div class="result" [class.result--ok]="r.status === 'PASS'" [class.result--error]="r.status === 'ERROR'" [class.result--warn]="r.status !== 'PASS' && r.status !== 'ERROR'">
-      <strong><span [class]="chip()">{{ r.status }}</span> &nbsp;{{ r.message }}</strong>
+      <strong><span [class]="chip()">{{ r.status === "PASS" ? "Clean" : r.status === "ERROR" ? "Errors found" : "Not run" }}</span> &nbsp;{{ r.message }}</strong>
       <span>
         @if (r.new_errors !== undefined) { {{ r.new_errors }} new since the original · }
         @if (r.preexisting_errors !== undefined) { {{ r.preexisting_errors }} already in the original · }

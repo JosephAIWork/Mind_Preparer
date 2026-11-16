@@ -13,8 +13,9 @@ const rules = { "FRM-009": "an empty cell is compared with a number", "REF-002":
 
 describe("plain codes", () => {
   it("shows a code with its plain name, or the code alone when it has none", () => {
-    expect(ruleLabel("FRM-009", rules["FRM-009"])).toBe("FRM-009 · an empty cell is compared with a number");
+    expect(ruleLabel("FRM-009", rules["FRM-009"])).toBe("an empty cell is compared with a number");
     expect(ruleLabel("UI", null)).toBe("UI");
+    expect(ruleLabel("#N/A", "the lookup found nothing")).toBe("the lookup found nothing (#N/A)"); // Excel's own value stays, in brackets
   });
 
   it("finds the error values a text quotes, each once, in the order they appear", () => {
@@ -111,7 +112,7 @@ describe("plain codes", () => {
       expect(codes.cellsLegend([{ value: "#REF!", error: true }, { value: 2, error: false }, { value: "#ref!", error: true }])).toEqual([
         { value: "#REF!", meaning: errors["#REF!"] },
       ]);
-      expect(codes.label("FRM-009")).toBe("FRM-009 · an empty cell is compared with a number");
+      expect(codes.label("FRM-009")).toBe("an empty cell is compared with a number");
       expect(codes.name("#ref!")).toBe(errors["#REF!"]); // an error value has words too
       expect(codes.name("UI")).toBeNull();
       expect(codes.meaning("#DIV/0!")).toBe(errors["#DIV/0!"]);
@@ -139,7 +140,7 @@ describe("plain codes", () => {
       answer = () => Promise.resolve({ rules, errors });
       await other.load();
       expect(calls).toBe(2);
-      expect(other.label("REF-002")).toBe("REF-002 · a formula reads another workbook");
+      expect(other.label("REF-002")).toBe("a formula reads another workbook");
     });
   });
 });

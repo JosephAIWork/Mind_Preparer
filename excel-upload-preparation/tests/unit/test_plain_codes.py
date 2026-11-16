@@ -45,8 +45,12 @@ EXCEL_GONE_SAID = 'Excel closed or stopped answering while the app was using it 
 # --- rule ids ----------------------------------------------------------------------------------
 def test_a_rule_is_cited_with_its_plain_name_and_an_unknown_id_alone():
     assert rule_name("FRM-009") == "an empty cell is compared with a number"
-    assert cite("FRM-009") == "FRM-009 (an empty cell is compared with a number)"
-    assert cite_all(["REF-002", "STR-008"]) == "REF-002 (a formula reads another workbook), STR-008 (a formula reads a lone text cell)"
+    # 16 Nov 2026: plain words on screen, the code only for the assistant and the bug reports
+    assert cite("FRM-009") == '"an empty cell is compared with a number"'
+    assert cite_all(["REF-002", "STR-008"]) == '"a formula reads another workbook", "a formula reads a lone text cell"'
+    from app.plain_codes import cite_code, plain_status
+    assert cite_code("FRM-009") == "FRM-009 (an empty cell is compared with a number)"
+    assert [plain_status(s) for s in ("PASS", "ERROR", "WARNING")] == ["fine", "a problem", "a warning"]
     # the screens' own changes ("UI"), a recalculation error ("RECALC"): no rule, no name
     assert rule_name("UI") is None and cite("UI") == "UI" and cite(None) == ""
     assert named({"rule_id": "INP-010", "status": "ERROR"}) == {"rule_id": "INP-010", "status": "ERROR", "rule_name": "macros bring in data from other files"}
@@ -249,6 +253,6 @@ def test_the_guide_quotes_the_red_box_as_the_app_words_it():
 
     said = server._plain_problem(None, "Fix the formulas", [{"rule_id": "FRM-012"}, {"rule_id": "FRM-012"}])
     quoted = said[: said.index(" The ones left out")]
-    assert quoted == "Fix the formulas: Excel did not accept 2 of the changes, for FRM-012 (a formula asks Excel about its own file). The other changes were made."
+    assert quoted == 'Fix the formulas: Excel did not accept 2 of the changes, for "a formula asks Excel about its own file". The other changes were made.'
     guide = (Path(__file__).resolve().parents[2] / "tools" / "package" / "guide" / "guide.html").read_text(encoding="utf-8")
     assert f"&ldquo;{quoted}&rdquo;" in guide

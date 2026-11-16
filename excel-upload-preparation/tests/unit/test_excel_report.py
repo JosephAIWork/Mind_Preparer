@@ -48,7 +48,7 @@ def test_report_rows_say_the_code_in_plain_words_and_each_error_value_once():
     )
     # the hint that cites other rules says them with their names
     hint = findings_rows({"findings": [{"rule_id": "FRM-001", "status": "PASS", "message": "inventory"}]}, {})[0][HEADERS.index("Recommended Fix")]
-    assert "FRM-002 (a function Mind may not support) and FORMULA-002 (a formula calls a custom macro function)" in hint
+    assert '"a function Mind may not support" and "a formula calls a custom macro function"' in hint
 
 
 def test_openpyxl_fallback_appends_sheets_and_says_so(tmp_path, plain_grid_xlsx):

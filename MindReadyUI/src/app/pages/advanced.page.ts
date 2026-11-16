@@ -22,11 +22,11 @@ import { RecalcPanel } from "./advanced/recalc-panel";
 import { StackBar } from "./advanced/stack-bar";
 
 const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" | "cyan" | "teal" | "green" | "gray" | "cool-gray" | "warm-gray" | "high-contrast" | "outline"; label: string }> = {
-  ERROR: { type: "red", label: "Error" },
-  REQUIRES_USER_INPUT: { type: "magenta", label: "Needs input" },
+  ERROR: { type: "red", label: "Problem" },
+  REQUIRES_USER_INPUT: { type: "magenta", label: "Needs an answer" },
   WARNING: { type: "warm-gray", label: "Warning" },
-  NOT_SUPPORTED: { type: "gray", label: "Not supported" },
-  PASS: { type: "green", label: "Pass" },
+  NOT_SUPPORTED: { type: "gray", label: "Not checked" },
+  PASS: { type: "green", label: "Fine" },
 };
 
 /** The  lists and  the manual work: findings, the Prep actions by hand, versions. Grows in later chunks. */

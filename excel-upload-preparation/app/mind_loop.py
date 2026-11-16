@@ -527,8 +527,8 @@ def decide(iteration: dict[str, Any], plan: list[dict[str, Any]], enabled: set[s
         # Mind reads some blocks differently from  the app (a detection gap, not
         # something any prep action can change)  -- reported, never a block
         gap = f"Mind lists {counts['mind_untitled']} Untitled grid(s), the app predicted {counts['app_untitled']}: {len(counts.get('unexplained') or [])} Mind-only, {len(counts.get('app_only') or [])} app-only (see detection_gaps)"
-        return {"verdict": "converged", "reason": "every gate passed; " + gap, "enable": [], "disable": []}
-    return {"verdict": "converged", "reason": "every gate passed", "enable": [], "disable": []}
+        return {"verdict": "converged", "reason": "Mind converted the workbook and ran the model, and the run agrees with its audit trail; " + gap, "enable": [], "disable": []}
+    return {"verdict": "converged", "reason": "Mind converted the workbook and ran the model, and the run agrees with its audit trail", "enable": [], "disable": []}
 
 
 def untitled_counts(mind_cells: list[str], app_anchors: list[str]) -> dict[str, Any]:

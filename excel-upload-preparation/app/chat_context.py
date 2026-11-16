@@ -29,7 +29,7 @@ from .formula_utils import STORAGE_PREFIX_RE, parse_ref, ref_text
 from .grids import all_grids
 from .inventory import cell_value
 from .llm import chat_completion
-from .plain_codes import cite
+from .plain_codes import cite_code as cite  # the  assistant reads  the codes; its answers are asked in plain words
 from .prep import validate_proposal
 
 MAX_CONTEXT_CHARS = 14000  # the  pack's facts,  findings and Prep actions; the rules' plain names come on top (each named once)

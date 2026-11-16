@@ -1,13 +1,14 @@
 import { Component, Input, inject } from "@angular/core";
 import { PlainCodes } from "./plain-codes";
 
-/** A  code with  its plain words, the code small and grey: "FRM-009 · an empty cell is compared with a
- *  number", or "#REF! · the formula points at a cell that no longer exists". The  one way every screen
- *  shows a rule id or an Excel error  value; the code alone when it  has no words. */
+/** A  code in  plain words (16 Nov 2026, Joseph: no technical codes on screen, they stay in the bug
+ *  reports): a rule shows its words only, "an empty cell is compared with a number"; an  Excel error
+ *  value shows its words with the value in brackets, "the  formula points at a cell that  no longer
+ *  exists (#REF!)", since that is what  the user sees in Excel. The code alone when it has  no words. */
 @Component({
   selector: "mr-code",
   standalone: true,
-  template: `<span class="code">{{ code }}</span>@if (words(); as w) {<span class="sep"> · </span><span class="words">{{ w }}</span>}`,
+  template: `@if (words(); as w) {<span class="words" [attr.title]="null">{{ w }}</span>@if (isExcelError()) {<span class="code"> ({{ code }})</span>}} @else {<span class="code">{{ code }}</span>}`,
   styleUrl: "./code-name.scss",
 })
 export class CodeName {
@@ -19,5 +20,10 @@ export class CodeName {
 
   words(): string | null {
     return this.codes.name(this.code, this.name);
+  }
+
+  /** #N/A, #REF!, #VALUE! ...: Excel's own error values, which the user sees  in the workbook */
+  isExcelError(): boolean {
+    return this.code.trim().startsWith("#");
   }
 }

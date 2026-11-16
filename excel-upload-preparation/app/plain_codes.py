@@ -46,8 +46,17 @@ def rule_name(rule_id: Any) -> str | None:
 
 
 def cite(rule_id: Any) -> str:
-    """A  rule id  as a text says it: 'FRM-009 (an empty cell is compared with a number)'; the id
-    alone when it has no name."""
+    """A  rule as  a text on screen says it: in plain words, '"an empty cell is compared with a number"'
+    (16 Nov 2026, Joseph: no technical codes on screen, codes only in the bug reports);  the id alone
+    when it has no name."""
+    rid = str(rule_id or "").strip()
+    name = rule_name(rid)
+    return f'"{name}"' if name else rid
+
+
+def cite_code(rule_id: Any) -> str:
+    """The  rule with  its code: 'FRM-009 (an empty cell is compared with a number)' -- for the
+    assistant's context and the bug reports, never for a screen."""
     rid = str(rule_id or "").strip()
     name = rule_name(rid)
     return f"{rid} ({name})" if name else rid
@@ -55,6 +64,20 @@ def cite(rule_id: Any) -> str:
 
 def cite_all(rule_ids: Iterable[Any], sep: str = ", ") -> str:
     return sep.join(cite(r) for r in rule_ids)
+
+
+# What  a finding's  status means, in plain words (apply summaries, the screens' texts)
+PLAIN_STATUS = {
+    "PASS": "fine",
+    "WARNING": "a warning",
+    "ERROR": "a problem",
+    "NOT_SUPPORTED": "not checked",
+    "REQUIRES_USER_INPUT": "waiting for an answer",
+}
+
+
+def plain_status(status: Any) -> str:
+    return PLAIN_STATUS.get(str(status or ""), str(status or "not reported").lower())
 
 
 def named(item: dict[str, Any]) -> dict[str, Any]:

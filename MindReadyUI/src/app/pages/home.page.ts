@@ -10,6 +10,7 @@ import {
 } from "../core/models";
 import { FinishBanner } from "../core/finish-banner";
 import { RecalcNow } from "../core/recalc-now";
+import { Thinking } from "../core/thinking";
 import { PlainCodes, meaningsText } from "../core/plain-codes";
 import { ReadinessBanner } from "../core/readiness-banner";
 import { SessionStore } from "../core/session.store";
@@ -126,7 +127,7 @@ function stoppedWhere(id: StepId, r: ActionState): string {
 @Component({
   selector: "mr-home",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner, FinishBanner, RecentWorkbooks, RecalcNow],
+  imports: [CommonModule, RouterLink, ButtonModule, FileUploaderModule, InlineLoadingModule, NotificationModule, ProgressBarModule, TagModule, TilesModule, KeyBox, ShowMeLink, ReadinessBanner, FinishBanner, RecentWorkbooks, RecalcNow, Thinking],
   templateUrl: "./home.page.html",
   styleUrl: "./home.page.scss",
 })
@@ -1236,6 +1237,11 @@ export class HomePage implements OnDestroy {
     return `About ${minutes(t.left)} left (around ${clock}).${slow} An estimate only: big models can take longer.`;
   });
 
+  /** The line says the assistant is at work (making stand-ins): the thinking dots go beside it */
+  aiWords(text: string | null | undefined): boolean {
+    return /(stand-in|assistant|with AI)/i.test(text ?? "");
+  }
+
   canBuildLoop(): boolean {
     const p = this.loopPlan();
     return !!p && p.found && p.operation_count > 0 && p.loops.some((l) => l.status === "ready");
@@ -1249,7 +1255,7 @@ export class HomePage implements OnDestroy {
     try {
       const out = await this.api.applyMindLoopPlan(id, this.headerRow() ? { first: "2" } : {});
       stop();
-      const { plan: loopPlan, ...analysis } = out; // `plan` here is the LOOP plan, not the Prep actions
+      const { plan: loopPlan, ...analysis } = out; // `plan` here is the LOOP plan, not  the Prep actions
       this.store.applyAnalysis({ ...analysis, version: out.version });
       this.loopPlan.set(loopPlan);
       void this.api.resume(id).then((s) => this.store.applyAnalysis({ summary: s.summary, report: s.report, plan: s.plan, readiness: s.readiness, prep_progress: s.prep_progress, versions: s.versions })).catch(() => {});
@@ -1271,9 +1277,9 @@ export class HomePage implements OnDestroy {
     }
   }
 
-  /** Building the loop changes what the rules see (which policy row the model  computes, the cells it clears): a
-   *  blocking action can show up that  was not there before (Palermo, 14  Nov 2026: "an empty cell is compared  with
-   *  a number" went from PASS to ERROR once the loop was  in). So after the loop step: one  more Prep pass, the same
+  /** Building the loop changes what the rules see (which  policy row the model computes, the  cells it clears): a
+   *  blocking action can show  up that was not there before (Palermo, 14 Nov 2026: "an  empty cell is compared with
+   *  a number" went  from PASS to ERROR once the loop was in). So after the loop step: one more Prep pass, the same
    *  rounds as the Prep step, only when something blocking is left. */
   async runLoopThenFix(): Promise<boolean> {
     if (!(await this.runLoop())) return false;
@@ -1316,14 +1322,14 @@ export class HomePage implements OnDestroy {
     }
   }
 
-  // ---- do everything --------------------------------------------------------------------------
+  // ---- do everything  --------------------------------------------------------------------------
   /** The whole chain, each step followed by its check, stopping at the first failed check. */
   async runAll(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.busy()) return;
     this.chainRunning.set(true);
     this.chainLine.set("");
-    // the  outside step only for a model whose macros open outside files
+    // the outside step only for a model whose macros open outside files
     const plan = STEPS.filter((s) => s.id !== "outside" || this.store.outsideInputs() !== null);
     this.steps.set(plan.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
     // the clock starts before the estimate is fetched: until then the timer would show the last run's time
@@ -1374,7 +1380,7 @@ export class HomePage implements OnDestroy {
         const r = states[step.id]();
         this.stepSeconds[step.id] = (Date.now() - this.stepT0) / 1000;
         // the files are in, but no computed value could be compared: amber, and the chain stops -- going
-        // on is the user's choice (Do everything again skips the step: the server says brought in)
+        // on is the user's choice (Do everything again skips the step: the server  says brought in)
         const unchecked = step.id === "outside" && !ok && this.outsideUnchecked();
         this.setStep(step.id, { state: ok ? "done" : unchecked ? "stopped" : "failed", line: r.line, detail: r.detail });
         if (unchecked) {
@@ -1416,7 +1422,7 @@ export class HomePage implements OnDestroy {
     this[which].update((s) => ({ ...s, open: !s.open }));
   }
 
-  // ---- next quarter's Mind input files -------------------------------------------------------------
+  // ---- next quarter's  Mind input files -------------------------------------------------------------
   onNextQuarterFiles(event: Event): void {
     const input = event.target as HTMLInputElement;
     const files = Array.from(input.files ?? []);
@@ -1424,10 +1430,10 @@ export class HomePage implements OnDestroy {
     if (files.length) void this.makeNextQuarter(files);
   }
 
-  /** Make next quarter's Mind input files: the  picked raw files go to  the server, which runs the model's
-   *  own import  macro on a  copy with  them and writes one file per Mind input grid (a file already shaped
-   *  like a grid goes in as it is). Followed until it ends; the zip is then offered for download.  No new
-   *  version: the model in Mind stays as it is. */
+  /** Make next quarter's Mind  input files: the  picked raw  files go to the server, which runs the model's
+   *  own import macro on a copy with them and writes one file per Mind input grid (a file already shaped
+   *  like a grid goes  in as it is). Followed until it ends; the zip is  then offered for download. No new
+   *  version:  the model in Mind stays as it  is. */
   async makeNextQuarter(files: File[]): Promise<boolean> {
     const id = this.store.sessionId();
     if (!id || this.nextQuarter().running) return false;
@@ -1451,8 +1457,8 @@ export class HomePage implements OnDestroy {
     return this.followNextQuarter(id, seq, Date.now());
   }
 
-  /** A next-quarter  job may still run from before  a reload or a visit to Advanced  (follow it), or its
-   *  result is there to show (the zip is  offered again). */
+  /** A next-quarter job may still run from before a reload or  a visit to Advanced (follow it), or  its
+   *  result is there to show (the zip is offered again). */
   private async resumeNextQuarter(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || !this.store.outsideInputs() || this.nextQuarter().running) return;
@@ -1470,7 +1476,7 @@ export class HomePage implements OnDestroy {
     } else if (st.result || st.error) this.showNextQuarterEnd(id, st);
   }
 
-  /** Follow the job  until it ends. Stops quietly when the page is left, the card is reset or the
+  /** Follow the job until it ends. Stops quietly when the page is left, the card is reset or the
    *  session changes: an old job's result never lands on another workbook's card. */
   private async followNextQuarter(id: string, seq: number, t0: number): Promise<boolean> {
     const stale = () => {

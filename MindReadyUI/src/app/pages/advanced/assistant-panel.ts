@@ -1,4 +1,5 @@
 import { CommonModule } from "@angular/common";
+import { Thinking } from "../../core/thinking";
 import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
@@ -16,7 +17,7 @@ import { KeyBox } from "./key-box";
 @Component({
   selector: "mr-assistant-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName, ShowMeLink],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName, ShowMeLink, Thinking],
   templateUrl: "./assistant-panel.html",
   styleUrl: "./panels.scss",
 })

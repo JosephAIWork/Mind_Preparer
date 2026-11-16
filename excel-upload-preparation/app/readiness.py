@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .plain_codes import cite, cite_all, rule_name
+from .plain_codes import cite, cite_all, rule_name, plain_status
 
 BLOCKING_STATUSES = ("ERROR", "REQUIRES_USER_INPUT")
 RECALC_RULE = "READY-001"
@@ -316,7 +316,7 @@ def _action_summary(a: dict[str, Any]) -> tuple[str, str]:
             continue
         sites = f" ({r['sites_from']:,} -> {r['sites_to']:,} cells)" if r["sites_from"] is not None and r["sites_to"] is not None and r["sites_from"] != r["sites_to"] else ""
         worse = " (worse than before)" if STATUS_RANK.get(r["to"], 0) > STATUS_RANK.get(r["from"] or "PASS", 0) else ""
-        moves.append(f"{cite(r['rule_id'])} {r['from'] or 'not reported'} -> {r['to']}{sites}{worse}" if r["from"] != r["to"] else f"{cite(r['rule_id'])} still {r['to']}{sites}")
+        moves.append(f"{cite(r['rule_id'])}: was {plain_status(r['from']) if r['from'] else 'not reported'}, now {plain_status(r['to'])}{sites}{worse}" if r["from"] != r["to"] else f"{cite(r['rule_id'])}: still {plain_status(r['to'])}{sites}")
     left = []
     if a["planned_after"]:
         left.append(f"{_plural(a['planned_after'], 'more repair')} planned by the new analysis")

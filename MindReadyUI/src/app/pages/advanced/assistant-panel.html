@@ -21,7 +21,7 @@
     }
     @if (streaming()) {
       <div class="bubble bubble--draft">
-        @if (partial()) { {{ partial() }} } @else { <span class="hint">{{ phase() }}</span> }
+        @if (partial()) { {{ partial() }} <mr-thinking></mr-thinking> } @else { <mr-thinking [text]="phase()"></mr-thinking> }
       </div>
     }
   </div>

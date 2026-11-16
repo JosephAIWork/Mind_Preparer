@@ -76,6 +76,10 @@ def mind_session(headed: bool = False) -> Iterator[tuple[Any, Page]]:
             accept_downloads=True,
             downloads_path=str(DOWNLOAD_DIR),
             args=_LAUNCH_ARGS,
+            # Playwright starts the browser with --no-sandbox unless asked not to: Edge then shows "You are  using
+            # an unsupported command-line flag: --no-sandbox. Stability and security will suffer." on  the sign-in
+            # window (Joseph, 16 Nov 2026).  Edge's own sandbox works on Windows: keep  it on.
+            chromium_sandbox=True,
             no_viewport=headed,  # let the real maximized window drive the size when headed
         )
         try:
@@ -86,7 +90,7 @@ def mind_session(headed: bool = False) -> Iterator[tuple[Any, Page]]:
             ctx.close()
 
 
-# --- session bookkeeping ------------------------------------------------------
+# ---  session bookkeeping ------------------------------------------------------
 def load_session() -> dict[str, Any]:
     if SESSION_FILE.is_file():
         try:

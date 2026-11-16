@@ -170,7 +170,7 @@ def test_blocking_with_prep_operations_routes_to_prep():
     r = compute_readiness(_report(_f("REF-001", "ERROR", "REQUIRED")), plan, None, "v")
     assert r["blocking"][0]["fix"] == "prep" and r["next_step"]["screen"] == "prep" and r["prep"]["blocking_ops"] == 4
     # the code said with its plain name
-    assert r["next_step"]["detail"] == "REF-001 (a broken reference to a cell or name)"
+    assert r["next_step"]["detail"] == '"a broken reference to a cell or name"'
 
 
 # --- the Prep gauge -----------------------------------------------------------------------------
@@ -268,7 +268,7 @@ def test_next_step_goes_to_the_assistant_when_prep_work_targets_no_blocking_find
     r = compute_readiness(_report(_f("FRM-002", "ERROR", "REQUIRED"), _f("STR-001", "WARNING", "REQUIRED")), plan, None, "v")
     assert r["state"] == "blocked" and r["prep"]["blocking_ops"] == 3
     assert r["next_step"]["screen"] == "findings" and r["next_step"]["rule_id"] == "FRM-002"
-    assert r["next_step"]["label"] == "Fix FRM-002 (a function Mind may not support) with the assistant"
+    assert r["next_step"]["label"] == 'Fix "a function Mind may not support" with the assistant'
     assert r["next_step"]["rule_name"] == r["blocking"][0]["rule_name"] == "a function Mind may not support"
 
 
@@ -448,7 +448,7 @@ def test_apply_outcome_tells_resolved_from_partial_from_unchanged():
     by_id = {a["id"]: a for a in out["actions"]}
     assert [a["id"] for a in out["actions"]][0] == "fix_broken_refs"  # blocking repairs first
     assert by_id["fix_broken_refs"]["verdict"] == "resolved"
-    assert by_id["fix_broken_refs"]["summary"] == "3 changes written. REF-001 (a broken reference to a cell or name) ERROR -> PASS (3 -> 0 cells). Resolved: nothing left for this repair."
+    assert by_id["fix_broken_refs"]["summary"] == '3 changes written. "a broken reference to a cell or name": was a problem, now fine (3 -> 0 cells). Resolved: nothing left for this repair.'
     assert by_id["fix_broken_refs"]["rules"][0]["rule_name"] == "a broken reference to a cell or name"
     assert by_id["create_grid_titles"]["verdict"] == "partial" and "2 more repairs planned" in by_id["create_grid_titles"]["summary"] and "1 left for review" in by_id["create_grid_titles"]["summary"]
     assert by_id["explicit_colors"]["verdict"] == "unchanged" and "will not resolve it" in by_id["explicit_colors"]["summary"]
@@ -460,8 +460,8 @@ def test_apply_outcome_tells_resolved_from_partial_from_unchanged():
     assert out["blocking_before"] == 2 and out["blocking_after"] == 1 and out["resolved_blocking"] == ["REF-001"]
     assert out["remaining_blocking"] == [{"rule_id": "FRM-002", "rule_name": "a function Mind may not support", "fix": "assistant", "action_id": None, "sites": None, "touched": False, "new": False}]
     assert out["headline"] == (
-        "9 of 9 changes written. Blocking problems: 2 before, 1 now -- resolved: REF-001 (a broken reference to a cell or name) "
-        "-- left: no automatic repair (by hand or with the assistant): FRM-002 (a function Mind may not support)."
+        '9 of 9 changes written. Blocking problems: 2 before, 1 now -- resolved: "a broken reference to a cell or name" '
+        '-- left: no automatic repair (by hand or with the assistant): "a function Mind may not support".'
     )
 
 
@@ -474,7 +474,7 @@ def test_apply_outcome_groups_assistant_fixes_by_rule_and_reports_refusals():
     failed = [{**ops[1], "error": "S!A2: inside the merged range A2:C2"}]
     out = apply_outcome(ops, {"applied": ops[:1], "failed": failed}, [], before, [], after, "ver-002", "ver-001")
     (a,) = out["actions"]
-    assert a["title"] == "Assistant fix for FRM-002 (a function Mind may not support)" and a["level"] == "blocking" and a["planned_before"] is None
+    assert a["title"] == 'Assistant fix for "a function Mind may not support"' and a["level"] == "blocking" and a["planned_before"] is None
     assert (a["sent"], a["applied"], a["failed"]) == (2, 1, 1) and a["errors"] == ["S!A2: inside the merged range A2:C2"]
     assert a["verdict"] == "partial" and "1 change written, 1 refused" in a["summary"] and "(2 -> 1 cells)" in a["summary"]
     assert out["remaining_blocking"][0]["touched"] is True

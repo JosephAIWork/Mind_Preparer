@@ -93,6 +93,7 @@
     <h3 class="panel__h">Or let the assistant name them</h3>
     <p class="hint">Names every untitled grid from the captions, labels and headers around it, through the assistant.</p>
     <button cdsButton="tertiary" size="md" (click)="suggest()" [disabled]="suggesting()">{{ suggesting() ? "Naming…" : "Suggest names" }}</button>
+    @if (suggesting()) { <mr-thinking text="The assistant is naming the grids…"></mr-thinking> }
     @if (suggestions(); as sg) {
       <p class="hint">{{ suggestLine(sg) }}<mr-show-me [text]="suggestLine(sg)"></mr-show-me></p>
       @if (sg.names.length) {

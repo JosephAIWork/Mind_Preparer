@@ -1,4 +1,5 @@
 import { CommonModule } from "@angular/common";
+import { Thinking } from "../../core/thinking";
 import { Component, HostListener, OnInit, computed, effect, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
@@ -99,7 +100,7 @@ function parseExtraFlags(text: string): string[] {
 @Component({
   selector: "mr-grid-namer-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule, ShowMeLink],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, ShowMeLink, Thinking],
   templateUrl: "./grid-namer-panel.html",
   styleUrl: "./grid-namer-panel.scss",
 })

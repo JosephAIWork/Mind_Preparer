@@ -2,6 +2,7 @@ import { Component, OnDestroy, computed, inject, input, signal } from "@angular/
 import { ApiService, errorText } from "./api.service";
 import { MindLoopOptions, MindLoopStatus, MindSignIn, Readiness } from "./models";
 import { RecalcNow } from "./recalc-now";
+import { Thinking } from "./thinking";
 import { SessionStore } from "./session.store";
 
 /** What  the end-of-check  banner says and allows, from the readiness verdict (1.15.0). */
@@ -45,7 +46,7 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
 @Component({
   selector: "mr-finish-banner",
   standalone: true,
-  imports: [RecalcNow],
+  imports: [RecalcNow, Thinking],
   template: `
     @if (state(); as s) {
       <section class="finish" [class.finish--stop]="!s.acceptable" [class.finish--problem]="s.problem" data-show-me="finish-banner">
@@ -69,7 +70,7 @@ export function finishState(r: Readiness | null | undefined): FinishState | null
           </div>
         }
         @if (progress()) {
-          <p class="finish__progress">{{ progress() }}</p>
+          <p class="finish__progress">@if (aiAtWork()) {<mr-thinking></mr-thinking> }{{ progress() }}</p>
         }
         @if (outcome()) {
           <p class="finish__outcome" [class.finish__outcome--error]="failed()">{{ outcome() }}</p>
@@ -130,6 +131,8 @@ export class FinishBanner implements OnDestroy {
   readonly downloadUrl = input<string | null>(null);
 
   readonly state = computed(() => finishState(this.readiness()));
+  /** the stage running now is the assistant's (naming the grids, explaining, making stand-ins) */
+  readonly aiAtWork = computed(() => /\b(nam(e|ing)|assistant|suggest|explain|stand-in)/i.test(this.progress()));
   readonly running = signal(false);
   readonly progress = signal("");
   readonly outcome = signal("");
@@ -151,7 +154,7 @@ export class FinishBanner implements OnDestroy {
     return "Not signed in to Mind, or the sign-in has expired. Sign in once (it lasts about a week); the upload then goes on by itself.";
   }
 
-  /** Upload to Mind: the sign-in first (asked for when missing), then the same run as Run in Mind. */
+  /** Upload to Mind: the sign-in first (asked for when missing), then the same run  as Run in Mind. */
   async upload(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.running() || !this.state()?.acceptable) return;
@@ -175,7 +178,7 @@ export class FinishBanner implements OnDestroy {
     }
   }
 
-  /** Opens the Edge window; when the sign-in is done  the upload starts by itself. */
+  /** Opens the Edge window; when the sign-in is  done the upload starts by itself. */
   async openSignIn(): Promise<void> {
     try {
       this.signIn.set(await this.api.startMindSignIn());
@@ -204,7 +207,7 @@ export class FinishBanner implements OnDestroy {
     }, 2000);
   }
 
-  /** The same call as Run in Mind:  the changes it ticks by default,  4 rounds at most, the model run,  the assistant naming grids. */
+  /** The  same call as Run in Mind: the  changes it ticks by default, 4 rounds at most, the model  run, the assistant naming grids. */
   private async start(id: string): Promise<void> {
     this.progress.set("Starting the upload…");
     try {
@@ -213,7 +216,7 @@ export class FinishBanner implements OnDestroy {
         const o = await this.api.mindLoopOptions(id, { useAssistant: true, runModel: true });
         opts.actions = o.choices.filter((c) => c.default_on).map((c) => c.id);
       } catch {
-        /* the run then chooses by itself */
+        /* the run then  chooses by itself */
       }
       await this.api.startMindLoop(id, opts);
     } catch (e) {
@@ -239,7 +242,7 @@ export class FinishBanner implements OnDestroy {
         return;
       }
     } catch {
-      /* the next look  tries again */
+      /* the next look tries again */
     }
     this.timer = setTimeout(() => void this.poll(id, next), 2000);
   }

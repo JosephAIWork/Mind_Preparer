@@ -481,10 +481,10 @@ def test_apply_says_what_it_did_repair_by_repair(client, flagged_model_broken_xl
     # two of the three rules it serves pass; the third still fails on fewer cells: said as it is
     headers = by_id["special_headers"]
     assert headers["verdict"] == "partial" and headers["level"] == "blocking" and headers["planned_after"] == 0
-    assert "EXP-003 (export settings grid has wrong columns or values) still ERROR" in headers["summary"] and "by hand" in headers["summary"]
+    assert '"export settings grid has wrong columns or values": still a problem' in headers["summary"] and "by hand" in headers["summary"]
     assert headers["applied"] == plan["special_headers"]["count"] == headers["planned_before"]
     moves = {r["rule_id"]: (r["from"], r["to"]) for r in headers["rules"]}
-    assert moves["PAR-002"] == ("ERROR", "PASS") and "PAR-002 (parameters grid has the wrong columns) ERROR -> PASS" in headers["summary"]
+    assert moves["PAR-002"] == ("ERROR", "PASS") and '"parameters grid has the wrong columns": was a problem, now fine' in headers["summary"]
     assert {"PAR-002", "PRJ-002"} <= set(oc["resolved_blocking"])
     assert oc["blocking_after"] == out["readiness"]["blocking_count"]
     assert oc["blocking_after"] == oc["blocking_before"] - len(oc["resolved_blocking"]) + sum(1 for r in oc["remaining_blocking"] if r["new"])

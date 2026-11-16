@@ -8,6 +8,13 @@
 - **Do everything fixes again after the loop.** Building the Mind loop changes what the rules see (which policy row the model computes, the cells it clears), so a blocking action can appear that was not there before (Palermo: "an empty cell is compared with a number" went from pass to error once the loop was in). The loop step is now followed by one more Prep pass when something blocking is left; the same in `scripts/night_chain.py` (`prepare_after_loop`).
 - A lone text cell read only through a formula that is wholly `N(...)` no longer blocks (Palermo `=N(VLOOKUP(...))`: `N()` turns the text into 0, as Mind's empty cell does), and the Mind upload script says "could not be read" instead of "Mind agrees" when it cannot open the list of differences.
 
+### Plain words on screen (16 Nov 2026)
+
+- No technical codes on the screens: a rule is said in its plain words ("an empty cell is compared with a number", not FRM-009); an Excel error keeps its value in brackets ("the lookup found nothing (#N/A)"), since that is what the workbook shows. Status tags read Problem / Fine / Warning / Not checked / Needs an answer; apply summaries say "was a problem, now fine". The codes stay in the bug reports (Send feedback) and in what the assistant is given.
+- The "Works until" date is no longer in the header (the "ends soon" and "stopped" messages stay). Basic: the button is **Start** / **Start again**, the progress line says in plain words what each step does, with an ETA and "an estimate only". A **Recalculate** button appears wherever the recalculation is the only thing left; errors found after a Mind loop come with a plain note that they may come from the loop's first value.
+- A thinking motion (three pulsing dots; still for people who ask for less motion) wherever the assistant works: the chat, naming the grids, Upload to Mind while it names grids, the stand-in files.
+- Run in Mind's end says "Mind converted the workbook and ran the model, and the run agrees with its audit trail" (was "every gate passed"); the Mind browser keeps Edge's sandbox on, so Edge no longer warns "unsupported command-line flag: --no-sandbox".
+
 ### Three screens
 
 - **Basic, Custom, Advanced** in the header. **Basic** is the new first screen: the upload box, one tick
