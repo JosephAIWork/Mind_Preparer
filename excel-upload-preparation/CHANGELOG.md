@@ -5,6 +5,8 @@
 ### Also
 
 - `scripts/night_chain.py` now skips the outside-files step the way the screen does when no cell names the files (or no macro brings them in): their data stays inside the model, and the chain goes on instead of stopping (found on Phoenix).
+- **Do everything fixes again after the loop.** Building the Mind loop changes what the rules see (which policy row the model computes, the cells it clears), so a blocking action can appear that was not there before (Palermo: "an empty cell is compared with a number" went from pass to error once the loop was in). The loop step is now followed by one more Prep pass when something blocking is left; the same in `scripts/night_chain.py` (`prepare_after_loop`).
+- A lone text cell read only through a formula that is wholly `N(...)` no longer blocks (Palermo `=N(VLOOKUP(...))`: `N()` turns the text into 0, as Mind's empty cell does), and the Mind upload script says "could not be read" instead of "Mind agrees" when it cannot open the list of differences.
 
 ### Three screens
 

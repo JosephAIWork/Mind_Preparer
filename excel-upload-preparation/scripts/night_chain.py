@@ -158,38 +158,42 @@ def main() -> int:
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])
 
-    # Fix the formulas and the structure: every blocking Prep action that is on by default, in rounds
-    # (an applied action can surface another one), until none is left or 3 rounds ran.
-    step: dict = {"ok": True, "rounds": [], "applied": 0, "failed": 0}
-    for round_no in range(1, 4):
+    def prepare_rounds(key: str) -> None:
+        # Fix the formulas and the structure: every blocking Prep action that is on by default, in rounds
+        # (an applied action can surface another one), until none is left or 3 rounds ran.
+        step: dict = {"ok": True, "rounds": [], "applied": 0, "failed": 0}
+        for round_no in range(1, 4):
+            st = state()
+            acts = [a for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
+            ops = [o for a in acts for o in a["operations"]]
+            say(f"{key} round {round_no}: {[(a['id'], a['count']) for a in acts]} -> {len(ops)} operations")
+            if not ops:
+                break
+            errors_before = sum(1 for f in st["report"]["findings"] if f["status"] == "ERROR")
+            r = requests.post(f"{B}/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True, "versionStep": "major"}, timeout=7200)
+            r.raise_for_status()
+            o = r.json()
+            res = o["result"]
+            applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied") or 0
+            failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed") or 0
+            errors_after = sum(1 for f in (o.get("report") or {}).get("findings", []) if f["status"] == "ERROR")
+            step["rounds"].append({"actions": [a["id"] for a in acts], "applied": applied, "failed": failed, "errors_before": errors_before, "errors_after": errors_after, "version": o["version"]["label"]})
+            step["applied"] += applied
+            step["failed"] += failed
+            step["version"] = o["version"]["label"]
+            if failed:
+                step["ok"] = False
+                break
         st = state()
-        acts = [a for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
-        ops = [o for a in acts for o in a["operations"]]
-        say(f"prepare round {round_no}: {[(a['id'], a['count']) for a in acts]} -> {len(ops)} operations")
-        if not ops:
-            break
-        errors_before = sum(1 for f in st["report"]["findings"] if f["status"] == "ERROR")
-        r = requests.post(f"{B}/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True, "versionStep": "major"}, timeout=7200)
-        r.raise_for_status()
-        o = r.json()
-        res = o["result"]
-        applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied") or 0
-        failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed") or 0
-        errors_after = sum(1 for f in (o.get("report") or {}).get("findings", []) if f["status"] == "ERROR")
-        step["rounds"].append({"actions": [a["id"] for a in acts], "applied": applied, "failed": failed, "errors_before": errors_before, "errors_after": errors_after, "version": o["version"]["label"]})
-        step["applied"] += applied
-        step["failed"] += failed
-        step["version"] = o["version"]["label"]
-        if failed:
+        left = [a["id"] for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
+        step["left"] = left
+        if left:
             step["ok"] = False
-            break
-    st = state()
-    left = [a["id"] for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
-    step["left"] = left
-    if left:
-        step["ok"] = False
-    chain["steps"]["prepare"] = step
-    say("prepare:", json.dumps(step)[:400])
+        chain["steps"][key] = step
+        say(f"{key}:", json.dumps(step)[:400])
+
+
+    prepare_rounds("prepare")
 
     plan = requests.get(f"{B}/sessions/{sid}/mind-loop-plan", timeout=1800).json()["plan"]
     (out / "loop_plan.json").write_text(json.dumps(plan, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -212,6 +216,10 @@ def main() -> int:
             applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied")
             failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed")
             chain["steps"]["loop"] = {"ok": not failed, "applied": applied, "failed": failed, "version": o["version"]["label"], "how": o["plan"].get("how_it_runs")}
+            if not failed and applied:
+                # building the loop changes the state the rules scan  (which policy row, which cells are cleared): a
+                # blocking action can appear that was not there before it (Palermo: FRM-009 PASS -> ERROR, 2026-11-14)
+                prepare_rounds("prepare_after_loop")
     else:
         chain["steps"]["loop"] = {"ok": None, "skipped": "no ready loop"}
     say("loop:", json.dumps(chain["steps"]["loop"])[:300])

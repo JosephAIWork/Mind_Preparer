@@ -89,7 +89,7 @@ const STEPS: { id: StepId; label: string; check: string }[] = [
   { id: "outside", label: "Bring in the outside files", check: "every input file matched and read by the model's own import macro" },
   { id: "fixAll", label: "Fix all issues", check: "the fixer ends clean, or every error left was already in the workbook (none caused by the preparation)" },
   { id: "prepare", label: "Fix the formulas and the structure", check: "every blocking action applied, nothing refused, none left" },
-  { id: "loop", label: "Build the Mind loop", check: "nothing refused (skipped when the model has no loop)" },
+  { id: "loop", label: "Build the Mind loop", check: "nothing refused, and nothing newly blocking after it (skipped when the model has no loop)" },
   { id: "recalc", label: "Recalculate", check: "no formula error that was not already in the original" },
 ];
 
@@ -1240,6 +1240,27 @@ export class HomePage implements OnDestroy {
     }
   }
 
+  /** Building the loop changes what the rules see (which policy row the model computes, the cells it clears): a
+   *  blocking action can show up that was not there before (Palermo, 14 Nov 2026: "an empty cell is compared with
+   *  a  number" went from PASS to  ERROR once the loop was in). So  after the loop  step: one  more Prep pass, the same
+   *  rounds as the Prep step, only when something blocking is left. */
+  async runLoopThenFix(): Promise<boolean> {
+    if (!(await this.runLoop())) return false;
+    if (this.destroyed || !this.store.plan().some((a) => a.level === "blocking" && a.default_on && a.count > 0)) return true;
+    const loopLine = this.loop().line;
+    this.loop.update((s) => ({ ...s, running: true, line: `${loopLine}; fixing what the loop uncovered…` }));
+    const ok = await this.runPrepare();
+    const p = this.prepare();
+    this.loop.update((s) => ({
+      ...s,
+      running: false,
+      line: ok ? `${loopLine}; then ${p.line.toLowerCase()} for what the loop uncovered` : `${loopLine}; the fixes after the loop stopped: ${p.line}`,
+      detail: [s.detail, p.detail].filter(Boolean).join(" · "),
+      tone: ok ? s.tone : "warn",
+    }));
+    return ok;
+  }
+
   // ---- recalculate ------------------------------------------------------------------------------
   async runRecalc(): Promise<boolean> {
     const id = this.store.sessionId();
@@ -1252,8 +1273,8 @@ export class HomePage implements OnDestroy {
       const newErrors = out.new_errors ?? out.formula_errors.length;
       const ok = out.status === "PASS" || newErrors === 0;
       const line = out.status === "PASS" ? "Recalculated, no formula errors" : `Recalculated, ${out.formula_errors.length} formula errors`;
-      // the list is named only when there is one: after a clean run its "Show me" would lead to the
-      // Recalculate button, for another recalculation with nothing to list
+      // the list is named only when there is one: after a clean run its "Show  me" would lead to the
+      // Recalculate button, for another recalculation with nothing  to list
       const list = out.formula_errors.length ? "The list is under Advanced › Recalculate." : "";
       const detail = [out.message, out.new_errors != null ? `${out.new_errors} new since the original` : "", out.preexisting_errors != null ? `${out.preexisting_errors} already in the original` : "", out.addin_gap_errors.length ? `${out.addin_gap_errors.length} add-in gap` : "", list].filter(Boolean).join(" · ");
       this.recalc.set({ running: false, fraction: null, line, detail, tone: ok ? "ok" : "warn" });
@@ -1265,16 +1286,16 @@ export class HomePage implements OnDestroy {
   }
 
   // ---- do everything --------------------------------------------------------------------------
-  /** The whole chain, each step followed  by its check, stopping at  the first failed check. */
+  /** The whole  chain, each step followed by its check,  stopping at the first failed check. */
   async runAll(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.busy()) return;
     this.chainRunning.set(true);
     this.chainLine.set("");
-    // the outside step only  for a model  whose macros  open outside files
+    // the outside step only for a  model whose macros open outside files
     const plan = STEPS.filter((s) => s.id !== "outside" || this.store.outsideInputs() !== null);
     this.steps.set(plan.map((s) => ({ ...s, state: "waiting", line: "", detail: "" })));
-    // the clock starts before the estimate is fetched: until then the timer would show the last run's time
+    // the clock  starts before the estimate is fetched: until then the timer would show the last run's time
     this.stepSeconds = {};
     this.waitT0 = 0;
     this.chainT0 = this.stepT0 = Date.now();
@@ -1286,7 +1307,7 @@ export class HomePage implements OnDestroy {
       outside: () => this.runOutside(true),
       fixAll: () => this.runFixAll(),
       prepare: () => this.runPrepare(),
-      loop: () => this.runLoop(),
+      loop: () => this.runLoopThenFix(),
       recalc: () => this.runRecalc(),
     };
     const states: Record<StepId, typeof this.fixAll> = { outside: this.outside, fixAll: this.fixAll, prepare: this.prepare, loop: this.loop, recalc: this.recalc };
@@ -1321,8 +1342,8 @@ export class HomePage implements OnDestroy {
         }
         const r = states[step.id]();
         this.stepSeconds[step.id] = (Date.now() - this.stepT0) / 1000;
-        // the files are  in, but no computed value could be compared: amber, and the  chain stops -- going
-        // on is the  user's choice (Do everything again skips the  step: the server says brought in)
+        // the files are in, but no computed value could be compared: amber, and the chain stops -- going
+        // on is the user's choice (Do everything again skips the step: the server says brought in)
         const unchecked = step.id === "outside" && !ok && this.outsideUnchecked();
         this.setStep(step.id, { state: ok ? "done" : unchecked ? "stopped" : "failed", line: r.line, detail: r.detail });
         if (unchecked) {
@@ -1364,7 +1385,7 @@ export class HomePage implements OnDestroy {
     this[which].update((s) => ({ ...s, open: !s.open }));
   }
 
-  // ---- next quarter's Mind input files  -------------------------------------------------------------
+  // ---- next quarter's Mind input  files -------------------------------------------------------------
   onNextQuarterFiles(event: Event): void {
     const input = event.target as HTMLInputElement;
     const files = Array.from(input.files ?? []);
@@ -1372,7 +1393,7 @@ export class HomePage implements OnDestroy {
     if (files.length) void this.makeNextQuarter(files);
   }
 
-  /** Make next quarter's Mind input files: the  picked raw files go to the server, which runs the model's
+  /** Make next quarter's Mind input files: the picked raw files go to the server, which runs the model's
    *  own import macro on a copy with them and writes one file per Mind input grid (a file already shaped
    *  like a grid goes in as it is). Followed until it ends; the zip is then offered for download. No new
    *  version: the model in Mind stays as it is. */
@@ -1399,8 +1420,8 @@ export class HomePage implements OnDestroy {
     return this.followNextQuarter(id, seq, Date.now());
   }
 
-  /** A next-quarter job may  still run from before a reload or a visit to Advanced (follow it), or its
-   *  result is there to show (the zip is offered again). */
+  /** A next-quarter job may still run from before a reload or a visit to Advanced (follow  it), or its
+   *  result is there  to show (the zip is offered again). */
   private async resumeNextQuarter(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || !this.store.outsideInputs() || this.nextQuarter().running) return;
@@ -1409,7 +1430,7 @@ export class HomePage implements OnDestroy {
     try {
       st = await this.api.nextQuarter(id);
     } catch {
-      return; // nothing to pick up
+      return; // nothing  to pick up
     }
     if (this.destroyed || seq !== this.nextQuarterSeq || this.store.sessionId() !== id) return;
     if (st.running) {
@@ -1418,13 +1439,13 @@ export class HomePage implements OnDestroy {
     } else if (st.result || st.error) this.showNextQuarterEnd(id, st);
   }
 
-  /** Follow the job until it ends. Stops quietly when the page is left, the card is reset or the
+  /** Follow  the job  until it ends. Stops quietly when the page is left, the card is reset or the
    *  session changes: an old job's result never lands on another workbook's card. */
   private async followNextQuarter(id: string, seq: number, t0: number): Promise<boolean> {
     const stale = () => {
       if (this.destroyed || seq !== this.nextQuarterSeq) return true;
       if (this.store.sessionId() === id) return false;
-      this.resetNextQuarter(); // another session without a reset: the card must not stay "running"
+      this.resetNextQuarter(); // another session without a reset:  the card must not stay "running"
       return true;
     };
     let failures = 0;
