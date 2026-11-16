@@ -470,7 +470,11 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     or under a label, or inside a grid (test workbook, 2026-10-08).
     A defined name counts as a reader only when some formula reads it: a name over a whole
     sheet ('LH2'!A1:OW909) that no formula uses -- a macro's -- flagged 9 labels of one model
-    (2026-10-26), and Mind runs no macro."""
+    (2026-10-26), and Mind runs no macro.
+    Every such cell is listed, the steps of a staircase too (`sites`, in  reading order; `sites_count`
+    is all of them, `limit` only shortens the list shown). The Tokyo IFRS 17 tool's W25, X26, Y27 were
+    all reported (2026-11-16); it was the Prep action that fixed one a pass, and it now takes them in
+    this order in one pass (prep.plan_title_lone_text_cells)."""
     from ..prep import reference_index, referenced_by, standalone_labels
 
     try:
@@ -482,15 +486,15 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     for lab in standalone_labels(analysis):
         owner = referenced_by(index, lab["sheet"], lab["row"], lab["col"])
         if owner and owner in (index["whole_cols"].get(lab["sheet"], {}).get(lab["col"]), index["whole_rows"].get(lab["sheet"], {}).get(lab["row"])):
-            # read only as part of a whole column / row: the formula reads  the sheet's table there, not this
+            # read only as part of a whole column / row: the formula reads the sheet's table there, not this
             # cell (VLOOKUP(x, BBA_04!$A:$B, 2, FALSE) gave Excel's values in Mind with a lone 'Result' in A1,
-            # the Tokyo IFRS 17 tool, 2026-11-08); a range over the cell itself still counts
+            # the Tokyo IFRS 17 tool,  2026-11-08); a range over the  cell itself still counts
             owner = next((o for r1, r2, c1, c2, o in index["rects"].get(lab["sheet"], ()) if r1 <= lab["row"] <= r2 and c1 <= lab["col"] <= c2), None)
         if owner and owner.startswith("name "):
             used = used or _names_in_use(analysis)
             owner = _reader_in_use(index, used, lab["sheet"], lab["row"], lab["col"])
         if owner and _wrapped_in_n(analysis, owner):
-            continue  # =N(VLOOKUP(...)): N() of a text is 0 and of a blank is 0, so a lost cell changes nothing
+            continue  # =N(VLOOKUP(...)): N() of a  text is 0  and of  a blank is 0, so a lost cell changes nothing
         if owner:
             sites.append({"sheet": lab["sheet"], "cell": lab["cell"], "text": str(lab["text"])[:80], "read_by": owner})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites)}
@@ -503,7 +507,8 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
         "not loose text cells: the formula gets nothing (confirmed in a real Mind conversion: \"Name#\"&$G$2, with G2 a lone text cell, came back as \"Name#\" "
         f"and 20,000 cells followed). First: {first['sheet']}!{first['cell']} = {first['text']!r}, read by {first['read_by']}. "
         "The Prep action 'Give a lone text cell that formulas read a title of its own' writes a '#' title in the empty cell above it, which makes it a one-cell grid Mind imports "
-        "-- or, with no room above: a label beside it when it sits just under a grid of labels (the grid takes its row), else the cell moves to a column "
+        "-- or, with no room above: a label beside it when it sits just under a grid of labels (the grid takes its row), a header over its column when it "
+        "sits just beside a grid (the grid takes that column), else the cell moves to a column "
         "of its own, Excel's cut and paste taking every formula that reads it along "
         "(a number standing alone is imported as it is; a text next to or under a label too).",
         observed,

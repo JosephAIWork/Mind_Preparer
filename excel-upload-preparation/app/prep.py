@@ -1646,25 +1646,80 @@ def _range_reader(analysis: dict[str, Any], sheet: str, row: int, col: int) -> s
 _USED_NAMES: dict[Any, set[str]] = {}
 
 
-def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int) -> dict[str, Any] | None:
+def _planned_value(analysis: dict[str, Any], planned: dict[tuple[str, int, int], Any] | None, sheet: str, row: int, col: int) -> Any:
+    """What  the cell  will hold once the operations planned so far in this pass are applied: the text a
+    planned label or title writes, None for a cell a planned move empties, else what it  holds today."""
+    if planned is not None and (sheet, row, col) in planned:
+        return planned[(sheet, row, col)]
+    return cell_value(analysis, sheet, row, col)
+
+
+def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
+                              planned: dict[tuple[str, int, int], Any] | None = None) -> dict[str, Any] | None:
     """A  lone cell  right under a grid whose first column -- its labels -- stops one row above
     (Base!J414 = 'N' under I406:J413, labels in I, I414 empty; 2026-10-26): a label in that first
     column makes  the grid one row longer, the cell part of it. Only  when the grid's last label is  a
     text, the label's cell lies in no  grid, and the cell under it is empty -- the grid  then takes
-    this row alone."""
+    this row alone.
+    `grids` and `planned` are  the sheet as this pass will leave it (the grid already one row longer
+    for each label planned before, those labels written): the next cell of a staircase joins too."""
     for g in grids:
         first = g["first_col"]
         if g["last_row"] != row - 1 or not (first < col <= g["last_col"]):
             continue
-        if not _is_text(cell_value(analysis, s["sheet"], row - 1, first)):
+        if not _is_text(_planned_value(analysis, planned, s["sheet"], row - 1, first)):
             return None
-        if cell_value(analysis, s["sheet"], row, first) is not None or grid_containing(grids, row, first) or cell_value(analysis, s["sheet"], row + 1, first) is not None:
+        if _planned_value(analysis, planned, s["sheet"], row, first) is not None or grid_containing(grids, row, first) or _planned_value(analysis, planned, s["sheet"], row + 1, first) is not None:
             return None
         if _range_reader(analysis, s["sheet"], row, first):
-            return None  # the empty label cell  lies inside a range a formula reads
+            return None  # the empty label cell lies inside a range a formula reads
         return _op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(first, row), before=None, after=f"Value in {s['cell']}",
                    note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just under the grid {g['ref']}, whose labels in column "
                         f"{num_to_col(first)} stop one row above; with a label beside it the grid takes this row and Mind imports the cell with it")
+    return None
+
+
+def _header_joining_grid_beside(analysis: dict[str, Any], grids: list[dict[str, Any]], lone: set[tuple[str, int, int]], s: dict[str, Any], row: int, col: int,
+                                planned: dict[tuple[str, int, int], Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The  mirror of  _label_joining_grid_above: a lone cell right beside a grid whose first row -- its
+    headers -- stops one column to the left (an IFRS risk model, 2026-11-16: Parameters!C46 = 'Not Used'
+    beside B34:B119, a  caption over a column of names, C34 empty; the cell above  it lies inside the
+    range an INDEX  reads, so no title can go there,  and the range keeps it from moving). A header in
+    that first  row makes the grid one column wider,  and every cell of that column on the grid's rows
+    part of it.
+    Only when the grid carries no flag (an /Input or /Resize grid keeps its columns) and its last header
+    is a text; the header's cell is empty, in no grid, inside no range a formula reads, with nothing
+    above it and nothing right of it (the grid then takes this one column);  and that column holds, on
+    the grid's rows, no '#' title and no grid other than one-column pieces that lie wholly on those rows
+    (anything else would be cut in two, or a title trapped).
+    -> (the header's operation, the grid it widens), else None."""
+    sheet = s["sheet"]
+    for g in grids:
+        top, bottom, last = g["first_row"], g["last_row"], g["last_col"]
+        if last != col - 1 or not (top < row <= bottom):
+            continue
+        if g.get("flags") or not _is_text(_planned_value(analysis, planned, sheet, top, last)):
+            return None
+        if _planned_value(analysis, planned, sheet, top, col) is not None or grid_containing(grids, top, col) or _planned_value(analysis, planned, sheet, top, col + 1) is not None:
+            return None
+        if top > 1 and _planned_value(analysis, planned, sheet, top - 1, col) is not None:
+            return None  # a cell above the header would take it (and the column) into a grid of its own
+        if _range_reader(analysis, sheet, top, col):
+            return None  # the empty header cell lies inside a range a formula reads
+        for o in grids:
+            if o is g or not (o["first_col"] <= col <= o["last_col"] and o["first_row"] <= bottom and o["last_row"] >= top):
+                continue
+            if o.get("title_cell") or o.get("inner_title_cells") or o["first_col"] != o["last_col"] or o["first_row"] <= top or o["last_row"] > bottom:
+                return None
+        if any(sh == sheet and c == col and top <= r <= bottom and looks_like_title(_planned_value(analysis, planned, sheet, r, c)) for sh, r, c in lone):
+            return None
+        letter = num_to_col(col)
+        return (
+            _op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(col, top), before=None, after=f"Values in column {letter}",
+                note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just beside the grid {g['ref']}, whose headers on row "
+                     f"{top} stop one column to the left; with a header over it the grid takes column {letter} and Mind imports the cell with it"),
+            g,
+        )
     return None
 
 
@@ -1702,8 +1757,18 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     by a formula, so that Mind imports it as a one-cell grid. Named after the label to  its
     left on the same row when there is one ('Nom Onglet  :' -> '#Nom Onglet value'), else  after
     the cell. With no empty cell above  it: a label joining it to the grid just above
-    (_label_joining_grid_above), else  the cell moves to a free column  with its title
-    (_move_to_free_column), else it is left for a person."""
+    (_label_joining_grid_above), else  a header joining it to the grid  just beside
+    (_header_joining_grid_beside), else the cell moves to a free column with its title
+    (_move_to_free_column), else it is left for a person.
+
+    One pass fixes every cell it can (2026-11-16, the Tokyo IFRS 17 tool: W25, X26, Y27 under the grid
+    U21:AA24, one row and one column further each time; each cell above is read by a formula, so only
+    the first could join the grid,  the next one pass later, the third a pass after that -- and Do
+    everything ran out of passes). The cells are taken in reading order and each sees the sheet as the
+    operations planned before it will leave it: the grid one row longer for each label (`on`), the
+    labels and titles written and the moved cells gone (`planned`). So the second step of a staircase
+    joins the grid the first one lengthened, and no title is planned where an earlier one of the  same
+    pass would be read as  one grid with it."""
     from .validators.structure import lone_text_cells_read
 
     ops, skipped = [], []
@@ -1715,8 +1780,27 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     if not sites:
         return ops, skipped
     used = {g["name"].strip().lower() for g in all_grids(analysis) if g.get("name")}
-    grids = all_grids(analysis)
-    free: dict[str, int] = {}  # per sheet, the next free column a cell can move to
+    free: dict[str, int] = {}  # per sheet, the next  free column a  cell can  move to
+    site_sheets = {s["sheet"] for s in sites}
+    # the sheet as this pass will leave it: its grids (a grid a label lengthens is replaced by a longer
+    # copy -- the analysis' own records are never changed), what the  planned operations write or empty,
+    # and which of the cells handled here  still stand alone where they were  (`waiting`)
+    on: dict[str, list[dict[str, Any]]] = {name: [] for name in site_sheets}
+    for g in all_grids(analysis):
+        if g["sheet"] in on:
+            on[g["sheet"]].append(g)
+    planned: dict[tuple[str, int, int], Any] = {}
+    waiting: set[tuple[str, int, int]] = set()
+    for s in sites:
+        at = parse_ref(s["cell"])
+        waiting.add((s["sheet"], at["r1"], at["c1"]))
+    lone: set[tuple[str, int, int]] = set()  # every text cell standing alone on those  sheets, read or not
+    for sh in analysis["workbooks"][0]["sheets"]:
+        if sh["name"] in site_sheets:
+            for c in sh.get("standalone_text_cells", []):
+                at = parse_ref(c["cell"])
+                if at:
+                    lone.add((sh["name"], at["r1"], at["c1"]))
 
     def title(s: dict[str, Any], row: int, col: int) -> str:
         label = None
@@ -1730,32 +1814,73 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         used.add(name.lower())
         return f"#{name}"
 
+    def grown(g: dict[str, Any], sheet: str, **edge: int) -> None:
+        """the grid one row longer / one column  wider, in this pass's picture of the  sheet"""
+        longer = {**g, **edge, "grown_in_this_pass": True}
+        longer["n_rows"], longer["n_cols"] = longer["last_row"] - longer["first_row"] + 1, longer["last_col"] - longer["first_col"] + 1
+        longer["ref"] = ref_text(longer["first_col"], longer["first_row"], longer["last_col"], longer["last_row"])
+        on[sheet] = [longer if x is g else x for x in on[sheet]]
+
     for s in sites:
         ref = parse_ref(s["cell"])
         row, col = ref["r1"], ref["c1"]
-        on_sheet = [g for g in grids if g["sheet"] == s["sheet"]]
-        if row == 1 or cell_value(analysis, s["sheet"], row - 1, col) is not None or grid_containing(on_sheet, row - 1, col):
-            joined = _label_joining_grid_above(analysis, on_sheet, s, row, col) if row > 1 else None
-            moved = None if joined else _move_to_free_column(analysis, on_sheet, s, row, col, free)
-            if joined:
-                ops.append(joined)
-            elif moved:
-                move, title_cell = moved
-                ops.append(move)
-                ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=title_cell, before=None, after=title(s, row, col),
-                               note=f"the title of {s['sheet']}!{s['cell']}, moved to {move['to']}: a one-cell grid Mind imports"))
-            else:
-                where = "on the first row, no cell above for a title" if row == 1 else f"the cell above ({ref_text(col, row - 1)}) is taken"
-                skipped.append(f"{s['sheet']}!{s['cell']}: {where}, and a range or a name over several cells reads it (it cannot move) -- by hand")
+        sheet = s["sheet"]
+        on_sheet = on[sheet]
+        inside = grid_containing(on_sheet, row, col)
+        if inside and inside.get("grown_in_this_pass"):
+            waiting.discard((sheet, row, col))
+            continue  # a label planned for an earlier cell already takes this one into its grid
+        above_taken = row == 1 or _planned_value(analysis, planned, sheet, row - 1, col) is not None or bool(grid_containing(on_sheet, row - 1, col))
+        range_reader = beside = None
+        if not above_taken:
+            # an empty cell inside a range some formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
+            # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
+            range_reader = _range_reader(analysis, sheet, row - 1, col)
+            # a title right of another cell this pass handles (a lone text still in its place, or  a header just
+            # planned) is read as one grid with it, and this cell stays alone (three texts on a diagonal,
+            # 2026-11-16: the titles of the second and third were trapped that way, and a second pass was needed).
+            # A lone label nothing reads on that spot is left as it always was: only this pass's own cells count.
+            left = (sheet, row - 1, col - 1)
+            if not range_reader and ((left in waiting and not grid_containing(on_sheet, row - 1, col - 1)) or planned.get(left) is not None):
+                beside = ref_text(col - 1, row - 1)
+            if not range_reader and not beside:
+                planned[(sheet, row - 1, col)] = heading = title(s, row, col)
+                ops.append(_op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(col, row - 1), before=None, after=heading,
+                               note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
+                continue
+        joined = _label_joining_grid_above(analysis, on_sheet, s, row, col, planned) if above_taken and row > 1 else None
+        if joined:
+            above = next(g for g in on_sheet if g["last_row"] == row - 1 and g["first_col"] < col <= g["last_col"])
+            planned[(sheet, row, above["first_col"])] = joined["after"]
+            grown(above, sheet, last_row=row)
+            waiting.discard((sheet, row, col))
+            ops.append(joined)
             continue
-        # an empty cell inside a range some formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
-        # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
-        range_reader = _range_reader(analysis, s["sheet"], row - 1, col)
-        if range_reader:
-            skipped.append(f"{s['sheet']}!{s['cell']}: could not name it -- the empty cell above ({ref_text(col, row - 1)}) lies inside a range {range_reader} reads, and a title there would change that result -- by hand")
+        widened = _header_joining_grid_beside(analysis, on_sheet, lone, s, row, col, planned)
+        if widened:
+            header, beside_grid = widened
+            planned[(sheet, beside_grid["first_row"], col)] = header["after"]
+            grown(beside_grid, sheet, last_col=col)
+            waiting.discard((sheet, row, col))
+            ops.append(header)
             continue
-        ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(col, row - 1), before=None, after=title(s, row, col),
-                       note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
+        moved = _move_to_free_column(analysis, on_sheet, s, row, col, free) if above_taken or beside else None
+        if moved:
+            move, title_cell = moved
+            to, over = parse_ref(move["to"]), parse_ref(title_cell)
+            heading = title(s, row, col)
+            planned[(sheet, row, col)] = None
+            planned[(sheet, to["r1"], to["c1"])], planned[(sheet, over["r1"], over["c1"])] = s["text"], heading
+            waiting.discard((sheet, row, col))
+            ops.append(move)
+            ops.append(_op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=title_cell, before=None, after=heading,
+                           note=f"the title of {sheet}!{s['cell']}, moved to {move['to']}: a one-cell grid Mind imports"))
+        elif range_reader:
+            skipped.append(f"{sheet}!{s['cell']}: could not name it -- the empty cell above ({ref_text(col, row - 1)}) lies inside a range {range_reader} reads, and a title there would change that result -- by hand")
+        else:
+            where = ("on the first row, no cell above for a title" if row == 1 else f"the cell above ({ref_text(col, row - 1)}) is taken" if above_taken
+                     else f"a title in the cell above ({ref_text(col, row - 1)}) would be read as one grid with the text beside it ({beside})")
+            skipped.append(f"{sheet}!{s['cell']}: {where}, and a range or a name over several cells reads it (it cannot move) -- by hand")
     return ops, skipped
 
 
