@@ -27,7 +27,8 @@
         {{ d.ref ? "Something went wrong. The message says where in the app it stopped and why, in codes we can read." : "Tell us what works, what does not, and what is missing." }}
         Nothing from your workbook is in it: no file name, no sheet names, no cell addresses, no values.
       </p>
-      <label class="fb__label" for="fb-note">{{ d.ref ? "What were you doing? (optional)" : "Your feedback" }}</label>
+      <!-- 17 Nov 2026: opened with the problem already written (Start could not fix something): the box is not empty, so its label says what the words are -->
+      <label class="fb__label" for="fb-note">{{ d.note ? "What happened (change it or add to it if you like)" : d.ref ? "What were you doing? (optional)" : "Your feedback" }}</label>
       <textarea id="fb-note" class="fb__note" rows="4" [value]="note()" (input)="note.set(value($event))" [disabled]="busy()"></textarea>
       @if (assistantOn()) {
         <label class="fb__check">

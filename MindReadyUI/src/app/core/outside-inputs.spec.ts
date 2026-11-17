@@ -527,7 +527,7 @@ describe("the Outside files card and Do everything", () => {
     (page as unknown as { sleep: () => Promise<void> }).sleep = tick; // the wait is a look every turn, not a hot loop
   }
 
-  it("with a file missing, Do everything waits: one box with the names, nothing runs, Go on greyed out, Stop ends it", async () => {
+  it("with a file missing, Do everything waits: one box with the names, nothing runs, Go on greyed out, Cancel ends it", async () => {
     const some = someMissing(false);
     const f = fakeServer([status(some), waiting(some, "Waiting for 1 input file: BBA_02")], undefined, () => [status(some, { state: "stopped", error: STOPPED })]);
     openWaiting(f, some);
@@ -553,16 +553,20 @@ describe("the Outside files card and Do everything", () => {
     // Go on does nothing while a file is missing
     await page.goOn();
     expect(f.continues).toEqual([]);
-    // Stop: the server's job ends, the chain stops at this step, nothing ran
+    // Cancel (the box's button; it said "Stop" until 17 Nov 2026): the server's wait ends, the chain stops at
+    // this step, nothing ran -- and the sentence is the one of a Cancel: nothing had finished
     await page.stopWaiting();
     await run;
     expect(f.stops).toBe(1);
     expect(page.outsideWaiting()).toBe(false);
     expect(page.chainRunning()).toBe(false);
-    expect(page.steps()[0]).toMatchObject({ state: "failed", line: "Stopped while waiting for the input files" });
-    expect(page.chainLine()).toBe('Stopped at "Bring in the outside files": Stopped while waiting for the input files. See the Outside files card above, then press Do everything again.');
+    expect(page.steps()[0]).toMatchObject({ state: "stopped", line: "Stopped." });
+    expect(page.chainLine()).toBe("Stopped. Your workbook is as it was before you pressed Do everything.");
     expect(f.autoFixStarts).toBe(0);
-    expect(page.outsideFailed()).toBe(true);
+    // the person stopped it: the card says so calmly, and offers no "Try again"
+    expect(page.outsideCard()).toMatchObject({ tone: "idle", line: "Stopped. Nothing was changed." });
+    expect(page.outsideFailed()).toBe(false);
+    expect(page.outsideButton(store.outsideInputs()!)).not.toBe("Try again");
   });
 
   it("the files picked in the box, then Go on: the bring-in runs from where it stopped and the other steps follow", async () => {
@@ -656,7 +660,7 @@ describe("the Outside files card and Do everything", () => {
     expect(f.autoFixStarts).toBe(1);
   });
 
-  it("after a reload, Make them with AI starts Do everything again on the stand-in path; Stop ends the wait on the card", async () => {
+  it("after a reload, Make them with AI starts Do everything again on the stand-in path; Cancel ends the wait on the card", async () => {
     const alone = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"] })], matched: 0, missing: ["Ctrl_01!H35"], assistant: true });
     const made = outside({ rows: [row("Ctrl_01!H35", { keys: ["BBA_01"], file: "2026Q1_2026_BBA_01.xlsm", stand_in: true })], matched: 1, brought_in: true, assistant: true, stand_ins: ["2026Q1_2026_BBA_01.xlsm"] });
     const f = fakeServer([waiting(alone, "Waiting for 1 input file: BBA_01"), waiting(alone, "Waiting for 1 input file: BBA_01"), running(alone), status(made, { state: "done", result: result() })]);
@@ -669,7 +673,7 @@ describe("the Outside files card and Do everything", () => {
     expect(f.standIns).toEqual([true]);
     expect(f.waits).toEqual([false]);
     expect(page.steps()[0].state).toBe("done");
-    // and Stop with no chain held: the card says it stopped, the box goes
+    // and Cancel with no chain held: the card and the line say it stopped (calmly: it is not an error), the box goes
     const g = fakeServer([waiting(alone, "Waiting for 1 input file: BBA_01")]);
     openWaiting(g, alone);
     await (page as unknown as { resumeOutside: () => Promise<void> }).resumeOutside();
@@ -677,7 +681,32 @@ describe("the Outside files card and Do everything", () => {
     await page.stopWaiting();
     expect(g.stops).toBe(1);
     expect(page.outsideWaiting()).toBe(false);
-    expect(page.outsideCard()).toMatchObject({ tone: "error", line: "Stopped while waiting for the input files" });
+    expect(page.outsideCard()).toMatchObject({ tone: "idle", line: "Stopped. Nothing was changed." });
+    expect(page.outsideFailed()).toBe(false);
+    expect(page.chainLine()).toBe("Stopped. Your workbook is as it was before you pressed Do everything.");
+  });
+
+  it("a bring-in that was stopped with Cancel is not an error, on the card or after a reload (17 Nov 2026)", async () => {
+    const all = outside();
+    // the job runs, then the server says "cancelled": its versions are gone
+    const f = fakeServer([running(all), status(all, { state: "cancelled", error: null, versions: [], message: "Stopped. Nothing was changed." })]);
+    open(f, all);
+    expect(await page.runOutside()).toBe(false);
+    expect(page.outsideCard()).toMatchObject({ running: false, tone: "idle", line: "Stopped. Nothing was changed." });
+    expect(page.outsideFailed()).toBe(false);
+    expect(page.outsideButton(store.outsideInputs()!)).toBe("Bring in the outside files");
+    expect(page.zipUrl()).toBeNull();
+    // after a reload the card is as it was before the bring-in: no old error, no result
+    const g = fakeServer([status(all, { state: "cancelled", error: null, versions: [] })]);
+    open(g, all);
+    await (page as unknown as { resumeOutside: () => Promise<void> }).resumeOutside();
+    expect(page.outsideCard()).toMatchObject({ running: false, line: "", tone: "idle" });
+    // and the wait that was ended on request reads the same way, not as "Try again"
+    const h = fakeServer([status(all, { state: "stopped", error: STOPPED })]);
+    open(h, all);
+    await (page as unknown as { resumeOutside: () => Promise<void> }).resumeOutside();
+    expect(page.outsideCard()).toMatchObject({ running: false, line: "", tone: "idle" });
+    expect(page.outsideFailed()).toBe(false);
   });
 
   it("the card's button makes the missing files with the assistant, the others stay as picked", async () => {

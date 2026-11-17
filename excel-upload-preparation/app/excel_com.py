@@ -34,6 +34,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator
 
+from . import cancel
 from .settings import SETTINGS
 
 FILE_FORMAT_CODES = {"xlsx": 51, "xlsm": 52, "xlsb": 50}  # xlOpenXMLWorkbook  / MacroEnabled  / Binary
@@ -139,11 +140,16 @@ def start_excel(mm_addin: bool = True) -> Any:
     from .perf import stage
 
     with stage("excel_start", mm_addin=mm_addin):
+        cancel.check()  # 17 Nov 2026: a cancelled job starts  no Excel
         excel = win32com.client.DispatchEx("Excel.Application")
-        _remember(excel_pid(excel))  # first: an error in the set-up below  must not leave it unlisted
+        pid = excel_pid(excel)
+        _remember(pid)  # first: an error in the  set-up below must not leave it unlisted
+        # 17  Nov 2026: the job this thread works for can now end  it; a Cancel that came while Excel
+        # was  starting ends it here (nobody else knew its pid) and leaves with Cancelled
+        cancel.note_excel(pid)
         excel.Visible = False
         excel.DisplayAlerts = False
-        excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable --  never run macros
+        excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
         excel.AskToUpdateLinks = False
         try:
             excel.EnableEvents = False
@@ -171,6 +177,7 @@ def quit_excel(excel: Any) -> None:
     excel = None
     gc.collect()
     _forget(pid)
+    cancel.forget_excel(pid)  # 17 Nov 2026: quit: no job  ends it any more
 
 
 @contextlib.contextmanager
@@ -211,14 +218,45 @@ def excel_pid(excel: Any) -> int | None:
         return None
 
 
-def kill_excel(pid: int | None) -> None:
+def kill_excel(pid: int | None) -> bool:
+    """End  the Excel  `pid`, but only an Excel THIS process started and has not quit: the list
+    (`excel_started.json`) names it for this process, and the process with that id is still that
+    same Excel (same creation  time, excel.exe). Then it is forgotten. -> True when it was  ended.
+
+    17 Nov 2026: the check lives  here, so that every caller is safe  -- the Cancel, the worker's
+    timeout and `_abandon`, the import macro's time  limit and its close. Any other id  (the person's
+    own Excel is never in the list; an id Windows gave to another program; an Excel of another Mind
+    Ready window; one killed a moment ago) is left alone: nothing happens, False."""
     if not pid:
-        return
-    _terminate(int(pid))
-    _forget(pid)
+        return False
+    pid = int(pid)
+    ended = False
+    with _REGISTRY_LOCK:
+        data = _load_started()
+        entry = data.get(str(pid))
+        if not isinstance(entry, dict) or not _started_here(entry):
+            return False  # not listed, or listed for another process: never ours to end
+        if _still_that_excel(pid, entry):
+            _terminate(pid)
+            ended = True
+        data.pop(str(pid), None)  # ended, or already gone (a stale line): forgotten either way
+        _save_started(data)
+    cancel.forget_excel(pid)
+    return ended
+
+
+def _started_here(entry: dict[str, Any]) -> bool:
+    """True  when the  list's line was written by this very process: its id, and (when both are
+    known) its creation time, so a line left by an earlier app that had the same id does  not count."""
+    if entry.get("app") != os.getpid():
+        return False
+    me = _process(os.getpid())
+    return not entry.get("app_created") or me is None or entry.get("app_created") == me[1]
 
 
 def _terminate(pid: int) -> None:
+    """Never  called directly:  only by kill_excel, clean_leftover_excels and kill_own_excels, each
+    after its own check that the process is an Excel written down in the list."""
     try:
         import ctypes
 
@@ -230,7 +268,7 @@ def _terminate(pid: int) -> None:
         pass
 
 
-# ---  the Excels  this app started (see the module's docstring) ----------------------------------
+# --- the Excels this app started (see the module's docstring) ----------------------------------
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -334,7 +372,7 @@ def kill_own_excels() -> int:
         return 0
     try:
         data = _load_started()
-        mine = {pid: e for pid, e in data.items() if e.get("app") == os.getpid()}
+        mine = {pid: e for pid, e in data.items() if isinstance(e, dict) and _started_here(e)}  # 17 Nov 2026: as kill_excel asks
         for pid, entry in mine.items():
             if _still_that_excel(int(pid), entry):
                 _terminate(int(pid))

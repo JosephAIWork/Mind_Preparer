@@ -4,8 +4,13 @@
     <button cdsButton="primary" size="md" data-show-me="recalc-run" (click)="run()" [disabled]="running()">{{ result() ? "Recalculate again" : "Recalculate in Excel" }}</button>
     @if (running()) {
       <cds-inline-loading [state]="'active'" loadingText="Recalculating… tens of seconds to a few minutes"></cds-inline-loading>
+      <!-- 17 Nov 2026: Cancel beside the loading line; it stops the recalculation on the server -->
+      <mr-cancel kind="recalc" size="md"></mr-cancel>
     }
   </div>
+  @if (stoppedLine() && !running()) {
+    <div class="result" data-test="stopped"><strong>{{ stoppedLine() }}</strong></div>
+  }
   @if (error()) {
     <div class="result result--error"><strong>Could not recalculate</strong><span>{{ error() }}</span></div>
   }

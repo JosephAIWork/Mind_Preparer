@@ -38,7 +38,7 @@ describe("the Send feedback dialog", () => {
     Feedback = (await import("./feedback.service")).FeedbackService;
   });
 
-  async function draw(ref: string | null) {
+  async function draw(ref: string | null, note?: string) {
     sent = [];
     const api = {
       assistantKey: () => Promise.resolve({ saved: false }),
@@ -52,7 +52,8 @@ describe("the Send feedback dialog", () => {
     TestBed.overrideComponent(DialogClass, { set: { imports: [], schemas: [NO_ERRORS_SCHEMA] } });
     const fixture = TestBed.createComponent(DialogClass);
     const feedback = TestBed.inject(Feedback);
-    feedback.open(ref);
+    if (note === undefined) feedback.open(ref);
+    else feedback.open(ref, note);
     const detect = async () => {
       fixture.detectChanges();
       await fixture.whenStable();
@@ -99,6 +100,8 @@ describe("the Send feedback dialog", () => {
     }
     expect(clicks).toHaveLength(1);
     expect(clicks[0]).toMatch(/^mailto:someone%40example\.com\?subject=/);
+    // opened from the header, with no note: the body is the one sentence, as before 17 Nov 2026
+    expect(decodeURIComponent(clicks[0].split("&body=")[1])).toBe("Paste the Mind Ready message here (Ctrl+V), then send.");
     const step = page.querySelector(".fb__steps li")?.textContent ?? "";
     expect(step).toContain("The message is copied.");
     expect(step).toContain("An email to someone@example.com should be open.");
@@ -125,5 +128,134 @@ describe("the Send feedback dialog", () => {
       message.aiUsage = null;
       message.text = original;
     }
+  });
+
+  // ---- 17 Nov 2026: "Send feedback" with the problem already written (Start could not fix something) ----
+  const NOTE = "Start could not fix this by itself: a formula reads a lone text cell. The assistant tried twice: its change altered a result and was undone.";
+  const PASTE = "Paste the Mind Ready message here (Ctrl+V), then send.";
+
+  /** "Copy and open email", with stand-ins for the clipboard and the mailto link: the email's body, decoded. */
+  async function emailBodyOf(dialog: FeedbackDialog, detect: () => Promise<void>): Promise<string> {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: () => Promise.resolve() }, configurable: true });
+    const clicks: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push(this.href);
+    });
+    try {
+      await dialog.send();
+      await detect();
+    } finally {
+      click.mockRestore();
+    }
+    expect(clicks).toHaveLength(1);
+    return decodeURIComponent(clicks[0].split("&body=")[1]);
+  }
+
+  const noteBox = (page: HTMLElement) => page.querySelector<HTMLTextAreaElement>("#fb-note");
+
+  it("the service opens the dialog with a ref, a note, both or neither", async () => {
+    const { feedback } = await draw(null);
+    expect(feedback.dialog()).toEqual({ ref: null, note: "" }); // the header's button: feedback.open()
+    feedback.open("ABCD-1234");
+    expect(feedback.dialog()).toEqual({ ref: "ABCD-1234", note: "" }); // the problem box under the header
+    feedback.open("ABCD-1234", NOTE);
+    expect(feedback.dialog()).toEqual({ ref: "ABCD-1234", note: NOTE }); // Start's question
+    feedback.open(null, NOTE);
+    expect(feedback.dialog()).toEqual({ ref: null, note: NOTE }); // a question that came with no incident
+    feedback.close();
+    expect(feedback.dialog()).toBeNull();
+  });
+
+  it("opened with a note, the note box holds it already and the message can be prepared at once", async () => {
+    const { page, dialog, detect } = await draw("ABCD-1234", NOTE);
+    expect(dialog.note()).toBe(NOTE);
+    expect(noteBox(page)?.value).toBe(NOTE);
+    expect(page.querySelector("label[for='fb-note']")?.textContent).toBe("What happened (change it or add to it if you like)");
+    await dialog.prepare();
+    await detect();
+    expect(sent).toEqual([{ ref: "ABCD-1234", note: NOTE, useAssistant: false, sessionId: null }]);
+    expect(page.querySelector(".fb__message")?.textContent).toContain("Feedback (no step failed)");
+
+    // with no incident behind it the note is what makes the message: the button is not held back
+    const plain = await draw(null, NOTE);
+    const prepare = Array.from(plain.page.querySelectorAll("button")).find((b) => b.textContent?.includes("Prepare the message"));
+    expect(prepare?.disabled).toBe(false);
+    expect((await draw(null)).page.querySelector("label[for='fb-note']")?.textContent).toBe("Your feedback");
+  });
+
+  it("the email's body starts with the note, then an empty line, then the sentence that says to paste", async () => {
+    const { dialog, detect } = await draw("ABCD-1234", NOTE);
+    await dialog.prepare();
+    await detect();
+    const body = await emailBodyOf(dialog, detect);
+    expect(body.startsWith(NOTE)).toBe(true);
+    expect(body).toBe(`${NOTE}\r\n\r\n${PASTE}`);
+    expect(body.split("\r\n")).toEqual([NOTE, "", PASTE]);
+    // the full message is not in the email: it is on the clipboard, to paste
+    expect(body).not.toContain("Feedback (no step failed)");
+  });
+
+  it("puts at most 500 characters of the note into the email", async () => {
+    const mod = await import("./feedback-dialog");
+    expect(mod.EMAIL_NOTE_MAX).toBe(500);
+    const long = "Start could not fix this by itself. ".repeat(30); // 1080 characters
+    const { dialog, detect } = await draw("ABCD-1234", long);
+    await dialog.prepare();
+    await detect();
+    expect((sent[0] as { note: string }).note).toBe(long); // the message itself gets the whole note
+    const body = await emailBodyOf(dialog, detect);
+    const [note, empty, paste] = body.split("\r\n");
+    expect(note.length).toBeLessThanOrEqual(500);
+    expect(long.startsWith(note)).toBe(true);
+    expect(note.length).toBeGreaterThan(490);
+    expect([empty, paste]).toEqual(["", PASTE]);
+    expect(mod.emailBody("x".repeat(600))).toBe("x".repeat(500) + "\r\n\r\n" + PASTE);
+    expect(mod.emailBody("")).toBe(PASTE);
+    expect(mod.emailBody("   ")).toBe(PASTE);
+  });
+
+  it("the email starts with the note as the person left it", async () => {
+    const changed = await draw("ABCD-1234", NOTE);
+    changed.dialog.note.set(NOTE + " It was the Tokyo model.");
+    await changed.dialog.prepare();
+    await changed.detect();
+    expect(await emailBodyOf(changed.dialog, changed.detect)).toBe(`${NOTE} It was the Tokyo model.\r\n\r\n${PASTE}`);
+
+    const emptied = await draw("ABCD-1234", NOTE);
+    emptied.dialog.note.set("");
+    await emptied.dialog.prepare();
+    await emptied.detect();
+    expect(await emailBodyOf(emptied.dialog, emptied.detect)).toBe(PASTE);
+
+    // words typed into a dialog opened with none stay out of the email, as before: they are in the message
+    const typed = await draw(null);
+    typed.dialog.note.set("Works well");
+    await typed.dialog.prepare();
+    await typed.detect();
+    expect(await emailBodyOf(typed.dialog, typed.detect)).toBe(PASTE);
+  });
+
+  it("stays in the shell for the whole visit: each opening brings its own note, the header's an empty box", async () => {
+    const { page, dialog, detect, feedback } = await draw("ABCD-1234", NOTE);
+    expect(noteBox(page)?.value).toBe(NOTE);
+    dialog.close();
+    await detect();
+    expect(noteBox(page)).toBeNull(); // closed: nothing drawn
+    feedback.open("WXYZ-5678", "Start could not fix this by itself: a formula has a broken reference. The assistant was not asked.");
+    await detect();
+    expect(noteBox(page)?.value).toBe("Start could not fix this by itself: a formula has a broken reference. The assistant was not asked.");
+    dialog.close();
+    feedback.open(); // the header's button, after a question
+    await detect();
+    expect(noteBox(page)?.value).toBe("");
+    expect(dialog.note()).toBe("");
+    // typing does not come back by itself, and is gone after Cancel
+    dialog.note.set("half a sentence");
+    await detect();
+    expect(noteBox(page)?.value).toBe("half a sentence");
+    dialog.close();
+    feedback.open("ABCD-1234");
+    await detect();
+    expect(noteBox(page)?.value).toBe("");
   });
 });

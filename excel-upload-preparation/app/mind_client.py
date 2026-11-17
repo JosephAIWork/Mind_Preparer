@@ -39,6 +39,7 @@ from typing import Any, Iterator
 
 from playwright.sync_api import Page, sync_playwright
 
+from . import cancel
 from .settings import SETTINGS
 
 # ---  stable, non-synced  locations --------------------------------------------
@@ -349,10 +350,15 @@ def body_text(page: Page) -> str:
 
 
 def _wait(page: Page, ms: int) -> None:
+    # 17  Nov 2026  (Cancel): every step in Mind waits through here, on the loop's own thread, so a
+    # cancelled Run in Mind leaves at its next wait (before it and after it) and Edge closes
+    # cleanly  through mind_session. No job (the sign-in check, the scripts): nothing.
+    cancel.check()
     try:
         page.wait_for_timeout(ms)
     except Exception:
         time.sleep(ms / 1000)
+    cancel.check()
 
 
 def _settle(page: Page, host: str, timeout_s: int = 55) -> bool:

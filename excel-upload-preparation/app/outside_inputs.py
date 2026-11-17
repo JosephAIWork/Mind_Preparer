@@ -642,8 +642,17 @@ def _new_excel(macros: bool):
     import win32com.client
     import win32process
 
+    from . import cancel
+    from .excel_com import _remember
+
+    cancel.check()  # 17 Nov 2026: a cancelled job starts no Excel
     xl = win32com.client.DispatchEx("Excel.Application")
     pid = int(win32process.GetWindowThreadProcessId(int(xl.Hwnd))[1])
+    # 17 Nov 2026: written down like every  Excel the app starts (it was not: kill_excel now ends
+    # only an  Excel in that list, and an  app stopped abruptly left this one running),  then given to
+    # the job, which ends it on a Cancel --  at once when the Cancel came while  it was starting
+    _remember(pid)
+    cancel.note_excel(pid)
     xl.Visible = False
     xl.DisplayAlerts = False
     xl.AskToUpdateLinks = False
@@ -665,16 +674,21 @@ def _close_excel(xl: Any, ev: Any, pid: int | None) -> None:
     ev = xl = None
     gc.collect()
     if pid:
-        for _ in range(20):
-            if not _pid_alive(pid):
-                return
-            time.sleep(0.25)
-        try:
-            from .excel_com import kill_excel
+        from . import cancel
+        from .excel_com import _forget, kill_excel
 
-            kill_excel(pid)
+        try:
+            for _ in range(20):
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.25)
+            else:
+                kill_excel(pid)  # it  did not  quit: ended, but only while it is still the Excel we started
         except Exception:
             pass
+        # 17 Nov 2026: quit (or ended): off the list of the app's Excels and off its job
+        _forget(pid)
+        cancel.forget_excel(pid)
 
 
 def _pid_alive(pid: int) -> bool:

@@ -6,10 +6,15 @@ import { ActivatedRoute, provideRouter } from "@angular/router";
 import type { HomePage } from "../pages/home.page";
 import type { RecentWorkbooks } from "../pages/recent-workbooks";
 import { ApiService } from "./api.service";
+import { CancelButton } from "./cancel-button";
+import type { FeedbackDialog } from "./feedback-dialog";
+import { FeedbackService } from "./feedback.service";
 import { finishState } from "./finish-banner";
-import { ChainEstimate, Readiness, SavedWorkbook, SessionStart } from "./models";
+import { ChainEstimate, LoopPlan, OutsideInputs, PrepAction, PrepAsk, PrepRunStatus, Readiness, STOPPED_NOTHING_CHANGED, SavedWorkbook, ScanStatus, SessionStart, Version } from "./models";
 import type { RunBar } from "./run-bar";
-import { planShowMe, PAGE_LINKS, showMeFor } from "./show-me";
+import { planShowMe, PAGE_LINKS, ShowMeRequest, showMeFor } from "./show-me";
+import { ShowMeLink } from "./show-me-link";
+import { ShowMeService } from "./show-me.service";
 import { SessionStore } from "./session.store";
 import { Thinking } from "./thinking";
 
@@ -72,8 +77,9 @@ describe("the three screens: routes and Show me", () => {
     expect(PAGE_LINKS.basic.map((t) => t.el)).toEqual(["nav-basic", "link-basic"]);
   });
 
-  it("points at Go on Basic and at Do everything on Custom; Download and the recent list exist on both", () => {
-    expect(planShowMe({ id: "do-everything" }, "basic")).toEqual([{ kind: "place", targets: [{ el: "do-everything", text: "Click Go" }] }]);
+  // (17 Nov 2026: the bubble said "Click Go"; the button says Start)
+  it("points at Start on Basic and at Do everything on Custom; Download and the recent list exist on both", () => {
+    expect(planShowMe({ id: "do-everything" }, "basic")).toEqual([{ kind: "place", targets: [{ el: "do-everything", text: "Click Start" }] }]);
     expect(planShowMe({ id: "do-everything" }, "custom")[0].targets[0].text).toBe("Click Do everything");
     expect(planShowMe({ id: "download" }, "basic").map((s) => s.kind)).toEqual(["place"]);
     expect(planShowMe({ id: "recent-workbooks" }, "basic").map((s) => s.kind)).toEqual(["place"]);
@@ -125,6 +131,7 @@ describe("the Basic screen", () => {
   let Page: typeof HomePage;
   let Banner: typeof import("./finish-banner").FinishBanner;
   let Bar: typeof RunBar;
+  let Dialog: typeof FeedbackDialog;
   let page: HomePage;
   let store: SessionStore;
 
@@ -136,6 +143,7 @@ describe("the Basic screen", () => {
     Page = (await import("../pages/home.page")).HomePage;
     Banner = (await import("./finish-banner")).FinishBanner;
     Bar = (await import("./run-bar")).RunBar;
+    Dialog = (await import("./feedback-dialog")).FeedbackDialog;
   });
 
   function open(mode: "basic" | "custom", api: Partial<ApiService> = {}): void {
@@ -206,7 +214,7 @@ describe("the Basic screen", () => {
     expect(page.steps().find((s) => s.id === "loop")).toMatchObject({ state: "skipped", line: "Left out: the box was not ticked" });
   });
 
-  it("Go stops at the first failed check, in Go's own words", async () => {
+  it("Start stops at the first failed check, in Start's own words", async () => {
     await opened();
     const ran = stub({ prepare: false });
     await page.runAll();
@@ -215,6 +223,13 @@ describe("the Basic screen", () => {
     expect(page.basicLine()).toMatch(/^Stopped at "Fix the formulas and the structure"/);
     expect(page.basicLine()).toContain("press Start again.");
     expect(page.basicLine()).not.toContain("Do everything");
+    // 17 Nov 2026: and a sentence that begins with the button keeps its capital (it came out as "press Start again.")
+    const again = stub({ fixAll: false });
+    page.fixAll.set({ running: false, fraction: null, line: "Not started", detail: "", tone: "error" });
+    await page.runAll();
+    expect(again).toEqual(["fixAll"]);
+    expect(page.chainLine()).toBe('Stopped at "Fix all issues": Not started. Press Do everything again.');
+    expect(page.basicLine()).toBe('Stopped at "Fix all issues": Not started. Press Start again.');
   });
 
   it("Custom still runs the loop whatever the box says", () => {
@@ -505,6 +520,7 @@ describe("the Basic screen", () => {
     expect(el.querySelector(".basic__go")?.textContent?.trim()).toBe("Start");
     expect(el.querySelector(".basic__line")).toBeNull();
     expect(el.querySelector("mr-run-bar")).toBeNull();
+    expect(el.querySelector("mr-cancel")).toBeNull(); // 17 Nov 2026: nothing runs, so there is nothing to cancel
 
     const gates = held();
     const run = page.runAll();
@@ -516,6 +532,12 @@ describe("the Basic screen", () => {
     expect(button.textContent?.trim()).toBe("Working");
     expect(button.querySelectorAll("mr-thinking .thinking__dot")).toHaveLength(3);
     expect(button.querySelector("mr-thinking")?.getAttribute("aria-hidden")).toBe("true");
+    // 17 Nov 2026: Cancel stands beside the "Working" button, in the same row, after it (its own tests:
+    // cancel-button.spec.ts, and cancel-places.spec.ts for the click)
+    const cancel = el.querySelector(".basic__run mr-cancel");
+    expect(cancel).not.toBeNull();
+    expect(button.parentElement).toBe(cancel?.parentElement);
+    expect(button.compareDocumentPosition(cancel!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(sentences(el)).toEqual(["Getting ready…", "Working out how long this will take."]);
     expect(el.querySelector(".basic__line")?.getAttribute("role")).toBe("status");
     expect(el.querySelector("mr-run-bar .run-bar--moving")).not.toBeNull();
@@ -544,9 +566,800 @@ describe("the Basic screen", () => {
     await run;
     await look();
     expect(el.querySelector("mr-run-bar")).toBeNull();
+    expect(el.querySelector("mr-cancel")).toBeNull();
     expect(el.querySelector(".basic__go")?.textContent?.trim()).toBe("Start again");
     expect(sentences(el)).toHaveLength(1);
     expect(sentences(el)[0]).toMatch(/^Everything ran and every check passed/);
+    fixture.destroy();
+  });
+
+  // ---- 17 Nov 2026: never stop for a person when the app can fix it -------------------------------------
+  // The Prep step is one job on the server (POST and GET .../prep-run): rounds while a round still changes
+  // something, then the assistant, then the numbers check. The page starts it, follows it, and when
+  // something is left it asks in two plain sentences, with "Show me" and "Send feedback".
+
+  const ver = (n: number): Version => ({ id: `ver-00${n}`, major: n, minor: 0, label: `v${n}`, file_name: `m1_v${n}.xlsm`, source: "prep" });
+
+  /** The question as the server words it (app/handoff.py `ask_lines`), on Basic. */
+  const ASK_LINES = ["One thing is left that the app could not fix: a formula reads a lone text cell, on sheet Roll, cell W25.", "Fix it by hand, then press Start again."];
+  const NO_KEY_LINES = ["Something is left that needs the assistant, and no AI key is saved.", "Paste an AI key under Advanced › Assistant, then press Start again."];
+  const WHY = "The assistant's fix changed a result, so it was taken back.";
+  const NOTE = "Start could not fix this by itself: a formula reads a lone text cell. The assistant tried twice: its change altered a result and was undone.";
+  const question = (over: Partial<PrepAsk> = {}): PrepAsk => ({ lines: ASK_LINES, why: WHY, stops_start: true, show_me: { id: "prep-action", rule_id: "STR-008", sheet: "Roll", cell: "W25" }, feedback: { ref: "ABCD-1234", note: NOTE }, ...over });
+  const noKey = (): PrepAsk => ({ lines: NO_KEY_LINES, why: "The assistant was not asked.", stops_start: true, show_me: { id: "assistant-key", rule_id: null, sheet: "", cell: "" }, feedback: null });
+
+  const round = (n: number, changes = 966): PrepRunStatus => ({ state: "running", stage: "pass", pass_no: n, message: `Round ${n}: writing ${changes} changes through Excel…` });
+  const done = (applied: number, fixed = 0, refused = 0): PrepRunStatus => ({ state: "done", stage: "done", applied, refused, assistant_fixed: fixed, left: 0, ask: null });
+  const asks = (ask: PrepAsk, applied = 954): PrepRunStatus => ({ state: "ask", stage: "done", applied, refused: 0, assistant_fixed: 0, left: 1, ask });
+
+  /** A stand-in for the server's Prep job. POST .../prep-run starts it; GET .../prep-run answers the next
+   *  of `looks` (the last one repeats; an entry may be held open by the test); GET /api/sessions/{id}
+   *  gives `after`. Before the start the job reads "idle", unless `pickUp`: then it runs already. */
+  interface PrepFake {
+    api: Partial<ApiService>;
+    /** "start", "look", "resume", "cancel:prep", in order */
+    calls: string[];
+    /** what each POST .../prep-run was sent */
+    starts: unknown[];
+    /** the step's line on screen when each look was made */
+    seen: string[];
+    looks: (PrepRunStatus | Promise<PrepRunStatus>)[];
+    after: SessionStart;
+    pickUp: boolean;
+  }
+
+  function prepFake(looks: (PrepRunStatus | Promise<PrepRunStatus>)[], after: Partial<SessionStart> = {}): PrepFake {
+    const f: PrepFake = { api: {}, calls: [], starts: [], seen: [], looks, after: { ...started("m1"), ...after }, pickUp: false };
+    let last: PrepRunStatus | Promise<PrepRunStatus> = { state: "idle" };
+    f.api = {
+      startPrepRun: (_id: string, o: unknown) => (f.calls.push("start"), f.starts.push(o), Promise.resolve({ state: "running" })),
+      prepRun: () => {
+        if (!f.pickUp && !f.calls.includes("start")) return Promise.resolve({ state: "idle" } as PrepRunStatus);
+        f.calls.push("look");
+        f.seen.push(page.prepare().line);
+        last = f.looks.shift() ?? last;
+        return Promise.resolve(last);
+      },
+      resume: () => (f.calls.push("resume"), Promise.resolve(f.after)),
+      scanStatus: () => Promise.resolve({ state: "ready" }),
+      cancel: (_id: string, kind: string | null = null) => (f.calls.push(`cancel:${kind}`), Promise.resolve({ cancelled: kind ? [kind] : [], late: [], stopping: [], ahead: false, message: STOPPED_NOTHING_CHANGED, session: null, mind: null })),
+    } as Partial<ApiService>;
+    return f;
+  }
+
+  const noWaits = () => ((page as unknown as { sleep: () => Promise<void> }).sleep = () => Promise.resolve()); // no real second between two looks
+
+  async function openedFor(mode: "basic" | "custom", f: PrepFake): Promise<void> {
+    open(mode, f.api);
+    noWaits();
+    page.openSaved(started("m1"));
+    await settle();
+  }
+
+  /** Start with the real Prep step; the other steps stand in (the workbook has a loop). */
+  function others(results: { fixAll?: boolean; loop?: boolean; recalc?: boolean } = {}): string[] {
+    const ran: string[] = [];
+    const p = page as unknown as Record<string, unknown>;
+    for (const [name, key] of [["runFixAll", "fixAll"], ["runLoop", "loop"], ["runRecalc", "recalc"]] as const) {
+      p[name] = async () => (ran.push(key), results[key] ?? true);
+    }
+    page.canBuildLoop = () => true;
+    return ran;
+  }
+
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 300 && !cond(); i++) await settle();
+    expect(cond()).toBe(true);
+  }
+
+  it("the Prep step is one job on the server: started once, followed to its end, then the workbook is read back", async () => {
+    const f = prepFake(
+      [round(1), { state: "running", stage: "assistant", problem_no: 1, problem_count: 2, message: "The assistant is working on what is left (1 of 2)." }, { state: "running", stage: "numbers", message: "Checking that no result changed." }, done(966)],
+      { version: ver(5), versions: [ver(3), ver(4), ver(5)] },
+    );
+    await openedFor("basic", f);
+    expect(await page.runPrepare()).toBe(true);
+    expect(f.calls).toEqual(["start", "look", "look", "look", "look", "resume"]);
+    // the job is told the name of the button, for the sentences it writes ("... then press Start again.")
+    expect(f.starts).toEqual([{ button: "Start" }]);
+    // the step's line while it ran: the job's own sentence, one at a time
+    expect(f.seen).toEqual(["Looking at what blocks the file…", "Round 1: writing 966 changes through Excel…", "The assistant is working on what is left (1 of 2).", "Checking that no result changed."]);
+    expect(page.prepare()).toMatchObject({ running: false, line: "966 changes applied", tone: "ok" });
+    // the versions the job made are in the store, from the workbook read back
+    expect(store.currentVersion()?.label).toBe("v5");
+    expect(store.versions().map((x) => x.label)).toEqual(["v3", "v4", "v5"]);
+    expect(page.busy()).toBe(false);
+  });
+
+  it("Custom's job is told its button is Do everything", async () => {
+    const f = prepFake([done(3)]);
+    await openedFor("custom", f);
+    expect(await page.runPrepare()).toBe(true);
+    expect(f.starts).toEqual([{ button: "Do everything" }]);
+  });
+
+  it("says what the step did in today's words, and the assistant's fixes in a sentence that leads to Versions", async () => {
+    const cases: [PrepRunStatus, string, string | null][] = [
+      [done(966), "966 changes applied", null],
+      [done(0), "Nothing blocked the file", null],
+      [done(966, 2), "966 changes applied. The assistant fixed 2 more: see Advanced › Versions.", "versions"],
+      [done(0, 1), "The assistant fixed 1: see Advanced › Versions.", "versions"],
+    ];
+    for (const [end, line, place] of cases) {
+      const f = prepFake([end]);
+      await openedFor("custom", f);
+      expect(await page.runPrepare()).toBe(true);
+      expect(page.prepare().line).toBe(line);
+      expect(showMeFor(page.prepare().line)?.id ?? null).toBe(place);
+      page.ngOnDestroy();
+      TestBed.resetTestingModule();
+    }
+    // changes Excel refused on the way are said under "View details", in plain words
+    const f = prepFake([done(12, 0, 3)], { version: ver(4) });
+    await openedFor("custom", f);
+    await page.runPrepare();
+    expect(page.prepare()).toMatchObject({ line: "12 changes applied", detail: "v4 · Excel refused 3 changes" });
+  });
+
+  it("the bar of a round being written is the Apply's own; while the assistant works it only moves", async () => {
+    const second = hold<PrepRunStatus>();
+    const third = hold<PrepRunStatus>();
+    const f = prepFake([round(1), second.done, third.done]);
+    let apply: ScanStatus["apply"] = { state: "running", fraction: 0.4, title: "Writing the changes", message: "390 of 966" };
+    f.api.scanStatus = () => Promise.resolve({ state: "ready", apply });
+    await openedFor("custom", f);
+    const run = page.runPrepare();
+    await until(() => f.calls.filter((c) => c === "look").length === 2 && page.prepare().fraction === 0.4);
+    expect(page.prepare()).toMatchObject({ running: true, line: "Round 1: writing 966 changes through Excel…", fraction: 0.4, detail: "Writing the changes · 390 of 966" });
+    // the rounds are over: the assistant's turn has no Apply, so no fraction and no words of an Apply
+    apply = { state: "done" };
+    second.end({ state: "running", stage: "assistant", message: "The assistant is working on what is left (1 of 1)." });
+    await until(() => f.calls.filter((c) => c === "look").length === 3);
+    expect(page.prepare()).toMatchObject({ running: true, line: "The assistant is working on what is left (1 of 1).", fraction: null, detail: "" });
+    third.end(done(966, 1));
+    expect(await run).toBe(true);
+  });
+
+  it("a question that does not stop Start: the step is true, Start goes on, and the question is the chain's last line", async () => {
+    const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-009", sheet: "Calc", cell: "B2" } });
+    const f = prepFake([round(1, 12), asks(ask, 12)], { version: ver(4) });
+    await openedFor("basic", f);
+    const ran = others();
+    await page.runAll();
+    expect(ran).toEqual(["fixAll", "loop", "recalc"]); // Start went on past the Prep step
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "done"]);
+    expect(page.steps()[1]).toMatchObject({ id: "prepare", line: "12 changes applied" });
+    // in place of "Everything ran and every check passed": the two sentences, one per line on Basic
+    expect(page.basicLines()).toEqual(ASK_LINES);
+    expect(page.chainLine()).toBe(ASK_LINES.join(" "));
+    expect(page.basicLine()).not.toContain("Everything ran");
+    expect(page.chainAsk()).toBe(ask);
+    expect(page.askPlace(ask)).toBe("assistant-ask");
+    expect(page.chainStoppedByCancel()).toBe(false);
+  });
+
+  it("a question whose problem the later steps made go is not asked: Everything ran", async () => {
+    const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-009", sheet: "Calc", cell: "B2" } });
+    const f = prepFake([asks(ask, 12)]);
+    await openedFor("basic", f);
+    others();
+    // the recalculation's answer brings the readiness as it is at the end: nothing blocking is left
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(readiness("ready")), true);
+    await page.runAll();
+    expect(page.chainAsk()).toBeNull();
+    expect(page.basicLine()).toMatch(/^Everything ran and every check passed/);
+    // while it is still blocking at the end, it is asked
+    const g = prepFake([asks(ask, 12)]);
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    await openedFor("basic", g);
+    others();
+    const still: Readiness = { ...readiness("blocked", 1), blocking: [{ rule_id: "FRM-009", status: "ERROR", message: "m", fix: "assistant" }] };
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(still), true);
+    await page.runAll();
+    expect(page.basicLines()).toEqual(ASK_LINES);
+  });
+
+  it("a question that stops Start: the step is false, nothing follows, and the stop line is the two sentences", async () => {
+    const ask = question();
+    const f = prepFake([round(1, 954), asks(ask)], { version: ver(4) });
+    await openedFor("basic", f);
+    const ran = others();
+    await page.runAll();
+    expect(ran).toEqual(["fixAll"]);
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "failed", "waiting", "waiting"]);
+    // the step says what it wrote, and why it could not finish is in its details
+    expect(page.steps()[1]).toMatchObject({ line: "954 changes applied", detail: `v4 · ${WHY}` });
+    expect(page.basicLines()).toEqual(ASK_LINES);
+    expect(page.chainLine()).toBe(ASK_LINES.join(" "));
+    expect(page.chainLine()).not.toContain("Stopped at"); // no count, no step name in quotes
+    expect(page.chainAsk()).toBe(ask);
+    expect(page.askPlace(ask)).toBe("prep-action");
+    expect(store.currentVersion()?.label).toBe("v4"); // the rounds that ran are kept
+  });
+
+  it("with no AI key Start stops and says so, in the server's two sentences or in the page's own", async () => {
+    const f = prepFake([{ state: "no_key", stage: "done", applied: 3, left: 1, ask: noKey() }]);
+    await openedFor("basic", f);
+    const ran = others();
+    await page.runAll();
+    expect(ran).toEqual(["fixAll"]);
+    expect(page.steps()[1].state).toBe("failed");
+    expect(page.basicLines()).toEqual(NO_KEY_LINES);
+    expect(page.askPlace(page.chainAsk()!)).toBe("assistant-key");
+    expect(page.chainAsk()?.feedback).toBeNull(); // nothing went wrong in the app: nothing to send
+    // a server that sends the state alone: the same sentences, with the screen's own button
+    for (const [mode, button] of [["basic", "Start"], ["custom", "Do everything"]] as const) {
+      page.ngOnDestroy();
+      TestBed.resetTestingModule();
+      const g = prepFake([{ state: "no_key", ask: null }]);
+      await openedFor(mode, g);
+      others();
+      await page.runAll();
+      expect(page.chainAsk()?.lines).toEqual([NO_KEY_LINES[0], `Paste an AI key under Advanced › Assistant, then press ${button} again.`]);
+      expect(page.askPlace(page.chainAsk()!)).toBe("assistant-key");
+      expect(page.steps()[1].state).toBe("failed");
+    }
+  });
+
+  it("Cancel in the second round throws the whole Prep step away: one job, so nothing of it is kept", async () => {
+    const end = hold<PrepRunStatus>();
+    const f = prepFake([round(1), round(2, 3), end.done]);
+    await openedFor("basic", f);
+    const ran = others();
+    const run = page.runAll();
+    await until(() => f.seen.includes("Round 2: writing 3 changes through Excel…"));
+    page.onChainStopping(); // the click on Cancel beside the Working button
+    expect(page.basicLines()).toEqual(["Stopping…"]);
+    expect(page.chainRunning()).toBe(true); // the page ends nothing at the click: the job says "cancelled" itself
+    end.end({ state: "cancelled", message: STOPPED_NOTHING_CHANGED });
+    page.onChainStopped(); // the button heard from the server: the workbook is back as it was before the step
+    await run;
+    expect(page.prepare()).toMatchObject({ running: false, line: STOPPED_NOTHING_CHANGED, tone: "idle" });
+    expect(page.steps().map((s) => [s.state, s.line])).toEqual([["done", ""], ["stopped", "Stopped."], ["waiting", ""], ["waiting", ""]]);
+    expect(page.basicLine()).toBe("Stopped. Your workbook is as it was after the formula errors were fixed.");
+    expect(page.chainStoppedByCancel()).toBe(true);
+    expect(page.chainAsk()).toBeNull();
+    // nothing of the job reached the store (the workbook comes from the Cancel's own answer), and nothing followed
+    expect(f.calls).not.toContain("resume");
+    expect(store.currentVersion()?.label).toBe("v3");
+    expect(ran).toEqual(["fixAll"]);
+  });
+
+  it("a job that ends in an error stops Start with the sentence that names the step, in Basic's words", async () => {
+    const f = prepFake([round(1), { state: "error", stage: "pass", error: "Excel did not start." }]);
+    await openedFor("basic", f);
+    others();
+    await page.runAll();
+    // the line does not guess what failed: the server's own sentence is under it
+    expect(page.prepare()).toMatchObject({ line: "Stopped with an error", detail: "Excel did not start.", tone: "error" });
+    expect(page.basicLine()).toBe('Stopped at "Fix the formulas and the structure": Stopped with an error. Fix that under Advanced › Prep actions, then press Start again.');
+    expect(page.chainAsk()).toBeNull();
+    // the rounds that had finished stay on the server: the workbook is read back after an error too
+    expect(f.calls).toContain("resume");
+    // a round that was written, but whose check of the workbook did not run: not "could not write"
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const written = "The changes were written, but the check of the workbook that follows did not run: Excel closed.";
+    const g = prepFake([{ state: "error", stage: "pass", error: written }]);
+    await openedFor("basic", g);
+    expect(await page.runPrepare()).toBe(false);
+    expect(page.prepare()).toMatchObject({ line: "Stopped with an error", detail: written, tone: "error" });
+  });
+
+  it("a start the server refuses is 'Not started' with its words; a job that runs already is followed instead", async () => {
+    const busy = { status: 409, error: { detail: "Wait a moment: changes are still being written." } };
+    const f = prepFake([]);
+    f.api.startPrepRun = () => (f.calls.push("start"), Promise.reject(busy));
+    f.looks.push({ state: "idle" });
+    await openedFor("basic", f);
+    expect(await page.runPrepare()).toBe(false);
+    expect(page.prepare()).toMatchObject({ running: false, line: "Not started", detail: "Wait a moment: changes are still being written.", tone: "error" });
+
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const g = prepFake([round(2), round(2), done(5)]);
+    g.api.startPrepRun = () => (g.calls.push("start"), Promise.reject({ status: 409, error: { detail: "Wait a moment: the formulas and the structure are still being fixed." } }));
+    await openedFor("basic", g);
+    expect(await page.runPrepare()).toBe(true);
+    expect(page.prepare().line).toBe("5 changes applied");
+  });
+
+  it("a look that fails is tried again; after five the job is lost", async () => {
+    const f = prepFake([round(1)]);
+    let failures = 4;
+    const look = f.api.prepRun!;
+    f.api.prepRun = (id: string) => (f.calls.includes("start") && f.seen.length && failures-- > 0 ? Promise.reject(new Error("offline")) : look(id));
+    f.looks.push(done(7));
+    await openedFor("basic", f);
+    expect(await page.runPrepare()).toBe(true); // four failed looks in a row, then the server was back
+    expect(page.prepare().line).toBe("7 changes applied");
+
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const g = prepFake([]);
+    g.api.prepRun = () => Promise.reject({ status: 0, message: "offline" });
+    await openedFor("basic", g);
+    expect(await page.runPrepare()).toBe(false);
+    expect(page.prepare()).toMatchObject({ running: false, line: "Lost the job", detail: "offline", tone: "error" });
+  });
+
+  it("a Prep job that was running before a reload is picked up: followed to its end, with its question", async () => {
+    const end = hold<PrepRunStatus>();
+    const f = prepFake([round(2), end.done], { version: ver(5) });
+    f.pickUp = true;
+    open("custom", f.api);
+    noWaits();
+    page.openSaved(started("m1"));
+    const picked = (page as unknown as { resumePrepRun: () => Promise<void> }).resumePrepRun();
+    await until(() => page.prepare().running && f.calls.filter((c) => c === "look").length >= 2);
+    // the step stands alone in the list, running; nothing else may start meanwhile
+    expect(f.calls).not.toContain("start");
+    expect(page.steps().map((s) => [s.id, s.state])).toEqual([["prepare", "running"]]);
+    expect(page.prepare().line).toBe("Round 2: writing 966 changes through Excel…");
+    expect(page.busy()).toBe(true);
+    expect(page.busyHint()).toBe("Fix the formulas and the structure is running");
+    expect(page.chainRunning()).toBe(false); // no chain in this page: the steps after it do not follow by themselves
+    // the job was started by Start on Basic (its sentences say so) and is picked up here on Custom, after
+    // the person went from one screen to the other: the question names the button this screen has
+    const ask = question();
+    end.end(asks(ask));
+    await picked;
+    expect(page.busy()).toBe(false);
+    expect(store.currentVersion()?.label).toBe("v5");
+    expect(page.steps()[0]).toMatchObject({ state: "failed", line: "954 changes applied" });
+    expect(page.chainAsk()).toEqual({ ...ask, lines: [ASK_LINES[0], "Fix it by hand, then press Do everything again."] });
+    expect(page.chainLine()).toBe(`${ASK_LINES[0]} Fix it by hand, then press Do everything again.`);
+  });
+
+  it("a picked-up job that ends clean, or is stopped, says so; one that does not run is left alone", async () => {
+    const f = prepFake([round(1), done(4)]);
+    f.pickUp = true;
+    open("basic", f.api);
+    noWaits();
+    page.openSaved(started("m1"));
+    await (page as unknown as { resumePrepRun: () => Promise<void> }).resumePrepRun();
+    expect(page.steps()[0]).toMatchObject({ id: "prepare", state: "done", line: "4 changes applied" });
+    expect(page.chainLine()).toBe("");
+
+    // stopped from the strip while this page followed it: Basic's one line says so, with no Show me
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const g = prepFake([round(1), { state: "cancelled" }]);
+    g.pickUp = true;
+    open("basic", g.api);
+    noWaits();
+    page.openSaved(started("m1"));
+    await (page as unknown as { resumePrepRun: () => Promise<void> }).resumePrepRun();
+    expect(page.steps()[0]).toMatchObject({ state: "stopped", line: STOPPED_NOTHING_CHANGED });
+    expect(page.basicLine()).toBe(STOPPED_NOTHING_CHANGED);
+    expect(page.chainStoppedByCancel()).toBe(true);
+
+    // a job that ended before the reload (its question may be out of date by now) starts nothing here
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const h = prepFake([asks(question())]);
+    h.pickUp = true;
+    open("basic", h.api);
+    page.openSaved(started("m1"));
+    await (page as unknown as { resumePrepRun: () => Promise<void> }).resumePrepRun();
+    expect(page.steps()).toEqual([]);
+    expect(page.chainAsk()).toBeNull();
+    expect(page.prepare().running).toBe(false);
+  });
+
+  // ---- the fixes after the loop: the same job, and its question replaces the Prep step's ----------------
+  const blockingLeft = (): PrepAction => ({ id: "compare_blank", title: "Compare with a blank", rule_ids: ["FRM-013"], default_on: true, level: "blocking", operations: [{ op: "set_formula", sheet: "S", cell: "B2" }], count: 1 });
+  const loopPlan = (): LoopPlan => ({ found: true, loops: [{ name: "i", status: "ready", first: 1, last: 5, cells: [] }], outputs: [], clears: [], operation_count: 3 });
+
+  /** Start with the real Prep step and the real loop step (its build answers at once); `afterLoop` is what
+   *  the workbook reads back once the loop is in: the Prep plan of the new version. */
+  async function withLoop(f: PrepFake, afterLoop: Promise<SessionStart>): Promise<string[]> {
+    let resumes = 0;
+    f.api.mindLoopPlan = () => Promise.resolve({ version_id: "ver-003", plan: loopPlan() });
+    f.api.applyMindLoopPlan = (() => (f.calls.push("loop"), Promise.resolve({ result: { status: "ok", applied: 3, failed: 0 }, version: ver(5), plan: loopPlan() }))) as unknown as ApiService["applyMindLoopPlan"];
+    // the first read is the Prep step's own; the loop's comes second, and may be slow
+    f.api.resume = () => (f.calls.push("resume"), ++resumes === 2 ? afterLoop : Promise.resolve(f.after));
+    await openedFor("basic", f);
+    await (page as unknown as { loadLoopPlan: () => Promise<void> }).loadLoopPlan();
+    const ran: string[] = [];
+    const p = page as unknown as Record<string, unknown>;
+    for (const [name, key] of [["runFixAll", "fixAll"], ["runRecalc", "recalc"]] as const) p[name] = async () => (ran.push(key), true);
+    return ran;
+  }
+
+  it("the fixes after the loop start from the plan as it is after the loop, not the one from before it", async () => {
+    const read = hold<SessionStart>();
+    const f = prepFake([done(954), done(5)], { version: ver(4) });
+    await withLoop(f, read.done);
+    const run = page.runAll();
+    await until(() => f.calls.includes("loop") && f.calls.filter((c) => c === "resume").length === 2);
+    await settle();
+    // the workbook has not been read back yet: the page waits, it does not decide from the old plan
+    expect(f.calls.filter((c) => c === "start")).toHaveLength(1);
+    expect(page.chainStep()?.id).toBe("loop");
+    read.end({ ...started("m1"), version: ver(5), plan: [blockingLeft()] }); // the loop uncovered something Prep repairs
+    await run;
+    expect(f.calls.filter((c) => c === "start")).toHaveLength(2);
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "done"]);
+    expect(page.steps()[2].line).toBe("3 loop formulas written; then 5 changes applied for what the loop uncovered");
+    expect(page.basicLine()).toMatch(/^Everything ran and every check passed/);
+  });
+
+  it("the question of the fixes after the loop replaces the Prep step's; an answer of 'done' takes it away", async () => {
+    const first = question({ stops_start: false, lines: ["One thing is left that the app could not fix: a formula has a broken reference, on sheet Calc, cell B2.", ASK_LINES[1]], show_me: { id: "assistant-ask", rule_id: "REF-001", sheet: "Calc", cell: "B2" } });
+    const second = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "STR-008", sheet: "Roll", cell: "W25" } });
+    const f = prepFake([asks(first, 10), asks(second, 5)]);
+    const ran = await withLoop(f, Promise.resolve({ ...started("m1"), version: ver(5), plan: [blockingLeft()] }));
+    await page.runAll();
+    expect(ran).toEqual(["fixAll", "recalc"]);
+    expect(page.chainAsk()).toBe(second);
+    expect(page.basicLines()).toEqual(ASK_LINES);
+
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const g = prepFake([asks(first, 10), done(5, 1)]);
+    await withLoop(g, Promise.resolve({ ...started("m1"), version: ver(5), plan: [blockingLeft()] }));
+    await page.runAll();
+    expect(page.chainAsk()).toBeNull();
+    expect(page.basicLine()).toMatch(/^Everything ran and every check passed/);
+    expect(page.steps()[2].line).toBe("3 loop formulas written; then 5 changes applied for what the loop uncovered. The assistant fixed 1 more: see Advanced › Versions.");
+  });
+
+  it("a question of the fixes after the loop that stops Start is the stop line, not 'Stopped at the loop'", async () => {
+    const ask = question();
+    const f = prepFake([done(954), asks(ask, 5)]);
+    const ran = await withLoop(f, Promise.resolve({ ...started("m1"), version: ver(5), plan: [blockingLeft()] }));
+    await page.runAll();
+    expect(ran).toEqual(["fixAll"]); // no recalculation after it
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "failed", "waiting"]);
+    expect(page.steps()[2].line).toBe("3 loop formulas written; the fixes after the loop stopped: 5 changes applied");
+    expect(page.chainAsk()).toBe(ask);
+    expect(page.basicLines()).toEqual(ASK_LINES);
+  });
+
+  it("the Cancel of a Prep step that stands alone stops that kind of work: prep", () => {
+    open("custom");
+    expect(page.cancelKind("prepare")).toBe("prep");
+    expect(page.cancelKind("fixFormulas")).toBe("apply"); // the Fix the formulas tile still sends one Apply
+  });
+
+  // ---- drawn: Show me on every stop message of Basic, the question's buttons, Custom's "View details" ----
+  /** The page drawn on one of the two screens, with the real "Show me" link and the real Cancel button. */
+  async function drawOn(mode: "basic" | "custom", api: Partial<ApiService>): Promise<{ fixture: ComponentFixture<HomePage>; el: HTMLElement; look: () => Promise<void>; shown: ShowMeRequest[] }> {
+    const none = () => Promise.reject(new Error("none"));
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        { provide: ActivatedRoute, useValue: { snapshot: { data: { mode } } } },
+        { provide: ApiService, useValue: { estimate: none, mindLoopPlan: none, autoFixStatus: none, outsideInputs: none, nextQuarter: none, resume: none, downloadUrl: () => "/x", ...api } },
+      ],
+    });
+    TestBed.overrideComponent(Page, { set: { imports: [CommonModule, Thinking, Bar, ShowMeLink, CancelButton], schemas: [NO_ERRORS_SCHEMA] } });
+    store = TestBed.inject(SessionStore);
+    // the pointer itself has its own tests (show-me.spec.ts): here, what each link asks it for
+    const shown: ShowMeRequest[] = [];
+    vi.spyOn(TestBed.inject(ShowMeService), "start").mockImplementation((r) => (shown.push(r), true));
+    const fixture = TestBed.createComponent(Page);
+    page = fixture.componentInstance;
+    noWaits();
+    const look = async () => {
+      fixture.detectChanges();
+      await settle();
+      fixture.detectChanges();
+    };
+    page.openSaved(started("m1"));
+    await look();
+    return { fixture, el: fixture.nativeElement as HTMLElement, look, shown };
+  }
+
+  const linkIn = (root: Element, where: string) => root.querySelector(`${where} mr-show-me button`) as HTMLButtonElement | null;
+  const buttonsIn = (root: Element | null) => Array.from(root?.querySelectorAll("button") ?? []).map((b) => b.textContent?.trim());
+
+  const twoFiles = (): OutsideInputs => ({
+    imports: true,
+    macro: "calcCF",
+    calls: [],
+    rows: [{ cell: "Ctrl!H35", expected: null, keys: ["BBA_01"], target_sheet: null, file: "BBA_01.xlsm", how: "key", candidates: [] }],
+    matched: 1,
+    missing: [],
+    extra: [],
+    summary: "1 of 1 input files matched.",
+    brought_in: false,
+    brought_in_reason: null,
+  });
+
+  type StepName = "outside" | "fixAll" | "prepare" | "loop" | "recalc";
+  interface Stop {
+    name: string;
+    step: StepName;
+    /** how the step that stops ended */
+    line: string;
+    tone: "warn" | "error";
+    unchecked?: boolean;
+    /** Basic's sentence, whole */
+    says: string;
+    /** the place its Show me opens */
+    to: string;
+  }
+
+  /** Every way Start stops by itself with a sentence of its own (`stoppedWhere`, and the outside step's amber stop). */
+  const STOPS: Stop[] = [
+    { name: "the outside files did not come in", step: "outside", line: "No input file matched yet", tone: "error", says: 'Stopped at "Bring in the outside files": No input file matched yet. See the Outside files card on the Custom screen, then press Start again.', to: "outside-card" },
+    {
+      name: "the outside files came in but the values were not checked",
+      step: "outside",
+      line: "The outside files are brought in, but the computed values were not checked",
+      tone: "warn",
+      unchecked: true,
+      says: 'Stopped at "Bring in the outside files": the computed values were not checked. Check them under Advanced › Deliver (Check the numbers), or press Start again to go on without the check.',
+      to: "deliver-numbers",
+    },
+    { name: "Fix all issues did not run", step: "fixAll", line: "Not started", tone: "error", says: 'Stopped at "Fix all issues": Not started. Press Start again.', to: "do-everything" },
+    {
+      name: "Fix all issues could not compare with the original",
+      step: "fixAll",
+      line: "The errors left could not be checked against the original (the comparison did not run)",
+      tone: "warn",
+      unchecked: true,
+      says: 'Stopped at "Fix all issues": The errors left could not be checked against the original (the comparison did not run). Check the numbers under Advanced › Deliver, then press Start again.',
+      to: "deliver-numbers",
+    },
+    { name: "Fix all issues left errors", step: "fixAll", line: "Fixed what it could (stuck)", tone: "warn", says: 'Stopped at "Fix all issues": Fixed what it could (stuck). Fix that under Advanced › Recalculate, then press Start again.', to: "recalc-errors" },
+    { name: "the formulas and the structure failed", step: "prepare", line: "Stopped with an error", tone: "error", says: 'Stopped at "Fix the formulas and the structure": Stopped with an error. Fix that under Advanced › Prep actions, then press Start again.', to: "prep-apply" },
+    { name: "the Mind loop was not written", step: "loop", line: "Could not write the loop", tone: "error", says: 'Stopped at "Build the Mind loop": Could not write the loop. Fix that under Advanced › Mind loop, then press Start again.', to: "loop-choices" },
+    { name: "the recalculation found new errors", step: "recalc", line: "Recalculated, 4 formula errors", tone: "warn", says: 'Stopped at "Recalculate": Recalculated, 4 formula errors. Fix that under Advanced › Recalculate, then press Start again.', to: "recalc-errors" },
+  ];
+
+  /** Every step stands in and succeeds, but `stop.step`, which ends as `stop` says. */
+  function stopsAt(stop: Stop): void {
+    const p = page as unknown as Record<string, unknown>;
+    const runner: Record<StepName, string> = { outside: "runOutside", fixAll: "runFixAll", prepare: "runPrepare", loop: "runLoop", recalc: "runRecalc" };
+    for (const step of Object.keys(runner) as StepName[]) {
+      p[runner[step]] = async () => {
+        if (step !== stop.step) return true;
+        page[step].set({ running: false, fraction: null, line: stop.line, detail: "", tone: stop.tone, unchecked: step === "fixAll" && !!stop.unchecked });
+        if (step === "outside" && stop.unchecked) page.outsideUnchecked.set(true);
+        return false;
+      };
+    }
+    page.canBuildLoop = () => true;
+  }
+
+  it.each(STOPS)("Basic shows Show me when $name, and it opens the place by itself", async (stop) => {
+    const { fixture, el, look, shown } = await drawOn("basic", {});
+    if (stop.step === "outside") store.outsideInputs.set(twoFiles());
+    stopsAt(stop);
+    await page.runAll();
+    await look();
+    // one sentence, in Basic's words: its button is Start, and the Outside files card is on Custom
+    expect(sentences(el)).toEqual([stop.says]);
+    expect(el.textContent).not.toContain("Do everything");
+    const link = linkIn(el, ".basic__next")!;
+    expect(link.textContent).toBe("Show me");
+    // under the line, outside the part a screen reader announces as the status
+    expect(el.querySelector(".basic__line mr-show-me")).toBeNull();
+    expect(el.querySelector(".basic__line")!.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    link.click();
+    expect(shown).toEqual([{ id: stop.to, open: true }]);
+    expect(el.querySelectorAll("mr-show-me button")).toHaveLength(1);
+    expect(el.querySelector('[data-test="question"]')).toBeNull(); // an ordinary stop: no question, no Send feedback
+    fixture.destroy();
+  });
+
+  it("no stop sentence on Basic starts with a small letter, and none names a button Basic does not have", async () => {
+    for (const stop of STOPS) {
+      open("basic");
+      page.openSaved(started("m1"));
+      if (stop.step === "outside") store.outsideInputs.set(twoFiles());
+      stopsAt(stop);
+      await page.runAll();
+      expect(page.basicLine(), stop.name).toBe(stop.says);
+      // each sentence: after a full stop and a space comes a capital, a digit or a quote, never a small letter
+      expect(page.basicLine(), stop.name).not.toMatch(/[.!?]\s+[a-z]/);
+      expect(page.basicLine(), stop.name).toMatch(/^[A-Z]/);
+      expect(page.basicLine(), stop.name).not.toContain("Do everything");
+      page.ngOnDestroy();
+      TestBed.resetTestingModule();
+    }
+  });
+
+  it("the outside step's sentence names the card where it is: on the Custom screen from Basic, above on Custom", async () => {
+    const stop = STOPS[0];
+    open("custom");
+    page.openSaved(started("m1"));
+    store.outsideInputs.set(twoFiles());
+    stopsAt(stop);
+    await page.runAll();
+    expect(page.chainLine()).toBe('Stopped at "Bring in the outside files": No input file matched yet. See the Outside files card above, then press Do everything again.');
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    open("basic");
+    page.openSaved(started("m1"));
+    store.outsideInputs.set(twoFiles());
+    stopsAt(stop);
+    await page.runAll();
+    expect(page.basicLine()).toBe(stop.says);
+    expect(showMeFor(page.chainLine())).toEqual({ id: "outside-card" }); // the card, on Custom: the pointer goes there
+  });
+
+  it("Basic draws the question one sentence per line, with Show me to the problem's cell and Send feedback with the note in it", async () => {
+    const f = prepFake([round(1, 954), asks(question())]);
+    const { fixture, el, look, shown } = await drawOn("basic", f.api);
+    others();
+    await page.runAll();
+    await look();
+    expect(sentences(el)).toEqual(ASK_LINES);
+    const row = el.querySelector('.basic__said [data-test="question"]')!;
+    expect(buttonsIn(row)).toEqual(["Show me", "Send feedback"]); // why the assistant failed is not for Basic: no "View details"
+    expect(el.textContent).not.toContain(WHY);
+    expect(el.textContent).not.toContain("STR-008"); // no rule code on screen
+    // Show me: the Prep action that repairs the rule, the cell's own line, and the pointer goes there itself
+    linkIn(el, '[data-test="question"]')!.click();
+    expect(shown).toEqual([{ id: "prep-action", ruleId: "STR-008", where: { sheet: "Roll", cell: "W25" }, open: true }]);
+    // Send feedback: the dialog opens for the incident the server wrote, with the problem already in the note box
+    const feedback = TestBed.inject(FeedbackService);
+    expect(feedback.dialog()).toBeNull();
+    (Array.from(row.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Send feedback") as HTMLButtonElement).click();
+    expect(feedback.dialog()).toEqual({ ref: "ABCD-1234", note: NOTE });
+    feedback.close();
+    expect(el.querySelectorAll("mr-show-me button")).toHaveLength(1); // one Show me: the question's own
+    fixture.destroy();
+  });
+
+  it("the question's Send feedback opens the real dialog with the problem in its note box, and the email starts with it", async () => {
+    // the dialog drawn beside the page, as the shell holds both: one FeedbackService between them
+    const sent: unknown[] = [];
+    const f = prepFake([asks(question())]);
+    f.api.assistantKey = () => Promise.resolve({ saved: false, last4: null });
+    f.api.feedback = (body) => (sent.push(body), Promise.resolve({ ref: "ABCD-1234", text: "Mind Ready 1.15.0 · ref ABCD-1234\n", subject: "Mind Ready feedback · ref ABCD-1234", email: "someone@example.com", file_name: "f.txt", assistant: false }));
+    TestBed.overrideComponent(Dialog, { set: { imports: [], schemas: [NO_ERRORS_SCHEMA] } });
+    const { fixture, el, look } = await drawOn("basic", f.api);
+    const box = TestBed.createComponent(Dialog);
+    const boxEl = box.nativeElement as HTMLElement;
+    const lookBox = async () => {
+      box.detectChanges();
+      await settle();
+      box.detectChanges();
+    };
+    await lookBox();
+    expect(boxEl.querySelector("#fb-note")).toBeNull(); // closed: nothing drawn
+    others();
+    await page.runAll();
+    await look();
+    (el.querySelector('[data-test="question"] .chain__feedback') as HTMLButtonElement).click();
+    await lookBox();
+    // the problem is already written, in plain words: no rule code, no version, no sheet or cell name
+    expect(boxEl.querySelector<HTMLTextAreaElement>("#fb-note")?.value).toBe(NOTE);
+    expect(NOTE).not.toMatch(/[A-Z]{2,5}-\d{3}|ver-\d|W25|Roll/);
+    await box.componentInstance.prepare();
+    await lookBox();
+    expect(sent).toEqual([{ ref: "ABCD-1234", note: NOTE, useAssistant: false, sessionId: "m1" }]); // the report the server wrote for the question
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: () => Promise.resolve() }, configurable: true });
+    const mails: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      mails.push(this.href);
+    });
+    await box.componentInstance.send();
+    expect(mails).toHaveLength(1);
+    const body = decodeURIComponent(mails[0].split("&body=")[1]);
+    expect(body.startsWith(NOTE)).toBe(true);
+    expect(body).toBe(`${NOTE}\r\n\r\nPaste the Mind Ready message here (Ctrl+V), then send.`);
+    box.destroy();
+    fixture.destroy();
+  });
+
+  it("Basic draws 'no AI key' with Show me to the key box, and no Send feedback", async () => {
+    const f = prepFake([{ state: "no_key", stage: "done", applied: 3, left: 1, ask: noKey() }]);
+    const { fixture, el, look, shown } = await drawOn("basic", f.api);
+    others();
+    await page.runAll();
+    await look();
+    expect(sentences(el)).toEqual(NO_KEY_LINES);
+    expect(buttonsIn(el.querySelector('[data-test="question"]'))).toEqual(["Show me"]);
+    linkIn(el, '[data-test="question"]')!.click();
+    expect(shown).toEqual([{ id: "assistant-key", open: true }]);
+    fixture.destroy();
+  });
+
+  it("Basic draws the question kept for the end of Start the same way, and no Show me when everything ran or after a Cancel", async () => {
+    const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-009", sheet: "Calc", cell: "B2" }, feedback: { ref: null, note: NOTE } });
+    const f = prepFake([asks(ask, 12)]);
+    const { fixture, el, look, shown } = await drawOn("basic", f.api);
+    others();
+    await page.runAll();
+    await look();
+    expect(sentences(el)).toEqual(ASK_LINES);
+    expect(buttonsIn(el.querySelector('[data-test="question"]'))).toEqual(["Show me", "Send feedback"]);
+    linkIn(el, '[data-test="question"]')!.click();
+    expect(shown).toEqual([{ id: "assistant-ask", ruleId: "FRM-009", where: { sheet: "Calc", cell: "B2" }, open: true }]);
+    (el.querySelector('[data-test="question"] .chain__feedback') as HTMLButtonElement).click();
+    expect(TestBed.inject(FeedbackService).dialog()).toEqual({ ref: null, note: NOTE }); // a question that came with no incident
+    TestBed.inject(FeedbackService).close();
+
+    // Start again, and this time nothing is left: one calm sentence, nothing to show
+    f.looks.push(done(0));
+    f.calls.length = 0;
+    await page.runAll();
+    await look();
+    expect(sentences(el)[0]).toMatch(/^Everything ran and every check passed/);
+    expect(el.querySelector(".basic__next")).toBeNull();
+    expect(el.querySelector('[data-test="question"]')).toBeNull();
+    expect(el.querySelector(".basic__said mr-show-me")).toBeNull();
+
+    // and after a Cancel: the person stopped it, there is no place to fix
+    const end = hold<PrepRunStatus>();
+    f.looks.push(end.done);
+    const run = page.runAll();
+    await until(() => f.seen.length > 0 && page.chainStep()?.id === "prepare");
+    page.onChainStopping();
+    end.end({ state: "cancelled" });
+    page.onChainStopped();
+    await run;
+    await look();
+    expect(sentences(el)).toEqual(["Stopped. Your workbook is as it was after the formula errors were fixed."]);
+    expect(el.querySelector(".basic__said mr-show-me")).toBeNull();
+    expect(el.querySelector('[data-test="question"]')).toBeNull();
+    fixture.destroy();
+  });
+
+  it("Custom draws the same question under its chain, with why under View details", async () => {
+    const ask = question({ lines: [ASK_LINES[0], "Fix it by hand, then press Do everything again."] });
+    const f = prepFake([round(1, 954), asks(ask)]);
+    const { fixture, el, look, shown } = await drawOn("custom", f.api);
+    others();
+    await page.runAll();
+    await look();
+    const text = (selector: string) => Array.from(el.querySelectorAll(selector)).map((x) => (x.textContent ?? "").replace(/\s+/g, " ").trim());
+    expect(text(".chain > .chain__text strong")).toEqual([`${ASK_LINES[0]} Fix it by hand, then press Do everything again.`]);
+    // the question has its own Show me: the sentence's plain one is not drawn beside it
+    expect(el.querySelector(".chain > .chain__text mr-show-me")).toBeNull();
+    const row = el.querySelector('.chain > [data-test="question"]')!;
+    expect(buttonsIn(row)).toEqual(["Show me", "Send feedback", "View details"]);
+    expect(el.querySelector(".chain__why")).toBeNull();
+    (Array.from(row.querySelectorAll("button")).find((b) => b.textContent?.trim() === "View details") as HTMLButtonElement).click();
+    await look();
+    expect(text(".chain__why")).toEqual([WHY]);
+    expect(buttonsIn(row)).toEqual(["Show me", "Send feedback", "Hide details"]);
+    linkIn(el, '.chain > [data-test="question"]')!.click();
+    expect(shown).toEqual([{ id: "prep-action", ruleId: "STR-008", where: { sheet: "Roll", cell: "W25" }, open: true }]);
+    (row.querySelector(".chain__feedback") as HTMLButtonElement).click();
+    expect(TestBed.inject(FeedbackService).dialog()).toEqual({ ref: "ABCD-1234", note: NOTE });
+    TestBed.inject(FeedbackService).close();
+    // the step in the list: what it wrote, in amber or red, and no question of its own
+    expect(text(".chain__step--failed .chain__line")[0]).toContain("954 changes applied");
+    // the next run starts clean: the question and its details go
+    f.looks.push(done(2));
+    await page.runAll();
+    await look();
+    expect(el.querySelector('[data-test="question"]')).toBeNull();
+    expect(el.querySelector(".chain__why")).toBeNull();
+    fixture.destroy();
+  });
+
+  it("Custom draws a Prep job picked up after a reload alone in the list, with its own Cancel, which stops the kind prep", async () => {
+    const end = hold<PrepRunStatus>();
+    const f = prepFake([round(2), end.done]);
+    f.pickUp = true;
+    const { fixture, el, look } = await drawOn("custom", f.api);
+    await until(() => page.prepare().running);
+    await look();
+    // picked up by the page itself when the workbook opened: nobody pressed anything
+    expect(f.calls).not.toContain("start");
+    expect(Array.from(el.querySelectorAll(".chain__step")).map((s) => s.querySelector(".chain__label")?.textContent?.trim().split(/\s+check:/)[0])).toEqual(["Fix the formulas and the structure"]);
+    const head = el.querySelector(".chain__buttons")!;
+    expect(head.querySelector("mr-cancel")).toBeNull(); // Do everything is not running: its own Cancel is not there
+    const cancel = el.querySelector(".chain__steps .action__progress mr-cancel button") as HTMLButtonElement;
+    expect(cancel.textContent?.trim()).toBe("Cancel");
+    expect(el.querySelectorAll("mr-cancel")).toHaveLength(1);
+    cancel.click();
+    await look();
+    expect(f.calls).toContain("cancel:prep");
+    end.end({ state: "cancelled" });
+    await until(() => !page.prepare().running);
+    await look();
+    expect(el.querySelector("mr-cancel")).toBeNull();
+    expect(page.steps()[0]).toMatchObject({ state: "stopped", line: STOPPED_NOTHING_CHANGED });
     fixture.destroy();
   });
 });

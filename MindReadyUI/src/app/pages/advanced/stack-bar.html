@@ -29,8 +29,12 @@
         <button cdsButton="ghost" size="md" (click)="stack.clear()" [disabled]="running()">Empty the list</button>
       }
       @if (running()) {
-        <div class="bar__progress">
-          <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+        <!-- 17 Nov 2026: Cancel beside the bar; the entries stay in the list -->
+        <div class="row">
+          <div class="bar__progress" style="flex: 1 1 20rem">
+            <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+          </div>
+          <mr-cancel kind="apply" size="md"></mr-cancel>
         </div>
       } @else if (line()) {
         <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">

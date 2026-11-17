@@ -2,9 +2,10 @@ import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
 import { ButtonModule, ContentSwitcherModule, TagModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../core/api.service";
+import { ApiService, errorText, wasCancelled } from "../core/api.service";
+import { CancelButton } from "../core/cancel-button";
 import { CodeName } from "../core/code-name";
-import { Finding, Grid, Status } from "../core/models";
+import { Finding, Grid, STOPPED_NOTHING_CHANGED, Status } from "../core/models";
 import { PlainCodes } from "../core/plain-codes";
 import { ReadinessBanner } from "../core/readiness-banner";
 import { RecalcNow } from "../core/recalc-now";
@@ -33,7 +34,7 @@ const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" |
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, InstancesPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink, ReadinessBanner, RecalcNow],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, InstancesPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink, ReadinessBanner, RecalcNow, CancelButton],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
@@ -91,6 +92,9 @@ export class AdvancedPage {
     return g.first_row <= r && r <= g.last_row && g.first_col <= c && c <= g.last_col;
   }
   readonly restoreLine = signal("");
+  /** 17 Nov 2026: the version "Make current" is working on (null: none). One at a time: until tonight
+   *  the button  could be clicked twice, and its Cancel needs to know that  the work runs. */
+  readonly restoring = signal<string | null>(null);
 
   readonly findings = computed<Finding[]>(() => {
     const all = this.store.findings();
@@ -99,7 +103,7 @@ export class AdvancedPage {
     const rank: Record<string, number> = { ERROR: 0, REQUIRES_USER_INPUT: 1, NOT_SUPPORTED: 2, WARNING: 3, PASS: 4 };
     return [...list].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.rule_id.localeCompare(b.rule_id));
   });
-  /** The table's rows: each finding with what the error values its message quotes mean, once each. */
+  /** The table's rows: each  finding with what the error values its  message quotes mean, once each. */
   readonly rows = computed(() => this.findings().map((f) => ({ f, meanings: this.codes.meaningsIn(f.message) })));
   readonly manualActions = computed(() => this.store.plan().filter((a) => a.level === "blocking" || a.level === "optional"));
   readonly versionsNewestFirst = computed(() => [...this.store.versions()].reverse());
@@ -114,7 +118,7 @@ export class AdvancedPage {
     return [loc.sheet, loc.cell ?? loc.ref].filter(Boolean).join("!");
   }
 
-  /** A chip shows the  code; its tooltip says it in plain words. */
+  /** A chip shows the code; its tooltip  says it in plain words. */
   chipTip(f: Finding): string {
     return this.codes.name(f.rule_id, f.rule_name) ?? f.message;
   }
@@ -147,7 +151,8 @@ export class AdvancedPage {
 
   async restore(versionId: string): Promise<void> {
     const id = this.store.sessionId();
-    if (!id) return;
+    if (!id || this.restoring()) return;
+    this.restoring.set(versionId);
     this.restoreLine.set(`Restoring ${versionId}…`);
     try {
       const out = await this.api.reanalyze(id, versionId);
@@ -156,7 +161,11 @@ export class AdvancedPage {
       if (v) this.store.currentVersion.set(v);
       this.restoreLine.set(`${versionId} is the current version.`);
     } catch (e) {
-      this.restoreLine.set(errorText(e));
+      // 17 Nov 2026:  stopped with Cancel is no error. The server put the current version back; the list
+      // comes from the Cancel's own answer, never from this call.
+      this.restoreLine.set(wasCancelled(e) ? STOPPED_NOTHING_CHANGED : errorText(e));
+    } finally {
+      this.restoring.set(null);
     }
   }
 }

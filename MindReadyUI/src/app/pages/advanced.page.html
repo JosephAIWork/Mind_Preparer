@@ -89,7 +89,8 @@
                 <tr>
                   <td class="rule"><mr-code [code]="row.f.rule_id" [name]="row.f.rule_name"></mr-code></td>
                   <td><cds-tag [type]="tag(row.f.status).type" size="sm">{{ tag(row.f.status).label }}</cds-tag></td>
-                  <td class="mono">{{ where(row.f) }}</td>
+                  <!-- 17 Nov 2026: "Show me" from a stop message ends here: the cell the problem is in (`where-<RULE>`) -->
+                  <td class="mono" [attr.data-show-me]="'where-' + row.f.rule_id">{{ where(row.f) }}</td>
                   <!-- the message's own instruction ("Use Bring in the outside files", "The Prep action '…'"); the row's
                        "Ask the assistant" is already next to it -->
                   <td>
@@ -139,9 +140,11 @@
       @case ("versions") {
 <div class="tab-body">
           @if (restoreLine()) {
-            <p class="hint">{{ restoreLine() }}</p>
+            <!-- 17 Nov 2026: Cancel beside "Restoring…"; the version list stays as it was -->
+            <p class="hint" data-test="restore-line">{{ restoreLine() }} @if (restoring()) { <mr-cancel kind="scan" size="sm"></mr-cancel> }</p>
           }
-          <table class="list">
+          <!-- 17 Nov 2026: "The assistant fixed 2 more: see Advanced › Versions." leads here (`versions-list`) -->
+          <table class="list" data-show-me="versions-list">
             <thead>
               <tr>
                 <th>Version</th>
@@ -161,7 +164,7 @@
                       <a cdsButton="ghost" size="sm" [href]="url">Download</a>
                     }
                     @if (v.id !== store.currentVersion()?.id) {
-                      <button cdsButton="ghost" size="sm" (click)="restore(v.id)">Make current</button>
+                      <button cdsButton="ghost" size="sm" (click)="restore(v.id)" [disabled]="!!restoring()">Make current</button>
                     }
                     @if (v.change_log?.length) {
                       <button cdsButton="ghost" size="sm" (click)="toggleChanges(v.id)">{{ changesOpen(v.id) ? "Hide" : "Show" }} {{ v.change_log!.length }} changes</button>

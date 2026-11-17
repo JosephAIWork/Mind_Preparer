@@ -116,19 +116,21 @@ export interface PrepProgress {
 }
 
 export interface ScanStatus {
-  state: "pending" | "idle" | "running" | "ready" | "error";
-  /** the  stage running  now (app/progress.py: convert, copy, load, inventory, names, rules, report, plan) */
+  /** "cancelled"  (17 Nov  2026): the check was stopped with Cancel; nothing was changed */
+  state: "pending" | "idle" | "running" | "ready" | "error" | "cancelled";
+  /** the stage running now (app/progress.py: convert, copy, load, inventory, names, rules, report, plan) */
   stage?: string | null;
   title?: string | null;
   message?: string | null;
   fraction?: number | null;
   /** 0..1 over the whole scan */
   overall?: number;
-  /** the stages already finished, with their seconds */
+  /** the stages already finished, with their  seconds */
   stages?: { stage: string; seconds: number }[];
   elapsed_s?: number;
   error?: string | null;
-  apply?: { state: string; stage?: string; title?: string; message?: string; fraction?: number; done?: number; total?: number };
+  /** the Apply's own progress; its `state` is "running", "done", "error" or  (17 Nov 2026) "cancelled" */
+  apply?: { state: "idle" | "running" | "done" | "error" | "cancelled" | string; stage?: string; title?: string; message?: string; fraction?: number; done?: number; total?: number };
 }
 
 export interface SessionStart {
@@ -274,7 +276,8 @@ export interface ApplyOutcome {
 }
 
 export interface AutoFixStatus {
-  state: "idle" | "running" | "done" | "error";
+  /** "cancelled"  (17 Nov  2026): stopped with Cancel -- no version, nothing kept ("Stop, keep what is fixed" ends "done") */
+  state: "idle" | "running" | "done" | "error" | "cancelled";
   stage?: string;
   title?: string;
   message?: string;
@@ -991,8 +994,69 @@ export interface MindLoopReport {
   leftover_projects?: string[];
 }
 
+/** A  project Run  in Mind made in Mind (17 Nov 2026, GET .../mind-loop `project` and `kept`). */
+export interface MindProject {
+  name: string;
+  /** how  far it  got: "creating" (it may or may not be in Mind yet), "created", "model added", "run" */
+  status: "creating" | "created" | "model added" | "run" | string;
+  /** the model was run in it */
+  ran: boolean;
+  /** null: still in Mind as far as the app knows; else what  the delete found ("deleted", "not found") */
+  deleted: string | null;
+  /** Mind's address, for the link "Open  Mind" */
+  url: string;
+}
+
+/** The  five ways  "Delete it from Mind" can end. */
+export type MindDeleteResult = "deleted" | "not found" | "still present" | "refused" | "unreachable";
+
+/** POST  .../mind-loop/delete-project (17  Nov 2026): what Mind did, in one plain sentence (`message`). */
+export interface MindDelete {
+  name: string;
+  result: MindDeleteResult;
+  message: string;
+  url: string;
+}
+
+/** After  "Delete it  from Mind": Mind did not delete the project and the person has to do it there, so
+ *  the link "Open Mind" stands beside the sentence. */
+export function mindDeleteByHand(d: MindDelete | null | undefined): boolean {
+  return d?.result === "still present" || d?.result === "refused";
+}
+
+/** After  "Delete it  from Mind", when the list of kept projects could not be read again: does the
+ *  project's button go? It goes when Mind no longer has the project; "It is not in Mind  yet" (a project
+ *  that was still being made) keeps the button for  one more try. */
+export function mindDeleteGone(d: MindDelete | null | undefined): boolean {
+  if (!d) return false;
+  return d.result === "deleted" || (d.result === "not found" && !/not in Mind yet/i.test(d.message ?? ""));
+}
+
+/** The  line under  a cancelled run when earlier rounds left projects in Mind (no button: they were run), or "". */
+export function mindEarlierLine(names: string[] | null | undefined): string {
+  const list = (names ?? []).filter(Boolean);
+  return list.length ? `Earlier rounds of this run are still in Mind: ${list.join(", ")}.` : "";
+}
+
+/** What  the screens  say when a Cancel came before anything reached the server (the sign-in check, the sign-in window). */
+export const MIND_NOTHING_UPLOADED = "Stopped. Nothing was uploaded to Mind.";
+
+/** The  sentence under  a run in Mind that was stopped with Cancel: the server's own (`message`), or, from
+ *  an answer without one, the same three sentences built from the run's project. */
+export function mindStoppedLine(s: { message?: string | null; project?: MindProject | null } | null | undefined): string {
+  if (s?.message) return s.message;
+  const p = s?.project;
+  if (!p) return MIND_NOTHING_UPLOADED;
+  return p.status === "creating" ? `Stopped. A project named ${p.name} may be in Mind.` : `Stopped. The project ${p.name} is still in Mind.`;
+}
+
+/** Above  the projects  that stopped runs left in Mind, when the banner or the Run in Mind tab opens later
+ *  (right after a Cancel the stopped run's own sentence stands there instead). */
+export const MIND_KEPT_LEAD = "Still in Mind from a run you stopped:";
+
 export interface MindLoopStatus {
-  state: "idle" | "running" | "done" | "error";
+  /** 17  Nov 2026:  "cancelling" from the click on Cancel until the run has really stopped, then "cancelled" */
+  state: "idle" | "running" | "cancelling" | "cancelled" | "done" | "error";
   events: MindLoopEvent[];
   next: number;
   report: MindLoopReport | null;
@@ -1002,7 +1066,55 @@ export interface MindLoopStatus {
   version?: MindRunVersion | null;
   actions?: string[] | null;
   timing?: MindRunTiming;
+  /** the newest project of this run (null: none was made) */
+  project?: MindProject | null;
+  /** this workbook's projects from cancelled runs that are still  in Mind: each gets "Delete it from Mind" */
+  kept?: MindProject[];
+  /** other projects this run  left in Mind (earlier rounds that  were run): names only */
+  earlier?: string[];
+  /** after a Cancel: "Stopped.  The project {name} is still in Mind." (the server's sentence) */
+  message?: string | null;
 }
+
+// ----  Cancel (17  Nov 2026): POST .../cancel, GET .../jobs ----------------------------------------
+/** The kinds of work the server knows (the only values of `kind`). */
+export type WorkKind = "scan" | "apply" | "autofix" | "recalc" | "numbers" | "reports" | "outside" | "next_quarter" | "names" | "finder" | "chat" | "mind" | "prep";
+
+/** One  job running  on the server for the open workbook (GET .../jobs). */
+export interface WorkJob {
+  kind: WorkKind | string;
+  /** in  plain words:  "Writing the changes" */
+  title: string;
+  /** seconds since 1970 */
+  started: number;
+  elapsed_s: number;
+  /** Cancel was pressed and the job is on its way out */
+  stopping: boolean;
+}
+
+/** POST  .../cancel: what  the click on Cancel stopped. The request answers once the work has really
+ *  ended (or, after about 20 s, with `stopping`). */
+export interface CancelResult {
+  /** stopped  by this  call: nothing of them was kept */
+  cancelled: string[];
+  /** their result stands: they had finished before the click reached them */
+  late: string[];
+  /** still on their way out (look at GET .../jobs); `session` is then null */
+  stopping: string[];
+  /** a recalculation made ahead  was stopped (it is not a job, so it is in  no list) */
+  ahead: boolean;
+  /** "Stopped. Nothing was changed." |  "Nothing was running." | "It had already  finished." | "Stopping…" | the Mind sentence */
+  message: string;
+  /** the workbook as it is  now (GET /api/sessions/{id}); null while `stopping` is  not empty and before the first check */
+  session: SessionStart | null;
+  /** the project a stopped Run in Mind was making */
+  mind: MindProject | null;
+}
+
+/** The  sentence after  any single step was stopped with Cancel. */
+export const STOPPED_NOTHING_CHANGED = "Stopped. Nothing was changed.";
+/** The  first check  after an upload was stopped with Cancel. */
+export const STOPPED_NOT_CHECKED = "Stopped. The workbook was not checked. It is in Recent workbooks.";
 
 export interface NumbersCheck {
   ran: boolean;
@@ -1171,6 +1283,118 @@ export interface AutoFixLeft {
 /** The  steps of  "Do everything", in order ("outside" only when the model's macros open outside files). */
 export type ChainStepId = "outside" | "fixAll" | "prepare" | "loop" | "recalc";
 
+/** What  each step  left behind, for the sentence after a Cancel ("... as it was after {words}."). */
+const AFTER_STEP: Record<ChainStepId, string> = {
+  outside: "the input files were brought in",
+  fixAll: "the formula errors were fixed",
+  prepare: "the formulas and the structure were fixed",
+  loop: "the Mind loop was built",
+  recalc: "the recalculation",
+};
+
+/** 17  Nov 2026:  the one sentence after Cancel in the middle of Do everything (Basic says "Start" for
+ *  "Do everything", as it does in every chain sentence). `last`: the last step that really finished
+ *  (a skipped  step does not count); null: nothing had finished. Only the running  step is thrown away. */
+export function chainStoppedLine(last: ChainStepId | null): string {
+  if (!last) return "Stopped. Your workbook is as it was before you pressed Do everything.";
+  return `Stopped. Your workbook is as it was after ${AFTER_STEP[last]}.`;
+}
+
+// ----  the Prep  step as one job on the server (17 Nov 2026): POST and GET .../prep-run ------------------
+/** How the assistant's try at one problem ended (app/handoff.py OUTCOMES). */
+export type PrepOutcome = "fixed" | "no_fix" | "too_wide" | "not_written" | "numbers_changed" | "not_cleared" | "not_checked" | "not_tried";
+
+/** One  blocking problem  the Prep step looked at. */
+export interface PrepProblem {
+  rule_id: string;
+  /** the  rule in  plain words ("a formula reads a lone text cell") */
+  rule_name?: string | null;
+  sheet?: string | null;
+  cell?: string | null;
+  /** how many cells the problem is in */
+  cells?: number;
+  /** who can fix it: a Prep action ("prep"), a Prep action that had nothing to write ("prep_skipped"),  or only the assistant */
+  route: "prep" | "prep_skipped" | "assistant" | string;
+  tries?: number;
+  outcome?: PrepOutcome | string;
+}
+
+/** Where  "Show me"  leads for the problem asked about: a place (`id` is a ShowMeId), its rule and its cell. */
+export interface PrepShowMe {
+  id: string;
+  rule_id?: string | null;
+  sheet?: string | null;
+  cell?: string | null;
+}
+
+/** The  question the  Prep step ends with when the app could not fix everything by itself (also for
+ *  "no AI key"). `lines`: two plain sentences, drawn one per line on Basic. `why`: never a line  on
+ *  Basic; Custom shows it under "View details". `stops_start`: Start stops here  (a Prep fix is still
+ *  left, or  no AI key); false: Start goes on  and asks at its end. `feedback`: what "Send feedback" opens
+ *  with (null:  nothing to send, the app is not  at fault). */
+export interface PrepAsk {
+  lines: string[];
+  why?: string | null;
+  stops_start: boolean;
+  show_me?: PrepShowMe | null;
+  feedback?: { ref: string | null; note: string } | null;
+}
+
+/** GET  .../prep-run: where  the Prep step's job is. One job does it all: Prep rounds while a round still
+ *  changes something, then the assistant on what is left, then the numbers check on each of  its fixes. */
+export interface PrepRunStatus {
+  state: "idle" | "running" | "done" | "ask" | "no_key" | "cancelled" | "error";
+  stage?: "pass" | "assistant" | "write" | "numbers" | "undo" | "check" | "done" | string | null;
+  title?: string | null;
+  /** one  plain sentence:  "Round 2: writing 966 changes through Excel…" */
+  message?: string | null;
+  pass_no?: number;
+  /** changes written by the Prep rounds, and changes Excel refused */
+  applied?: number;
+  refused?: number;
+  /** problems the assistant fixed (each fix is a version of its own) */
+  assistant_fixed?: number;
+  problem_no?: number;
+  problem_count?: number;
+  problems?: PrepProblem[];
+  /** blocking problems left at the  end (outside-file ones are not counted) */
+  left?: number;
+  ask?: PrepAsk | null;
+  from_version_id?: string | null;
+  version?: Version | null;
+  started?: number | null;
+  updated?: number | null;
+  finished?: number | null;
+  elapsed_s?: number | null;
+  error?: string | null;
+  /** only with `?full=1`: the workbook as  GET /api/sessions/{id} gives it */
+  analysis?: Partial<SessionStart> | null;
+}
+
+/** What  the Prep  step wrote, in the words on screen (the server's `done_lines`, app/handoff.py):
+ *  "966 changes applied", then, when the assistant fixed something, "The assistant fixed 2 more: see
+ *  Advanced › Versions." (its "Show me" leads  to the Versions tab). Only the assistant: "The assistant
+ *  fixed 1: see  Advanced › Versions." Nothing written at  all: "" (the caller says what that  means). */
+export function prepDoneWords(applied: number | null | undefined, assistantFixed: number | null | undefined = 0): string {
+  const n = Math.max(0, Number(applied) || 0);
+  const m = Math.max(0, Number(assistantFixed) || 0);
+  if (!n) return m ? `The assistant fixed ${m}: see Advanced › Versions.` : "";
+  return m ? `${n} changes applied. The assistant fixed ${m} more: see Advanced › Versions.` : `${n} changes applied`;
+}
+
+/** The  two sentences  when something is left that needs the assistant and no AI key is saved (the server
+ *  sends them with state "no_key"; these stand in when it sends none). `button`: "Start" on Basic,  "Do
+ *  everything" on Custom. */
+export function prepNoKeyAsk(button: string): PrepAsk {
+  return {
+    lines: ["Something is left that needs the assistant, and no AI key is saved.", `Paste an AI key under Advanced › Assistant, then press ${button} again.`],
+    why: "The assistant was not asked.",
+    stops_start: true,
+    show_me: { id: "assistant-key", rule_id: null, sheet: "", cell: "" },
+    feedback: null,
+  };
+}
+
 /** 1.11.6:  GET .../estimate  -- how long "Do everything" may take, per step (seconds). */
 export interface ChainEstimateStep {
   id: ChainStepId;
@@ -1321,23 +1545,24 @@ export interface OutsideRunResult {
 export interface OutsideRunStatus {
   outsideInputs: OutsideInputs | null;
   running: boolean;
-  /** idle  | running  | done | error */
-  state?: string;
-  /** the versions the job made (also when it stopped half-way) */
+  /** idle  | running  | waiting_for_inputs | done | error | stopped | cancelled (17 Nov 2026: stopped with
+   *  Cancel -- both versions are gone, `versions` is empty) */
+  state?: "idle" | "running" | "waiting_for_inputs" | "done" | "error" | "stopped" | "cancelled" | string;
+  /** the versions the job made (also when it stopped  half-way) */
   versions?: string[];
   /** the stage in words ("Running the workbook's import macro") */
   stage: string | null;
   result: OutsideRunResult | null;
   error: string | null;
-  /** the latest progress line of the stage, and the seconds since  the job started */
+  /** the latest progress  line of the stage, and the  seconds since the job started */
   message?: string | null;
   elapsed_s?: number;
-  /** the stand-in files the assistant made (or tried to):  each try's outcome, also when it  failed */
+  /** the stand-in files  the assistant made (or tried to): each try's outcome, also when  it failed */
   standIns?: OutsideRunResult["standIns"];
-  /** 1.14.0: Do everything is waiting for the  input files (state "waiting_for_inputs"): nothing runs until
-   *  POST .../outside-inputs/continue (the files picked  meanwhile, or the assistant's stand-ins) or .../stop */
+  /** 1.14.0: Do everything is waiting for  the input files (state "waiting_for_inputs"): nothing runs until
+   *  POST .../outside-inputs/continue (the files picked meanwhile, or the assistant's stand-ins) or .../stop */
   waiting?: boolean;
-  /** while  it waits: the files the model's macro opens, which are there, what each fills */
+  /** while it waits: the files the model's macro opens, which are there, what each fills */
   needed?: OutsideNeededFile[] | null;
   /** the stages the job went through, in order (waiting | start | stand_ins | import | scan | ... | done | stopped) */
   stages?: string[];
@@ -1593,8 +1818,8 @@ export interface NextQuarterStatus {
   available: boolean;
   why_not?: string | null;
   running: boolean;
-  /** idle | running | done | error */
-  state?: string;
+  /** idle | running | done | error | cancelled (17 Nov 2026: stopped with Cancel -- no zip, `result` is null) */
+  state?: "idle" | "running" | "done" | "error" | "cancelled" | string;
   stage: string | null;
   message?: string | null;
   elapsed_s?: number;

@@ -1,8 +1,10 @@
 import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../../core/api.service";
+import { ApiService, errorText, wasCancelled } from "../../core/api.service";
+import { CancelButton } from "../../core/cancel-button";
 import { CodeName } from "../../core/code-name";
+import { STOPPED_NOTHING_CHANGED } from "../../core/models";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 
@@ -10,7 +12,7 @@ import { SessionStore } from "../../core/session.store";
 @Component({
   selector: "mr-deliver-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule, CodeName],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, CodeName, CancelButton],
   templateUrl: "./deliver-panel.html",
   styleUrl: "./panels.scss",
 })
@@ -21,6 +23,9 @@ export class DeliverPanel {
   readonly building = signal(false);
   readonly checking = signal(false);
   readonly error = signal("");
+  /** 17  Nov 2026:  what a Cancel left ("Stopped. Nothing was changed."), under the button it stopped: plain lines, not errors */
+  readonly buildStopped = signal("");
+  readonly checkStopped = signal("");
 
   readonly reports = computed(() => this.store.reports());
   readonly numbers = computed(() => this.store.numbers());
@@ -34,7 +39,7 @@ export class DeliverPanel {
     const s = this.numbers()?.samples ?? {};
     return Object.entries(s).flatMap(([kind, rows]) => rows.slice(0, 5).map((r) => ({ kind, ...r })));
   });
-  /** What  each error  value among the samples means ("#REF!" was a value, "#N/A" is now), once each. */
+  /** What each error value among the samples means ("#REF!" was a value, "#N/A" is now),  once each. */
   readonly legend = computed(() => this.codes.legend(this.sampleRows().flatMap((r) => [r.was, r.is])));
 
   url(name: string): string | null {
@@ -47,9 +52,15 @@ export class DeliverPanel {
     if (!id || this.building()) return;
     this.building.set(true);
     this.error.set("");
+    this.buildStopped.set("");
     try {
       this.store.reports.set(await this.api.generateReports(id));
     } catch (e) {
+      // 17 Nov 2026: stopped with Cancel is no error; the  reports made before (if any) stay
+      if (wasCancelled(e)) {
+        this.buildStopped.set(STOPPED_NOTHING_CHANGED);
+        return;
+      }
       this.error.set(errorText(e));
     } finally {
       this.building.set(false);
@@ -61,9 +72,15 @@ export class DeliverPanel {
     if (!id || this.checking()) return;
     this.checking.set(true);
     this.error.set("");
+    this.checkStopped.set("");
     try {
       this.store.numbers.set(await this.api.numbersCheck(id));
     } catch (e) {
+      // 17  Nov 2026: stopped with Cancel is no  error; the last comparison (if any) stays
+      if (wasCancelled(e)) {
+        this.checkStopped.set(STOPPED_NOTHING_CHANGED);
+        return;
+      }
       this.error.set(errorText(e));
     } finally {
       this.checking.set(false);

@@ -34,6 +34,14 @@
         <button class="shell__problem-close" (click)="feedback.dismiss()" aria-label="Dismiss">Dismiss</button>
       </div>
     }
+    @if (work.left(); as job) {
+      <!-- 17 Nov 2026: something still runs on the server and no Cancel for it is on screen (the page that
+           started it was left): one strip, so there is always a way to stop it -->
+      <div class="shell__work" role="status">
+        <span class="shell__work-text">Still working: {{ job.title }}.</span>
+        <mr-cancel [kind]="null" size="sm" [counted]="false"></mr-cancel>
+      </div>
+    }
     <router-outlet></router-outlet>
   </main>
   <mr-feedback-dialog></mr-feedback-dialog>

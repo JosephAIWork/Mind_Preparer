@@ -1,11 +1,14 @@
-import { Component } from "@angular/core";
-import { TestBed } from "@angular/core/testing";
+import { CommonModule } from "@angular/common";
+import { Component, NO_ERRORS_SCHEMA, Type } from "@angular/core";
+import { ComponentFixture, TestBed } from "@angular/core/testing";
 import { Router, provideRouter } from "@angular/router";
+import type { AdvancedPage } from "../pages/advanced.page";
+import type { PrepPanel } from "../pages/advanced/prep-panel";
 import type { HomePage } from "../pages/home.page";
 import { ApiService } from "./api.service";
-import { AutoFixStatus, LoopPlan, OutsideInputs, OutsideRunResult, RecalcResult, outsideAddLine, outsideOutcome } from "./models";
+import { AutoFixStatus, LoopPlan, Operation, OutsideInputs, OutsideRunResult, PrepAction, RecalcResult, SessionStart, Version, outsideAddLine, outsideOutcome } from "./models";
 import { SessionStore } from "./session.store";
-import { PLACE_SIDES, SHOW_ME_PHRASES, SHOW_ME_PLACES, ShowMeId, TAB_NAMES, chatIsAppWords, placeShowMe, planShowMe, showMeFor, showMeForStep } from "./show-me";
+import { PAGE_PATHS, PLACE_SIDES, SHOW_ME_PHRASES, SHOW_ME_PLACES, ShowMeId, TAB_NAMES, chatIsAppWords, placeShowMe, planShowMe, showMeFor, showMeForStep } from "./show-me";
 import { ShowMeLink } from "./show-me-link";
 import { ShowMeOverlay } from "./show-me-overlay";
 import { SHOW_ME_AFTER_CLICK_MS, SHOW_ME_WAIT_MS, SHOW_ME_WATCH_MS, ShowMeService } from "./show-me.service";
@@ -70,10 +73,18 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
     id: "recalc-errors",
   },
   {
+    // (17 Nov 2026: the step is one job on the server now; it stops like this only when the job itself failed.
+    // When something is left that the app could not fix, the stop line is the question: see NOT_A_PLACE below)
     where: "Do everything: stopped at the formulas and the structure",
-    text: 'Stopped at "Fix the formulas and the structure": 3 changed, 1 refused. Fix that under Advanced › Prep actions, then press Do everything again.',
+    text: 'Stopped at "Fix the formulas and the structure": Stopped with an error. Fix that under Advanced › Prep actions, then press Do everything again.',
     id: "prep-apply",
   },
+  {
+    where: "Start (Basic): stopped at the outside step, whose card is on the Custom screen",
+    text: 'Stopped at "Bring in the outside files": No input file matched yet. See the Outside files card on the Custom screen, then press Do everything again.',
+    id: "outside-card",
+  },
+  { where: "the loop step: what its fixes wrote, and the assistant's", text: "3 loop formulas written; then 5 changes applied for what the loop uncovered. The assistant fixed 1 more: see Advanced › Versions.", id: "versions" },
   { where: "Do everything: stopped at the loop", text: 'Stopped at "Build the Mind loop": Could not write the loop. Fix that under Advanced › Mind loop, then press Do everything again.', id: "loop-choices" },
   { where: "Do everything: stopped at Recalculate", text: 'Stopped at "Recalculate": Recalculated, 4 formula errors. Fix that under Advanced › Recalculate, then press Do everything again.', id: "recalc-errors" },
   // Advanced
@@ -139,6 +150,15 @@ const FOUND: { where: string; text: string; id: ShowMeId; ruleId?: string }[] = 
     id: "outside-bring-in",
   },
   { where: "the Do everything button itself", text: "press Do everything", id: "do-everything" },
+  // 17 Nov 2026: the Prep step's own sentences (app/handoff.py `done_lines`, `no_key_ask`)
+  { where: "the Prep step: the assistant fixed more", text: "966 changes applied. The assistant fixed 2 more: see Advanced › Versions.", id: "versions" },
+  { where: "the Prep step: only the assistant fixed something", text: "The assistant fixed 1: see Advanced › Versions.", id: "versions" },
+  { where: "the Prep step: no AI key (the second sentence)", text: "Paste an AI key under Advanced › Assistant, then press Start again.", id: "assistant-key" },
+  {
+    where: "the Prep step: no AI key (both sentences on one line)",
+    text: "Something is left that needs the assistant, and no AI key is saved. Paste an AI key under Advanced › Assistant, then press Start again.",
+    id: "assistant-key",
+  },
 ];
 
 /** Texts next to which no "Show me" belongs: they name no place to go. */
@@ -151,6 +171,22 @@ const NOT_A_PLACE = [
   "Already brought in",
   'Running "Bring in the outside files"', // a quoted name is a step's name, not an instruction
   "Fixed what it could; 3 errors the workbook already had stay, moving on",
+  // 17 Nov 2026: the question's own sentences name no place (their Show me comes from the server's `ask.show_me`)
+  "One thing is left that the app could not fix: a formula reads a lone text cell, on sheet Roll, cell W25.",
+  "One thing is left that the app could not fix: a formula reads a lone text cell, in 11 cells; the first is W25 on sheet Roll.",
+  "3 things are left that the app could not fix. The first: a formula reads a lone text cell, on sheet Roll, cell W25.",
+  "Fix it by hand, then press Start again.",
+  "Something is left that needs the assistant, and no AI key is saved.",
+  "Nothing blocked the file.",
+  // a Cancel has no place to fix: the person stopped it
+  "Stopped. Nothing was changed.",
+  "Stopped. Your workbook is as it was before you pressed Start.",
+  "Stopped. Your workbook is as it was before you pressed Do everything.",
+  "Stopped. Your workbook is as it was after the input files were brought in.",
+  "Stopped. Your workbook is as it was after the formula errors were fixed.",
+  "Stopped. Your workbook is as it was after the formulas and the structure were fixed.",
+  "Stopped. Your workbook is as it was after the Mind loop was built.",
+  "Stopped. Your workbook is as it was after the recalculation.",
 ];
 
 describe("Show me: the texts that send the user somewhere", () => {
@@ -293,9 +329,10 @@ describe("Show me: the clicks to a place", () => {
     expect(planShowMe({ id: "download" }, "advanced").map((s) => s.targets[0].el)).toEqual(["tab-mind", "mind-run"]);
   });
 
+  // (17 Nov 2026: the bubble said the code, "Ask the assistant about FRM-009 here"; no rule code on screen)
   it("points at the rule's own row when there is a rule, else at any finding", () => {
     expect(planShowMe({ id: "assistant-ask", ruleId: "FRM-009" }, "advanced")[1].targets).toEqual([
-      { el: "ask-FRM-009", text: "Ask the assistant about FRM-009 here" },
+      { el: "ask-FRM-009", text: "Ask the assistant about this problem here" },
       { el: "ask", text: "Ask the assistant about a finding here" },
       { el: "findings-list", text: "The findings are listed here" },
     ]);
@@ -564,6 +601,297 @@ describe("Show me: the link next to a finding's message", () => {
   });
 });
 
+// ---- 17 Nov 2026: a stop message on Basic: the cell the problem is in, and the pointer goes there itself ----
+describe("Show me: the cell, and going to the place by itself", () => {
+  let showMe: ShowMeService;
+  let store: SessionStore;
+  let router: Router;
+  const WHERE = { sheet: "Roll", cell: "W25" };
+
+  beforeEach(async () => {
+    TestBed.configureTestingModule({
+      providers: [provideRouter([{ path: "", component: Blank }, { path: "custom", component: Blank }, { path: "advanced", component: Blank }])],
+    });
+    showMe = TestBed.inject(ShowMeService);
+    store = TestBed.inject(SessionStore);
+    router = TestBed.inject(Router);
+    store.advancedTab.set("findings");
+    await router.navigateByUrl("/");
+  });
+
+  afterEach(() => {
+    showMe.stop();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+    store.sessionId.set(null);
+  });
+
+  it("plans the line of the cell first: the change for it in the Prep action, the Where cell of the Findings row", () => {
+    expect(planShowMe({ id: "prep-action", ruleId: "STR-008", where: WHERE }, "advanced")).toEqual([
+      { kind: "tab", tab: "prep", targets: [{ el: "tab-prep", text: "Click Prep actions" }] },
+      {
+        kind: "place",
+        targets: [
+          { el: "prep-cell", text: "This change is for cell W25 on sheet Roll. Tick the action, then click Apply." },
+          { el: "prep-for-STR-008", text: "Tick this action, then click Apply" },
+          { el: "prep-list", text: "The Prep actions are listed here" },
+        ],
+      },
+    ]);
+    const ask = planShowMe({ id: "assistant-ask", ruleId: "STR-008", where: WHERE }, "advanced")[1].targets;
+    expect(ask.map((t) => t.el)).toEqual(["where-STR-008", "ask-STR-008", "ask", "findings-list"]);
+    expect(ask[0].text).toBe("The problem is in cell W25 on sheet Roll.");
+  });
+
+  it("leaves the cell's line out when the request names no cell, or no rule for the Findings row", () => {
+    expect(planShowMe({ id: "prep-action", ruleId: "STR-008" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-for-STR-008", "prep-list"]);
+    expect(planShowMe({ id: "assistant-ask", ruleId: "STR-008" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["ask-STR-008", "ask", "findings-list"]);
+    // a cell with no rule: the change's own line still (it is marked by the panel), but no row to name
+    expect(planShowMe({ id: "prep-action", where: WHERE }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-cell", "prep-list"]);
+    expect(planShowMe({ id: "assistant-ask", where: WHERE }, "advanced")[1].targets.map((t) => t.el)).toEqual(["ask", "findings-list"]);
+    // half a cell is no cell
+    expect(planShowMe({ id: "prep-action", ruleId: "STR-008", where: { sheet: "Roll", cell: " " } }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-for-STR-008", "prep-list"]);
+    // a place that has no line for a cell is planned as before
+    expect(planShowMe({ id: "prep-apply", where: WHERE, open: true }, "custom")).toEqual(planShowMe({ id: "prep-apply" }, "custom"));
+  });
+
+  it("knows the two new places: the Versions tab's list and the AI key box", () => {
+    expect(planShowMe({ id: "versions" }, "basic")).toEqual([
+      { kind: "page", page: "advanced", targets: [{ el: "nav-advanced", text: "Click Advanced" }, { el: "link-advanced", text: "Click Advanced" }] },
+      { kind: "tab", tab: "versions", targets: [{ el: "tab-versions", text: "Click Versions" }] },
+      { kind: "place", targets: [{ el: "versions-list", text: "The versions are listed here" }] },
+    ]);
+    expect(planShowMe({ id: "assistant-key" }, "basic").map((s) => s.targets[0].el)).toEqual(["nav-advanced", "tab-assistant", "assistant-key"]);
+    expect(showMeFor("The assistant fixed 2 more: see Advanced › Versions.")).toEqual({ id: "versions" });
+    expect(showMeFor("The assistant fixed 2 more: see Advanced > Versions.")).toEqual({ id: "versions" });
+    expect(PAGE_PATHS).toEqual({ basic: "/", custom: "/custom", advanced: "/advanced" });
+  });
+
+  it("with open, goes to Advanced and to the tab by itself, and points at the place only", async () => {
+    store.sessionId.set("s1");
+    const apply = draw("prep-apply");
+    // no link to Advanced is drawn at all: Basic in a narrow window, where the pointer used to end quietly
+    expect(showMe.start({ id: "prep-apply", open: true })).toBe(true);
+    expect(showMe.steps().map((s) => s.kind)).toEqual(["place"]);
+    // the screen first: until it has opened, no tab is touched and nothing is pointed at
+    expect(showMe.pointer()).toBeNull();
+    expect(store.advancedTab()).toBe("findings");
+    await vi.waitFor(() => expect(showMe.pointer()).toMatchObject({ el: apply, text: "Apply the blocking repairs here", last: true }));
+    expect(router.url).toBe("/advanced?session=s1"); // as the header's link goes there: the open workbook stays in the address
+    expect(store.advancedTab()).toBe("prep");
+    expect(showMe.page()).toBe("advanced");
+    apply.click(); // at the place the person acts, and the pointer goes
+    expect(showMe.active()).toBe(false);
+  });
+
+  it("without open nothing moves by itself", () => {
+    vi.useFakeTimers();
+    draw("prep-apply");
+    showMe.start({ id: "prep-apply" });
+    expect(showMe.steps().map((s) => s.kind)).toEqual(["page", "tab", "place"]);
+    vi.advanceTimersByTime(SHOW_ME_WAIT_MS);
+    expect(router.url).toBe("/");
+    expect(store.advancedTab()).toBe("findings");
+    expect(showMe.active()).toBe(false);
+  });
+
+  it("with open on Advanced already, only opens the tab; with no workbook open the address has no session", async () => {
+    await router.navigateByUrl("/advanced");
+    const navigate = vi.spyOn(router, "navigate");
+    const numbers = draw("deliver-numbers");
+    showMe.start({ id: "deliver-numbers", open: true });
+    expect(store.advancedTab()).toBe("deliver");
+    expect(showMe.pointer()).toMatchObject({ el: numbers, last: true }); // at once: there was no screen to wait for
+    expect(navigate).not.toHaveBeenCalled();
+    navigate.mockRestore();
+
+    await router.navigateByUrl("/");
+    showMe.start({ id: "deliver-numbers", open: true });
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(numbers));
+    expect(router.url).toBe("/advanced");
+  });
+
+  it("with open, goes to Custom and to Basic too", async () => {
+    await router.navigateByUrl("/advanced?session=s1");
+    store.sessionId.set("s1");
+    const card = draw("outside-card");
+    showMe.start({ id: "outside-card", open: true });
+    await vi.waitFor(() => expect(showMe.pointer()).toMatchObject({ el: card, text: "The Outside files card is here", last: true }));
+    expect(router.url).toBe("/custom?session=s1");
+
+    await router.navigateByUrl("/advanced?session=s1");
+    const recent = draw("recent-workbooks");
+    showMe.start({ id: "recent-workbooks", open: true });
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(recent));
+    expect(router.url).toBe("/?session=s1");
+  });
+
+  it("with open, reaches the AI key box and the Versions list", async () => {
+    const key = draw("assistant-key");
+    showMe.start({ id: "assistant-key", open: true });
+    await vi.waitFor(() => expect(showMe.pointer()).toMatchObject({ el: key, text: "Paste the AI key here", last: true }));
+    expect(store.advancedTab()).toBe("assistant");
+
+    const versions = draw("versions-list");
+    showMe.start({ id: "versions", open: true }); // on Advanced by now
+    expect(store.advancedTab()).toBe("versions");
+    expect(showMe.pointer()).toMatchObject({ el: versions, text: "The versions are listed here", last: true });
+  });
+
+  it("keeps the cell while the pointer lives, for the panel that draws its line", async () => {
+    expect(showMe.where()).toBeNull();
+    expect(showMe.request()).toBeNull();
+    const card = draw("prep-for-STR-008");
+    const line = draw("prep-cell");
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: WHERE, open: true });
+    // known before the screen has opened: the Prep panel reads it when it is first drawn
+    expect(showMe.where()).toEqual(WHERE);
+    expect(showMe.request()).toEqual({ id: "prep-action", ruleId: "STR-008", where: WHERE, open: true });
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(line));
+    expect(showMe.pointer()).toMatchObject({ text: "This change is for cell W25 on sheet Roll. Tick the action, then click Apply.", last: true });
+    expect(store.advancedTab()).toBe("prep");
+    expect(showMe.where()).toEqual(WHERE);
+
+    card.click(); // a click elsewhere ends the pointer, and the cell with it
+    expect(showMe.active()).toBe(false);
+    expect(showMe.where()).toBeNull();
+    expect(showMe.request()).toBeNull();
+
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: WHERE });
+    expect(showMe.where()).toEqual(WHERE);
+    showMe.start({ id: "prep-apply" }); // the next pointer has no cell: the last one's is not left behind
+    expect(showMe.where()).toBeNull();
+    expect(showMe.request()).toEqual({ id: "prep-apply" });
+    showMe.start({ id: "prep-action", where: { sheet: "Roll", cell: "" } }); // half a cell is none
+    expect(showMe.where()).toBeNull();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(showMe.request()).toBeNull();
+  });
+
+  it("on Findings the arrow is on the row's Where cell, not on its button", async () => {
+    draw("findings-list", { width: 900, height: 400 });
+    draw("ask ask-STR-008");
+    const whereCell = draw("where-STR-008");
+    draw("where-FRM-009"); // another rule's row
+    showMe.start({ id: "assistant-ask", ruleId: "STR-008", where: WHERE, open: true });
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(whereCell));
+    expect(showMe.pointer()).toMatchObject({ text: "The problem is in cell W25 on sheet Roll.", last: true });
+    expect(store.advancedTab()).toBe("findings");
+    expect(router.url).toBe("/advanced");
+  });
+
+  it("moves the arrow to the cell's line when it is drawn a moment after the action's card", async () => {
+    await router.navigateByUrl("/advanced");
+    store.advancedTab.set("prep");
+    vi.useFakeTimers();
+    const card = draw("prep-for-STR-008");
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: WHERE });
+    expect(showMe.pointer()).toMatchObject({ el: card, text: "Tick this action, then click Apply", last: true });
+    const line = draw("prep-cell"); // the panel has opened the action's list
+    vi.advanceTimersByTime(SHOW_ME_WATCH_MS);
+    expect(showMe.pointer()).toMatchObject({ el: line, text: "This change is for cell W25 on sheet Roll. Tick the action, then click Apply.", last: true });
+    // and it stays there: a worse target drawn later takes nothing
+    draw("prep-list");
+    vi.advanceTimersByTime(SHOW_ME_WATCH_MS * 3);
+    expect(showMe.pointer()?.el).toBe(line);
+    line.remove(); // the list closed: back to the card
+    vi.advanceTimersByTime(SHOW_ME_WATCH_MS);
+    expect(showMe.pointer()?.el).toBe(card);
+  });
+
+  it("a pointer ended while the screen opens stays ended", async () => {
+    draw("prep-apply");
+    showMe.start({ id: "prep-apply", open: true });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(showMe.active()).toBe(false);
+    await vi.waitFor(() => expect(router.url).toBe("/advanced")); // the screen still opens: the click asked for it
+    await new Promise((r) => setTimeout(r, 20));
+    expect(showMe.active()).toBe(false);
+    expect(showMe.pointer()).toBeNull();
+    expect(store.advancedTab()).toBe("findings"); // the tab was the ended pointer's: not opened
+  });
+
+  it("a second Show me while the first screen opens wins, whole", async () => {
+    draw("prep-apply");
+    const card = draw("outside-card");
+    showMe.start({ id: "prep-apply", open: true });
+    showMe.start({ id: "outside-card", open: true });
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(card));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(router.url).toBe("/custom");
+    expect(showMe.pointer()).toMatchObject({ el: card, last: true });
+    expect(store.advancedTab()).toBe("findings");
+  });
+
+  it("ends quietly when the screen does not open", async () => {
+    draw("prep-apply");
+    vi.spyOn(router, "navigate").mockResolvedValue(false);
+    showMe.start({ id: "prep-apply", open: true });
+    await vi.waitFor(() => expect(showMe.active()).toBe(false));
+    expect(showMe.pointer()).toBeNull();
+    expect(showMe.where()).toBeNull();
+
+    vi.spyOn(router, "navigate").mockRejectedValue(new Error("no such screen"));
+    showMe.start({ id: "prep-apply", open: true });
+    await vi.waitFor(() => expect(showMe.active()).toBe(false));
+    expect(showMe.pointer()).toBeNull();
+  });
+
+  /** The link as a template draws it, with these inputs. */
+  function link(inputs: Record<string, unknown>): HTMLButtonElement | null {
+    const f = TestBed.createComponent(ShowMeLink);
+    for (const [name, value] of Object.entries(inputs)) f.componentRef.setInput(name, value);
+    f.detectChanges();
+    return (f.nativeElement as HTMLElement).querySelector("button");
+  }
+
+  it("the link takes [where] and [open] and hands them to the pointer", async () => {
+    // Basic's question, from the server's ask.show_me as it is: {id, rule_id, sheet, cell}
+    const showMeOfAsk = { id: "prep-action", rule_id: "STR-008", sheet: "Roll", cell: "W25" };
+    const line = draw("prep-cell");
+    const button = link({ to: showMeOfAsk.id, rule: showMeOfAsk.rule_id, where: showMeOfAsk, open: true });
+    expect(button?.textContent).toBe("Show me");
+    button!.click();
+    expect(showMe.request()).toEqual({ id: "prep-action", ruleId: "STR-008", where: WHERE, open: true });
+    expect(showMe.where()).toEqual(WHERE);
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(line));
+    expect(router.url).toBe("/advanced");
+    expect(store.advancedTab()).toBe("prep");
+  });
+
+  it("the link with a stop text and [open] opens the place the text names", async () => {
+    const stop = 'Stopped at "Fix the formulas and the structure": Stopped with an error. Fix that under Advanced › Prep actions, then press Do everything again.';
+    const apply = draw("prep-apply");
+    link({ text: stop, open: true })!.click();
+    expect(showMe.request()).toEqual({ id: "prep-apply", open: true });
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(apply));
+    expect(store.advancedTab()).toBe("prep");
+    // no key: the box under Advanced › Assistant
+    const key = draw("assistant-key");
+    link({ to: "assistant-key", open: true })!.click();
+    expect(showMe.pointer()).toMatchObject({ el: key, last: true });
+    expect(store.advancedTab()).toBe("assistant");
+  });
+
+  it("the link without them asks for what it always did", () => {
+    const service = TestBed.inject(ShowMeService);
+    const start = vi.spyOn(service, "start").mockReturnValue(true);
+    link({ to: "prep-action", rule: "STR-008" })!.click();
+    link({ to: "prep-action", rule: "STR-008", where: { sheet: "Roll", cell: "" }, open: false })!.click(); // half a cell is none
+    link({ to: "prep-action", rule: "STR-008", where: null })!.click();
+    link({ to: "prep-apply", open: "" })!.click(); // <mr-show-me to="prep-apply" open>
+    expect(start.mock.calls.map((c) => c[0])).toEqual([
+      { id: "prep-action", ruleId: "STR-008" },
+      { id: "prep-action", ruleId: "STR-008" },
+      { id: "prep-action", ruleId: "STR-008" },
+      { id: "prep-apply", open: true },
+    ]);
+    // a text that names no place draws no link, whatever else is given
+    expect(link({ text: "Fix it by hand, then press Start again.", where: WHERE, open: true })).toBeNull();
+  });
+});
+
 // ---- the main screen's own texts, built by the page -----------------------------------------------------
 describe("Show me on the main screen's texts", () => {
   let Page: typeof HomePage;
@@ -680,5 +1008,207 @@ describe("Show me on the main screen's texts", () => {
     } as LoopPlan);
     expect(page.loopSummary()).toBe("Loop CohortRng (2021 to 2026), Scenario (0 to 3): 91 formulas to write");
     expect(showMeFor(page.loopSummary())).toBeNull();
+  });
+});
+
+// ---- 17 Nov 2026: the places Start's question leads to, on the real Advanced screen ----------------------
+// The question Start ends with ("One thing is left that the app could not fix: ...") has a Show me that
+// goes to the problem's own cell: the line of its change in the Prep action's list, or the "Where" cell
+// of its row under Findings. Here the real panel and the real page are drawn, and the real pointer runs.
+describe("Show me: the cell's own line on the Prep panel, the Findings row and the Versions tab", () => {
+  let Prep: typeof PrepPanel;
+  let Advanced: typeof AdvancedPage;
+  let changeFor: (ops: Operation[], where: { sheet: string; cell: string }) => number;
+  let showMe: ShowMeService;
+  let store: SessionStore;
+  let router: Router;
+  let fixture: ComponentFixture<unknown> | null = null;
+  const WHERE = { sheet: "Roll", cell: "W25" };
+
+  beforeAll(async () => {
+    // Carbon (a package Node cannot load as it is) stands in as inert classes, as for the main screen above
+    vi.doMock("carbon-components-angular", () => {
+      class Inert {}
+      return new Proxy({}, { get: (_t, name) => (name === "then" ? undefined : Inert), has: () => true });
+    });
+    const prep = await import("../pages/advanced/prep-panel");
+    Prep = prep.PrepPanel;
+    changeFor = prep.changeFor;
+    Advanced = (await import("../pages/advanced.page")).AdvancedPage;
+  });
+
+  beforeEach(async () => {
+    const api = { plainCodes: () => Promise.resolve({ rules: {}, errors: {} }), downloadUrl: (id: string, name: string) => `/api/sessions/${id}/files/${name}` };
+    TestBed.configureTestingModule({
+      providers: [provideRouter([{ path: "", component: Blank }, { path: "custom", component: Blank }, { path: "advanced", component: Blank }]), { provide: ApiService, useValue: api }],
+    });
+    // each drawn with its own template; its child parts (other panels, Carbon's) stay inert
+    for (const cls of [Prep, Advanced] as Type<unknown>[]) TestBed.overrideComponent(cls, { set: { imports: [CommonModule], schemas: [NO_ERRORS_SCHEMA] } });
+    showMe = TestBed.inject(ShowMeService);
+    store = TestBed.inject(SessionStore);
+    router = TestBed.inject(Router);
+    store.sessionId.set("s1");
+    store.advancedTab.set("findings");
+    await router.navigateByUrl("/"); // the person is on Basic, reading the question
+    // jsdom lays nothing out: every element counts as drawn, with a size
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ top: 120, left: 100, width: 300, height: 20, right: 400, bottom: 140, x: 100, y: 120, toJSON: () => ({}) } as DOMRect);
+  });
+
+  afterEach(() => {
+    showMe.stop();
+    fixture?.destroy();
+    fixture = null;
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+    store.reset();
+  });
+
+  /** The panel or the page, drawn. */
+  function drawn<T>(cls: Type<T>): { el: HTMLElement; look: () => void } {
+    const f = TestBed.createComponent(cls);
+    fixture = f as ComponentFixture<unknown>;
+    f.detectChanges();
+    return { el: f.nativeElement as HTMLElement, look: () => f.detectChanges() };
+  }
+
+  const titles: PrepAction = { id: "title_grids", title: "Title the grids", rule_ids: ["STR-001"], default_on: true, level: "blocking", count: 1, operations: [{ op: "set_value", sheet: "Roll", cell: "A1", after: "#Title" }] };
+  /** Prep's own fix for a lone text cell is written BESIDE the cell: its note says which cell it is for. */
+  const lone = (ops: Operation[]): PrepAction => ({ id: "title_lone_text_cells", title: "Give a lone text cell that formulas read a title of its own", rule_ids: ["STR-008"], default_on: true, level: "blocking", count: ops.length, operations: ops });
+  const label = (sheet: string, at: string, cell: string): Operation => ({ op: "set_value", sheet, cell: at, before: null, after: `Value in ${cell}`, note: `${cell} = 'Not used' is read by Calc!B2 but sits just under the grid B20:${at}` });
+
+  it("finds the change that is for a cell: its own, or the one whose words name it", () => {
+    const ops = [label("Roll", "U24", "V24"), label("Other", "V25", "W25"), label("Roll", "V25", "W25"), { op: "move_cell", sheet: "Roll", cell: "J414", to: "AZ414" } as Operation];
+    expect(changeFor(ops, WHERE)).toBe(2); // not the one on the other sheet, whose note names a W25 too
+    expect(changeFor(ops, { sheet: "roll", cell: "$w$25" })).toBe(2); // as Excel writes a fixed cell, in any case
+    expect(changeFor(ops, { sheet: "Roll", cell: "J414" })).toBe(3); // the change of the cell itself
+    expect(changeFor(ops, { sheet: "Roll", cell: "V24" })).toBe(0);
+    // a longer address that only contains the cell's is another cell
+    expect(changeFor([label("Roll", "V25", "AW25"), label("Roll", "V26", "W250")], WHERE)).toBe(-1);
+    // a cell of another sheet named in the words is not this sheet's cell
+    expect(changeFor([{ op: "set_formula", sheet: "Roll", cell: "C3", note: "reads Calc!W25" }], WHERE)).toBe(-1);
+    expect(changeFor(ops, { sheet: "Roll", cell: "" })).toBe(-1);
+    expect(changeFor([], WHERE)).toBe(-1);
+  });
+
+  it("with a cell, the Prep action's list is open with that cell's change first, and the arrow is on it", async () => {
+    store.plan.set([titles, lone([label("Roll", "U24", "V24"), label("Roll", "V25", "W25"), label("Roll", "W26", "X26")])]);
+    const { el, look } = drawn(Prep);
+    expect(el.querySelector(".ops")).toBeNull(); // every list is closed until someone opens it
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: WHERE, open: true });
+    look();
+    look();
+    const card = el.querySelector('[data-show-me~="prep-for-STR-008"]')!;
+    const lines = Array.from(card.querySelectorAll(".ops li"));
+    expect(lines).toHaveLength(3);
+    expect(lines[0].textContent).toContain("Roll!V25");
+    expect(lines[0].textContent).toContain("W25"); // the line names the cell
+    expect(lines[0].getAttribute("data-show-me")).toBe("prep-cell");
+    expect(lines.slice(1).map((l) => l.textContent?.includes("Roll!U24") || l.textContent?.includes("Roll!W26"))).toEqual([true, true]);
+    expect(el.querySelectorAll('[data-show-me="prep-cell"]')).toHaveLength(1);
+    // the other action's list was not opened
+    expect(el.querySelectorAll(".ops")).toHaveLength(1);
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(lines[0]));
+    expect(showMe.pointer()).toMatchObject({ text: "This change is for cell W25 on sheet Roll. Tick the action, then click Apply.", last: true });
+    expect(router.url).toBe("/advanced?session=s1"); // the pointer went to Advanced and to the tab by itself
+    expect(store.advancedTab()).toBe("prep");
+    // the pointer ends (the service forgets the cell): the list stays open, with that change still first
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    look();
+    expect(showMe.where()).toBeNull();
+    expect(card.querySelector(".ops li")?.getAttribute("data-show-me")).toBe("prep-cell");
+  });
+
+  it("the change is first also when the list would not have shown it, and a plan made again marks nothing", async () => {
+    const many = Array.from({ length: 100 }, (_x, i) => label("Roll", `B${i + 1}`, `C${i + 1}`));
+    many[95] = label("Roll", "V25", "W25");
+    store.plan.set([lone(many)]);
+    const { el, look } = drawn(Prep);
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: WHERE, open: true });
+    look();
+    look();
+    const lines = Array.from(el.querySelectorAll(".ops li"));
+    expect(lines).toHaveLength(81); // 80 changes and the line that says how many more
+    expect(lines[0].getAttribute("data-show-me")).toBe("prep-cell");
+    expect(lines[0].textContent).toContain("Roll!V25");
+    expect(lines[80].textContent?.trim()).toBe("… 20 more");
+    // Apply made a new plan (the change is written): the old line is not marked in it
+    showMe.stop();
+    store.plan.set([lone([label("Roll", "U24", "V24")])]);
+    look();
+    look();
+    expect(el.querySelector('[data-show-me="prep-cell"]')).toBeNull();
+  });
+
+  it("with no change for that cell the arrow stays on the action's card; with no such action, on the list", async () => {
+    store.plan.set([titles, lone([label("Roll", "U24", "V24")])]);
+    const { el, look } = drawn(Prep);
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: WHERE, open: true });
+    look();
+    look();
+    expect(el.querySelector('[data-show-me="prep-cell"]')).toBeNull();
+    expect(el.querySelector(".ops")).toBeNull();
+    const card = el.querySelector('[data-show-me~="prep-for-STR-008"]') as HTMLElement;
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(card));
+    expect(showMe.pointer()?.text).toBe("Tick this action, then click Apply");
+    // the Prep action had nothing to write for the rule ("prep_skipped"): the list of actions
+    showMe.start({ id: "prep-action", ruleId: "FRM-009", where: { sheet: "Calc", cell: "B2" }, open: true });
+    look();
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(el.querySelector('[data-show-me="prep-list"]')));
+    expect(showMe.pointer()?.text).toBe("The Prep actions are listed here");
+  });
+
+  const v1: Version = { id: "ver-001", major: 1, minor: 0, label: "v1 — original", file_name: "model.xlsx", source: "upload" };
+  const v2: Version = { id: "ver-002", major: 2, minor: 0, label: "v2 — Assistant", file_name: "model_v2.xlsx", source: "assistant" };
+  const loaded = (): SessionStart => ({
+    sessionId: "s1",
+    summary: { file_name: "model.xlsx", file_type: "xlsx", sheet_count: 2, grid_count: 1, formula_count: 10 },
+    report: {
+      status: "ERROR",
+      findings: [
+        { rule_id: "FRM-009", rule_name: "a formula spills over several cells", status: "ERROR", message: "1 formula spills.", location: { sheet: "Calc", cell: "B2" } },
+        { rule_id: "STR-008", rule_name: "a formula reads a lone text cell", status: "ERROR", message: "11 lone text cells are read by formulas.", location: { sheet: "Roll", cell: "W25" } },
+      ],
+    },
+    plan: [],
+    version: v2,
+    versions: [v1, v2],
+  });
+
+  it("on Findings the rule's row carries the Where cell, and the arrow ends on it with the cell and the sheet", async () => {
+    store.setSession(loaded());
+    const { el, look } = drawn(Advanced);
+    const whereCell = el.querySelector('[data-show-me="where-STR-008"]') as HTMLElement;
+    expect(whereCell.tagName).toBe("TD");
+    expect(whereCell.textContent?.trim()).toBe("Roll!W25"); // the cell that names where the problem is
+    expect(el.querySelector('[data-show-me="where-FRM-009"]')?.textContent?.trim()).toBe("Calc!B2");
+    showMe.start({ id: "assistant-ask", ruleId: "STR-008", where: WHERE, open: true });
+    look();
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(whereCell));
+    expect(showMe.pointer()).toMatchObject({ text: "The problem is in cell W25 on sheet Roll.", last: true });
+    expect(router.url).toBe("/advanced?session=s1");
+    expect(store.advancedTab()).toBe("findings");
+    // without a cell the arrow is on the row's own button, and the bubble says no rule code
+    showMe.start({ id: "assistant-ask", ruleId: "STR-008", open: true });
+    const ask = el.querySelector('[data-show-me~="ask-STR-008"]') as HTMLElement;
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(ask));
+    expect(showMe.pointer()?.text).toBe("Ask the assistant about this problem here");
+    expect(showMe.pointer()?.text).not.toMatch(/[A-Z]{2,5}-\d{3}/);
+  });
+
+  it("'see Advanced › Versions' opens the Versions tab and points at its list", async () => {
+    store.setSession(loaded());
+    const { el, look } = drawn(Advanced);
+    expect(el.querySelector('[data-show-me="versions-list"]')).toBeNull(); // another tab is open
+    const sentence = "966 changes applied. The assistant fixed 2 more: see Advanced › Versions.";
+    showMe.start({ ...showMeFor(sentence)!, open: true });
+    await vi.waitFor(() => {
+      look();
+      expect(showMe.pointer()?.el).toBe(el.querySelector('[data-show-me="versions-list"]'));
+    });
+    expect(store.advancedTab()).toBe("versions");
+    expect(showMe.pointer()).toMatchObject({ text: "The versions are listed here", last: true });
+    // the list it points at holds the version the assistant's fix made
+    expect((showMe.pointer()!.el as HTMLElement).tagName).toBe("TABLE");
+    expect(showMe.pointer()!.el.textContent).toContain("v2 — Assistant");
   });
 });

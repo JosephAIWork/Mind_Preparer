@@ -61,6 +61,7 @@ from typing import Any, Callable
 
 import openpyxl
 
+from . import cancel  # 17  Nov 2026:  the Cancel button -- the loop reads the flag between its stages and before each Mind call
 from . import mind_client as mc
 from . import prep
 from .change_apply import convert_output_format
@@ -324,7 +325,9 @@ def numbers_gate(source: Path, prepared: Path, applied: list[dict[str, Any]], an
         s_copy, _ = make_immutable_copy(source, work / "source")
         p_copy, _ = make_immutable_copy(prepared, work / "prepared")
         rs = recalculate(s_copy)
+        cancel.check()  # 17 Nov 2026: an  Excel ended by a Cancel answers "did not run" -- that  is not a failed gate
         rp = recalculate(p_copy)
+        cancel.check()
         out["source_recalc"] = {"status": rs["status"], "ran": rs["ran"], "errors": len(rs["formula_errors"])}
         out["prepared_recalc"] = {"status": rp["status"], "ran": rp["ran"], "errors": len(rp["formula_errors"])}
         if not (rs["ran"] and rp["ran"]):
@@ -336,7 +339,7 @@ def numbers_gate(source: Path, prepared: Path, applied: list[dict[str, Any]], an
         out.update(cmp)
         out["ran"] = True
         out["match"] = bool(cmp["match"])
-    except Exception as exc:  # the gate must report,  never crash the loop
+    except Exception as exc:  # the gate  must report, never crash the loop
         out["ran"] = False
         out["message"] = f"numbers gate failed: {exc}"[:300]
         out.setdefault("match", False)
@@ -345,7 +348,7 @@ def numbers_gate(source: Path, prepared: Path, applied: list[dict[str, Any]], an
     return out
 
 
-# --- names and structure ---------------------------------------------------------
+# --- names  and structure ---------------------------------------------------------
 def names_gate(after_analysis: dict[str, Any], after_report: dict[str, Any], baseline_grid_count: int) -> dict[str, Any]:
     grids = all_grids(after_analysis)
     unnamed = [f"{g['sheet']}!{g['ref']}" for g in grids if not g.get("name")]
@@ -569,6 +572,7 @@ def _assistant_names(analysis: dict[str, Any], progress: Progress) -> dict[str, 
         return {}
     progress({"event": "names", "stage": "names", "message": f"asking the assistant to name {len(targets)} grid(s)"})
     out = suggest_names([build_grid_context(analysis, g) for g in targets])
+    cancel.check()  # 17  Nov 2026:  a call given up on a Cancel is not "assistant unavailable"
     if not out["available"]:
         progress({"event": "names", "message": f"assistant unavailable ({out.get('message')}); deterministic names stand"})
         return {}
@@ -600,11 +604,34 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         progress({"event": "done", "verdict": verdict, "message": f"{verdict}: {reason}"})
         return report
 
+    try:
+        return _iterations(cfg, progress, source, report, report_path, engine, finish)
+    except cancel.Cancelled:
+        # 17  Nov 2026:  stopped on request (the Cancel button). The report is still written, so that it
+        # lists the project Mind may hold; the caller says what happens next. Nothing is deleted here.
+        finish("cancelled", "stopped on request")
+        raise
+
+
+def _stop_check(*_a: Any, **_k: Any) -> None:
+    """A  progress callback  that only reads the Cancel flag (the loop's scans and its Apply report no
+    progress of their own): a cancelled run leaves at their next stage, sheet, rule or written change."""
+    cancel.check()
+
+
+def _iterations(cfg: LoopConfig, progress: Progress, source: Path, report: dict[str, Any], report_path: Path, engine: RulesEngine,
+                finish: Callable[[str, str], dict[str, Any]]) -> dict[str, Any]:
+    """The  loop itself:  run_loop's body, apart since 17 Nov 2026 so that a Cancel anywhere in it leaves
+    through run_loop's one handler. The flag is read between the stages (`cancel.check()`; no job, as
+    from the command  line: nothing)."""
+    # only under a job: the checks are for the Cancel  button, and nothing else needs the  callback
+    watched: dict[str, Any] = {"progress": _stop_check} if cancel.current() is not None else {}
     if source.suffix.lower() == ".xlsb":
-        # Mind  accepts .xlsx/.xlsm  only; the same Excel Save-As the upload endpoint uses.
+        # Mind accepts .xlsx/.xlsm only; the same Excel  Save-As the upload endpoint uses.
         target = "xlsm" if has_vba_project(source) else "xlsx"
         progress({"event": "log", "message": f"converting {source.name} to .{target} through Excel (Mind does not accept .xlsb)"})
         conv = convert_output_format(source, cfg.work_dir / "source", target)
+        cancel.check()
         if conv.get("status") != "APPLIED":
             return finish("stuck", f"could not convert .xlsb: {conv.get('message')}")
         source = Path(conv["output_path"]).resolve()
@@ -622,13 +649,14 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         progress({"event": "log", "message": msg, **extra})
 
     for n in range(1, cfg.max_iterations + 1):
+        cancel.check()
         it: dict[str, Any] = {"n": n, "enabled": sorted(enabled), "disabled": sorted(disabled), "run_model": cfg.run_model, "started": _now()}
         it_dir = cfg.work_dir / f"iter_{n}"
         it_dir.mkdir(parents=True, exist_ok=True)
         progress({"event": "iteration", "stage": "analyse", "n": n, "message": f"iteration {n}: analysing the source"})
 
         # 1. analyse the ORIGINAL source
-        res = plan_mode.run(source, it_dir / "analysis", {}, engine)
+        res = plan_mode.run(source, it_dir / "analysis", {}, engine, **watched)
         analysis, vreport = res["workbook_analysis"], res["validation_report"]
         wb0 = analysis["workbooks"][0]
         if baseline_grids is None:
@@ -649,9 +677,11 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
         it["findings_before"] = vreport["summary"]["status_counts"]
         log(stage="prepare", msg=f"iteration {n}: applying {len(ops)} operation(s) from {', '.join(a['id'] for a in chosen) or 'no actions'}")
 
-        # 2. apply through Excel
+        # 2. apply through  Excel
+        cancel.check()
         if ops:
-            applied = prep.apply_operations(source, it_dir / "prep", ops, prefer_excel=True)
+            applied = prep.apply_operations(source, it_dir / "prep", ops, prefer_excel=True, **watched)
+            cancel.check()  # 17 Nov 2026: its Excel ended by  a Cancel is not "prep could not be applied"
         else:
             copy, _ = make_immutable_copy(source, it_dir / "prep")
             applied = {"status": "NOT_APPLICABLE", "output_path": copy, "applied": [], "failed": [], "message": "no operations", "verified_opens_in_excel": None}
@@ -666,14 +696,17 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
             return finish(d["verdict"], d["reason"])
 
         # 3. local gates
+        cancel.check()
         log(stage="check", msg=f"iteration {n}: checking the prepared copy (grids and names)")
-        after = plan_mode.run(prepared, it_dir / "after", {}, engine)
+        after = plan_mode.run(prepared, it_dir / "after", {}, engine, **watched)
         it["findings_after"] = after["validation_report"]["summary"]["status_counts"]
         it["names"] = names_gate(after["workbook_analysis"], after["validation_report"], baseline_grids)
         log(f"iteration {n}: grids {it['names']['grids']} (baseline {baseline_grids}), unnamed {it['names']['unnamed']}, blocked {len(it['names']['blocked'])}")
+        cancel.check()
         if cfg.check_numbers:
             progress({"event": "numbers", "stage": "numbers", "message": f"iteration {n}: recalculating source and prepared copies in Excel"})
             it["numbers"] = numbers_gate(source, prepared, applied.get("applied", []), analysis, it_dir / "numbers")
+            cancel.check()
             nm = it["numbers"]
             log(f"iteration {n}: numbers {'match' if nm.get('match') else 'DIFFER' if nm.get('ran') else 'NOT CHECKED (' + str(nm.get('message')) + ')'} ({nm.get('compared', 0)} cells compared, {nm.get('differences', 0)} differ, {nm.get('volatile_skipped', 0)} volatile skipped)")
         else:
@@ -684,7 +717,9 @@ def run_loop(cfg: LoopConfig, progress: Progress | None = None) -> dict[str, Any
             it["mind"] = {"skipped": True, "reason": "local gate failed" if local_fail else "skip_mind"}
         else:
             # 4. Mind
+            cancel.check()
             it["mind"] = _mind_iteration(cfg, it_dir, prepared, it["names"], [s["name"] for s in wb0["sheets"]], n, stamp, report, progress)
+            cancel.check()  # 17 Nov 2026: what a stopped Mind step answered is not judged
             if "inputs_upload" in it["mind"]:
                 it["inputs_upload"] = it["mind"]["inputs_upload"]
         it["decision"] = decide(it, plan, enabled, disabled, wb0.get("formulas", []), wb0.get("defined_names", []))
@@ -730,43 +765,65 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
     name = f"{cfg.project_prefix}_{stamp}_i{n}"
     record = {"name": name, "status": "not created", "init_url": None, "ran": False}
     report["projects"].append(record)
+
+    def note(status: str) -> None:
+        # 17  Nov 2026:  every change of the project's state is told (event "project"), so that after a
+        # Cancel the app can say what Mind holds, or may hold, and offer to delete it
+        record["status"] = status
+        # with a message,  as every event of the loop has one (the log on  screen and the readers of the  events show it)
+        progress({"event": "project", "project": name, "status": status, "ran": bool(record.get("ran")),
+                  "message": f"iteration {n}: sandbox project {name}: {status}"})
+
+    # 17 Nov 2026: `cancel.check()` before  each Mind call. A Cancel leaves through `mind_session`'s own
+    # exit, on this  thread, so Edge closes cleanly (Cancelled is  not an Exception: the handler below
+    # does not turn it into "Mind automation failed").
     try:
         with mc.mind_session(headed=cfg.headed) as (_ctx, page):
             try:
                 page.set_viewport_size({"width": 1680, "height": 1000})
             except Exception:
                 pass
+            cancel.check()
             progress({"event": "mind", "stage": "mind_open", "message": f"iteration {n}: creating sandbox project {name}"})
             if not mc.open_manager(page):
                 out["error"] = "could not reach Mind's Project manager: the Mind sign-in is missing or has expired (Run in Mind > Sign in to Mind)"
                 return out
+            cancel.check()
             mc.ensure_folder(page, cfg.folder)
+            cancel.check()
+            note("creating")  # before the click: a Cancel during it leaves a project that may be in Mind
             init = mc.create_blank_project(page, name)
             record["init_url"] = init
             if not init:
+                if not cancel.flagged():
+                    note("not created")
                 out["error"] = "project was not created"
                 return out
-            record["status"] = "created"
+            note("created")
+            cancel.check()
             state = mc.open_project(page, init)
             if state != "empty":
                 out["error"] = f"project opened in state '{state}', expected an empty drop zone"
                 return out
+            cancel.check()
             progress({"event": "mind", "stage": "upload", "message": f"iteration {n}: uploading {prepared.name} and waiting for Upload / Convert / Test"})
             out["convert"] = mc.upload_and_convert(page, prepared, shots=shots)
             conv = out["convert"]
             progress({"event": "mind", "stage": "template", "message": f"iteration {n}: convert {'succeeded' if conv['success'] else 'FAILED'} {conv['steps']}" + (f" -- {' | '.join(conv['errors'])[:200]}" if conv["errors"] else "")})
             if not conv["success"]:
                 return out
+            cancel.check()
             if not mc.add_template(page):
                 out["error"] = "Add template to Milliman Mind did not lead to a Run button"
                 return out
-            record["status"] = "model added"
+            note("model added")
+            cancel.check()
             if inputs:
-                # every  iteration uploads  a new model into a new project, so its inputs go up again too
+                # every iteration uploads a new model into a new project, so its inputs go up again too
                 progress({"event": "mind", **_inputs_stage(), "message": f"iteration {n}: uploading {len(inputs)} input file(s) through Mind's Inputs window"})
                 mb = sum(f.stat().st_size for f in inputs) / 2**20  # Tokyo's inputs: about 1.4 M cells
-                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened  again before
-                # the run, else the run still uses the copies as  loaded before the import (K2 showed  120 for 915)
+                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened again  before
+                # the run, else the run still uses the copies as loaded before the import (K2 showed 120 for 915)
                 up = out["inputs_upload"] = mc.upload_inputs(page, Path(cfg.inputs_dir), timeout_s=int(300 + 30 * mb), shots=shots, project_url=init)
                 if not up.get("ok"):
                     out["error"] = f"Mind did not take the input files: {up.get('reason') or 'no reason recorded'}"
@@ -776,9 +833,10 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
                 if not up.get("closed", True) and mc.open_project(page, init) != "model":
                     out["error"] = "Mind's Inputs window would not close and the project did not open again"
                     return out
+            cancel.check()
             stem = prepared.stem
             listed = mc.template_names(page, stem)
-            # the list is only trusted  when it shows the workbook's own sheets
+            # the list is only trusted when it shows the workbook's own sheets
             trusted = bool(listed) and any(s in listed for s in sheet_names)
             untitled = mc.untitled_entries(listed) if trusted else []
             out["templates"] = {"stem": stem, "entries": len(listed), "trusted": trusted, "untitled": untitled}
@@ -786,9 +844,10 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
             c = out["counts"]
             progress({"event": "mind", "message": f"iteration {n}: Mind lists {len(listed)} template entries" + (f", {c['mind_untitled']} Untitled; app predicted {c['app_untitled']}, unexplained {len(c['unexplained'])}, app-only {len(c['app_only'])}" if trusted else " (selector could not be read; count skipped)")})
             if cfg.run_model:
+                cancel.check()  # the last stop before the Run click: after it the project was run, and is kept either way
                 progress({"event": "mind", "stage": "run", "message": f"iteration {n}: running the model"})
-                record["ran"] = True  # set before the click: a  project that was run must never be  deleted
-                record["status"] = "run"
+                record["ran"] = True  # set before the click: a project that was run must never be deleted
+                note("run")
                 out["run"] = mc.run_model(page, shots=shots)
                 progress({"event": "mind", "stage": "results", "message": f"iteration {n}: run {'completed' if out['run']['completed'] else 'did not complete'}" + (", consistent with the audit trail" if out["run"]["audit_consistent"] else "")})
                 try:
@@ -798,15 +857,19 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
             mc.screenshot(page, shots / "final.png")
     except Exception as exc:
         out["error"] = f"Mind automation failed: {exc}"[:300]
+        if record["status"] == "creating" and not cancel.flagged():
+            note("not created")  # as before tonight: a create that failed is not listed as left in Mind
     finally:
-        if cfg.delete_projects and record.get("status") in ("created", "model added") and not record.get("ran"):
+        # 17 Nov 2026: not after a Cancel -- the person  asked to keep the half-made  project and to be
+        # offered "Delete it from  Mind"; nothing is  deleted without  their click
+        if cfg.delete_projects and record.get("status") in ("created", "model added") and not record.get("ran") and not cancel.flagged():
             progress({"event": "mind", "stage": "cleanup", "message": f"iteration {n}: removing the sandbox project {name}"})
             try:
                 with mc.mind_session(headed=cfg.headed) as (_ctx, page):
                     st = mc.delete_project(page, name, cfg.folder)
                     record["delete"] = st
                     if st == "deleted":
-                        record["status"] = "deleted"
+                        note("deleted")
             except Exception as exc:
                 record["delete"] = f"failed: {exc}"[:120]
     return out

@@ -37,12 +37,28 @@ export type ShowMeId =
   | "outside-waiting" // main screen: the box under Do everything while it waits for the input files (1.14.0)
   | "do-everything" // main screen: Do everything
   | "recent-workbooks" // main screen: the Recent workbooks list (a saved workbook to open again)
-  | "download"; // main screen: Download this version; on Advanced: Run in Mind (send it to Mind)
+  | "versions" // Advanced › Versions: the list of versions ("The assistant fixed 2 more: see Advanced  › Versions.")
+  | "download"; // main screen: Download this  version; on Advanced: Run in Mind (send  it to Mind)
 
-/** A  pointer to start: the place,  and the rule whose Findings row to  point at ("Fix  FRM-009 with  the assistant"). */
+/** The  cell a  pointer is about: the problem Start could not fix by itself (17 Nov 2026). */
+export interface ShowMeWhere {
+  sheet: string;
+  cell: string;
+}
+
+/** A  pointer to  start: the place, and the rule whose Findings row to point at ("Fix FRM-009 with the assistant").
+ *  17 Nov 2026 (Show me in every stop message on Basic):
+ *  - `where`: the cell the  problem is in. The arrow then ends on the line that  names that cell (the change
+ *    for it  in the Prep action's list, the "Where"  cell of the rule's Findings row) and the bubble says the
+ *    cell  and the sheet. ShowMeService keeps it while  the pointer lives, for the panel that draws that line.
+ *  - `open`: the pointer goes to the place itself (the screen, then the Advanced tab) and points at the
+ *    place only, with no click on the way. From Basic in a narrow window there is no link to Advanced to
+ *    point at (Carbon hides the header's), and a stop message should need one click,  not three. */
 export interface ShowMeRequest {
   id: ShowMeId;
   ruleId?: string;
+  where?: ShowMeWhere;
+  open?: boolean;
 }
 
 /** What  to point  at: an element's `data-show-me` word, and the bubble's words there. */
@@ -92,6 +108,9 @@ export const TAB_NAMES: Record<AdvancedTab, string> = {
 
 /** Stands  for the  rule id in a target ("ask-{rule}"); a target with it is left out when no rule is given. */
 const RULE = "{rule}";
+/** Stand  for the  cell and the sheet of the request's `where`; a target with them is left out when no cell is given. */
+const CELL = "{cell}";
+const SHEET = "{sheet}";
 
 const OUTSIDE_CARD: ShowMeTarget = { el: "outside-card", text: "The Outside files card is here" };
 
@@ -105,14 +124,17 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
       tab: "prep",
       // the  card of  the action that repairs the finding's rule; an action with nothing left to change
       // is not drawn, and then the list of actions is shown
+      // 17 Nov 2026: with a cell, first the  line of the change for that cell (the panel opens the  action's
+      // list of changes and puts that  one first, marked `prep-cell`)
       targets: [
+        { el: "prep-cell", text: `This change is for cell ${CELL} on sheet ${SHEET}. Tick the action, then click Apply.` },
         { el: `prep-for-${RULE}`, text: "Tick this action, then click Apply" },
         { el: "prep-list", text: "The Prep actions are listed here" },
       ],
     },
   ],
   "prep-pivots": [{ page: "advanced", tab: "prep", targets: [{ el: "prep-pivots", text: "Choose what happens to the pivot tables here" }] }],
-  // above the tabs: on any tab of Advanced
+  // above the tabs: on  any tab of Advanced
   "stack-apply": [{ page: "advanced", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }],
   "deliver-numbers": [{ page: "advanced", tab: "deliver", targets: [{ el: "deliver-numbers", text: "Check the numbers here" }] }],
   "assistant-key": [{ page: "advanced", tab: "assistant", targets: [{ el: "assistant-key", text: "Paste the AI key here" }] }],
@@ -120,8 +142,11 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
     {
       page: "advanced",
       tab: "findings",
+      // 17 Nov 2026: with a cell, first the  "Where" cell of the rule's row (`where-<RULE>`),  which names it
       targets: [
-        { el: `ask-${RULE}`, text: `Ask the assistant about ${RULE} here` },
+        { el: `where-${RULE}`, text: `The problem is in cell ${CELL} on sheet ${SHEET}.` },
+        // (17 Nov 2026: the bubble said the rule's code here, "Ask the assistant about FRM-009 here": no code on screen)
+        { el: `ask-${RULE}`, text: "Ask the assistant about this problem here" },
         { el: "ask", text: "Ask the assistant about a finding here" },
         { el: "findings-list", text: "The findings are listed here" },
       ],
@@ -141,7 +166,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
       ],
     },
   ],
-  // the  box of the one answer a loop still needs (drawn above  the fold only while it is  needed), else
+  // the box of the one answer a loop still needs (drawn above the fold only while it is needed), else
   // the fold that holds every choice
   "loop-choices": [
     {
@@ -155,7 +180,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   ],
   "loop-build": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-build", text: "Click Build it" }] }],
   "loop-result": [{ page: "advanced", tab: "loop", targets: [{ el: "loop-result", text: "What the build did is here" }] }],
-  // the  Instances tab: the question, the Build it button, the line with  the download
+  // the Instances tab: the question, the Build it button, the line with the download
   "instances-choice": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-choice", text: "Tick a loop or pick a column here" }] }],
   "instances-build": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-build", text: "Click Build it" }] }],
   "instances-result": [{ page: "advanced", tab: "instances", targets: [{ el: "instances-result", text: "What the build did is here, with the download" }] }],
@@ -163,10 +188,11 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "outside-add": [{ page: "custom", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "custom", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
   "do-everything": [
-    { page: "basic", targets: [{ el: "do-everything", text: "Click Go" }] },
+    // (17 Nov 2026:  the bubble said "Click Go"; the button says Start)
+    { page: "basic", targets: [{ el: "do-everything", text: "Click Start" }] },
     { page: "custom", targets: [{ el: "do-everything", text: "Click Do everything" }] },
   ],
-  // the box is drawn only while  Do everything waits for the input files: the picker first, else the box
+  // the box is drawn only while Do everything waits for the input files: the picker first, else the box
   "outside-waiting": [
     { page: "basic", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "The check waits here for the input files" }] },
     { page: "custom", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "Do everything waits here for the input files" }] },
@@ -174,6 +200,8 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   // the list is drawn only while a saved workbook exists and no workbook is open (the idle main screen)
   "recent-workbooks": [{ page: "basic", targets: [{ el: "recent-workbooks", text: "Open the list of recent workbooks, then Reopen" }] },
     { page: "custom", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
+  // 17 Nov 2026: the Versions tab's list (a fix the assistant wrote by itself is a version of its own there)
+  versions: [{ page: "advanced", tab: "versions", targets: [{ el: "versions-list", text: "The versions are listed here" }] }],
   download: [
     { page: "basic", targets: [{ el: "download", text: "Download the file here" }] },
     { page: "custom", targets: [{ el: "download", text: "Download the file here" }] },
@@ -227,7 +255,9 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   { words: /\bthe box under Do everything\b/i, id: "outside-waiting" },
   { words: /\bpress Do everything\b/i, id: "do-everything" },
   { words: /\bDownload or send to Mind\b/i, id: "download" },
-  // "Open it again from Recent workbooks on  the main screen" (the server, for a session the restart closed)
+  // "The assistant fixed 2 more: see Advanced  › Versions." (the Prep step, 17 Nov 2026)
+  { words: under("Versions"), id: "versions" },
+  // "Open it again from Recent workbooks on the main screen" (the server, for a session the restart closed)
   { words: /\bRecent workbooks\b/i, id: "recent-workbooks" },
 ];
 
@@ -299,6 +329,10 @@ export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
   ],
 };
 
+/** Each  screen's address  (app.routes.ts): where a pointer started with `open` goes by itself, as the
+ *  header's link would. */
+export const PAGE_PATHS: Record<ShowMePage, string> = { basic: "/", custom: "/custom", advanced: "/advanced" };
+
 /** The  steps from  the screen the user is on (`here`) to the place: a click on Basic, Custom or Advanced when the
  *  place is on the other screen, a click on the Advanced tab, then  the place itself. Whether the user is
  *  already on that screen or  tab is checked again as each  step comes up (ShowMeService). */
@@ -309,10 +343,21 @@ export function planShowMe(request: ShowMeRequest, here: ShowMePage): ShowMeStep
   const steps: ShowMeStep[] = [];
   if (way.page !== here) steps.push({ kind: "page", page: way.page, targets: [...PAGE_LINKS[way.page]] });
   if (way.tab) steps.push({ kind: "tab", tab: way.tab, targets: [{ el: `tab-${way.tab}`, text: `Click ${TAB_NAMES[way.tab]}` }] });
-  const rule = request.ruleId?.trim();
+  // a  target that  names the rule, the cell or the sheet is left out when the request does not give it
+  const given: [string, string | undefined][] = [
+    [RULE, request.ruleId?.trim()],
+    [CELL, request.where?.cell?.trim()],
+    [SHEET, request.where?.sheet?.trim()],
+  ];
   const targets = way.targets.flatMap((t) => {
-    if (!t.el.includes(RULE) && !t.text.includes(RULE)) return [t];
-    return rule ? [{ el: t.el.split(RULE).join(rule), text: t.text.split(RULE).join(rule) }] : [];
+    let { el, text } = t;
+    for (const [mark, value] of given) {
+      if (!el.includes(mark) && !text.includes(mark)) continue;
+      if (!value) return [];
+      el = el.split(mark).join(value);
+      text = text.split(mark).join(value);
+    }
+    return el === t.el && text === t.text ? [t] : [{ el, text }];
   });
   steps.push({ kind: "place", targets });
   return steps;

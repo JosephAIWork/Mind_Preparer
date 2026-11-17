@@ -49,8 +49,12 @@
     <button cdsButton="primary" size="md" data-show-me="prep-apply" (click)="apply()" [disabled]="running() || !selectedOps().length">Apply {{ selectedOps().length }} changes</button>
     <button cdsButton="secondary" size="md" (click)="addToList()" [disabled]="running() || !selectedOps().length" title="Collect changes from Prep and the assistant, then write them all at once">Add to the list</button>
     @if (running()) {
-      <div class="bar__progress">
-        <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+      <!-- 17 Nov 2026: Cancel beside the bar; the Apply is stopped on the server and no version is made -->
+      <div class="row">
+        <div class="bar__progress" style="flex: 1 1 20rem">
+          <cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+        </div>
+        <mr-cancel kind="apply" size="md"></mr-cancel>
       </div>
     } @else if (line()) {
       <div class="result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
@@ -87,11 +91,13 @@
         <button class="link" (click)="toggleOpen(a.id)">{{ isOpen(a.id) ? "Hide the changes" : "Show the changes" }}</button>
         @if (isOpen(a.id)) {
           <ul class="ops mono">
-            @for (o of a.operations.slice(0, 80); track $index) {
-              <li>{{ opText(o) }}</li>
+            <!-- 17 Nov 2026: the change a "Show me" asked for (the cell of a problem Start could not fix) is
+                 first and carries the word the arrow looks for -->
+            @for (o of shownOps(a); track $index) {
+              <li [attr.data-show-me]="isPointed(a, o) ? 'prep-cell' : null">{{ opText(o) }}</li>
             }
-            @if (a.operations.length > 80) {
-              <li>… {{ a.operations.length - 80 }} more</li>
+            @if (moreOps(a)) {
+              <li>… {{ moreOps(a) }} more</li>
             }
           </ul>
         }

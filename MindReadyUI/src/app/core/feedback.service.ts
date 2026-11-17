@@ -8,19 +8,22 @@ import { tap } from "rxjs";
 export class FeedbackService {
   /** the  incident waiting  in the box under the header (null: no box), with what stopped, in plain words */
   readonly incident = signal<{ ref: string; text: string | null } | null>(null);
-  /** the dialog is open, for this incident (null: feedback from the header) */
-  readonly dialog = signal<{ ref: string | null } | null>(null);
+  /** the dialog is open, for this incident (`ref` null: feedback from the header), with these words
+   *  already in  its note box (`note` "": none). 17 Nov 2026: when Start  asks the person about a problem
+   *  it  could not fix, "Send feedback" opens with  the problem already written. */
+  readonly dialog = signal<{ ref: string | null; note: string } | null>(null);
   private seen = new Set<string>();
 
-  /** A problem the backend recorded: shown  once, however often a poll repeats it. */
+  /** A problem the backend recorded: shown once, however  often a poll repeats it. */
   report(ref: unknown, text?: unknown): void {
     if (typeof ref !== "string" || !ref || this.seen.has(ref)) return;
     this.seen.add(ref);
     this.incident.set({ ref, text: typeof text === "string" && text ? text : null });
   }
 
-  open(ref: string | null = null): void {
-    this.dialog.set({ ref });
+  /** Opens the dialog:  for an incident (`ref`) or from the header (null), with `note` in the note box. */
+  open(ref: string | null = null, note = ""): void {
+    this.dialog.set({ ref: ref || null, note: typeof note === "string" ? note : "" });
   }
 
   close(): void {

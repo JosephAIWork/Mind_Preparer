@@ -74,7 +74,12 @@
     }
     <label class="check"><input type="checkbox" [checked]="nameRest()" (change)="nameRest.set(!nameRest())" /> Name every other untitled grid by the conventions</label>
     <button cdsButton="primary" size="md" (click)="submit()" [disabled]="submitting() || !pending().length">{{ submitting() ? "Writing…" : "Submit " + pending().length + " area" + (pending().length === 1 ? "" : "s") }}</button>
-    @if (submitting()) { <cds-inline-loading [state]="'active'" loadingText="Writing the titles through Excel…"></cds-inline-loading> }
+    @if (submitting()) {
+      <cds-inline-loading [state]="'active'" loadingText="Writing the titles through Excel…"></cds-inline-loading>
+      <!-- 17 Nov 2026: Cancel beside the loading line; the areas to be named stay in the list -->
+      <mr-cancel kind="apply" size="md"></mr-cancel>
+    }
+    @if (submitStopped() && !submitting()) { <p class="hint" data-test="namer-submit-stopped">{{ submitStopped() }}</p> }
     @if (error()) {
       <div class="result result--error"><strong>Not written</strong><span>{{ error() }}</span></div>
     }
@@ -93,7 +98,12 @@
     <h3 class="panel__h">Or let the assistant name them</h3>
     <p class="hint">Names every untitled grid from the captions, labels and headers around it, through the assistant.</p>
     <button cdsButton="tertiary" size="md" (click)="suggest()" [disabled]="suggesting()">{{ suggesting() ? "Naming…" : "Suggest names" }}</button>
-    @if (suggesting()) { <mr-thinking text="The assistant is naming the grids…"></mr-thinking> }
+    @if (suggesting()) {
+      <mr-thinking text="The assistant is naming the grids…"></mr-thinking>
+      <!-- 17 Nov 2026: Cancel beside the thinking dots; the assistant's call is given up on the server -->
+      <mr-cancel kind="names" size="md"></mr-cancel>
+    }
+    @if (suggestStopped() && !suggesting()) { <p class="hint" data-test="namer-suggest-stopped">{{ suggestStopped() }}</p> }
     @if (suggestions(); as sg) {
       <p class="hint">{{ suggestLine(sg) }}<mr-show-me [text]="suggestLine(sg)"></mr-show-me></p>
       @if (sg.names.length) {

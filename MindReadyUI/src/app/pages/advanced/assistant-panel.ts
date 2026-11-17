@@ -2,22 +2,26 @@ import { CommonModule } from "@angular/common";
 import { Thinking } from "../../core/thinking";
 import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../../core/api.service";
+import { ApiService, errorText, wasCancelled } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
+import { CancelButton } from "../../core/cancel-button";
 import { ChangeStack } from "../../core/change-stack";
 import { CodeName } from "../../core/code-name";
-import { ChatMessage, FixTarget, Proposal, Version, aiUsageLine, appliedCount, failedCount, failedText } from "../../core/models";
+import { ChatMessage, FixTarget, Proposal, STOPPED_NOTHING_CHANGED, Version, aiUsageLine, appliedCount, failedCount, failedText } from "../../core/models";
 import { PlainCodes } from "../../core/plain-codes";
 import { SessionStore } from "../../core/session.store";
 import { chatIsAppWords } from "../../core/show-me";
 import { ShowMeLink } from "../../core/show-me-link";
 import { KeyBox } from "./key-box";
 
+/** 17  Nov 2026:  the note the chat gets when the answer was stopped with Cancel (the question stays above it). */
+export const ANSWER_STOPPED = "Stopped.";
+
 /** The  assistant: questions  about the workbook, or about one finding / one error it was pointed at; proposals applied through Excel. */
 @Component({
   selector: "mr-assistant-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName, ShowMeLink, Thinking],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, KeyBox, CodeName, ShowMeLink, Thinking, CancelButton],
   templateUrl: "./assistant-panel.html",
   styleUrl: "./panels.scss",
 })
@@ -37,13 +41,17 @@ export class AssistantPanel implements OnInit, OnDestroy {
   readonly applying = signal(false);
   readonly fraction = signal<number | null>(null);
   readonly applyLine = signal("");
+  /** 17 Nov 2026: what a Cancel of the Apply left ("Stopped. Nothing was changed."), in the  proposal's card: a plain line, not an error */
+  readonly applyStopped = signal("");
   readonly error = signal("");
   private stop: (() => void) | null = null;
+  /** 17 Nov 2026: the  answer on its way: Cancel gives  its request up at the click (the  button itself tells the server) */
+  private answering: AbortController | null = null;
 
   readonly target = computed(() => this.store.fixTarget());
-  /** 1.14.1: "AI used: 12,340 tokens in 7 calls" on this workbook, or "AI not used yet  on this workbook". */
+  /** 1.14.1: "AI used: 12,340 tokens in 7  calls" on this workbook, or "AI not  used yet on this workbook". */
   readonly usageLine = computed(() => aiUsageLine(this.store.aiUsage()));
-  /** Only the app's own words in the chat get  a "Show me", never the assistant's  free text. */
+  /** Only the app's own words in the chat get a "Show me", never the assistant's free text. */
   readonly appWords = chatIsAppWords;
   readonly prompts = computed(() => {
     const t = this.target();
@@ -60,18 +68,18 @@ export class AssistantPanel implements OnInit, OnDestroy {
     this.stop?.();
   }
 
-  /** The count from the server (a  step in a job -- Fix all issues, the grid namer  -- adds to it too). */
+  /** The count from the server (a step in a job -- Fix all issues, the grid namer -- adds to it too). */
   async refreshUsage(): Promise<void> {
     const id = this.store.sessionId();
     if (!id) return;
     try {
       this.store.aiUsage.set((await this.api.aiUsage(id)).aiUsage);
     } catch {
-      // the line keeps  what it had
+      // the line keeps what it had
     }
   }
 
-  /** A recalculation error in words: "#REF! at Calc!B7 and 3 cells alike: the formula points at a cell
+  /** A recalculation error in words: "#REF! at Calc!B7 and 3 cells alike: the formula points  at a cell
    *  that no longer exists" (its "RECALC" is no rule: not shown). */
   targetText(t: FixTarget): string {
     const where = [t.sheet, t.cell].filter(Boolean).join("!");
@@ -115,16 +123,33 @@ export class AssistantPanel implements OnInit, OnDestroy {
     this.phase.set("Thinking…");
     this.partial.set("");
     this.proposalVersion = this.store.currentVersion();
+    this.applyStopped.set("");
+    const answering = new AbortController();
+    this.answering = answering;
     try {
-      const reply = await this.api.chatStream(id, history, q, this.target() ?? undefined, (ev) => {
-        if (ev.type === "phase") this.phase.set(ev.phase === "lookup" ? "Looking into the workbook…" : ev.phase === "repair" ? "Checking the proposal…" : "Answering…");
-        else this.partial.update((p) => p + ev.text);
-      });
+      const reply = await this.api.chatStream(
+        id,
+        history,
+        q,
+        this.target() ?? undefined,
+        (ev) => {
+          if (ev.type === "phase") this.phase.set(ev.phase === "lookup" ? "Looking into the workbook…" : ev.phase === "repair" ? "Checking the proposal…" : "Answering…");
+          else this.partial.update((p) => p + ev.text);
+        },
+        answering.signal,
+      );
+      if (!reply) {
+        // 17 Nov 2026: stopped with Cancel (the request given up here, or the server's own last line): no
+        // error. The question stays in the chat, a note says the answer was stopped, the half answer goes.
+        this.store.chatHistory.update((h) => [...h, { role: "assistant", content: ANSWER_STOPPED, note: true }]);
+        return;
+      }
       this.store.chatHistory.update((h) => [...h, { role: "assistant", content: reply.text }]);
       this.proposal.set(reply.proposal && reply.proposal.operations?.length ? reply.proposal : null);
     } catch (e) {
       this.error.set(errorText(e));
     } finally {
+      if (this.answering === answering) this.answering = null;
       this.streaming.set(false);
       this.phase.set("");
       this.partial.set("");
@@ -132,7 +157,13 @@ export class AssistantPanel implements OnInit, OnDestroy {
     }
   }
 
-  /** 1.11.6: keep the proposal for the list at the top of the page instead of writing it now. */
+  /** 17 Nov 2026: the click on Cancel beside the thinking dots (the button's `stopping`, before the server
+   *  is asked): the request is given up  at once, so the screen  is free while the server ends the  call. */
+  stopAnswer(): void {
+    this.answering?.abort();
+  }
+
+  /** 1.11.6: keep the  proposal for  the list at the top of the page instead of writing it now. */
   addToList(): void {
     const p = this.proposal();
     if (!p) return;
@@ -152,11 +183,12 @@ export class AssistantPanel implements OnInit, OnDestroy {
     if (!id || !p || this.applying()) return;
     const now = this.store.currentVersion();
     if (this.proposalVersion && now && this.proposalVersion.id !== now.id) {
-      // its cells were  chosen on the older version: after an inserted row they would land one row off
+      // its cells were chosen on the older version: after an inserted row they would land one row off
       this.error.set(`This proposal was made on ${this.proposalVersion.label.split(" — ")[0]}; the workbook is now ${now.label.split(" — ")[0]}. Ask again so it is made on the current version.`);
       return;
     }
     this.applying.set(true);
+    this.applyStopped.set("");
     this.applyLine.set(`Writing ${p.operations.length} changes through Excel…`);
     this.stop = followApply(this.api, id, (t) => {
       this.fraction.set(t.fraction);
@@ -177,6 +209,12 @@ export class AssistantPanel implements OnInit, OnDestroy {
     } catch (e) {
       this.stop?.();
       this.applyLine.set("");
+      // 17 Nov  2026: stopped with Cancel is no error. Nothing was written and  the proposal's card stays
+      // (it can be  applied again); the workbook comes from the  Cancel's own answer, never from this call.
+      if (wasCancelled(e)) {
+        this.applyStopped.set(STOPPED_NOTHING_CHANGED);
+        return;
+      }
       this.error.set(errorText(e));
     } finally {
       this.applying.set(false);

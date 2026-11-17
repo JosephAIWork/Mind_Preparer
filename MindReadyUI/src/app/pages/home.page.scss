@@ -217,6 +217,21 @@
   margin-top: $spacing-05;
 }
 
+// 17 Nov 2026: Cancel under the first check's list of stages, and the one calm sentence after it
+// ("Stopped. The workbook was not checked. It is in Recent workbooks.")
+.scan__cancel {
+  display: block;
+  margin-top: $spacing-05;
+}
+
+.scan__stopped {
+  @include type.type-style("body-compact-01");
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$border-strong-01;
+  padding: $spacing-04 $spacing-05;
+  margin-bottom: $spacing-05;
+}
+
 .file {
   display: flex;
   justify-content: space-between;
@@ -269,6 +284,12 @@
   }
 
   &__progress {
+    margin-top: $spacing-03;
+  }
+
+  // 17 Nov 2026: Cancel under a step's progress bar
+  &__cancel {
+    display: block;
     margin-top: $spacing-03;
   }
 
@@ -446,6 +467,14 @@
     flex-wrap: wrap;
   }
 
+  // 17 Nov 2026: Do everything's button with Cancel beside it while it runs
+  &__buttons {
+    display: flex;
+    align-items: center;
+    gap: $spacing-03;
+    flex-wrap: wrap;
+  }
+
   &__title {
     @include type.type-style("heading-03");
   }
@@ -533,6 +562,14 @@
     margin: 0;
   }
 
+  // 17 Nov 2026: Start (or "Working") with Cancel close beside it
+  &__run {
+    display: flex;
+    align-items: center;
+    gap: $spacing-03;
+    flex-wrap: wrap;
+  }
+
   // 16 Nov 2026 (night): while Start runs the button holds the moving dots and "Working". It stays greyed
   // (it cannot be clicked), but its word is dark enough to read: Carbon's greyed text is too pale for that.
   & &__go--working {
@@ -545,10 +582,14 @@
     }
   }
 
+  // 17 Nov 2026: the line and what goes with it ("Show me" under a stop message, the question's buttons)
+  &__said {
+    margin-bottom: $spacing-05;
+  }
+
   &__line {
     @include type.type-style("body-02");
     color: theme.$text-secondary;
-    margin-bottom: $spacing-05;
   }
 
   // one short sentence a line: the step, the time left, the disclaimer
@@ -556,9 +597,34 @@
     display: block;
   }
 
+  // 17 Nov 2026: "Show me" under a stop message, starting its own row (drawn only when the message names
+  // a place). The link keeps a gap before it for when it follows a sentence: taken back here.
+  &__next {
+    margin: $spacing-03 0 0 (-$spacing-03);
+  }
+
   // the bar under the line while Start runs
   &__bar {
     max-width: 32rem;
     margin-bottom: $spacing-05;
   }
+}
+
+// 17 Nov 2026: what goes with the question the Prep step ended with, on Basic and on Custom: Show me, Send
+// feedback, and on Custom "View details" (why the assistant could not fix it)
+.chain__next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: $spacing-05;
+  margin: $spacing-03 0 0;
+
+  mr-show-me {
+    margin-left: -$spacing-03;
+  }
+}
+
+// inside Do everything's block the rows are already spaced: the buttons sit close under their sentence
+.chain > .chain__next {
+  margin-top: -$spacing-03;
 }

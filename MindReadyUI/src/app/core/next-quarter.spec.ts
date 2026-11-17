@@ -254,6 +254,26 @@ describe("the Next quarter part of the Outside files card", () => {
     expect(page.nextQuarterZipUrl()).toBeNull();
   });
 
+  it("a job stopped with Cancel empties the card and says so calmly: no zip, no files, not an error (17 Nov 2026)", async () => {
+    // an older job's files and zip are on the card; the new job is stopped half-way
+    const f = fake([status({ state: "done", result: result() }), status({ running: true, state: "running", stage: "Running the model's import macro with the new files" }), status({ state: "cancelled", result: null, error: null })]);
+    open(f);
+    await (page as unknown as { resumeNextQuarter: () => Promise<void> }).resumeNextQuarter();
+    expect(page.nextQuarterZipUrl()).not.toBeNull();
+    expect(await page.makeNextQuarter([new File(["x"], "2026_Q2 - BBA_01.csv")])).toBe(false);
+    expect(page.nextQuarter()).toMatchObject({ running: false, tone: "idle", line: "Stopped. Nothing was changed.", detail: "" });
+    expect(page.nextQuarterZipUrl()).toBeNull();
+    expect(page.nextQuarterFiles()).toEqual([]);
+    expect(page.busy()).toBe(false);
+    // after a reload there is nothing to show for a job that was stopped
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    open(fake([status({ state: "cancelled", result: null, error: null })]));
+    await (page as unknown as { resumeNextQuarter: () => Promise<void> }).resumeNextQuarter();
+    expect(page.nextQuarter()).toMatchObject({ running: false, line: "" });
+    expect(page.nextQuarterZipUrl()).toBeNull();
+  });
+
   it("checks the picked files first and waits while another step runs", async () => {
     const f = fake([status({ state: "done", result: result() })]);
     open(f);

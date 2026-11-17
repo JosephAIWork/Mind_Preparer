@@ -1,9 +1,10 @@
 import { CommonModule } from "@angular/common";
 import { Component, OnDestroy, OnInit, computed, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule, ProgressBarModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../../core/api.service";
+import { ApiService, errorText, wasCancelled } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
-import { LoopChoice, LoopChoices, LoopPlan, LoopPlanLoop, appliedCount, failedCount, failedText } from "../../core/models";
+import { CancelButton } from "../../core/cancel-button";
+import { LoopChoice, LoopChoices, LoopPlan, LoopPlanLoop, STOPPED_NOTHING_CHANGED, appliedCount, failedCount, failedText } from "../../core/models";
 import { plainWhy, splitNotes } from "../../core/plain-words";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
@@ -21,7 +22,7 @@ export type LoopAnswerKey = "count_cell" | "first" | "last" | "range";
 @Component({
   selector: "mr-loop-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule, ShowMeLink],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, ProgressBarModule, ShowMeLink, CancelButton],
   templateUrl: "./loop-panel.html",
   styleUrl: "./panels.scss",
   // the  macro dropdown,  styled like the panel's text inputs (as the instances panel's key dropdown)
@@ -261,6 +262,14 @@ export class LoopPanel implements OnInit, OnDestroy {
       this.built.set(done > 0);
     } catch (e) {
       this.stop?.();
+      // 17 Nov 2026: stopped with Cancel is no error. No loop  was written; the plan on screen still
+      // fits, and the workbook comes from the Cancel's own answer, never from this call.
+      if (wasCancelled(e)) {
+        this.tone.set("idle");
+        this.line.set(STOPPED_NOTHING_CHANGED);
+        this.detail.set("");
+        return;
+      }
       this.tone.set("error");
       this.line.set("Could not write the loop");
       this.detail.set(errorText(e));
@@ -274,7 +283,7 @@ export class LoopPanel implements OnInit, OnDestroy {
     return status === "ready" ? "chip chip--ok" : status === "needs_decision" ? "chip chip--warn" : status === "nothing_to_do" ? "chip" : "chip chip--error";
   }
 
-  /** The status in plain words: "left as is" is not an  error, the model keeps what it has there. */
+  /** The status in plain words: "left as is" is not an error, the model keeps what it has there. */
   statusText(status: string): string {
     return status === "ready" ? "ready" : status === "needs_decision" ? "needs one answer" : status === "nothing_to_do" ? "nothing to do" : "left as is";
   }

@@ -2,6 +2,7 @@ import { Component, OnInit, inject, signal } from "@angular/core";
 import { ActivatedRoute, Router, RouterLink, RouterLinkActive, RouterOutlet } from "@angular/router";
 import { UIShellModule } from "carbon-components-angular";
 import { ApiService } from "./core/api.service";
+import { CancelButton } from "./core/cancel-button";
 import { ExpiredNotice } from "./core/expired-notice";
 import { ExpiryService } from "./core/expiry";
 import { FeedbackDialog } from "./core/feedback-dialog";
@@ -9,15 +10,18 @@ import { FeedbackService } from "./core/feedback.service";
 import { PlainCodes } from "./core/plain-codes";
 import { SessionStore } from "./core/session.store";
 import { ShowMeOverlay } from "./core/show-me-overlay";
+import { WorkService } from "./core/work.service";
 
 /** The  shell: Mind's  dark Carbon header, the two places (main screen, Advanced), the version, and
  *  "Send feedback" (in the header, and in a box when a step failed), and the
  *  "Show me" pointer's overlay (once, above  everything). A shared copy also says until when it works;
- *  once it  stopped working, the notice replaces everything. */
+ *  once it  stopped working, the notice replaces everything.
+ *  17  Nov 2026: a strip under the header,  "Still working: ..." with Cancel, whenever something runs on the
+ *  server for  the open workbook and no Cancel for  it is on screen (the page that started it was left). */
 @Component({
   selector: "mr-root",
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog, ExpiredNotice, ShowMeOverlay],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, UIShellModule, FeedbackDialog, ExpiredNotice, ShowMeOverlay, CancelButton],
   templateUrl: "./app.html",
   styleUrl: "./app.scss",
 })
@@ -29,11 +33,14 @@ export class App implements OnInit {
   readonly feedback = inject(FeedbackService);
   readonly expiry = inject(ExpiryService);
   private codes = inject(PlainCodes);
+  /** 17  Nov 2026:  what runs on the server for the open workbook, and whether a Cancel for it is on screen */
+  readonly work = inject(WorkService);
   readonly version = signal("");
   readonly rules = signal<number | null>(null);
 
   ngOnInit(): void {
-    void this.codes.load(); // the  plain words  for every code the screens show
+    void this.codes.load(); // the plain words for every code the screens show
+    this.work.watch(); // 17 Nov 2026: the strip's list  of running jobs, read every 3 s while a workbook is  open
 
     this.api
       .health()
@@ -44,7 +51,7 @@ export class App implements OnInit {
         document.title = `Mind Ready Beta ${h.version}`;
       })
       .catch(() => {});
-    // `?session=<id>` reopens a session the backend still holds (after a reload or a shared link).
+    // `?session=<id>` reopens a session the backend  still holds (after a reload or a  shared link).
     const wanted = new URLSearchParams(window.location.search).get("session");
     if (wanted && !this.store.sessionId()) {
       this.api

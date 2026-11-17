@@ -36,7 +36,7 @@ import re
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
-from . import ai_key
+from . import ai_key, cancel
 from .settings import SETTINGS
 
 try:  # token  meter (PyCodes\TokenUsage)  - optional, never breaks the app
@@ -273,6 +273,17 @@ def _finish(text: str, stop_reason: str | None, on_delta: Callable[[str], None] 
     return {"available": True, "text": text, "message": None}
 
 
+def _until_cancelled(on_delta: Callable[[str], None]) -> Callable[[str], None]:
+    """17  Nov 2026  (Cancel): `on_delta` for a job that may be cancelled -- a cancelled job takes no
+    more of the answer: the next piece of text leaves with Cancelled (not an Exception: the `except`
+    of  chat_completion does not turn it into "Request failed"), and the stream  is closed on the way out."""
+    def checked(chunk: str) -> None:
+        cancel.check()
+        on_delta(chunk)
+
+    return checked
+
+
 def chat_completion(
     messages: list[dict[str, str]],
     system_prompt: str,
@@ -296,8 +307,23 @@ def chat_completion(
     if found is None:
         return {"available": False, "text": None, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
     api_key, endpoint = found
+    if on_delta is not None:
+        on_delta = _until_cancelled(on_delta)
     try:
         import requests
+
+        def send() -> Any:
+            # 17 Nov 2026 (Cancel): the request cannot be interrupted, so it runs through
+            # cancel.call -- checked before it is sent; on a Cancel the caller leaves within a
+            # quarter second and the request is left to end alone (its tokens are spent). An error
+            # of the request reaches the `except` below as before. No job: a plain call.
+            def post() -> Any:
+                resp = requests.post(url, headers=headers, json=payload, timeout=timeout, **({"stream": True} if stream else {}))
+                if cancel.flagged():
+                    resp.close()  # the caller has  left: nobody reads this answer
+                return resp
+
+            return cancel.call(post)
 
         url = endpoint.rstrip("/") + CLAUDE_APIM_PATH
         headers = {"Content-Type": "application/json", "api-key": api_key, "anthropic-version": "2023-06-01"}
@@ -315,14 +341,14 @@ def chat_completion(
         stream = on_delta is not None and _streaming_on()
         if stream:
             payload["stream"] = True
-        resp = requests.post(url, headers=headers, json=payload, timeout=timeout, **({"stream": True} if stream else {}))
+        resp = send()
         rejected = [k for k in ("temperature", "output_config") if k in payload and k in (resp.text or "")] if resp.status_code == 400 else []
         if rejected:
             # A model that refuses one of the tuning params (not yet known to
             # _takes_temperature / _takes_effort): drop it and ask once more.
             for k in rejected:
                 payload.pop(k)
-            resp = requests.post(url, headers=headers, json=payload, timeout=timeout, **({"stream": True} if stream else {}))
+            resp = send()
         resp.raise_for_status()
         if stream and "text/event-stream" in (resp.headers.get("content-type") or ""):
             usage: dict[str, Any] = {}

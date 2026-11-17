@@ -2,8 +2,9 @@ import { CommonModule } from "@angular/common";
 import { Thinking } from "../../core/thinking";
 import { Component, HostListener, OnInit, computed, effect, inject, signal } from "@angular/core";
 import { ButtonModule, InlineLoadingModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../../core/api.service";
-import { Grid, GridNamerOutcome, GridNamesResult, MindFlag, SheetCells, failedCount } from "../../core/models";
+import { ApiService, errorText, wasCancelled } from "../../core/api.service";
+import { CancelButton } from "../../core/cancel-button";
+import { Grid, GridNamerOutcome, GridNamesResult, MindFlag, STOPPED_NOTHING_CHANGED, SheetCells, failedCount } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
 
@@ -100,7 +101,7 @@ function parseExtraFlags(text: string): string[] {
 @Component({
   selector: "mr-grid-namer-panel",
   standalone: true,
-  imports: [CommonModule, ButtonModule, InlineLoadingModule, ShowMeLink, Thinking],
+  imports: [CommonModule, ButtonModule, InlineLoadingModule, ShowMeLink, Thinking, CancelButton],
   templateUrl: "./grid-namer-panel.html",
   styleUrl: "./grid-namer-panel.scss",
 })
@@ -138,6 +139,9 @@ export class GridNamerPanel implements OnInit {
   readonly showSkipped = signal(false);
   readonly suggesting = signal(false);
   readonly suggestions = signal<GridNamesResult | null>(null);
+  /** 17 Nov 2026: what a Cancel left ("Stopped. Nothing was changed."), under the button it stopped: plain lines, not errors */
+  readonly submitStopped = signal("");
+  readonly suggestStopped = signal("");
 
   readonly grids = computed<Grid[]>(() => this.sheets().find((s) => s.name === this.active())?.grids ?? []);
   readonly target = computed<Resolved | null>(() => {
@@ -169,7 +173,7 @@ export class GridNamerPanel implements OnInit {
   });
 
   constructor() {
-    // A new selection prefills the name and flags from the grid it lands on.
+    // A new selection prefills  the name and flags from the grid it lands on.
     effect(() => {
       const g = this.targetGrid();
       if (!g) return;
@@ -185,7 +189,7 @@ export class GridNamerPanel implements OnInit {
       this.chosenFlags.set(docFlags);
       this.extraFlags.set(extras.map((e) => "/" + e).join(" "));
     });
-    // The sheet's cells follow the active sheet, the size and  the summary.
+    // The sheet's  cells follow the active sheet, the  size and the summary.
     effect(() => {
       const id = this.store.sessionId();
       const sheet = this.active();
@@ -305,6 +309,7 @@ export class GridNamerPanel implements OnInit {
     if (!id || !this.pending().length || this.submitting()) return;
     this.submitting.set(true);
     this.error.set("");
+    this.submitStopped.set("");
     this.outcome.set(null);
     try {
       const out = await this.api.applyNamedAreas(
@@ -317,6 +322,12 @@ export class GridNamerPanel implements OnInit {
       this.pending.set([]);
       this.sel.set(null);
     } catch (e) {
+      // 17 Nov 2026: stopped  with Cancel is no error. No title was written, so the  areas "to be named"
+      // stay in the list;  the workbook comes from the Cancel's own answer, never from this call.
+      if (wasCancelled(e)) {
+        this.submitStopped.set(STOPPED_NOTHING_CHANGED);
+        return;
+      }
       this.error.set(errorText(e));
     } finally {
       this.submitting.set(false);
@@ -328,20 +339,26 @@ export class GridNamerPanel implements OnInit {
     if (!id || this.suggesting()) return;
     this.suggesting.set(true);
     this.error.set("");
+    this.suggestStopped.set("");
     try {
       const out = await this.api.suggestGridNames(id, true);
       this.suggestions.set(out);
       if (out.plan) this.store.plan.set(out.plan);
       if (out.readiness) this.store.readiness.set(out.readiness);
     } catch (e) {
+      // 17 Nov 2026: stopped with Cancel is no error; the names and the Prep plan are as they were
+      if (wasCancelled(e)) {
+        this.suggestStopped.set(STOPPED_NOTHING_CHANGED);
+        return;
+      }
       this.error.set(errorText(e));
     } finally {
       this.suggesting.set(false);
     }
   }
 
-  /** The suggestions' line: the server's words (no AI key: where  to paste one), or how many  names
-   *  were suggested and whether they went into  the Prep plan (applied there). */
+  /** The suggestions' line: the server's words (no AI key: where to paste one), or how many names
+   *  were suggested and whether they went into the Prep plan (applied there). */
   suggestLine(sg: GridNamesResult): string {
     return sg.message || sg.names.length + " suggestions" + (sg.applied ? ", added to the Prep plan" : "");
   }

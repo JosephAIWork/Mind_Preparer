@@ -1,5 +1,5 @@
-import { Component, computed, inject, input } from "@angular/core";
-import { ShowMeId, ShowMeNextStep, ShowMeRequest, showMeFor, showMeForStep } from "./show-me";
+import { Component, booleanAttribute, computed, inject, input } from "@angular/core";
+import { ShowMeId, ShowMeNextStep, ShowMeRequest, ShowMeWhere, showMeFor, showMeForStep } from "./show-me";
 import { ShowMeService } from "./show-me.service";
 
 /** The  quiet "Show  me" link next to an instruction. It appears only when there is a place to show:
@@ -10,7 +10,10 @@ import { ShowMeService } from "./show-me.service";
  *  Prep action. `except`: a place already next to the text (a Findings row's own "Ask the assistant"):
  *  no link to it, the next place the text names counts. `[unless]`: another text shown next to this
  *  one; when it leads to the same place, its own link is enough (one link per place). The click starts
- *  the pointer (ShowMeService). */
+ *  the pointer (ShowMeService).
+ *  17 Nov 2026 (a stop  message on Basic): `[where]`: the cell the problem is in, `{ sheet, cell }` (the
+ *  server's `ask.show_me` as it is: its other fields are not read): the arrow ends on the line that names
+ *  that cell. `[open]`: the pointer goes to the screen and the tab itself and points at the place only. */
 @Component({
   selector: "mr-show-me",
   standalone: true,
@@ -25,6 +28,8 @@ export class ShowMeLink {
   readonly rule = input<string | null | undefined>(null);
   readonly except = input<ShowMeId | null | undefined>(null);
   readonly unless = input<string | null | undefined>(null);
+  readonly where = input<Partial<ShowMeWhere> | null | undefined>(null);
+  readonly open = input(false, { transform: booleanAttribute });
 
   readonly request = computed<ShowMeRequest | null>(() => {
     const to = this.to();
@@ -32,9 +37,14 @@ export class ShowMeLink {
     const found = to ? { id: to } : step ? showMeForStep(step) : showMeFor(this.text(), this.except());
     if (!found) return null;
     const rule = this.rule()?.trim();
-    const r: ShowMeRequest = rule && !found.ruleId ? { ...found, ruleId: rule } : found;
+    let r: ShowMeRequest = rule && !found.ruleId ? { ...found, ruleId: rule } : found;
     const other = showMeFor(this.unless());
-    return other && other.id === r.id ? null : r;
+    if (other && other.id === r.id) return null;
+    const sheet = this.where()?.sheet?.trim();
+    const cell = this.where()?.cell?.trim();
+    if (sheet && cell) r = { ...r, where: { sheet, cell } };
+    if (this.open()) r = { ...r, open: true };
+    return r;
   });
 
   go(r: ShowMeRequest): void {

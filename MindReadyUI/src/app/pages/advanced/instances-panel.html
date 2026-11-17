@@ -59,7 +59,14 @@
           }
         </div>
         @if (finding()) {
-          <cds-inline-loading [state]="'active'" loadingText="Reading every formula of the model… up to two minutes on a big model"></cds-inline-loading>
+          <!-- 17 Nov 2026: Cancel beside the loading line; the look is stopped on the server -->
+          <div class="row">
+            <cds-inline-loading [state]="'active'" loadingText="Reading every formula of the model… up to two minutes on a big model"></cds-inline-loading>
+            <mr-cancel kind="finder" size="sm"></mr-cancel>
+          </div>
+        }
+        @if (findStopped() && !finding()) {
+          <p class="hint" data-test="inst-find-stopped">{{ findStopped() }}</p>
         }
         @if (findLine()) {
           <div class="result result--error"><strong>Could not read the model</strong><span>{{ findLine() }}</span></div>
@@ -149,7 +156,11 @@
       </div>
 
       @if (writing()) {
-        <div class="bar__progress"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
+        <!-- 17 Nov 2026: Cancel beside the bar; the build is stopped on the server: no version, no main workbook, no zip -->
+        <div class="row">
+          <div class="bar__progress" style="flex: 1 1 20rem"><cds-progress-bar [label]="line()" [helperText]="detail()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
+          <mr-cancel kind="apply" size="md"></mr-cancel>
+        </div>
       } @else if (line()) {
         <div class="result" data-show-me="instances-result" [class.result--ok]="tone() === 'ok'" [class.result--warn]="tone() === 'warn'" [class.result--error]="tone() === 'error'">
           <strong>{{ line() }}</strong>

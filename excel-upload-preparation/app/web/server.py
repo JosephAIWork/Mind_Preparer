@@ -20,6 +20,7 @@ served from the same process with an SPA fallback, so  one URL does it all:
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -54,6 +55,8 @@ from app.excel_com import com_available  # noqa: E402
 from app.perf import record as perf_record  # noqa: E402
 from app.perf import stage as perf_stage  # noqa: E402
 from app import excel_worker  # noqa: E402
+from app import cancel  # noqa: E402  (17 Nov 2026: the Cancel button -- one registry of running jobs, one flag, one exception)
+from app import handoff  # noqa: E402  (17 Nov 2026: every rule and sentence of the prep-run job, as plain functions)
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
 from app import ai_key, feedback  # noqa: E402
@@ -300,11 +303,185 @@ def _ai_scope(s: Session) -> Any:
     return llm.usage_scope(_ai_sink(s))
 
 
-def _ai_thread(s: Session, target: Callable[..., Any], name: str, args: tuple[Any, ...] = ()) -> threading.Thread:
+def _ai_thread(s: Session, target: Callable[..., Any], name: str, args: tuple[Any, ...] = (), job: cancel.Job | None = None) -> threading.Thread:
     """A  job's thread  that counts the assistant's calls for `s` (a new thread starts with no context,
     so the request's scope would not reach it): Fix all issues, the bring-in and its stand-ins, next
-    quarter's files,  the streamed chat, Run in Mind."""
-    return threading.Thread(target=llm.under_usage_scope(_ai_sink(s), target), args=args, name=name, daemon=True)
+    quarter's files,  the streamed chat, Run in Mind.
+
+    `job` (17 Nov 2026): the thread  works for this job (app/cancel.py), so  every check in the work it
+    calls reads  this job's flag. Bound by hand for the same reason: a  new thread has no context."""
+    counted = llm.under_usage_scope(_ai_sink(s), target)
+
+    def bound(*a: Any) -> Any:
+        with cancel.bind(job):
+            return counted(*a)
+
+    return threading.Thread(target=bound, args=args, name=name, daemon=True)
+
+
+# --- Cancel (app/cancel.py)  -------------------------------------------------------------------------
+# 17 Nov 2026. Every long piece of work is a job: the route begins it, the work reads its flag at its
+# natural stops and leaves with cancel.Cancelled, and POST .../cancel sets the flag. A job that
+# changes the workbook all along (the kinds of _BUSY_WORDS) puts the session back from a snapshot
+# taken at its start; the others write only after their gate  (job.commit()), so a Cancel before it
+# leaves nothing behind.
+CANCEL_WAIT_S = 20  # how  long POST  .../cancel waits for the flagged jobs to end before it answers "stopping"
+_CANCELLED = "Stopped. Nothing was changed."
+# what  a job  that changes the workbook is doing, in words: one such job per workbook at a time
+_BUSY_WORDS = {
+    "scan": "the workbook is still being analysed",
+    "apply": "changes are still being written",
+    "autofix": "Fix all issues is still running",
+    "outside": "the outside files are still being brought in",
+    "prep": "the formulas and the structure are still being fixed",
+}
+# every  kind of  job, as GET .../jobs names it ("Still working: {title}.")
+_JOB_TITLES = {
+    "scan": "Checking the workbook", "apply": "Writing the changes", "autofix": "Fixing the formula errors", "recalc": "Recalculating",
+    "numbers": "Comparing the numbers", "reports": "Making the reports", "outside": "Bringing in the input files",
+    "next_quarter": "Making next quarter's input files", "names": "Suggesting names", "finder": "Looking for instances",
+    "chat": "The assistant is answering", "mind": "Uploading to Mind", "prep": "Fixing the formulas and the structure",
+}
+
+
+class _StoppedOnRequest(HTTPException):
+    """The  answer of  a blocking request whose job was cancelled: 409 {detail, cancelled: true, kind},
+    written by _http_error. Never an incident: the person stopped it."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(status_code=409, detail=_CANCELLED)
+        self.kind = kind
+
+
+def _begin_job(s: Session, kind: str, on_flag: Callable[[], Any] | None = None) -> cancel.Job:
+    """Register  a job  for the workbook (only a route does: helpers read the current job). 409 "Wait a
+    moment: ..." while another job that changes this workbook is registered -- it stays registered
+    until after its  restore, so the workbook never reads free with a half-made version  in it."""
+    try:
+        return cancel.begin(s.id, kind, changes=kind in _BUSY_WORDS, on_flag=on_flag)
+    except cancel.Busy as busy:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_BUSY_WORDS.get(busy.kind, 'changes are still being written')}.") from None
+
+
+def _job_route(s: Session, kind: str, work: Callable[[cancel.Job], Any]) -> Any:
+    """One  blocking request  as one job: begin (409 while another job changes the workbook), bind this
+    thread, snapshot when the job changes the workbook, run `work(job)`, pass the gate. Cancelled at
+    any point, the gate included  -- or any error once the flag is set: ending Excel  makes ordinary
+    errors -- the session goes  back to the snapshot and the request  answers 409 "cancelled" by
+    itself. A job that does not change the  workbook all along calls `job.commit()` itself just
+    before  its one write (the call here is then a no-op) and never restores."""
+    job = _begin_job(s, kind)
+    outcome = "error"
+    try:
+        snap = _snapshot(s) if job.changes else None
+        try:
+            with cancel.bind(job):
+                out = work(job)
+                job.commit()  # the point of no return: after it a Cancel is too late and the result stands
+            outcome = "done"
+            return out
+        except cancel.Cancelled:
+            pass
+        except Exception:
+            if not job.flag.is_set():
+                raise
+        outcome = "cancelled"
+        if snap is not None:
+            _restore(s, snap)
+            if _statuses_stopped(s, job):
+                _save(s)
+        raise _StoppedOnRequest(kind)
+    finally:
+        cancel.end(job, outcome)  # last: the job stays registered until the session is back as it was
+
+
+_SNAP_COPIES = ("paths", "files", "grid_names", "mind_inputs_dirs", "brought_in_files")
+_SNAP_VALUES = ("current_version_id", "result", "plan", "last_delta", "recalc", "recalc_version_id", "recalc_path", "input_seq",
+                "mind_inputs_dir", "instances_zip", "pending")
+
+
+def _snapshot(s: Session) -> dict[str, Any]:
+    """What  a job  that changes the workbook may touch, as it is now: copies of the lists and dicts,
+    the values of the pointers, the lengths of the two histories, and deep copies of the  two findings
+    the server changes in place (the recalculation's and the outside  files') with the report's status
+    and summary.  `_restore` puts it back. The status objects  are not in it: after a Cancel they say so."""
+    report = s.result["validation_report"] if s.result else None
+    snap: dict[str, Any] = {
+        "versions": [dict(v) for v in s.versions],
+        "inputs": [dict(i) for i in s.inputs],
+        "ignore_sheets": list(s.ignore_sheets),
+        "plan_history": len(s.plan_history),
+        "apply_history": len(s.apply_history),
+        "report": None,
+    }
+    snap.update({k: dict(getattr(s, k) or {}) for k in _SNAP_COPIES})
+    snap.update({k: getattr(s, k) for k in _SNAP_VALUES})
+    if report is not None:
+        snap["report"] = {
+            "status": report.get("status"),
+            "summary": copy.deepcopy(report.get("summary")),
+            "findings": {f["rule_id"]: copy.deepcopy(f) for f in report["findings"] if f.get("rule_id") in ("READY-001", OUTSIDE_RULE)},
+        }
+    return snap
+
+
+def _restore(s: Session, snap: dict[str, Any]) -> None:
+    """The  session as  `_snapshot` took it, saved: the versions made since are dropped (their files stay
+    on disk; nothing points to them). The model map, the finder's result and the instances plan kept
+    for a dropped  version go too: the next version gets the same id."""
+    dropped = {v["id"] for v in s.versions} - {v["id"] for v in snap["versions"]}
+    s.versions = [dict(v) for v in snap["versions"]]
+    s.inputs = [dict(i) for i in snap["inputs"]]
+    s.ignore_sheets = list(snap["ignore_sheets"])
+    for k in _SNAP_COPIES:
+        setattr(s, k, dict(snap[k]))
+    for k in _SNAP_VALUES:
+        setattr(s, k, snap[k])
+    del s.plan_history[snap["plan_history"]:]
+    del s.apply_history[snap["apply_history"]:]
+    if s.model_map_version_id in dropped:
+        s.model_map, s.model_map_version_id = None, None
+    if s.instance_finder_version_id in dropped:
+        s.instance_finder, s.instance_finder_version_id, s.instance_finder_assistant = None, None, None
+    if s.instance_plan_default_version_id in dropped:
+        s.instance_plan_default, s.instance_plan_default_version_id = None, None
+    if dropped:
+        # the session's  Excel worker may still be at  work for a version that is gone  (the recalculation
+        # made ahead of a Mind loop version runs for minutes,  and the next step would wait behind  it):
+        # what belongs to no job is let go. Only when a version was dropped: otherwise that work is
+        # for a version that stays.
+        with contextlib.suppress(Exception):
+            excel_worker.cancel(s.id, [], free=True)
+    report = s.result["validation_report"] if s.result else None
+    kept = snap.get("report")
+    if report is not None and kept is not None:
+        for i, f in enumerate(report["findings"]):
+            old = kept["findings"].get(f.get("rule_id"))
+            if old is not None:
+                report["findings"][i] = copy.deepcopy(old)
+        report["status"] = kept["status"]
+        if kept["summary"] is not None:
+            report["summary"] = copy.deepcopy(kept["summary"])
+    _rematch(s)
+    _sync_recalc_finding(s)
+    if report is not None:
+        _recount_report(report)
+    _save(s)
+
+
+def _statuses_stopped(s: Session, job: cancel.Job) -> bool:
+    """After  a cancelled  job that changes the workbook: the scan and the Apply status it opened say
+    "cancelled" (they are never restored). `_run_scan` and `_tracked_apply` close their own when the
+    Cancel lands inside them; this is  for one that had already finished (an Apply done, then the
+    Cancel  during its scan: the version it  reported is gone). True when one was  changed."""
+    changed = False
+    if not job.changes:
+        return changed
+    for status, finish in ((s.scan, _scan_finish), (s.apply_status, _apply_finish)):
+        if status and status.get("state") != "cancelled" and float(status.get("started_at") or 0) >= job.started:
+            finish(s, cancelled=True)
+            changed = True
+    return changed
 
 
 def _register_file(s: Session, path: Path) -> str:
@@ -328,6 +505,7 @@ def _add_version(
     step (`minor`) is the next minor of the current major (v2 -> v2.1 -> v2.2);
     everything else -- and a recalculation after such fixes -- starts  the next
     major (v3). Ids follow the number: ver-002, ver-002.1, ..."""
+    cancel.check()  # 17 Nov  2026: whatever slipped through, a cancelled  job never makes a version
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
     if minor and current is not None:
         major = current.get("major", 1)
@@ -340,7 +518,7 @@ def _add_version(
     download_name = _register_file(s, path)
     version = {
         "id": vid,
-        "parent": s.current_version_id or None,  # the version  this one was made from
+        "parent": s.current_version_id or None,  # the version this  one was made from
         "major": major,
         "minor": n_minor,
         "label": f"v{number} — {label_body}",
@@ -469,6 +647,7 @@ def _scan_start(s: Session, needs_convert: bool) -> None:
 
 def _progress_for(s: Session):
     def cb(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        cancel.check()  # 17  Nov 2026:  a cancelled scan leaves at its next stage, sheet or rule (the scanner lets it through)
         sc = s.scan
         now = time.time()
         if sc.get("stage") != stage:
@@ -488,9 +667,13 @@ def _progress_for(s: Session):
     return cb
 
 
-def _scan_finish(s: Session, error: str | None = None) -> None:
+def _scan_finish(s: Session, error: str | None = None, cancelled: bool = False) -> None:
     sc = s.scan
     now = time.time()
+    if cancelled:
+        # 17  Nov 2026:  stopped on request -- not an error, no incident (GET .../status: state "cancelled")
+        sc.update(state="cancelled", finished_at=now, updated_at=now, error=None, title="Stopped", message="Stopped.")
+        return
     if sc.get("stage"):
         sc["stages"].append({"stage": sc["stage"], "seconds": round(now - sc.get("stage_started", now), 2)})
     sc.update(state="error" if error else "ready", finished_at=now, updated_at=now, error=error, overall=sc.get("overall", 0.0) if error else 1.0)
@@ -507,12 +690,14 @@ def _scan_snapshot(s: Session) -> dict[str, Any]:
     sc["elapsed_s"] = round(((finished or now) - started), 1) if started else 0.0
     sc.pop("stage_started", None)
     sc["state"] = sc.get("state") or ("pending" if s.pending else "idle")
+    if sc["state"] == "cancelled":
+        sc["version_id"] = s.current_version_id  # 17  Nov 2026:  the version a cancelled check was of may be gone
     sc["version_id"] = sc.get("version_id") or s.current_version_id
     sc["apply"] = _apply_snapshot(s)
     return sc
 
 
-# ---  apply status  -----------------------------------------------------------------
+# --- apply status -----------------------------------------------------------------
 def _apply_start(s: Session, total: int, reanalyze: bool) -> None:
     now = time.time()
     s.apply_status = {
@@ -538,6 +723,9 @@ def _apply_start(s: Session, total: int, reanalyze: bool) -> None:
 
 def _apply_progress_for(s: Session):
     def cb(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        # 17  Nov 2026:  a cancelled Apply leaves at its next stage or written change (the worker's thread
+        # is bound to the job of the item it runs; the openpyxl fallback calls this first)
+        cancel.check()
         st = s.apply_status
         now = time.time()
         if st.get("stage") != stage:
@@ -553,9 +741,13 @@ def _apply_progress_for(s: Session):
     return cb
 
 
-def _apply_finish(s: Session, res: dict[str, Any] | None = None, error: str | None = None) -> None:
+def _apply_finish(s: Session, res: dict[str, Any] | None = None, error: str | None = None, cancelled: bool = False) -> None:
     st = s.apply_status
     now = time.time()
+    if cancelled:
+        # 17  Nov 2026:  stopped on request -- not an error (GET .../status, field "apply": state "cancelled")
+        st.update(state="cancelled", finished_at=now, updated_at=now, error=None, fraction=None, title="Stopped", message="Stopped.")
+        return
     if st.get("stage"):
         st["stages"].append({"stage": st["stage"], "seconds": round(now - st.get("stage_started", now), 2)})
     st.update(state="error" if error else "done", finished_at=now, updated_at=now, error=error, fraction=None if error else 1.0)
@@ -589,11 +781,19 @@ def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer
             try:
                 res = worker.apply(s.current_path, ops, progress=_apply_progress_for(s), defer_verify=defer_verify, recalc_ahead=source == "loop")
             except excel_worker.WorkerUnavailable as exc:
+                cancel.check()  # 17 Nov  2026: its Excel was ended by  a Cancel -- the Apply is not  run again in a fresh one
                 perf_record("excel_worker_fallback", 0.0, session=s.id, error=str(exc)[:160])
                 _apply_start(s, len(ops), reanalyze)
         if res is None:
             res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
+    except cancel.Cancelled:
+        # 17 Nov 2026: the status is  closed where it was opened, or it  would say "running" for good
+        _apply_finish(s, cancelled=True)
+        raise
     except Exception as exc:
+        if cancel.flagged():  # a set flag wins over any error: ending Excel makes ordinary ones
+            _apply_finish(s, cancelled=True)
+            raise cancel.Cancelled() from None
         _apply_finish(s, error=f"apply failed: {plain_error(exc)}")
         raise
     if res["status"] == "NOT_APPLICABLE":
@@ -768,11 +968,23 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
                 path = _convert(s, path, progress)
             with perf_stage("scan", file=path.name):
                 out = _analyze(s, path, progress)
+        except cancel.Cancelled:
+            # 17 Nov 2026: the status is  closed where it was opened (a cancelled scan inside the fixer  or
+            # the bring-in would leave it "running",  and the workbook "still being analysed", for  good);
+            # not saved here: the job's restore saves
+            _scan_finish(s, cancelled=True)
+            raise
         except HTTPException as exc:
+            if cancel.flagged():  # a set flag wins over  any error (the convert's Excel was ended)
+                _scan_finish(s, cancelled=True)
+                raise cancel.Cancelled() from None
             _scan_finish(s, error=str(exc.detail))
             _save(s)
             raise
         except Exception as exc:
+            if cancel.flagged():
+                _scan_finish(s, cancelled=True)
+                raise cancel.Cancelled() from None
             _scan_finish(s, error=f"analysis failed: {plain_error(exc)}")
             _save(s)
             raise HTTPException(status_code=500, detail=f"analysis failed: {plain_error(exc)}") from exc
@@ -1049,6 +1261,7 @@ _STEPS = {
     "/api/sessions/{session_id}/analyze": "Check the workbook",
     "/api/sessions/{session_id}/reanalyze": "Check the workbook",
     "/api/sessions/{session_id}/apply": "Fix the formulas",
+    "/api/sessions/{session_id}/prep-run": "Fix the formulas and the structure",
     "/api/sessions/{session_id}/auto-fix": "Fix all issues",
     "/api/sessions/{session_id}/mind-loop-plan": "Build the Mind loop",
     "/api/sessions/{session_id}/mind-loop-plan/apply": "Build the Mind loop",
@@ -1064,6 +1277,7 @@ _STEPS = {
     "/api/sessions/{session_id}/grid-names": "Grid Namer",
     "/api/sessions/{session_id}/grid-namer": "Grid Namer",
     "/api/sessions/{session_id}/mind-loop": "Run in Mind",
+    "/api/sessions/{session_id}/mind-loop/delete-project": "Run in Mind",
     "/api/sessions/{session_id}/model-map": "Model map",
     "/api/sessions/{session_id}/reports": "Download the report",
     "/api/sessions/{session_id}/files/{file_name}": "Download",
@@ -1152,6 +1366,8 @@ def _problem_from_request(request: Request, exc: BaseException) -> dict[str, Any
 async def _http_error(request: Request, exc: StarletteHTTPException):
     """As  FastAPI answers;  a 5xx also gets an incident (its `ref` as `incident`), the error it
     wraps (`raise HTTPException(...) from exc`) reported rather than the wrapper."""
+    if isinstance(exc, _StoppedOnRequest):  # 17 Nov 2026: a cancelled request says so, with its  kind; never an incident
+        return JSONResponse({"detail": exc.detail, "cancelled": True, "kind": exc.kind}, status_code=409)
     if exc.status_code < 500:
         return await http_exception_handler(request, exc)
     incident = _problem_from_request(request, exc.__cause__ or exc)
@@ -1387,13 +1603,15 @@ def _remove_saved(session_id: str) -> bool:
     s = SESSIONS.get(session_id)
     if s is not None:
         busy = _busy_with(s)
-        if (MIND_LOOPS.get(session_id) or {}).get("state") == "running":  # not in _busy_with: Run in Mind checks that itself
+        if _loop_busy(session_id):  # not in _busy_with: Run in Mind checks that itself (17  Nov 2026: also while it is  stopping)
             busy = "Run in Mind is still running"
-        if busy and busy != "the workbook has not been analysed yet":  # an upload  never scanned may go; a running  step may not
+        if busy and busy != "the workbook has not been analysed yet":  # an upload never scanned may go; a  running step may not
             raise HTTPException(status_code=409, detail=f"Not removed: {busy}. Wait for it to finish, then remove it.")
-        excel_worker.release(session_id)  # an Excel that holds a  version open would keep the folder
+        excel_worker.release(session_id)  # an Excel that holds a version open would  keep the folder
         SESSIONS.pop(session_id, None)
         AUTOFIX.pop(session_id, None)
+        PREP_RUNS.pop(session_id, None)  # 17 Nov 2026: the last  prep-run and what the assistant failed on go with the workbook
+        HANDOFF_MEMO.pop(session_id, None)
     else:
         _held_elsewhere(session_id)
     existed = session_store.remove(session_id) if session_store.valid_id(session_id) else False
@@ -1438,6 +1656,12 @@ def session_state(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    return _session_public(s)
+
+
+def _session_public(s: Session) -> dict[str, Any]:
+    """An  analysed session  as GET /api/sessions/{id} gives it (17 Nov 2026: POST .../cancel answers with
+    the same, after the restore)."""
     current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
     return {
         "sessionId": s.id,
@@ -1457,10 +1681,10 @@ def session_state(session_id: str) -> dict[str, Any]:
         "outsideInputs": _outside_public(s),
         "main": _main_name(s),
         "inputs": _inputs_public(s),
-        # the last recalculation, when it is the current version's (a  saved workbook opened again
-        # shows its error list under Advanced > Recalculate  without recalculating)
+        # the last recalculation, when it is the current version's (a saved workbook opened again
+        # shows its error  list under Advanced > Recalculate without recalculating)
         "recalc": s.recalc if s.recalc and s.recalc_version_id == s.current_version_id else None,
-        # the tokens and calls the  assistant spent on this workbook (GET .../ai-usage  after a step)
+        # the tokens and calls the  assistant spent on this workbook (GET  .../ai-usage after a step)
         "aiUsage": dict(s.ai_usage),
     }
 
@@ -1497,9 +1721,14 @@ def analyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict
     given `ignore_sheets`. Long call: poll GET .../status meanwhile."""
     s = _session(session_id)
     _refuse_while_bringing_in(s)  # the job scans its own versions (and every sheet of the first)
-    if "ignore_sheets" in payload:
-        s.ignore_sheets = _parse_ignore(s, payload.get("ignore_sheets"))
-    return {"sessionId": s.id, **_run_scan(s)}
+    ignore = _parse_ignore(s, payload.get("ignore_sheets")) if "ignore_sheets" in payload else None
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        if ignore is not None:
+            s.ignore_sheets = ignore  # inside the job: a cancelled  check puts the list back too
+        return {"sessionId": s.id, **_run_scan(s)}
+
+    return _job_route(s, "scan", work)
 
 
 @app.get("/api/sessions/{session_id}/status")
@@ -1510,6 +1739,80 @@ def scan_status(session_id: str) -> dict[str, Any]:
     return _scan_snapshot(_session(session_id))
 
 
+@app.post("/api/sessions/{session_id}/cancel")
+def cancel_work(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """The  Cancel button  (17 Nov 2026). Body {"kind": "<kind>"} for one kind of work, or {} for
+    everything that runs for this workbook. Always 200 (404 for an unknown workbook).
+
+    It sets the flag of every  job that has not passed its gate, ends the Excels those  jobs started
+    (only Excels this app started)  and lets go of their place in  the session's Excel worker; ends a
+    wait for the input files as  POST .../outside-inputs/stop does; closes a waiting sign-in  window;
+    then waits up to CANCEL_WAIT_S for the flagged jobs to end, and answers:
+
+    {cancelled: [kinds stopped by this call], late: [kinds whose result stands: they had passed their
+    gate, or ended by themselves], stopping: [kinds still on their way out: look at GET .../jobs],
+    ahead: a recalculation made ahead was stopped, message, session: the workbook as GET
+    /api/sessions/{id} gives it after the restore (null while  anything is still stopping, and before
+    the first check), mind: the project a stopped Run in Mind left in Mind, or null}."""
+    s = _session(session_id)
+    kind = str(payload.get("kind") or "").strip() or None
+    found = cancel.request(s.id, kind)
+    flagged: list[cancel.Job] = list(found.get("flagged") or [])
+    cancelled: list[str] = []
+    late = [j.kind for j in found.get("late") or []]
+    if kind in (None, "outside") and (s.outside_run or {}).get("state") == "waiting_for_inputs":
+        _end_wait(s)  # the wait is no job: it held nothing, so it is simply over (state "stopped")
+        cancelled.append("outside")
+    sign_in_closed = False
+    if kind in (None, "mind") and MIND_SIGN_IN["state"] == "waiting":
+        MIND_SIGN_IN["stop"] = True  # the Edge window closes on its own thread
+        sign_in_closed = True
+    deadline = time.time() + CANCEL_WAIT_S
+    for job in flagged:
+        job.ended.wait(max(0.0, deadline - time.time()))
+    stopping: list[str] = []
+    for job in flagged:
+        if not job.ended.is_set():
+            stopping.append(job.kind)
+        elif job.outcome == "cancelled":
+            cancelled.append(job.kind)
+        else:  # it finished, or failed, before it saw the flag: its result stands
+            late.append(job.kind)
+    ahead = bool(found.get("ahead"))
+    mind = _mind_fields(s.id, MIND_LOOPS.get(s.id)) if "mind" in cancelled else None
+    if stopping:
+        message = "Stopping…"
+    elif mind is not None:
+        message = mind["message"] or _CANCELLED
+    elif cancelled or ahead:
+        message = _CANCELLED
+    elif sign_in_closed:
+        message = "Stopped. Nothing was uploaded to Mind."
+    elif late:
+        message = "It had already finished."
+    else:
+        message = "Nothing was running."
+    return {
+        "cancelled": cancelled, "late": late, "stopping": stopping, "ahead": ahead, "message": message,
+        # never while a job is still on its way out: its restore has not happened yet
+        "session": _session_public(s) if s.result and not stopping else None,
+        "mind": mind["project"] if mind is not None else None,
+    }
+
+
+@app.get("/api/sessions/{session_id}/jobs")
+def running_jobs(session_id: str) -> dict[str, Any]:
+    """What  is running  for this workbook right now (17 Nov 2026), oldest first: each job's kind, its
+    title in plain words ("Still working: {title}."), when it started, and whether Cancel was already
+    pressed for it (`stopping`)."""
+    s = _session(session_id)
+    now = time.time()
+    return {"jobs": [
+        {"kind": j.kind, "title": _JOB_TITLES.get(j.kind, "Working"), "started": j.started, "elapsed_s": round(now - j.started, 1), "stopping": j.flag.is_set()}
+        for j in cancel.jobs(s.id)
+    ]}
+
+
 @app.post("/api/sessions/{session_id}/reanalyze")
 def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     s = _session(session_id)
@@ -1517,21 +1820,35 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
     vid = payload.get("versionId") or s.current_version_id
     if vid not in s.paths:
         raise HTTPException(status_code=404, detail=f"unknown version {vid}")
-    s.current_version_id = vid
-    return _run_scan(s, s.paths[vid])
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        s.current_version_id = vid  # inside  the job:  a cancelled check puts the pointer back
+        return _run_scan(s, s.paths[vid])
+
+    return _job_route(s, "scan", work)
 
 
-def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool = False) -> dict[str, Any]:
+def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool = False, save: bool = True) -> dict[str, Any]:
     """Write  `ops` into  a fresh copy of the current version, register the result as the next
     version, re-analyse it when asked, and report the outcome (the shape every Apply returns).
-    One Apply at a time per  session: a second one is refused while the first runs."""
+    One Apply at a time per  session: a second one is refused while the first runs.
+
+    `save` False  (17 Nov 2026): nothing is written  to the state file here -- the  caller judges the
+    new version first and saves, or restores. Nothing is  saved after a Cancel either: the job's
+    restore  does the saving."""
     if not s.apply_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="an Apply is already running for this session")
     try:
         return _apply_and_version_locked(s, ops, source, who, reanalyze, minor)
+    except cancel.Cancelled:
+        # the Apply had finished ("done") and the Cancel came during its scan: the version it reports is going
+        if (s.apply_status or {}).get("state") not in (None, "cancelled"):
+            _apply_finish(s, cancelled=True)
+        raise
     finally:
         s.apply_lock.release()
-        _save(s)  # the new  version (its label settled after the  check that it opens), the gauge
+        if save and not cancel.flagged():
+            _save(s)  # the new version (its label settled after the check that it opens), the gauge
 
 
 def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool) -> dict[str, Any]:
@@ -1545,11 +1862,15 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
     finish = res.pop("finish", None)
     checker: threading.Thread | None = None
     if finish is not None:
+        job = cancel.current()  # 17 Nov 2026: the thread  below works for the same job (a new thread has no  context)
+
         def check() -> None:
             try:
-                with perf_stage("verify_opens_alongside", file=output.name):
+                with cancel.bind(job), perf_stage("verify_opens_alongside", file=output.name):
                     finish()
-            except Exception as exc:  # the check itself failed: the  version stays unverified
+            except cancel.Cancelled:
+                pass  # the Apply's own thread sees the  flag and puts the session back
+            except Exception as exc:  # the check  itself failed: the version stays unverified
                 res.setdefault("warnings", []).append(f"The check that the file opens in Excel did not run: {str(exc)[:160]}")
 
         checker = threading.Thread(target=check, name=f"verify-{s.id}", daemon=True)
@@ -1559,7 +1880,12 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
         verified = res.get("verified_opens_in_excel")
         return f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
 
-    version = _add_version(s, output, source, label_of(), res.get("applied", []), res.get("verified_opens_in_excel"), res["change_log_entry"]["output_sha256"], minor=minor)
+    try:
+        version = _add_version(s, output, source, label_of(), res.get("applied", []), res.get("verified_opens_in_excel"), res["change_log_entry"]["output_sha256"], minor=minor)
+    except cancel.Cancelled:
+        if checker is not None:
+            checker.join()  # 17 Nov 2026: it leaves by  itself (its Excel was ended, or it  met the flag): nothing is left running
+        raise
     reanalyzed = reanalyze and res["status"] in ("APPLIED", "PARTIAL")
     scanned: dict[str, Any] = {}
     scan_error: str | None = None
@@ -1567,8 +1893,8 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
         if reanalyzed:
             scanned = _run_scan(s, output)
     except HTTPException as exc:
-        # the new version is already current: the Apply still  answers with it (an error here  would
-        # leave the page on the old version,  and a second Apply would write the same changes twice)
+        # the new version is already current: the Apply still answers with it (an error here would
+        # leave the page on the old version, and a second Apply would write the same changes twice)
         scan_error = str(exc.detail)
         reanalyzed = False
     finally:
@@ -1581,7 +1907,7 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
     if scan_error is not None:
         out["scan_error"] = scan_error
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
-    out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge,  this Apply included
+    out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     if res.get("failed"):
         step = {"loop": "Build the Mind loop", "instances": "Build the Mind instances", "assistant": "Assistant", "formula": "Formula fix"}.get(source, "Fix the formulas")
         out.update(_problem_fields(_report_problem(None, step, s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
@@ -1597,7 +1923,7 @@ def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any
     source = "assistant" if action_ids == {"assistant"} else "formula" if action_ids == {"formula_replacement"} else "prep"
     who = {"assistant": "Assistant", "formula": "Formula fix", "prep": "Prep"}[source]
     minor = payload.get("versionStep") == "minor"  # a  fix on  the Recalculate step
-    return _apply_and_version(s, ops, source, who, bool(payload.get("reanalyze", True)), minor=minor)
+    return _job_route(s, "apply", lambda _job: _apply_and_version(s, ops, source, who, bool(payload.get("reanalyze", True)), minor=minor))
 
 
 @app.post("/api/sessions/{session_id}/suggest")
@@ -1638,54 +1964,199 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     if not targets:
         return {"available": True, "names": [], "message": "every grid already has a meaningful name", "applied": False}
     contexts = [build_grid_context(analysis, g) for g, _, _ in targets]
-    with _ai_scope(s):
-        res = suggest_names(contexts)
-    if not res["available"]:
-        return {"available": False, "names": [], "message": res.get("message"), "applied": False}
-    proposed = res["names"]
-    rows = [
-        {
-            "grid": f'{g["sheet"]}!{g["ref"]}',
-            "sheet": g["sheet"],
-            "ref": g["ref"],
-            "size": f'{g["n_rows"]}x{g["n_cols"]}',
-            "current": g.get("name"),
-            "deterministic": deterministic,
-            "deterministic_source": source,
-            "suggested": proposed.get(f'{g["sheet"]}!{g["ref"]}'),
-        }
-        for g, deterministic, source in targets
-    ]
-    applied = bool(payload.get("apply", True))
-    if applied:
-        s.grid_names.update({k: v for k, v in proposed.items() if v})
-        s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
-        _save(s)
-    return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
+
+    def work(job: cancel.Job) -> dict[str, Any]:
+        with _ai_scope(s):
+            res = suggest_names(contexts)
+        cancel.check()  # 17 Nov 2026: a  call given up on a Cancel is  not "the assistant is not there"
+        if not res["available"]:
+            return {"available": False, "names": [], "message": res.get("message"), "applied": False}
+        proposed = res["names"]
+        rows = [
+            {
+                "grid": f'{g["sheet"]}!{g["ref"]}',
+                "sheet": g["sheet"],
+                "ref": g["ref"],
+                "size": f'{g["n_rows"]}x{g["n_cols"]}',
+                "current": g.get("name"),
+                "deterministic": deterministic,
+                "deterministic_source": source,
+                "suggested": proposed.get(f'{g["sheet"]}!{g["ref"]}'),
+            }
+            for g, deterministic, source in targets
+        ]
+        applied = bool(payload.get("apply", True))
+        if applied:
+            job.commit()  # the gate before the one write:  cancelled before it, the names and the  plan stay as they were
+            s.grid_names.update({k: v for k, v in proposed.items() if v})
+            s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
+            _save(s)
+        return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
+
+    return _job_route(s, "names", work)
 
 
-# --- the app runs  itself against real Mind ------------------------------------
+# --- the app runs itself against real Mind ------------------------------------
 MIND_LOOPS: dict[str, dict[str, Any]] = {}  # session  id ->  {state, events, report, started, work_dir}
 _MIND_LOOP_LOCK = threading.Lock()
 
 
+# 17  Nov 2026:  a cancelled run says "cancelling" until its thread has left Mind, then "cancelled": the
+# Edge profile takes one browser at a time, so "cancelling" keeps Mind taken exactly as "running" does
+_MIND_BUSY_STATES = ("running", "cancelling")
+# the  project "Delete  it from Mind" is deleting right now (set and cleared under _MIND_LOOP_LOCK)
+_MIND_DELETE: dict[str, Any] = {"name": None}
+
+
 def _loop_running() -> str | None:
+    """The  session whose  Run in Mind is running or still stopping (one loop for the whole app)."""
     for sid, st in MIND_LOOPS.items():
-        if st.get("state") == "running":
+        if st.get("state") in _MIND_BUSY_STATES:
             return sid
     return None
+
+
+def _loop_busy(sid: str) -> bool:
+    """This  session's Run  in Mind is running or still stopping."""
+    return (MIND_LOOPS.get(sid) or {}).get("state") in _MIND_BUSY_STATES
+
+
+def _mind_in_use() -> str | None:
+    """What  holds the  Edge profile of Mind right now -- "loop" (Run in Mind, running or stopping),
+    "waiting" (the sign-in window), "checking" (the sign-in check) or "delete" (a project being
+    deleted) -- or None. Asked, under  _MIND_LOOP_LOCK, by every route that opens that profile."""
+    if _loop_running():
+        return "loop"
+    if MIND_SIGN_IN["state"] in ("waiting", "checking"):
+        return str(MIND_SIGN_IN["state"])
+    if _MIND_DELETE["name"]:
+        return "delete"
+    return None
+
+
+_MIND_BUSY = "Mind is busy. Try again in a moment."
+
+
+# ---  the Mind  projects the app made (17 Nov 2026) --------------------------------------------------
+# <data folder>\mind_projects.json: {name: {session, folder, status, ran, made, cancelled, deleted, tries}}.
+# A cancelled Run in Mind keeps its half-made project and offers "Delete it from  Mind"; the list
+# outlives the next run (which replaces MIND_LOOPS[sid]), a restart  and Remove. Read and written
+# only here,  under _MIND_LOOP_LOCK.
+_MIND_LIVE = ("creating", "created", "model added", "run")  # a  project that  is, or may be, in Mind
+
+
+def _mind_projects_path() -> Path:
+    return Path(SETTINGS.data_folder) / "mind_projects.json"  # read  at call  time: the tests point it at a folder of their own
+
+
+def _mind_projects_read() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(_mind_projects_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def _mind_projects_write(data: dict[str, dict[str, Any]]) -> None:
+    path = _mind_projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)  # written  whole, then  renamed: a stop in the middle leaves the previous file
+
+
+def _mind_project_note(sid: str, folder: str, e: dict[str, Any]) -> None:
+    """A  `project` event  of the loop (app/mind_loop.py sends one at every change of a project's
+    state): added to the file, or updated. Never raises: the list must not stop a run."""
+    name = str(e.get("project") or "")
+    if not name:
+        return
+    try:
+        with _MIND_LOOP_LOCK:
+            data = _mind_projects_read()
+            entry = data.get(name) or {"session": sid, "folder": folder, "status": "not created", "ran": False,
+                                       "made": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "cancelled": False, "deleted": None, "tries": 0}
+            entry.update(status=str(e.get("status") or entry["status"]), ran=bool(e.get("ran")))
+            if entry["status"] == "deleted":  # the loop removed it by  itself (a project that was never run)
+                entry["deleted"] = "deleted"
+            data[name] = entry
+            _mind_projects_write(data)
+    except Exception as exc:
+        print(f"The list of Mind projects could not be written: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+
+
+def _mind_projects_cancelled(names: list[str]) -> None:
+    """The  run was  cancelled: its newest project that is, or may be, in Mind is the one the screens
+    offer to delete (`cancelled`)."""
+    with _MIND_LOOP_LOCK:
+        data = _mind_projects_read()
+        for name in reversed(names):
+            entry = data.get(name)
+            if entry and entry.get("status") in _MIND_LIVE and entry.get("deleted") is None:
+                entry["cancelled"] = True
+                _mind_projects_write(data)
+                return
+
+
+def _mind_project_public(name: str, entry: dict[str, Any]) -> dict[str, Any]:
+    from app import mind_client as mc
+
+    return {"name": name, "status": entry.get("status"), "ran": bool(entry.get("ran")), "deleted": entry.get("deleted"), "url": mc.MAIN_URL}
+
+
+def _mind_fields(sid: str, st: dict[str, Any] | None) -> dict[str, Any]:
+    """What  GET .../mind-loop  says about the projects (also when idle): `project` (the newest project
+    of this run that is, or may be, in Mind), `kept` (this workbook's projects from cancelled runs
+    that are still in Mind:  each gets a "Delete it from Mind" button), `earlier` (other projects  this
+    run left in Mind: earlier rounds  that were run) and the `message` of  a stopped run."""
+    from app import mind_client as mc
+
+    with _MIND_LOOP_LOCK:
+        data = _mind_projects_read()
+    made = [n for n in ((st or {}).get("projects") or []) if (data.get(n) or {}).get("status") in _MIND_LIVE]
+    project = _mind_project_public(made[-1], data[made[-1]]) if made else None
+    state = (st or {}).get("state")
+    message = None
+    if state == "cancelling":
+        message = "Stopping…"
+    elif state == "cancelled":
+        if project is None:
+            message = "Stopped. Nothing was uploaded to Mind."
+        elif project["deleted"] == "deleted":  # deleted since, by the person: never "is still in  Mind"
+            message = f"Stopped. The project {project['name']} was deleted from Mind."
+        elif project["deleted"] is not None:
+            message = f"Stopped. The project {project['name']} is not in Mind."
+        elif project["status"] == "creating":
+            message = f"Stopped. A project named {project['name']} may be in Mind."
+        else:
+            message = f"Stopped. The project {project['name']} is still in Mind."
+    return {
+        "project": project,
+        # only names the delete route would take:  this workbook's, with the sandbox prefix
+        "kept": [_mind_project_public(n, e) for n, e in data.items()
+                 if e.get("session") == sid and e.get("cancelled") and e.get("deleted") is None and n.startswith(mc.PROJECT_PREFIX)],
+        "earlier": [n for n in made[:-1] if data[n].get("deleted") is None],
+        "message": message,
+    }
 
 
 def _busy_with(s: Session) -> str | None:
     """What  is still  changing this session's workbook, in words (None = nothing): Run in Mind must
     wait for it, or it would upload the version before that change."""
+    # 17 Nov 2026: the registered job that changes  the workbook first -- it stays registered until
+    # after its restore, when  its own status already says how  it ended
+    job = cancel.changing(s.id)
+    if job is not None:
+        return _BUSY_WORDS.get(job.kind, "changes are still being written")
     if (s.outside_run or {}).get("state") == "running":
         return "the outside files are still being brought in"
     if (s.next_quarter or {}).get("state") == "running":
-        # its import macro runs in an Excel of  its own, from the grids of the line as they were  at its start
+        # its import macro runs in an  Excel of its own, from the grids of the line as  they were at its start
         return "next quarter's Mind input files are still being made"
     if (AUTOFIX.get(s.id) or {}).get("state") == "running":
         return "Fix all issues is still running"
+    if (PREP_RUNS.get(s.id) or {}).get("state") == "running":  # 17 Nov 2026:  the prep-run job (its rounds, the assistant's fixes)
+        return _BUSY_WORDS["prep"]
     if s.id in RECALCULATING:
         return "a recalculation is still running"
     if (s.apply_status or {}).get("state") == "running" or s.apply_lock.locked():
@@ -1804,33 +2275,28 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
     choices = _mind_choices(s)
     chosen = [c for c in choices if (c["id"] in chosen_ids if chosen_ids is not None else c["default_on"])]
     estimate = _mind_run_estimate(s, use_assistant, run_model, check_numbers, chosen)
+    skip_mind = bool(payload.get("skipMind", False))
     with _MIND_LOOP_LOCK:
         busy = _loop_running()
         if busy:
             raise HTTPException(status_code=409, detail=f"a Mind loop is already running (session {busy})")
-        if MIND_SIGN_IN["state"] in ("waiting", "checking") and not bool(payload.get("skipMind", False)):
+        in_use = None if skip_mind else _mind_in_use()  # a run  that never opens Mind needs no free Edge profile
+        if in_use in ("waiting", "checking"):
             raise HTTPException(status_code=409, detail="Finish signing in to Mind first (the Edge window), then start Run in Mind")
+        if in_use:  # 17 Nov 2026: a project is being deleted from Mind
+            raise HTTPException(status_code=409, detail=_MIND_BUSY)
         work = s.work_dir / "mind_loop" / time.strftime("%Y%m%d_%H%M%S")
         state: dict[str, Any] = {
             "state": "running", "events": [], "report": None, "started": time.time(), "work_dir": str(work), "error": None,
             "stage": None, "stage_started": time.time(), "iteration": 0, "max_iterations": max_iterations,
             "estimate": estimate, "finished": None, "version": _version_public(s), "actions": chosen_ids,
             "inputs": _mind_input_files(inputs_dir),
+            "projects": [], "message": None,  # 17 Nov 2026: the Mind projects of this run, oldest first (their state: mind_projects.json)
         }
         MIND_LOOPS[session_id] = state
-    cfg = LoopConfig(
-        source=s.current_path,
-        work_dir=work,
-        max_iterations=max_iterations,
-        use_assistant=use_assistant,
-        run_model=run_model,
-        check_numbers=check_numbers,
-        enable=enable,
-        disable=disable,
-        delete_projects=bool(payload.get("deleteProjects", True)),
-        skip_mind=bool(payload.get("skipMind", False)),
-        **({"inputs_dir": Path(inputs_dir)} if inputs_dir else {}),
-    )
+        # the job begins before the thread starts, so a Cancel in the first millisecond finds it. Its
+        # on_flag runs under the registry's lock, and only for a job neither committed nor ended.
+        job = _begin_job(s, "mind", on_flag=lambda: state.update(state="cancelling", message="Stopping…"))
 
     def progress(e: dict[str, Any]) -> None:
         now = time.time()
@@ -1839,22 +2305,67 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
         stage = e.get("stage")
         if stage and stage != state.get("stage"):
             state["stage"], state["stage_started"] = stage, now
+        if e.get("event") == "project" and e.get("project"):
+            # 17 Nov 2026: every change of a Mind project's state is written down, so that after a Cancel
+            # (and after a restart)  the app can still say  what Mind may hold and offer to  delete it
+            if e["project"] not in state["projects"]:
+                state["projects"].append(str(e["project"]))
+            _mind_project_note(session_id, folder, e)
         state["events"].append({"t": now, **e})
 
     def worker() -> None:
+        # 17 Nov  2026: how  it ended is decided first (a set flag wins over any error), the final word is
+        # written in the finally whatever happened, and the job is ended last
+        final = "error"
         try:
-            excel_worker.release(s.id)  # one Excel  per session
-            state["report"] = run_loop(cfg, progress)
-            state["state"] = "done"
-        except Exception as exc:  # the thread must never die silently
-            state["error"] = str(exc)[:300]
-            state["state"] = "error"
-            state.update(_problem_fields(_report_problem(exc, "Run in Mind", s)))
-            progress({"event": "done", "verdict": "error", "message": f"loop crashed: {exc}"[:300]})
+            excel_worker.release(s.id)  # one Excel per session
+            report = run_loop(cfg, progress)
+            job.commit()  # the gate:  a Cancel after it finds the run finished and leaves "done"
+            state["report"] = report
+            final = "done"
+        except cancel.Cancelled:
+            final = "cancelled"
+        except Exception as exc:  # the  thread must never die silently
+            if job.flag.is_set():
+                final = "cancelled"
+            else:
+                state["error"] = str(exc)[:300]
+                state.update(_problem_fields(_report_problem(exc, "Run in Mind", s)))
+                progress({"event": "done", "verdict": "error", "message": f"loop crashed: {exc}"[:300]})
         finally:
             state["finished"] = time.time()
+            if final == "cancelled":
+                with contextlib.suppress(Exception):
+                    _mind_projects_cancelled(state["projects"])  # the project  is kept: the screens offer "Delete it  from Mind"
+            state.update(state=final, message=None)
+            cancel.end(job, final)
+            # once more, after the end: a first Cancel that landed  between the two lines above wrote
+            # "cancelling" over  the final word, and no on_flag can come after cancel.end
+            state.update(state=final, message=None)
 
-    _ai_thread(s, worker, f"mind-loop-{session_id}").start()
+    try:
+        from app import mind_client as mc
+
+        folder = mc.SANDBOX_FOLDER
+        cfg = LoopConfig(
+            source=s.current_path,
+            work_dir=work,
+            max_iterations=max_iterations,
+            use_assistant=use_assistant,
+            run_model=run_model,
+            check_numbers=check_numbers,
+            enable=enable,
+            disable=disable,
+            delete_projects=bool(payload.get("deleteProjects", True)),
+            skip_mind=skip_mind,
+            **({"inputs_dir": Path(inputs_dir)} if inputs_dir else {}),
+        )
+        folder = str(getattr(cfg, "folder", None) or folder)  # where its projects are made, and deleted from
+        _ai_thread(s, worker, f"mind-loop-{session_id}", job=job).start()
+    except BaseException:  # the thread never started: nothing stays "running", no job stays registered
+        cancel.end(job, "error")
+        state.update(state="error", message=None, error="the run could not start", finished=time.time())
+        raise
     return {"state": "running", "work_dir": str(work), "version": state["version"], "estimate": estimate}
 
 
@@ -1878,8 +2389,10 @@ def mind_sign_in_status(check: bool = False) -> dict[str, Any]:
     sign-in (10-40  s) and says whether it still works (`checked`: {signed_in, at})."""
     if check:
         with _MIND_LOOP_LOCK:
-            busy = _loop_running()
-            if busy or MIND_SIGN_IN["state"] == "waiting":
+            in_use = _mind_in_use()  # 17 Nov  2026: one question for every route  that opens the Edge profile
+            if in_use == "delete":
+                raise HTTPException(status_code=409, detail=_MIND_BUSY)
+            if in_use:
                 raise HTTPException(status_code=409, detail="Mind is in use (Run in Mind or the sign-in window): check again when it has finished")
             MIND_SIGN_IN["state_before_check"] = MIND_SIGN_IN["state"]
             MIND_SIGN_IN["state"] = "checking"
@@ -1888,7 +2401,7 @@ def mind_sign_in_status(check: bool = False) -> dict[str, Any]:
 
             res = mc.is_authenticated()
             MIND_SIGN_IN["checked"] = {"signed_in": bool(res.get("authenticated")), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        except Exception as exc:  # no Edge,  no Playwright driver...
+        except Exception as exc:  # no Edge, no  Playwright driver...
             MIND_SIGN_IN["checked"] = {"signed_in": False, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": f"{type(exc).__name__}: {exc}"[:200]}
         finally:
             MIND_SIGN_IN["state"] = MIND_SIGN_IN.pop("state_before_check", "idle")
@@ -1903,11 +2416,13 @@ def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, 
         MIND_SIGN_IN["stop"] = True
         return _sign_in_public()
     with _MIND_LOOP_LOCK:
-        busy = _loop_running()
-        if busy:
+        in_use = _mind_in_use()
+        if in_use == "loop":
             raise HTTPException(status_code=409, detail="Run in Mind is using Mind right now: sign in when it has finished")
-        if MIND_SIGN_IN["state"] in ("waiting", "checking"):
+        if in_use in ("waiting", "checking"):
             raise HTTPException(status_code=409, detail="the sign-in window is already open")
+        if in_use:  # 17 Nov 2026: a project is being  deleted from Mind
+            raise HTTPException(status_code=409, detail=_MIND_BUSY)
         MIND_SIGN_IN.update(state="waiting", message="Opening Edge on Mind...", started=time.time(), finished=None, stop=False)
 
     def tell(message: str) -> None:
@@ -1940,7 +2455,7 @@ def _mind_loop_timing(st: dict[str, Any]) -> dict[str, Any]:
     stages = [x for x in (est.get("stages") or []) if n == 1 or x["id"] != "names"]  # the assistant names grids once
     stage = st.get("stage")
     stage_elapsed = max(0.0, now - float(st.get("stage_started") or now))
-    running = st.get("state") == "running"
+    running = st.get("state") in _MIND_BUSY_STATES  # 17 Nov 2026: still at work while it is stopping
     left = mind_run_remaining(stages, stage, stage_elapsed) if running else 0.0
     elapsed = max(0.0, now - float(st["started"]))
     budget = float(est.get("first_s") or 0) + (n - 1) * float(est.get("retry_s") or 0)
@@ -1970,8 +2485,10 @@ def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
     uploads and the timing (elapsed, stage, a conservative time left)."""
     _session(session_id)
     st = MIND_LOOPS.get(session_id)
+    # 17 Nov 2026: project  / kept / earlier / message -- what a cancelled run  left in Mind (also when
+    # idle: the  projects of earlier cancelled runs of this  workbook keep their "Delete it from Mind")
     if not st:
-        return {"state": "idle", "events": [], "report": None, "next": 0}
+        return {"state": "idle", "events": [], "report": None, "next": 0, **_mind_fields(session_id, None)}
     report = st.get("report")
     if report is None:
         candidate = Path(st["work_dir"]) / "loop_report.json"
@@ -1982,7 +2499,57 @@ def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
                 report = None
     events = st["events"][after:]
     return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "incident": st.get("incident"), "problem": st.get("problem"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None,
-            "version": st.get("version"), "actions": st.get("actions"), "timing": _mind_loop_timing(st)}
+            "version": st.get("version"), "actions": st.get("actions"), "timing": _mind_loop_timing(st), **_mind_fields(session_id, st)}
+
+
+@app.post("/api/sessions/{session_id}/mind-loop/delete-project")
+def delete_mind_project(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """"Delete  it from  Mind" (17 Nov 2026): delete one project a Run in Mind of this workbook made --
+    only a name the app itself wrote down for this workbook (mind_projects.json) and that starts with
+    the  sandbox prefix (404 otherwise). 409 while anything else uses Mind. Blocking,  about a minute.
+    -> {name, result, message,  url}; result: deleted | not found |  still present | refused |
+    unreachable. Nothing is deleted without this call:  the person's own click."""
+    from app import mind_client as mc
+
+    _session(session_id)
+    name = str(payload.get("name") or "").strip()
+    with _MIND_LOOP_LOCK:
+        entry = _mind_projects_read().get(name)
+        if not name or entry is None or entry.get("session") != session_id or not name.startswith(mc.PROJECT_PREFIX):
+            raise HTTPException(status_code=404, detail="This workbook has no Mind project of that name.")
+        if _mind_in_use():
+            raise HTTPException(status_code=409, detail=_MIND_BUSY)
+        _MIND_DELETE["name"] = name  # its own flag: the  other routes that open the Edge profile wait
+    folder = str(entry.get("folder") or mc.SANDBOX_FOLDER)
+    try:
+        try:
+            with mc.mind_session() as (_ctx, page):
+                # first: did Mind open at all? (delete_project alone would call a Mind that did not open "not found")
+                result = mc.delete_project(page, name, folder) if mc.open_manager(page) else "unreachable"
+        except Exception as exc:  # no Edge, the profile in use, a page that never loaded
+            print(f"Delete from Mind did not run for {name}: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+            result = "unreachable"
+        with _MIND_LOOP_LOCK:
+            data = _mind_projects_read()
+            kept = data.get(name) or dict(entry)
+            if result == "deleted":
+                kept["deleted"], message = "deleted", "Deleted from Mind."
+            elif result == "not found" and kept.get("status") == "creating" and not int(kept.get("tries") or 0):
+                # the run was stopped while Mind was making it: Mind may still be making it. Asked once more.
+                kept["tries"], message = 1, "It is not in Mind yet. Try again in a minute."
+            elif result == "not found":
+                kept["deleted"], message = "not found", "It was not in Mind: nothing to delete."
+            elif result == "unreachable":
+                message = "Mind did not open. Sign in to Mind, then try again."
+            else:  # still present, refused
+                message = f"Mind did not delete it. Delete it by hand in Mind: open the Project manager, folder {folder}."
+            data[name] = kept
+            with contextlib.suppress(Exception):
+                _mind_projects_write(data)
+    finally:
+        with _MIND_LOOP_LOCK:
+            _MIND_DELETE["name"] = None
+    return {"name": name, "result": result, "message": message, "url": mc.MAIN_URL}
 
 
 def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]], str, str | None]:
@@ -2100,26 +2667,57 @@ def chat_stream(session_id: str, payload: dict[str, Any] = Body(...)) -> Streami
     """The  same turn  as /chat, streamed as NDJSON (one JSON object per line):
     {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
     model call, {"type": "delta", "text"} for each chunk of the reply, then
-    {"type": "done", <the /chat payload>}  or {"type": "error", "detail"}."""
+    {"type": "done", <the /chat payload>}  or {"type": "error", "detail"}.
+
+    17 Nov 2026: the turn is a job  (kind "chat"). Cancelled, the stream ends  with the line
+    {"type": "cancelled"}: the reader below  looks at the flag every half second, the thread's next
+    event raises,  and the model call in flight is  given up (app/llm.py)."""
     s = _session(session_id)
     history, question, extra = _chat_turn(s, payload)
     events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+    job = _begin_job(s, "chat")
+
+    def tell(ev: dict[str, Any]) -> None:
+        cancel.check()
+        events.put(ev)
 
     def work() -> None:
+        outcome = "error"
         try:
-            reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra, on_event=events.put)
+            reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra, on_event=tell)
+            job.commit()  # it writes nothing: the gate is the answer itself
             events.put({"type": "done", **_chat_payload(reply)})
+            outcome = "done"
+        except cancel.Cancelled:
+            outcome = "cancelled"
         except Exception as exc:  # the stream has started: report in-band
-            events.put({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+            if job.flag.is_set():
+                outcome = "cancelled"
+            else:
+                events.put({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
         finally:
+            cancel.end(job, outcome)
             events.put(None)
 
-    _ai_thread(s, work, f"chat-{session_id}").start()
+    try:
+        _ai_thread(s, work, f"chat-{session_id}", job=job).start()
+    except BaseException:
+        cancel.end(job, "error")
+        raise
 
     def lines():
         while True:
-            ev = events.get()
+            try:
+                ev = events.get(timeout=0.5)
+            except queue.Empty:
+                if not job.flag.is_set():
+                    continue
+                # cancelled while the model was thinking: the stream ends now, the thread by itself
+                yield json.dumps({"type": "cancelled"}) + "\n"
+                return
             if ev is None:
+                if job.outcome == "cancelled":  # written by cancel.end, before the None was queued
+                    yield json.dumps({"type": "cancelled"}) + "\n"
                 return
             yield json.dumps(ev, ensure_ascii=False, default=str) + "\n"
 
@@ -2156,6 +2754,7 @@ def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
         copy_path, _ = make_immutable_copy(original, s.work_dir / "recalc_original")
         with perf_stage("recalc_original_baseline", file=original.name):
             res = recalculate(copy_path, save=False)  # a disposable  copy -- nothing reads it again
+        cancel.check()  # 17  Nov 2026: an Excel ended by a  Cancel answers "did not run" -- never kept as the baseline
         ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED"))
         known_refs = s.ref_formulas.get(key)
         if known_refs is None and Path(original) == _upload_path(s):
@@ -2178,31 +2777,42 @@ def recalc(session_id: str) -> dict[str, Any]:
     _refuse_while_fixing(session_id)
     if session_id in RECALCULATING:
         raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
-    RECALCULATING.add(session_id)
-    try:
+
+    def work(job: cancel.Job) -> dict[str, Any]:
         with perf_stage("recalc_endpoint", file=s.current_path.name):
             # After  a Mind  loop the session's Excel worker recalculated this version while it
             # was being analysed; otherwise (or when that did not happen) as before, in its own Excel
             ew = excel_worker.WORKERS.get(s.id)
             ahead = ew.take_recalc(s.current_path) if ew is not None and not ew._stopped else None
-            excel_worker.release(s.id)  # one Excel per session
+            cancel.check()  # 17 Nov 2026: a wait in the  worker's queue ended by a Cancel never falls through to an  Excel of its own
+            excel_worker.release(s.id)  # one Excel per  session
             if ahead is not None:
                 copy_path, res = ahead
                 perf_record("recalc_ahead_used", 0.0, file=s.current_path.name)
             else:
                 copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
                 res = recalculate(copy_path)
+            # its Excel ended by a Cancel answers  "did not run": never stored over the last good recalculation
+            cancel.check()
             with perf_stage("recalc_out", file=s.current_path.name):
-                return _recalc_out(s, res, copy_path)
+                return _recalc_out(s, res, copy_path, gate=job.commit)
+
+    RECALCULATING.add(session_id)
+    try:
+        return _job_route(s, "recalc", work)
     finally:
         RECALCULATING.discard(session_id)
 
 
-def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True) -> dict[str, Any]:
+def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True, gate: Callable[[], None] | None = None) -> dict[str, Any]:
     """What  a recalculation  of the current version means for the session: the
     errors against the original's, the root-cause groups, READY-001, the verdict.
     `res` has the shape of app.recalc.recalculate -- the automatic fixer
-    ends with a full recalculation  of its own and hands it in the same way."""
+    ends with a full recalculation  of its own and hands it in the same way.
+
+    `gate` (17  Nov 2026): called just before the  first write -- the Recalculate route hands  its job's
+    commit, so a Cancel before it leaves the last recalculation  as it was and one after it  is too
+    late. The fixer passes none: its own job puts the session back."""
     out = {
         "status": res["status"],
         "message": res["message"],
@@ -2215,13 +2825,13 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
         "addin_gap_errors": [{"sheet": e.get("sheet", ""), "cell": e.get("cell", ""), "formula": e.get("formula", "")} for e in res.get("addin_gap_errors", [])],
     }
     out["groups"] = group_errors(out["formula_errors"], out["addin_gap_errors"])
-    # Errors the  original already had are the model's  own, not the preparation's.
-    # The baseline is the  ORIGINAL after the same full recalculation (once per
-    # session), never its cached  values -- those can be stale.
+    # Errors the original already had are the model's own, not the preparation's.
+    # The baseline is the ORIGINAL after the same full recalculation (once per
+    # session), never its cached values -- those can be stale.
     original = _original_path(s)
     if original is not None and out["formula_errors"]:
         base = _original_baseline(s, original)
-        # the original's  cells where they are now (title rows inserted, sheets renamed), as the numbers check sees them
+        # the original's cells where they are now (title rows inserted, sheets renamed), as the numbers check sees them
         found = _original_and_moves(s)
         forward = found[1].forward if found is not None and found[0] == original else None
         if base is not None:
@@ -2237,7 +2847,9 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     else:
         out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
         out["compared_with_original"] = original is not None
-    # A recalculation after fixes (v2.1, v2.2, ...) closes the round: the
+    if gate is not None:
+        gate()
+    # A  recalculation after fixes (v2.1, v2.2, ...) closes the round: the
     # same file becomes the next major version (v3), and the recalculation is its own
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
     if close_round and out["ran"] and current is not None and current.get("minor"):
@@ -2334,8 +2946,14 @@ def numbers_check(session_id: str) -> dict[str, Any]:
                    else "This is the original workbook: nothing to compare.")
         return {"ran": False, "clean": True, "version_id": s.current_version_id, "verdict": verdict, "counts": {}}
     original, moves = found
-    excel_worker.release(s.id)
-    return _numbers_public(compare_workbooks(original, s.current_path, moves), s.current_version_id)
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        excel_worker.release(s.id)
+        res = compare_workbooks(original, s.current_path, moves)
+        cancel.check()  # 17 Nov 2026: its Excel ended by a Cancel answers "could not be compared" --  that is no verdict
+        return _numbers_public(res, s.current_version_id)
+
+    return _job_route(s, "numbers", work)
 
 
 # --- bringing the outside files in (app/outside_inputs.py) --------------------------------------
@@ -2587,6 +3205,7 @@ def _make_stand_ins(s: Session, base_path: Path, macro: str, stage, say) -> str 
         made = stand_in_inputs.make_stand_ins(base_path, rows, need, macro, model_map_module.read_vba(base_path), work, ask,
                                               real_files=real, messages=((s.outside_inputs or {}).get("vba") or {}).get("messages") or [],
                                               progress=say)
+    cancel.check()  # 17 Nov 2026: a  set flag wins over whatever the stopped Excels and the abandoned  call answered
     s.outside_run["stand_ins"] = {"ok": bool(made.get("ok")), "explain": made.get("explain"), "files": sorted(p.name for p in (made.get("files") or {}).values()),
                                   "left_out": list(made.get("left_out") or []),
                                   "attempts": [{"n": a.get("n"), "problem": a.get("problem"), "details": a.get("details")} for a in made.get("attempts") or []]}
@@ -2642,6 +3261,7 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
     with perf_stage("outside_inputs_import", file=base_path.name, files=len(files)):
         report = outside_inputs.run_import(base_path, rows, files, macro, imported, run_dir, progress=say, messages=oi["vba"].get("messages") or [],
                                            **({"restore_rows": restore} if restore else {}))
+    cancel.check()  # 17 Nov 2026: the macro's Excel ended by a Cancel is not "the macro stopped early"
     if not _import_ok(report) or not imported.is_file():
         raise _BringInStopped(_import_stopped(report))
     s.current_version_id = base["id"]  # the new line starts from the version the macro ran on
@@ -2677,6 +3297,7 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
         made_path = run_dir / "mind_inputs" / base_path.name
         with perf_stage("outside_inputs_mind_inputs", file=base_path.name, inputs=len(plan)):
             made = outside_inputs.apply_mind_inputs(imported, plan, wb0.get("formulas") or [], made_path, csv_dir, progress=say)
+        cancel.check()
         if not made.get("inputs") or not made.get("saved") or not made_path.is_file():
             why = (made.get("kept") or [{}])[0].get("why")
             result["notes"].append("No Mind input could be made" + (f": {why}" if why else "") + ". The outside data stays inside the model.")
@@ -2690,6 +3311,7 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
                 stage("numbers", "Comparing every computed value with the version the files were brought into")
                 excel_worker.release(s.id)
                 compared = compare_workbooks(imported, made_path, Moves([log]), lambda _stage, message, *_a, **_k: say(message))
+                cancel.check()  # a comparison whose  Excel was ended "could not  run": never read as "keep the Mind  inputs"
                 if compared.get("ran") and not compared.get("clean"):
                     raise _MindInputsRefused(_mind_inputs_refused(compared, v_import))
             v_made = _add_version(s, made_path, "mind_inputs", "Outside files made Mind inputs", log, None, sha256_of(made_path))
@@ -2699,15 +3321,15 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
             s.mind_inputs_dir = str(csv_dir)
             result["mindInputs"] = _mind_inputs_public(made, v_made)
             result["download"] = _register_mind_inputs(s, made, run_dir)
-            if compared is not None:  # clean, or the comparison could not run: "ran" False, said in the summary
+            if compared is not None:  # clean, or the  comparison could  not run: "ran" False, said in the summary
                 result["numbers"] = _numbers_public(compared, v_made["id"])
             if made.get("kept"):
                 result["notes"].append(f"{len(made['kept'])} area(s) stay inside the model (Mind cannot swap them): {made['kept'][0].get('why')}")
             stage("rescan", "Checking the new version")
             _run_scan(s, made_path)
-    # got to the end: the line  counts as brought in, while  the picked files are the ones read  here
+    # got to the end: the line counts as brought in, while the picked files are the ones read here
     s.brought_in_files[result["versions"][-1]] = fingerprint
-    with contextlib.suppress(Exception):  # INP-010 of the  last scan  ran before this record
+    with contextlib.suppress(Exception):  # INP-010 of the last scan ran  before this record
         _patch_outside_finding(s, s.result)
     result["summary"] = _bring_in_summary(report, made, result["numbers"], note)
     if _stand_in_names(s) & {str(r.get("file")) for r in rows}:
@@ -2715,14 +3337,20 @@ def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers:
     return result
 
 
-def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stand_ins: bool = False) -> None:
+def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stand_ins: bool = False,
+                     job: cancel.Job | None = None, snap: dict[str, Any] | None = None) -> None:
+    """`job`,  `snap` (17  Nov 2026): the job the route began and the session as it was then. Cancelled --
+    or any error once the flag is set: ending Excel makes ordinary errors -- the session  goes back to
+    `snap` (both versions, the pointer, the stand-in files it  picked) and the state is "cancelled"."""
     st = s.outside_run
 
     def stage(name: str, message: str) -> None:
+        cancel.check()  # 17  Nov 2026: a cancelled bring-in leaves at  its next stage or message
         st.update(stage=name, title=_OUTSIDE_TITLES.get(name, name), message=message, updated=time.time())
-        st.setdefault("stages", []).append(name)  # the  stages this  job went through, in order
+        st.setdefault("stages", []).append(name)  # the stages this job went through, in  order
 
     def say(message: Any) -> None:
+        cancel.check()
         st.update(message=str(message)[:300], updated=time.time())
 
     def after_versions(text: str) -> str:
@@ -2732,35 +3360,57 @@ def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_n
         short = made[-1]["label"].split(" — ")[0]
         return f"{short} holds the outside data, but the rest did not finish: {text}"
 
-    # the end is said only once the workbook is free again: a client that sees "done" or "error"
-    # and starts the next step at once must not find  the lock still held (a few ms otherwise);
-    # meanwhile "running" keeps every  other job away (_busy_with)
+    # the end is said only once the  workbook is free again: a client that sees "done" or "error"
+    # and starts the next step at once must not find the lock still held (a few ms otherwise);
+    # meanwhile "running" keeps every other job away (_busy_with)
     end: dict[str, Any] = {}
+    outcome = "error"
     try:
         result = _bring_in(s, base, note, check_numbers, stage, say, stand_ins)
+        if job is not None:
+            job.commit()  # 17 Nov 2026, the gate: a Cancel after it is too late, the bring-in stands
         end = {"result": result, "state": "done", "stage": "done", "title": "Done", "message": result["summary"]}
         st.setdefault("stages", []).append("done")
-    except _MindInputsRefused as exc:  # says which version  holds the outside data itself
-        end = {"state": "error", "error": str(exc)}
-    except _BringInStopped as exc:
-        end = {"state": "error", "error": after_versions(str(exc))}
-    except HTTPException as exc:  # a scan refused  or failed
-        end = {"state": "error", "error": after_versions(str(exc.detail))[:400]}
-        if exc.status_code >= 500:
-            end.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+        outcome = "done"
+    except cancel.Cancelled:
+        outcome = "cancelled"
     except Exception as exc:  # the thread must never die silently
-        end = {"state": "error", "error": after_versions(_exc_text(exc))[:400]}
-        with contextlib.suppress(Exception):
-            end.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
-    finally:
-        s.apply_lock.release()
-        st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
-        if st.get("state") == "error":
-            # a job that stopped half-way  leaves its line not brought in: INP-010  says why (its last
-            # scan ran while the job was still going)
+        if job is not None and job.flag.is_set():  # a set flag wins over any error: no  error, no incident
+            outcome = "cancelled"
+        elif isinstance(exc, _MindInputsRefused):  # says which version holds the outside data itself
+            end = {"state": "error", "error": str(exc)}
+        elif isinstance(exc, _BringInStopped):
+            end = {"state": "error", "error": after_versions(str(exc))}
+        elif isinstance(exc, HTTPException):  # a scan refused or failed
+            end = {"state": "error", "error": after_versions(str(exc.detail))[:400]}
+            if exc.status_code >= 500:
+                with contextlib.suppress(Exception):
+                    end.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+        else:
+            end = {"state": "error", "error": after_versions(_exc_text(exc))[:400]}
             with contextlib.suppress(Exception):
-                _patch_outside_finding(s, s.result)
-        _save(s)  # the versions it made, the Mind inputs, its result or error
+                end.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+    finally:
+        # 17 Nov 2026, the order: how it ended is decided above; then the restore, the lock, the state,
+        # the save, and last the end of the job -- until then the workbook reads busy (_busy_with)
+        try:
+            if outcome == "cancelled":
+                end = {"state": "cancelled", "stage": "stopped", "title": _OUTSIDE_TITLES["stopped"], "message": _CANCELLED, "error": None,
+                       "result": None, "versions": [], "stand_ins": None}
+                if snap is not None:
+                    _restore(s, snap)
+                if job is not None:
+                    _statuses_stopped(s, job)
+        finally:
+            s.apply_lock.release()
+            st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
+            if st.get("state") == "error":
+                # a job that stopped half-way leaves its line not brought in: INP-010 says why (its last
+                # scan ran while the job was still going)
+                with contextlib.suppress(Exception):
+                    _patch_outside_finding(s, s.result)
+            _save(s)  # the versions it made, the Mind inputs, its result or error
+            cancel.end(job, outcome)
 
 
 @app.post("/api/sessions/{session_id}/outside-inputs/run", status_code=202)
@@ -2816,7 +3466,7 @@ def _free_for_bring_in(s: Session, session_id: str) -> None:
     why = _busy_with(s)
     if why:
         raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
-    if (MIND_LOOPS.get(session_id) or {}).get("state") == "running":
+    if _loop_busy(session_id):  # 17 Nov 2026: also while a cancelled run is still stopping
         raise HTTPException(status_code=409, detail="Wait a moment: Run in Mind is using this workbook.")
 
 
@@ -2827,18 +3477,42 @@ def _start_bring_in(s: Session, session_id: str, stand_ins: bool, check_numbers:
     base, note = _bring_in_base(s)
     if not has_vba_project(s.paths[base["id"]]):
         raise HTTPException(status_code=422, detail=f"{base['label'].split(' — ')[0]} has no macros left to run: bring the outside files in on the uploaded workbook.")
+    # 17 Nov 2026: the job begins here, before  the thread starts, so a Cancel in the first millisecond
+    # finds it;  the snapshot is the session a  cancelled bring-in goes back to
+    job = _begin_job(s, "outside")
     if not s.apply_lock.acquire(blocking=False):
+        cancel.end(job, "error")
         raise HTTPException(status_code=409, detail="Wait a moment: changes are still being written.")
-    now = time.time()
-    s.outside_run = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now, "finished": None,
-                     "result": None, "error": None, "versions": [], "base_version_id": base["id"], "stages": ["start"]}
     try:
-        _ai_thread(s, _bring_in_worker, f"outside-inputs-{session_id}", (s, base, note, check_numbers, stand_ins)).start()
-    except Exception:
-        s.outside_run.update(state="error", error="the job could not start", finished=time.time())
+        snap = _snapshot(s)
+        now = time.time()
+        s.outside_run = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now, "finished": None,
+                         "result": None, "error": None, "versions": [], "base_version_id": base["id"], "stages": ["start"]}
+        _ai_thread(s, _bring_in_worker, f"outside-inputs-{session_id}", (s, base, note, check_numbers, stand_ins, job, snap), job=job).start()
+    except BaseException:
+        if (s.outside_run or {}).get("state") == "running":
+            s.outside_run.update(state="error", error="the job could not start", finished=time.time())
         s.apply_lock.release()
+        cancel.end(job, "error")
         raise
     return {"running": True, "state": "running", "base_version_id": base["id"], "note": note}
+
+
+def _job_live(sid: str, kind: str) -> bool:
+    """A  job of  this kind is still registered for the workbook: its thread has not ended it yet. The
+    status routes of the two thread jobs that change the workbook say "running" until then (17  Nov
+    2026): a screen that reads "done" and starts the next step  at once must find the workbook  free."""
+    return any(j.kind == kind for j in cancel.jobs(sid))
+
+
+def _end_wait(s: Session) -> None:
+    """End  the wait  for the input files (Do everything stopped at its first step): the job is over,
+    state "stopped"; the wait held no lock and no Excel, so nothing was changed."""
+    st = s.outside_run
+    now = time.time()
+    st.update(state="stopped", stage="stopped", title=_OUTSIDE_TITLES["stopped"], message=_WAIT_STOPPED, error=_WAIT_STOPPED, finished=now, updated=now)
+    st.setdefault("stages", []).append("stopped")
+    _save(s)
 
 
 @app.post("/api/sessions/{session_id}/outside-inputs/continue", status_code=202)
@@ -2870,10 +3544,7 @@ def stop_outside_inputs(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     st = s.outside_run or {}
     if st.get("state") == "waiting_for_inputs":
-        now = time.time()
-        st.update(state="stopped", stage="stopped", title=_OUTSIDE_TITLES["stopped"], message=_WAIT_STOPPED, error=_WAIT_STOPPED, finished=now, updated=now)
-        st.setdefault("stages", []).append("stopped")
-        _save(s)
+        _end_wait(s)
         return {"running": False, "state": "stopped", "error": _WAIT_STOPPED}
     if st.get("state") == "running":
         raise HTTPException(status_code=409, detail="The outside files are being brought in: that cannot be stopped half-way. Wait for it to finish.")
@@ -2888,15 +3559,18 @@ def outside_inputs_state(session_id: str) -> dict[str, Any]:
     st = s.outside_run or {}
     started = st.get("started")
     waiting = st.get("state") == "waiting_for_inputs"
+    state = st.get("state") or "idle"
+    if state in ("done", "error", "cancelled") and _job_live(s.id, "outside"):
+        state = "running"  # 17 Nov 2026: its  thread is still saving -- the end is said once the  workbook is free
     return {
         "outsideInputs": _outside_public(s),
         "inputs": _inputs_public(s),
-        "running": st.get("state") == "running",
-        "state": st.get("state") or "idle",
+        "running": state == "running",
+        "state": state,
         "stage": st.get("title"),  # in words, for the  screen ("Running the workbook's import macro")
-        "stage_id": st.get("stage"),  # waiting | start | stand_ins |  import | scan | mind_inputs |  numbers | rescan | done | stopped
-        "stages": list(st.get("stages") or []),  # the  stages this job went through, in order
-        # Do everything waits for the  input files: which the macro opens, which  are there, what each fills
+        "stage_id": st.get("stage"),  # waiting |  start | stand_ins | import | scan | mind_inputs | numbers  | rescan | done | stopped
+        "stages": list(st.get("stages") or []),  # the stages  this job went through, in order
+        # Do everything waits for the input files: which the macro opens, which are there, what each fills
         "waiting": waiting,
         "needed": _needed_public(s) if waiting else None,
         "message": _waiting_message(s) if waiting else st.get("message"),
@@ -2983,35 +3657,51 @@ def _next_quarter_public(res: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _next_quarter_worker(s: Session, base: dict[str, Any], grids: list[dict[str, Any]], paths: list[Path], folder: Path, has_raw: bool) -> None:
+def _next_quarter_worker(s: Session, base: dict[str, Any], grids: list[dict[str, Any]], paths: list[Path], folder: Path, has_raw: bool,
+                         job: cancel.Job | None = None) -> None:
     st = s.next_quarter
 
     def say(message: Any) -> None:
+        cancel.check()  # 17  Nov 2026:  a cancelled job leaves at its next message
         text = str(message)[:300]
         stage = "files" if "Mind input" in text else "import" if has_raw else st.get("stage")
         st.update(message=text, stage=stage, title=_NEXT_QUARTER_TITLES.get(stage or "", st.get("title")), updated=time.time())
 
     end: dict[str, Any] = {}
+    outcome = "error"
     try:
         oi = s.outside_inputs or {}
         if has_raw:
-            excel_worker.release(s.id)  # the  macro runs  in an Excel of its own
+            excel_worker.release(s.id)  # the macro runs in an Excel of its own
         with perf_stage("next_quarter_inputs", file=Path(s.paths[base["id"]]).name, files=len(paths)):
             res = next_quarter_inputs.make_next_quarter(
                 s.paths[base["id"]], oi.get("table") or [], paths, grids, oi["vba"]["import_macro"], folder,
                 messages=oi["vba"].get("messages") or [], progress=say, model_name=_main_name(s), made_at=time.strftime("%Y-%m-%d %H:%M"))
+        if job is not None:
+            # 17 Nov 2026, the gate before the one write (the zip registered): a flag set meanwhile  wins
+            # over whatever the macro's Excel, ended by the Cancel, made the  job answer
+            job.commit()
         if res.get("ok") and res.get("zip"):
             s.files[Path(res["zip"]).name] = Path(res["zip"])  # newest wins: one download name
         public = _next_quarter_public(res)
         end = {"state": "done" if res.get("ok") else "error", "stage": "done", "title": "Done", "result": public,
                "error": None if res.get("ok") else res.get("error"), "message": public["summary"] or res.get("error")}
-    except Exception as exc:  # the thread must never die silently
-        end = {"state": "error", "error": _exc_text(exc)[:400]}
-        with contextlib.suppress(Exception):
-            end.update(_problem_fields(_report_problem(exc, "Make next quarter's Mind input files", s, stage=str(st.get("stage") or ""))))
+        outcome = "done" if res.get("ok") else "error"
+    except cancel.Cancelled:
+        outcome = "cancelled"
+    except Exception as exc:  # the  thread must never die silently
+        if job is not None and job.flag.is_set():  # a set flag  wins over any error: no error, no incident
+            outcome = "cancelled"
+        else:
+            end = {"state": "error", "error": _exc_text(exc)[:400]}
+            with contextlib.suppress(Exception):
+                end.update(_problem_fields(_report_problem(exc, "Make next quarter's Mind input files", s, stage=str(st.get("stage") or ""))))
     finally:
+        if outcome == "cancelled":  # nothing was registered: there  is nothing to put back
+            end = {"state": "cancelled", "title": "Stopped", "message": _CANCELLED, "error": None, "result": None}
         st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
-        _save(s)  # next quarter's zip and how the job ended
+        _save(s)  # next quarter's zip  and how the job ended
+        cancel.end(job, outcome)
 
 
 @app.post("/api/sessions/{session_id}/next-quarter-inputs", status_code=202)
@@ -3049,12 +3739,14 @@ def start_next_quarter_inputs(session_id: str, files: list[UploadFile] = File(..
     if has_raw and not com_available():
         raise HTTPException(status_code=409, detail="Reading raw input files needs Excel on this machine: the model's own import macro runs on them.")
     now = time.time()
+    job = _begin_job(s, "next_quarter")  # 17 Nov 2026: before the thread starts, so a Cancel in the first millisecond finds it
     s.next_quarter = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now,
                       "finished": None, "result": None, "error": None}
     try:
-        _ai_thread(s, _next_quarter_worker, f"next-quarter-{session_id}", (s, base, grids, paths, folder, has_raw)).start()
-    except Exception:
+        _ai_thread(s, _next_quarter_worker, f"next-quarter-{session_id}", (s, base, grids, paths, folder, has_raw, job), job=job).start()
+    except BaseException:
         s.next_quarter.update(state="error", error="the job could not start", finished=time.time())
+        cancel.end(job, "error")
         raise
     return {
         "running": True, "state": "running",
@@ -3108,6 +3800,11 @@ def _refuse_while_fixing(session_id: str) -> None:
     state = AUTOFIX.get(session_id)
     if state and state.get("state") == "running":
         raise HTTPException(status_code=409, detail="the automatic fixer is running on this workbook: wait for it to finish, or stop it")
+    # 17 Nov 2026: the  prep-run job adds versions and scans all  along (its rounds, each fix of the
+    # assistant and its undo): a  Recalculate or a numbers check landing in  the middle would speak of
+    # a version that may be taken back. Until the job has ended, not only while its state says so.
+    if (PREP_RUNS.get(session_id) or {}).get("state") == "running" or _job_live(session_id, "prep"):
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_BUSY_WORDS['prep']}.")
     _refuse_while_bringing_in(SESSIONS.get(session_id))
 
 
@@ -3160,6 +3857,15 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
     keep = bool(payload.get("keep_good_values", True))
     budget = max(1.0, float(payload.get("time_budget_min", 120))) * 60
     advisor = make_advisor() if use_assistant else None
+    # 17 Nov 2026: the job begins here, before the thread starts, so a Cancel in the first millisecond
+    # finds it (409 while another job changes the workbook); the snapshot is the session a cancelled
+    # fixer goes back to. "Stop, keep what  is fixed" (POST .../auto-fix/stop) is another thing and stays.
+    job = _begin_job(s, "autofix")
+    try:
+        snap = _snapshot(s)
+    except BaseException:
+        cancel.end(job, "error")
+        raise
     state: dict[str, Any] = {
         "state": "running", "stage": "start", "title": "Starting", "message": "Opening the workbook in Excel", "fraction": None,
         "pass_no": 0, "errors": None, "errors_before": None, "kept": 0, "started": time.time(), "updated": time.time(), "finished": None,
@@ -3170,6 +3876,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
     source = s.current_path
 
     def progress(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        cancel.check()  # 17 Nov 2026: a cancelled fixer leaves at its next message, with nothing kept
         state.update(stage=stage, title=_AUTOFIX_TITLES.get(stage, stage), message=message, fraction=fraction, updated=time.time())
         if facts.get("pass_no") is not None:
             state["pass_no"] = facts["pass_no"]
@@ -3181,28 +3888,31 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             state["kept"] += int(facts["kept"])
 
     def worker() -> None:
+        outcome = "error"
         try:
             excel_worker.release(s.id)  # one Excel per session -- the fixer has its own
             # On a prepared version: what did the preparation itself change? An error that was a
-            # value in the original is Prep's doing -- the fixer must not put a 0 over  it.
+            # value in the original is Prep's doing -- the fixer must not put a 0 over it.
             regressions = None
             numbers = None
             found = _original_and_moves(s)
             if found is not None:
                 progress("compare", "Comparing this version with the original workbook", None)
                 compared = compare_workbooks(found[0], source, found[1], progress)
+                cancel.check()  # 17 Nov 2026: a comparison whose Excel was ended is not "nothing regressed"
                 numbers = _numbers_public(compared, state["version_id"])
                 regressions = compared.get("regressions") or None
             state["numbers"] = numbers
             cfg = AutoFixConfig(time_budget_s=budget, keep_good_values=keep, advisor=advisor, progress=progress, should_stop=lambda: bool(state["stop"]), regressions=regressions)
             res = run_autofix(source, s.work_dir / "autofix", cfg)
+            cancel.check()  # its Excel ended by a Cancel comes back as  status "error": the flag is  read first
             res["numbers_check"] = numbers
             if res.get("status") == "error":
                 raise RuntimeError(res.get("message") or "the automatic fixer failed")
             if not res.get("output_path"):
                 ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
                 if ew is not None:
-                    ew.preopen_async(source)  # nothing changed -- Prep's first round finds this version open
+                    ew.preopen_async(source)  # nothing changed -- Prep's first round  finds this version  open
             if res.get("output_path"):
                 output = Path(res["output_path"])
                 left = int(res.get("errors_after") or 0)
@@ -3216,32 +3926,63 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
                 rec = _recalc_out(s, res["recalc"], output, close_round=False)
                 ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
                 if ew is not None:
-                    ew.preopen_async(output)  # Prep's first round finds it open
+                    ew.preopen_async(output)  # Prep's first  round finds it open
                 progress("reanalyze", "Checking the fixed version against the rules", None)
                 state["analysis"] = _run_scan(s, output)
                 rec["readiness"] = s.readiness()
                 rec.pop("report", None)
                 rec.pop("plan", None)
                 state["recalc"] = rec
+            job.commit()  # 17 Nov 2026, the gate: a Cancel after it is too late, the fixer's version stands
             state["result"] = {k: v for k, v in res.items() if k not in ("applied", "change_log_entry", "recalc", "log")}
             state["result"]["log"] = res.get("log", [])[-200:]
             state.update(state="done", stage="done", title="Done", message=res.get("summary") or "", finished=time.time(), updated=time.time())
+            outcome = "done"
+        except cancel.Cancelled:
+            outcome = "cancelled"
         except HTTPException as exc:  # the re-analysis refused (a scan already running)
-            state.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
-            if exc.status_code >= 500:
-                state.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Fix all issues", s)))
+            if job.flag.is_set():  # a set flag wins over any error:  no error, no incident
+                outcome = "cancelled"
+            else:
+                state.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+                if exc.status_code >= 500:
+                    state.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Fix all issues", s)))
         except Exception as exc:  # the thread must never die silently
-            state.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
-            state.update(_problem_fields(_report_problem(exc, "Fix all issues", s, stage=str(state.get("stage") or ""))))
+            if job.flag.is_set():
+                outcome = "cancelled"
+            else:
+                state.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
+                state.update(_problem_fields(_report_problem(exc, "Fix all issues", s, stage=str(state.get("stage") or ""))))
         finally:
-            _save(s)  # the fixer's version, recalculation and analysis, or how it ended
+            # 17 Nov 2026,  the order: how it ended is  decided above; then the restore (no version,  or the
+            # one just added, goes; the recalculation is back), the state,  the save, and last the end of
+            # the  job. Whatever happened, the state is final here: never "running".
+            try:
+                if outcome == "cancelled":
+                    _restore(s, snap)
+                    _statuses_stopped(s, job)
+                    state.update(state="cancelled", title="Stopped", message=_CANCELLED, error=None, fraction=None, version=None, result=None,
+                                 recalc=None, analysis=None, finished=time.time(), updated=time.time())
+            finally:
+                if state.get("state") == "running":
+                    state.update(state="cancelled" if outcome == "cancelled" else "error", finished=time.time(), updated=time.time(),
+                                 error=None if outcome == "cancelled" else "the job stopped without saying why")
+                _save(s)  # the fixer's version, recalculation and analysis, or how it ended
+                cancel.end(job, outcome)
 
-    _ai_thread(s, worker, f"autofix-{session_id}").start()
+    try:
+        _ai_thread(s, worker, f"autofix-{session_id}", job=job).start()
+    except BaseException:  # the thread never started: nothing stays "running", no job stays registered
+        state.update(state="error", error="the job could not start", finished=time.time(), updated=time.time())
+        cancel.end(job, "error")
+        raise
     return _autofix_public(s, state, full=False)
 
 
 def _autofix_public(s: Session, state: dict[str, Any], full: bool) -> dict[str, Any]:
     out = {k: state.get(k) for k in _AUTOFIX_PUBLIC}
+    if out["state"] in ("done", "error", "cancelled") and _job_live(s.id, "autofix"):
+        out["state"] = "running"  # 17  Nov 2026:  its thread is still saving -- the end is said once the workbook is free
     out["elapsed_s"] = round((state.get("finished") or time.time()) - state["started"], 1)
     if state.get("stage") == "reanalyze" and state.get("state") == "running":
         scan = _scan_snapshot(s)
@@ -3278,6 +4019,347 @@ def stop_autofix(session_id: str) -> dict[str, Any]:
         return {"state": (state or {}).get("state", "idle")}
     state["stop"] = True
     return _autofix_public(s, state, full=False)
+
+
+# --- prep-run: "Fix the formulas and the structure" as one job (app/handoff.py) ---------------------
+# 17 Nov 2026.  Start's Prep step never stops for a person while the app  can fix it: Prep rounds while
+# a  round still changes something; then what is  left goes to the assistant, whose fix is written by
+# itself only  when it is narrow and kept only  when no computed value changed, its problem got
+# smaller and no other blocking problem got worse; anything else is undone first, and only then is
+# the person asked, in plain words. Every rule and every sentence is in app/handoff.py; here is the
+# work it decides about. The screens and scripts/night_chain.py both call this job, so "a round
+# still makes progress" is defined once. One job,  kind "prep": a Cancel throws the whole run away.
+PREP_RUNS: dict[str, dict[str, Any]] = {}  # session  id ->  live state of the current / last run (in memory only: "idle" after a restart)
+# session id -> {handoff.memo_key(...): {"outcome", "tries"}}: the problems the assistant already
+# failed on. The run after the Mind  loop, and Start pressed again on a workbook nobody touched, keep
+# that  outcome with no model call; a  hand edit of the problem's cells gives  another key. In memory
+# only; dropped with the session (_remove_saved).
+HANDOFF_MEMO: dict[str, dict[str, dict[str, Any]]] = {}
+_PREP_RUN_STEP = "Fix the formulas and the structure"  # the  step's name  on Custom, for a problem report
+_PREP_RUN_TITLES = {
+    "pass": "Fixing the formulas and the structure", "assistant": "Asking the assistant", "write": "Writing the assistant's fix",
+    "numbers": "Checking the numbers", "undo": "Taking the fix back", "check": "Checking the workbook", "done": "Done",
+}
+_PREP_RUN_PUBLIC = ("state", "stage", "title", "message", "pass_no", "applied", "refused", "assistant_fixed", "problem_no", "problem_count",
+                    "left", "ask", "from_version_id", "version", "started", "updated", "finished", "error")
+_PREP_RUN_BUTTONS = ("Start", "Do everything")  # the  button that  started the job: the question names it ("... press Start again.")
+
+
+@app.post("/api/sessions/{session_id}/prep-run", status_code=202)
+def start_prep_run(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Fix  the formulas  and the structure, in the background (poll GET .../prep-run): every blocking
+    Prep action that is on by default, round after round while a round still changes something;
+    then, with `assistant` (default true), each  blocking problem that is left goes to the assistant
+    (five problems at  most, two tries each); a fix  it proposes is written only when it  changes the
+    problem's own cells (or labels one empty cell), and kept  only when the numbers check finds no
+    computed  value changed and the check of the workbook finds the problem smaller and no other
+    one worse -- else it is taken back. The end is `done`, or `ask` (something is left for a
+    person: the two sentences, where "Show me" leads, the note for Send feedback, and whether Start
+    stops here), or `no_key` (something is left and no AI key is saved; the  rounds are kept).
+
+    Body (all optional): assistant (false: the rounds only; what is left is asked about), button
+    ("Start" or "Do everything": the word the question uses for the button to press again).
+    409 with no analysis yet and while anything else changes this workbook. Cancel (POST .../cancel,
+    kind "prep") puts the workbook back as it was before this run."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
+    use_assistant = bool(payload.get("assistant", True))
+    button = str(payload.get("button") or "").strip()
+    button = button if button in _PREP_RUN_BUTTONS else _PREP_RUN_BUTTONS[0]
+    # the job begins here, before the thread starts, so a Cancel in the first millisecond finds it
+    # (409 while another job changes the workbook); the snapshot is  the workbook a cancelled run  goes back to
+    job = _begin_job(s, "prep")
+    state: dict[str, Any] = {}
+    try:
+        snap = _snapshot(s)
+        now = time.time()
+        state.update(
+            state="running", stage="pass", title=_PREP_RUN_TITLES["pass"], message="Looking at what blocks the file…",
+            pass_no=0, applied=0, refused=0, assistant_fixed=0, problem_no=0, problem_count=0, problems=[], left=0, ask=None,
+            from_version_id=s.current_version_id, version=None, started=now, updated=now, finished=None, error=None,
+        )
+        PREP_RUNS[session_id] = state
+        _ai_thread(s, _prep_run_worker, f"prep-run-{session_id}", (s, state, job, snap, use_assistant, button), job=job).start()
+    except BaseException:  # the thread never started: nothing  stays "running", no  job stays  registered
+        if state.get("state") == "running":
+            state.update(state="error", error="the job could not start", finished=time.time(), updated=time.time())
+        cancel.end(job, "error")
+        raise
+    return {"state": "running"}
+
+
+def _prep_run_public(s: Session, state: dict[str, Any], full: bool) -> dict[str, Any]:
+    out = {k: state.get(k) for k in _PREP_RUN_PUBLIC}
+    out["problems"] = [dict(p) for p in state.get("problems") or []]
+    if out["state"] != "running" and _job_live(s.id, "prep"):
+        out["state"] = "running"  # its  thread is  still saving -- the end is said once the workbook is free (as the fixer's)
+    out["elapsed_s"] = round((state.get("finished") or time.time()) - state["started"], 1)
+    if state.get("state") == "error":  # only then: a question carries its feedback inside `ask`, with no red box beside it
+        out.update({k: state[k] for k in ("incident", "problem") if state.get(k)})
+    if full and out["state"] != "running" and s.result:
+        out["analysis"] = _session_public(s)
+    return out
+
+
+@app.get("/api/sessions/{session_id}/prep-run")
+def prep_run_status(session_id: str, full: int = 0) -> dict[str, Any]:
+    """Where  the prep-run  job is: state idle | running | done | ask | no_key | cancelled | error; the
+    stage (pass | assistant | write | numbers | undo | check | done) with  one plain sentence; the
+    round, the changes applied and refused, how many  problems the assistant fixed; each problem  that
+    was left after the rounds with its  route, its tries and how it ended; `left` (blocking problems
+    left at  the end, the outside files aside) and  `ask` (the question for the person, or null).
+    While the stage is pass or write, the Apply's own progress is in GET .../status, field "apply".
+    `full=1` once it has ended adds `analysis`: the workbook as GET /api/sessions/{id} gives it."""
+    s = _session(session_id)
+    state = PREP_RUNS.get(session_id)
+    if not state:
+        return {"state": "idle"}
+    return _prep_run_public(s, state, full=bool(full))
+
+
+def _prep_run_worker(s: Session, st: dict[str, Any], job: cancel.Job, snap: dict[str, Any], use_assistant: bool, button: str) -> None:
+    """The  job's thread.  `job`, `snap`: the job the route began and the workbook as it was then.
+    Cancelled -- or any error once the flag is set: ending Excel makes ordinary errors -- the whole
+    run  goes back to `snap` (every round, every fix) and the state  is "cancelled"."""
+    outcome = "error"
+    hold: dict[str, Any] = {"undo": None}  # how to take back a  fix of the assistant that is written  and not judged yet
+    try:
+        _prep_run_work(s, st, use_assistant, hold)  # steps 1 to 5
+        job.commit()  # step 6, the gate: a  Cancel after it is too late, the  run stands
+        _prep_run_end(s, st, button)  # step 7: done, or the question
+        outcome = "done"
+    except cancel.Cancelled:
+        outcome = "cancelled"
+    except HTTPException as exc:  # an Apply or a check refused or failed
+        if job.flag.is_set():  # a set flag wins over any error: no error, no incident
+            outcome = "cancelled"
+        else:
+            st.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+            if exc.status_code >= 500:
+                with contextlib.suppress(Exception):
+                    st.update(_problem_fields(_report_problem(exc.__cause__ or exc, _PREP_RUN_STEP, s, stage=str(st.get("stage") or ""))))
+    except Exception as exc:  # the thread must never die silently
+        if job.flag.is_set():
+            outcome = "cancelled"
+        else:
+            st.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
+            with contextlib.suppress(Exception):
+                st.update(_problem_fields(_report_problem(exc, _PREP_RUN_STEP, s, stage=str(st.get("stage") or ""))))
+    finally:
+        # the order: how it ended is decided above; then the restore, the state, the save, and last
+        # the end of the job -- until then the workbook reads busy. Whatever happened, the state is
+        # final  here: never "running".
+        try:
+            if outcome == "cancelled":
+                _restore(s, snap)
+                _statuses_stopped(s, job)
+                st.update(state="cancelled", title="Stopped", message=_CANCELLED, error=None, ask=None, version=None, pass_no=0, applied=0, refused=0,
+                          assistant_fixed=0, problem_no=0, problem_count=0, problems=[], left=0, finished=time.time(), updated=time.time())
+            elif outcome == "error" and hold["undo"] is not None:
+                # an error the try itself could not take back: a fix nobody judged never stays current
+                with contextlib.suppress(Exception):
+                    hold["undo"]()
+        finally:
+            if st.get("state") == "running":
+                st.update(state="cancelled" if outcome == "cancelled" else "error", finished=time.time(), updated=time.time(),
+                          error=None if outcome == "cancelled" else "the job stopped without saying why")
+            if outcome == "error":
+                with contextlib.suppress(Exception):
+                    st.update(version=_current_version(s), left=len(handoff.problems_left(s.readiness()["blocking"], s.result["validation_report"])))
+            _save(s)  # the rounds' versions and the kept fixes, or the workbook as it was
+            cancel.end(job, outcome)
+
+
+def _prep_run_work(s: Session, st: dict[str, Any], use_assistant: bool, hold: dict[str, Any]) -> None:
+    """Steps  1 to  5 of the job (DESIGN section 6): the rounds, what is left, the assistant on each
+    problem, and the rounds once more when a kept fix left Prep work."""
+    def stage(name: str, message: str, **facts: Any) -> None:
+        cancel.check()  # a cancelled run leaves  at its next stage, with nothing kept
+        st.update(stage=name, title=_PREP_RUN_TITLES.get(name, name), message=message, updated=time.time(), **facts)
+
+    def rounds() -> None:
+        base = st["pass_no"]  # the rounds after the assistant  go on counting
+
+        def write_round(ops: list[dict[str, Any]], n: int) -> tuple[int, int]:
+            stage("pass", handoff.round_message(base + n, len(ops)), pass_no=base + n)
+            out = _apply_and_version(s, ops, "prep", "Prep", reanalyze=True)
+            res = out["result"]
+            applied, refused = len(res.get("applied") or []), len(res.get("failed") or [])
+            st.update(applied=st["applied"] + applied, refused=st["refused"] + refused, updated=time.time())
+            if out.get("scan_error"):
+                # the round is written  and current, but its check did not  run: what the session knows
+                # is of the version before it, and  nothing may be decided from that
+                raise HTTPException(status_code=500, detail=f"The changes were written, but the check of the workbook that follows did not run: {out['scan_error']}")
+            return applied, refused
+
+        handoff.run_rounds(lambda: s.plan, write_round)
+
+    stage("pass", "Looking at what blocks the file…")
+    rounds()  # step 1
+    problems = handoff.problems_left(s.readiness()["blocking"], s.result["validation_report"])  # step  2
+    st.update(problems=problems, updated=time.time())
+    if not problems or not use_assistant:  # step 3: nothing left, or the rounds only (every problem stays "not_tried")
+        return
+    if not llm_available():
+        st["no_key"] = True  # the rounds that ran are kept; the end says that no AI key is saved
+        return
+    asked = problems[:handoff.MAX_PROBLEMS]  # the others stay "not_tried"
+    st.update(problem_count=len(asked))
+    kept = 0
+    for no, problem in enumerate(asked, start=1):  # step 4
+        st.update(problem_no=no)
+        if _prep_run_problem(s, st, stage, problem, no, len(asked), hold):
+            kept += 1
+            st.update(assistant_fixed=kept)
+    if kept and handoff.pass_ops(s.plan):  # step 5: a kept fix left Prep work -- the rounds once more, no second turn of the assistant
+        rounds()
+
+
+def _prep_run_finding(s: Session, rule_id: str) -> dict[str, Any] | None:
+    """The  finding of  a rule that blocks the current version, or None when it blocks no more."""
+    if not any(b.get("rule_id") == rule_id for b in s.readiness()["blocking"]):
+        return None
+    return next((f for f in s.result["validation_report"]["findings"] if f.get("rule_id") == rule_id), None)
+
+
+def _prep_run_problem(s: Session, st: dict[str, Any], stage: Callable[..., None], problem: dict[str, Any], no: int, count: int, hold: dict[str, Any]) -> bool:
+    """Step  4 for  one problem: the memo, then up to handoff.MAX_TRIES tries (_prep_run_try). The entry
+    of the job's `problems` gets its tries and how it ended. True when a fix of the assistant was kept."""
+    rule = str(problem["rule_id"])
+    memo = HANDOFF_MEMO.setdefault(s.id, {})
+    kept = answered = False
+    earlier: str | None = None
+    detail = ""
+    while problem["tries"] < handoff.MAX_TRIES:
+        cancel.check()
+        finding = _prep_run_finding(s, rule)
+        if finding is None:  # gone:  its own fix cleared it, or the fix of the problem  before it did
+            problem["outcome"] = "fixed"
+            return kept
+        if problem["tries"] == 0:
+            # a. the memo: a  problem the assistant already failed on keeps  that outcome, with no model call
+            known = memo.get(handoff.memo_key(finding, s.result["workbook_analysis"]))
+            if known:
+                problem.update(outcome=known["outcome"], tries=known["tries"])
+                return False
+        stage("assistant", handoff.assistant_message(no, count))
+        problem["tries"] += 1
+        outcome, detail, heard = _prep_run_try(s, stage, rule, finding, earlier, detail, hold)
+        answered = answered or heard
+        problem["outcome"] = earlier = outcome
+        st.update(updated=time.time())
+        if outcome == "fixed":
+            kept = True  # a rule that got smaller and  is still blocking gets its second try  on what is left
+    finding = _prep_run_finding(s, rule)
+    if finding is None:
+        problem["outcome"] = "fixed"
+    elif answered:
+        # it ends not fixed: remembered under the cells as they are now (after a fix that was kept, what is
+        # left of it). Not when the assistant never answered (no connection): nothing was paid, and
+        # the next Start asks again.
+        memo[handoff.memo_key(finding, s.result["workbook_analysis"])] = {"outcome": problem["outcome"], "tries": problem["tries"]}
+    return kept
+
+
+def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: dict[str, Any], earlier: str | None, detail: str, hold: dict[str, Any]) -> tuple[str, str, bool]:
+    """One  try of  the assistant on one problem (steps 4b to 4j). -> (the outcome, a few words on it for
+    the next try's question, whether the assistant answered at all). On "fixed" the new  version is
+    kept and saved; on every other outcome the workbook is  exactly as before the try."""
+    snap = _snapshot(s)  # b.
+    statuses = (dict(s.scan), dict(s.apply_status))
+    before = s.current_version_id
+    blocking_before = handoff.sites_by_rule(s.readiness()["blocking"])
+    cells = handoff.cells_of(finding)
+    heard = writing = False
+
+    def undo() -> None:
+        """The workbook  as before this try. The scan and  the Apply status go back too (first: the
+        restore saves): nobody stopped  anything, and they would speak of a  version that is gone."""
+        s.scan, s.apply_status = dict(statuses[0]), dict(statuses[1])
+        _restore(s, snap)
+        hold["undo"] = None
+
+    try:
+        # c. the question, as the Assistant tab's "Propose a fix" for this finding, with every cell named
+        reply = answer_question([], handoff.question_for(finding, cells, earlier, detail), s.result["workbook_analysis"], s.result["validation_report"], s.plan)
+        cancel.check()
+        heard = bool(reply.get("available", True))
+        ops = list(reply.get("proposal") or [])
+        errors = [str(e) for e in reply.get("proposal_errors") or []]
+        if not ops or errors:  # d.
+            return "no_fix", (errors[0][:300] if errors else ""), heard
+        wide = handoff.narrow_problem(ops, cells)  # e. the guard: nothing wider than the problem's own cells is written without a person
+        if wide:
+            return "too_wide", wide, heard
+        stage("write", handoff.WRITE_MESSAGE)  # f. nothing of the fix is saved until it is judged
+        hold["undo"] = undo
+        writing = True
+        out = _apply_and_version(s, ops, "assistant", "Assistant", reanalyze=False, save=False)
+        writing = False  # from here an error is one of the checks, not of the write
+        failed = out["result"].get("failed") or []
+        if failed:
+            undo()
+            return "not_written", str(failed[0].get("error") or "")[:300], heard
+        # g. the numbers check itself, between  the version just before the fix and the version with
+        # it: only the fix is judged. A check that could not run is never a pass.
+        stage("numbers", handoff.NUMBERS_MESSAGE)
+        excel_worker.release(s.id)
+        numbers = compare_workbooks(s.paths[before], s.current_path, Moves([out["version"].get("change_log") or []]))
+        cancel.check()  # its Excel ended by a Cancel answers "could not be compared": that is no verdict
+        changed = _changed_values(numbers) if numbers.get("ran") else None
+        blocking_after = None
+        if changed == 0:  # h.
+            stage("check", handoff.CHECK_MESSAGE)
+            _run_scan(s)
+            blocking_after = handoff.sites_by_rule(s.readiness()["blocking"])
+        outcome = handoff.judge(blocking_before, blocking_after, rule, changed)  # i.
+        if outcome == "fixed":
+            hold["undo"] = None
+            _save(s)  # the version is kept
+            return outcome, "", heard
+        stage("undo", handoff.undo_message(outcome))
+        undo()
+        return outcome, (handoff.changed_sample(numbers) if outcome == "numbers_changed" else ""), heard
+    except Exception as exc:  # j. an error between the write and the judge never leaves the fix current
+        if cancel.flagged():  # a set flag wins over any error
+            raise cancel.Cancelled() from None
+        if hold["undo"] is None:  # before the write: there is no fix to take back, and none to check
+            return "no_fix", "", heard
+        undo()
+        return ("not_written" if writing else "not_checked"), plain_error(exc)[:300], heard
+
+
+def _prep_run_end(s: Session, st: dict[str, Any], button: str) -> None:
+    """Step  7, after  the gate: what is left comes from the FINAL blocking list (the outside files
+    aside), not from the list the assistant was given. Nothing left: "done". Else "ask" about the
+    first one left,  in the words of app/handoff.py; "no_key" when the assistant was needed  and no AI
+    key is saved."""
+    final = handoff.problems_left(s.readiness()["blocking"], s.result["validation_report"])
+    seen = {p["rule_id"]: p for p in st.get("problems") or []}
+    for p in final:  # what the  run did with each one that is  still there ("not_tried": the assistant never saw it)
+        was = seen.get(p["rule_id"])
+        if was is not None:
+            p.update(tries=was["tries"], outcome=was["outcome"])
+    if not final:
+        end = {"state": "done", "title": _PREP_RUN_TITLES["done"], "message": " ".join(handoff.done_lines(st["applied"], st["assistant_fixed"])), "ask": None}
+    elif st.pop("no_key", False):
+        ask = handoff.no_key_ask(button)
+        end = {"state": "no_key", "title": "No AI key is saved", "message": " ".join(ask["lines"]), "ask": ask}
+    else:
+        first = final[0]
+        ref = None
+        with contextlib.suppress(Exception):  # the question never waits  on its report
+            asked = first.get("outcome") != "not_tried"
+            ref = _report_problem(None, "Assistant", s, rule_id=first.get("rule_id"), what="not fixed by the assistant" if asked else "left for a person: the assistant was not asked")["ref"]
+        ask = handoff.build_ask(final, s.plan, ref, button)
+        end = {"state": "ask", "title": "Something is left", "message": " ".join(ask["lines"]), "ask": ask}
+    now = time.time()
+    # in one step: a look  that lands here never reads the last stage with a sentence of the one before
+    st.update(end, left=len(final), version=_current_version(s), stage="done", finished=now, updated=now, error=None)
 
 
 @app.get("/api/sessions/{session_id}/readiness")
@@ -3444,7 +4526,7 @@ def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={}))
     ops = plan["operations"]
     if not ops:
         raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan["notes"]) or "no loop could be built"))
-    out = _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True)))
+    out = _job_route(s, "apply", lambda _job: _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True))))
     out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
     return out
 
@@ -3562,17 +4644,24 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
     ops = list(plan.get("operations") or [])
     if not ops:
         raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))
+    return _job_route(s, "apply", lambda _job: _instances_apply(s, plan, ops, payload))
+
+
+def _instances_apply(s: Session, plan: dict[str, Any], ops: list[dict[str, Any]], payload: dict[str, Any]) -> dict[str, Any]:
+    """The  work of  POST .../mind-instances-plan/apply, all of it inside the route's one job (17 Nov
+    2026): cancelled at any point, the new version, the main workbook's zip and the pointer to the
+    older zip all go  back (the main workbook's Excel is this thread's, so the Cancel  ends it)."""
     out = _apply_and_version(s, ops, "instances", "Mind instances", bool(payload.get("reanalyze", True)))
     stem = _instances_stem(s)
     main = plan.get("main") if isinstance(plan.get("main"), dict) else {}
     model_file = str(main.get("model_file") or f"{stem}_instances{s.current_path.suffix}")
     main_file = str(main.get("file") or f"{stem}_Main.xlsx")
-    s.instances_zip = None  # an older zip belongs to an older  version
+    s.instances_zip = None  # an older zip belongs to  an older version
     warnings: list[str] = []
     download: str | None = None
     status = out["result"]["status"]
-    # a refused change (the key column, the  driver, a result cell) leaves a model the plan does not
-    # describe: no main workbook and no zip for it. A paste-area cell that stayed is not that.
+    # a refused change (the key  column, the driver, a result cell) leaves a model the plan  does not
+    # describe: no main workbook and no  zip for it. A paste-area cell that stayed is not that.
     refused = [f for f in out["result"].get("failed") or [] if f.get("op") != "clear_cell"]
     if status == "APPLIED" or (status == "PARTIAL" and not refused):
         try:
@@ -3586,6 +4675,7 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
             s.instances_zip = Path(zip_for_mind(model_path, main_path, folder / f"{stem}_instances.zip"))
             download = f"/api/sessions/{s.id}/mind-instances/download"
         except Exception as exc:
+            cancel.check()  # its Excel ended by a Cancel is not a warning: the whole build goes back
             warnings.append(f"The main workbook could not be written: {type(exc).__name__}: {str(exc)[:200]}. The new version of the model exists; build the instances again to retry.")
     elif status == "PARTIAL":
         where = ", ".join(f"{f.get('sheet')}!{f.get('cell') or f.get('ref') or f.get('row') or f.get('column')}" for f in refused[:4])
@@ -3597,7 +4687,8 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
     out["download"] = download
     out["files"] = [model_file, main_file]
     out["warnings"] = warnings
-    _save(s)  # the zip of this build (the version itself was saved by the Apply)
+    if not cancel.flagged():  # after a Cancel the job's restore does the saving
+        _save(s)  # the zip of this build (the version itself was saved by the Apply)
     return json.loads(json.dumps(out, default=str))
 
 
@@ -3646,6 +4737,7 @@ def _instance_finder_of(s: Session, refresh: bool = False) -> dict[str, Any]:
                 loop_plan = build_loop_plan(analysis, mp)
                 result = json.loads(json.dumps(find_instances(analysis, mp, loop_plan=loop_plan), default=str))
                 result["builder"] = _builder_block(s, result)
+                cancel.check()  # 17 Nov 2026: cancelled before the result is kept, the  last one (and its explanation) stays
                 s.instance_finder = result
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"instance finder failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
@@ -3662,25 +4754,34 @@ def instance_finder(session_id: str, assistant: str = "0", refresh: str = "0") -
     assistant's explanation and order on top (the  deterministic result alone when there is no key or
     no answer: the  assistant never turns into an error).  `refresh=1` builds the result again."""
     s = _session(session_id)
-    result = _instance_finder_of(s, _truthy(refresh))
-    if not _truthy(assistant):
-        return {"version_id": s.current_version_id, "finder": result}
-    if s.instance_finder_assistant is None:
-        advise = make_finder_advisor()
-        if advise is None:
-            block = {**EMPTY_ASSISTANT, "asked": True, "available": False, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+
+    def work(job: cancel.Job) -> dict[str, Any]:
+        result = _instance_finder_of(s, _truthy(refresh))
+        if not _truthy(assistant):
+            return {"version_id": s.current_version_id, "finder": result}
+        if s.instance_finder_assistant is None:
+            advise = make_finder_advisor()
+            if advise is None:
+                block = {**EMPTY_ASSISTANT, "asked": True, "available": False, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
+            else:
+                cancel.check()  # 17 Nov 2026:  between the finder and the assistant's call
+                try:  # last line of defence: the  assistant never turns into an error
+                    with perf_stage("instance_finder_assistant", file=s.current_path.name), _ai_scope(s):
+                        block = advise(result)
+                except Exception as exc:
+                    block = {**EMPTY_ASSISTANT, "asked": True, "available": True, "message": f"Request failed: {type(exc).__name__}"}
+                cancel.check()  # a call  given up on a Cancel is not "Request failed"
+            if block.get("available") and not block.get("message"):
+                job.commit()  # the gate before the explanation is kept
+                s.instance_finder_assistant = block  # an answer is kept per version; no key or a failed call is asked again next time
+                _save(s)
         else:
-            try:  # last line of  defence: the assistant never turns into an error
-                with perf_stage("instance_finder_assistant", file=s.current_path.name), _ai_scope(s):
-                    block = advise(result)
-            except Exception as exc:
-                block = {**EMPTY_ASSISTANT, "asked": True, "available": True, "message": f"Request failed: {type(exc).__name__}"}
-        if block.get("available") and not block.get("message"):
-            s.instance_finder_assistant = block  # an answer is kept  per version; no key or a failed  call is asked again next time
-            _save(s)
-    else:
-        block = s.instance_finder_assistant
-    return {"version_id": s.current_version_id, "finder": merge_assistant(result, block)}
+            block = s.instance_finder_assistant
+        return {"version_id": s.current_version_id, "finder": merge_assistant(result, block)}
+
+    return _job_route(s, "finder", work)
 
 
 @app.get("/api/sessions/{session_id}/cells")
@@ -3803,7 +4904,13 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         ops += auto_ops
         skipped += auto_skipped
         auto_count = len(auto_ops)
+    # 17 Nov 2026: the write, the new  version and its scan are one job (kind "apply"): cancelled at  any
+    # point, the session goes back to what  it was (409 while another job changes the workbook)
+    return _job_route(s, "apply", lambda _job: _grid_namer_apply(s, payload, manual, ops, skipped, auto_count))
 
+
+def _grid_namer_apply(s: Session, payload: dict[str, Any], manual: dict[str, Any], ops: list[dict[str, Any]], skipped: list[str], auto_count: int) -> dict[str, Any]:
+    """The  work of  the Grid Namer's Submit, inside the route's job."""
     before = _before_apply(s)
     res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
     output = Path(res["output_path"])
@@ -3825,7 +4932,8 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
     if res.get("failed"):
         out.update(_problem_fields(_report_problem(None, "Grid Namer", s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
-    _save(s)
+    if not cancel.flagged():  # after a Cancel the job's restore does the saving
+        _save(s)
     return out
 
 
@@ -3839,18 +4947,24 @@ def reports(session_id: str) -> dict[str, Any]:
     copy_path = Path(analysis["source"]["copy_path"])
     stem = s.current_path.stem
     out_dir = s.work_dir / "reports" / s.current_version_id
-    excel_worker.release(s.id)
-    standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
-    built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
-    out = {
-        "standalone_name": _register_file(s, standalone),
-        "workbook_name": _register_file(s, Path(built.path)),
-        "method": built.method,
-        "verified_opens_in_excel": built.verified_opens_in_excel,
-        "warnings": built.warnings,
-    }
-    _save(s)  # the  two report  files stay downloadable after a reopen
-    return out
+
+    def work(job: cancel.Job) -> dict[str, Any]:
+        excel_worker.release(s.id)
+        standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
+        cancel.check()  # 17  Nov 2026:  between the two files
+        built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
+        job.commit()  # the gate before the one write: cancelled before it, the two files are not registered
+        out = {
+            "standalone_name": _register_file(s, standalone),
+            "workbook_name": _register_file(s, Path(built.path)),
+            "method": built.method,
+            "verified_opens_in_excel": built.verified_opens_in_excel,
+            "warnings": built.warnings,
+        }
+        _save(s)  # the two report files stay downloadable after a reopen
+        return out
+
+    return _job_route(s, "reports", work)
 
 
 @app.get("/api/sessions/{session_id}/versions")

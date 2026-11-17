@@ -1,17 +1,18 @@
 import { CommonModule } from "@angular/common";
 import { Component, OnDestroy, computed, inject, signal } from "@angular/core";
 import { ButtonModule, ProgressBarModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../../core/api.service";
+import { ApiService, errorText, wasCancelled } from "../../core/api.service";
 import { followApply } from "../../core/apply-progress";
+import { CancelButton } from "../../core/cancel-button";
 import { ChangeStack } from "../../core/change-stack";
-import { appliedCount, failedCount, failedText } from "../../core/models";
+import { STOPPED_NOTHING_CHANGED, appliedCount, failedCount, failedText } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 
 /** 1.11.6:  the list  of approved changes waiting to be written, with one Apply for all of them. */
 @Component({
   selector: "mr-stack-bar",
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressBarModule],
+  imports: [CommonModule, ButtonModule, ProgressBarModule, CancelButton],
   templateUrl: "./stack-bar.html",
   styleUrl: "./panels.scss",
 })
@@ -70,6 +71,14 @@ export class StackBar implements OnDestroy {
       this.detail.set([out.version?.label ?? "", r.verified_opens_in_excel ? "opens in Excel" : "", failedText(r)].filter(Boolean).join(" · "));
     } catch (e) {
       this.stop?.();
+      // 17 Nov 2026: stopped with Cancel is  no error. Nothing was written, so the  entries stay in the
+      // list (they are taken out only after a write); the workbook comes from the Cancel's own answer.
+      if (wasCancelled(e)) {
+        this.tone.set("idle");
+        this.line.set(STOPPED_NOTHING_CHANGED);
+        this.detail.set("");
+        return;
+      }
       this.tone.set("error");
       this.line.set("Could not apply the list");
       this.detail.set(errorText(e));

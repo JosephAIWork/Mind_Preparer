@@ -9,8 +9,14 @@
       @if (signIn()?.state === "waiting") {
         <button cdsButton="secondary" size="sm" (click)="stopSignIn()">Close the sign-in window</button>
       } @else {
-        <button cdsButton="secondary" size="sm" (click)="openSignIn()" [disabled]="running() || signIn()?.state === 'checking'">Sign in to Mind</button>
-        <button cdsButton="ghost" size="sm" (click)="loadSignIn(true)" [disabled]="running() || signIn()?.state === 'checking'">Check the sign-in</button>
+        <button cdsButton="secondary" size="sm" (click)="openSignIn()" [disabled]="running() || starting() || checking() || signIn()?.state === 'checking'">Sign in to Mind</button>
+        <button cdsButton="ghost" size="sm" (click)="loadSignIn(true)" [disabled]="running() || starting() || checking() || signIn()?.state === 'checking'">Check the sign-in</button>
+        <!-- 17 Nov 2026: Cancel beside the check (10 to 40 s). The server has no job for it: the click is
+             kept on screen, and nothing more starts when the check answers. While a Run in Mind waits for
+             the check, its own Cancel (below) serves. -->
+        @if (checking() && !starting()) {
+          <mr-cancel kind="mind" size="sm" [busy]="cancelled()" (stopping)="onStopping()" (failed)="cancelFailed($event)"></mr-cancel>
+        }
       }
     </div>
     @if (signInError()) { <span class="card__caution">{{ signInError() }}</span> }
@@ -58,27 +64,43 @@
       <label class="field">Max rounds <input type="text" [value]="maxIterations()" (input)="maxIterations.set(num($event))" style="width: 4rem" /></label>
       <label class="check"><input type="checkbox" [checked]="runModel()" (change)="runModel.set(!runModel()); loadOptions()" /> Run the model after converting</label>
       <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set(!useAssistant()); loadOptions()" /> Let the assistant name grids</label>
-      <button cdsButton="primary" size="md" data-show-me="mind-run" (click)="start()" [disabled]="!!options()?.busy">{{ report() ? "Run again" : "Run in Mind" }}</button>
+      <button cdsButton="primary" size="md" data-show-me="mind-run" (click)="start()" [disabled]="!!options()?.busy || starting() || !!deleting()">{{ report() ? "Run again" : "Run in Mind" }}</button>
     </div>
   }
 
-  @if (running() || timing()) {
+  @if (starting()) {
+    <!-- 17 Nov 2026: between the click and the server's job (the tab's own sign-in check or its options
+         are still on their way): Cancel is on screen already; nothing has reached the server yet -->
+    <div class="result" data-test="mind-starting">
+      <strong>{{ cancelled() ? "Stopping…" : "Starting…" }}</strong>
+      <span><mr-cancel kind="mind" size="md" [busy]="cancelled()" (stopping)="onStopping()" (failed)="cancelFailed($event)"></mr-cancel></span>
+    </div>
+  }
+
+  @if (running() || (timing() && state() !== "cancelled")) {
     <!-- while it runs: the stages, what is going on now, time spent, time left -->
     @if (timing(); as t) {
-      <div class="result" [class.result--ok]="state() === 'done' && report()?.verdict === 'converged'">
+      <div class="result" data-test="mind-progress" [class.result--ok]="state() === 'done' && report()?.verdict === 'converged'">
         @if (running()) {
-          <strong>{{ t.stage_title }}… <span class="mono">({{ clockText(t.stage_elapsed_s + drift()) }})</span></strong>
-          <span>{{ latestLine() }}</span>
-          <span>
-            Time spent <strong class="mono">{{ clockText(elapsed()) }}</strong>
-            @if (t.over_estimate) {
-              · taking longer than estimated, still working
-            } @else {
-              · about <strong>{{ minutes(remaining()) }}</strong> left (done by about {{ doneBy() }})
-            }
-            @if (t.iteration > 1) { · round {{ t.iteration }} of at most {{ t.max_iterations }} }
-          </span>
-          @if (t.last_news_s + drift() > 120) { <span class="hint">No news for {{ minutes(t.last_news_s + drift()) }}: Mind can be slow; the app is still waiting for it.</span> }
+          @if (stoppingNow()) {
+            <!-- 17 Nov 2026: from the click on Cancel until the run has really stopped -->
+            <strong>Stopping…</strong>
+          } @else {
+            <strong>{{ t.stage_title }}… <span class="mono">({{ clockText(t.stage_elapsed_s + drift()) }})</span></strong>
+            <span>{{ latestLine() }}</span>
+            <span>
+              Time spent <strong class="mono">{{ clockText(elapsed()) }}</strong>
+              @if (t.over_estimate) {
+                · taking longer than estimated, still working
+              } @else {
+                · about <strong>{{ minutes(remaining()) }}</strong> left (done by about {{ doneBy() }})
+              }
+              @if (t.iteration > 1) { · round {{ t.iteration }} of at most {{ t.max_iterations }} }
+            </span>
+            @if (t.last_news_s + drift() > 120) { <span class="hint">No news for {{ minutes(t.last_news_s + drift()) }}: Mind can be slow; the app is still waiting for it.</span> }
+          }
+          <!-- 17 Nov 2026: Cancel beside the progress. The run stops on the server; the project it was making stays in Mind -->
+          <span><mr-cancel kind="mind" size="md" [busy]="stoppingNow()" (stopping)="onStopping()" (stopped)="onStopped()" (failed)="cancelFailed($event)"></mr-cancel></span>
         } @else {
           <strong>Finished in {{ clockText(t.elapsed_s) }}</strong>
         }
@@ -92,7 +114,35 @@
         }
       </ol>
     } @else {
-      <div class="result"><strong>Starting…</strong></div>
+      <div class="result" data-test="mind-progress">
+        <strong>{{ stoppingNow() ? "Stopping…" : "Starting…" }}</strong>
+        <span><mr-cancel kind="mind" size="md" [busy]="stoppingNow()" (stopping)="onStopping()" (stopped)="onStopped()" (failed)="cancelFailed($event)"></mr-cancel></span>
+      </div>
+    }
+  }
+
+  @if (!running() && !starting()) {
+    <!-- 17 Nov 2026, after a Cancel: what was stopped, and the projects a stopped run left in Mind. Each
+         one has its own "Delete it from Mind": nothing is deleted without a click. Shown again, under a
+         line that says what they are, whenever the tab opens on a workbook that still has such a project. -->
+    @if (stopLine()) {
+      <div class="result" data-test="mind-stopped"><strong>{{ stopLine() }}</strong></div>
+    }
+    @if (keptRows().length || earlierLine()) {
+      <div class="result" data-test="mind-kept">
+        @if (keptLead()) { <strong data-test="mind-kept-lead">{{ keptLead() }}</strong> }
+        @for (row of keptRows(); track row.name) {
+          <div class="row" data-test="mind-kept-project">
+            <span class="mono">{{ row.name }}</span>
+            @if (row.button) {
+              <button cdsButton="tertiary" size="sm" data-test="mind-delete" (click)="deleteProject(row.name)" [disabled]="!!deleting()">Delete it from Mind</button>
+            }
+            @if (row.note) { <span data-test="mind-delete-note">{{ row.note }}</span> }
+            @if (row.openMind; as url) { <a class="link" data-test="mind-open" [href]="url" target="_blank" rel="noopener">Open Mind</a> }
+          </div>
+        }
+        @if (earlierLine()) { <span data-test="mind-earlier">{{ earlierLine() }}</span> }
+      </div>
     }
   }
 
@@ -101,7 +151,7 @@
   }
 
   @if (report(); as r) {
-    @if (r.verdict) {
+    @if (r.verdict && state() !== "cancelled") {
       <div class="result" [class.result--ok]="r.verdict === 'converged'" [class.result--warn]="r.verdict === 'stuck' || r.verdict === 'exhausted'">
         <strong><span [class]="verdictClass()">{{ r.verdict }}</span> &nbsp;{{ r.reason || summary() }}</strong>
         @if (r.final_workbook) { <span class="mono">{{ r.final_workbook }}</span> }

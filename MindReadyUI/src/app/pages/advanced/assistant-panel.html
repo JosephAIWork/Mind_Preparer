@@ -22,6 +22,8 @@
     @if (streaming()) {
       <div class="bubble bubble--draft">
         @if (partial()) { {{ partial() }} <mr-thinking></mr-thinking> } @else { <mr-thinking [text]="phase()"></mr-thinking> }
+        <!-- 17 Nov 2026: Cancel beside the thinking dots: the answer is given up at the click, the question stays -->
+        <mr-cancel kind="chat" size="sm" (stopping)="stopAnswer()"></mr-cancel>
       </div>
     }
   </div>
@@ -44,7 +46,13 @@
         <button cdsButton="ghost" size="sm" (click)="discard()" [disabled]="applying()">Discard</button>
       </div>
       @if (applying()) {
-        <cds-progress-bar [label]="applyLine()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar>
+        <!-- 17 Nov 2026: Cancel beside the bar; the Apply is stopped on the server and this card stays -->
+        <div class="row">
+          <div style="flex: 1 1 16rem"><cds-progress-bar [label]="applyLine()" [value]="fraction() === null ? undefined : fraction()! * 100" [max]="100"></cds-progress-bar></div>
+          <mr-cancel kind="apply" size="sm"></mr-cancel>
+        </div>
+      } @else if (applyStopped()) {
+        <p class="hint" data-test="assistant-apply-stopped">{{ applyStopped() }}</p>
       }
     </div>
   }

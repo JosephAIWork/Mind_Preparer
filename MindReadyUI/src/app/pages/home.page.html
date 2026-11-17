@@ -29,6 +29,10 @@
     @if (uploadError()) {
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
+    @if (scanNote()) {
+      <!-- 17 Nov 2026: the first check was stopped with Cancel: one calm sentence (it is not an error) -->
+      <p class="scan__stopped" role="status">{{ scanNote() }}</p>
+    }
     @if (!basic) {
       <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
     }
@@ -80,6 +84,8 @@
         }
       </ul>
       <p class="trust">A large model takes a minute or two.{{ autoRun() ? " Do everything starts as soon as this is done." : "" }}</p>
+      <!-- 17 Nov 2026: Cancel stops the check on the server; the workbook stays in Recent workbooks, not checked -->
+      <mr-cancel class="scan__cancel" kind="scan" size="md" [session]="scanningId()"></mr-cancel>
     </div>
   } @else {
     <header class="file">
@@ -104,6 +110,8 @@
           <input type="checkbox" [checked]="buildLoop()" (change)="buildLoop.set($any($event.target).checked)" [disabled]="chainRunning()" />
           <span>Build the Mind loop</span>
         </label>
+        <!-- (17 Nov 2026: the button and its Cancel keep together) -->
+        <div class="basic__run">
         @if (!chainRunning()) {
           <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Start again" : "Start" }}</button>
         } @else if (outsideWaiting()) {
@@ -115,14 +123,32 @@
             <span>Working</span>
           </button>
         }
+        @if (chainRunning() && (!outsideWaiting() || chainStopping())) {
+          <!-- 17 Nov 2026: Cancel, beside the button: it stops the step that runs (on the server) and keeps the
+               steps that finished. While Start waits for the input files, the box below has its own Cancel. -->
+          <mr-cancel class="basic__cancel" [kind]="null" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
+        }
+        </div>
       </div>
       @if (basicLine()) {
+        <div class="basic__said">
         <!-- one short sentence a line: the step, the time left, the disclaimer (not when the step runs late) -->
         <p class="basic__line" role="status">
           @for (sentence of basicLines(); track $index) {
             <span class="basic__sentence">{{ sentence }}</span>
           }
         </p>
+        @if (!chainRunning() && !chainStoppedByCancel()) {
+          <!-- 17 Nov 2026: every stop message on Basic has a "Show me" that opens the place by itself (the
+               screen, then the tab). The question the Prep step ended with has its own (to the problem's
+               cell) and "Send feedback". None after a Cancel: the person stopped it, there is no place to fix. -->
+          @if (chainAsk(); as ask) {
+            <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
+          } @else if (stopPlace()) {
+            <p class="basic__next"><mr-show-me [text]="chainLine()" [open]="true"></mr-show-me></p>
+          }
+        }
+        </div>
       }
       @if (basicBar(); as bar) {
         <!-- 16 Nov 2026 (night): how far Start is; it only moves while there is no time estimate yet -->
@@ -207,6 +233,10 @@
             <div class="action__progress">
               <cds-progress-bar [label]="s.line" [helperText]="s.detail" [max]="100"></cds-progress-bar>
               @if (aiWords(s.line + " " + s.detail)) { <mr-thinking text="The assistant is making the missing files"></mr-thinking> }
+              @if (!chainRunning()) {
+                <!-- 17 Nov 2026: Cancel under the bar (inside Do everything, the Cancel beside its button serves) -->
+                <mr-cancel class="action__cancel" kind="outside" size="sm"></mr-cancel>
+              }
             </div>
           } @else if (s.line) {
             <div class="outside__result">
@@ -251,6 +281,8 @@
             @if (nextQuarter().running) {
               <div class="action__progress">
                 <cds-progress-bar [label]="nextQuarter().line" [helperText]="nextQuarter().detail" [max]="100"></cds-progress-bar>
+                <!-- 17 Nov 2026: Cancel under the bar: no zip is made -->
+                <mr-cancel class="action__cancel" kind="next_quarter" size="sm"></mr-cancel>
               </div>
             } @else if (nextQuarter().line) {
               <div class="outside__result">
@@ -299,6 +331,7 @@
             <p class="chain__caveat">{{ estimate()?.caveat }}</p>
           }
         </div>
+        <div class="chain__buttons">
         @if (!chainRunning()) {
           <button cdsButton="primary" size="lg" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
         } @else if (chainStep()?.id === "fixAll" && !fixAll().stopping) {
@@ -308,6 +341,13 @@
         } @else {
           <button cdsButton="primary" size="lg" disabled>Running…</button>
         }
+        @if (chainRunning() && (!outsideWaiting() || chainStopping())) {
+          <!-- 17 Nov 2026: Cancel, beside "Running…" and beside "Stop, keep what is fixed" (which keeps what the
+               fixer has fixed so far; Cancel throws the running step away and keeps the steps that finished).
+               While Do everything waits for the input files, the box below has its own Cancel. -->
+          <mr-cancel class="chain__cancel" [kind]="null" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
+        }
+        </div>
       </div>
       @if (outsideWaiting()) {
         <ng-container *ngTemplateOutlet="waiting"></ng-container>
@@ -322,7 +362,9 @@
                 <span class="chain__check">check: {{ s.check }}</span>
               </div>
               @if (s.state === "running") {
-                <ng-container *ngTemplateOutlet="result; context: { s: stateOf(s.id), which: s.id, bare: true }"></ng-container>
+                <!-- (17 Nov 2026: a Prep job picked up after a reload stands here alone, with no Do everything
+                     running: then the bar has its own Cancel) -->
+                <ng-container *ngTemplateOutlet="result; context: { s: stateOf(s.id), which: s.id, bare: chainRunning() }"></ng-container>
               } @else if (s.line) {
                 <div class="chain__line">
                   {{ s.line }}<mr-show-me [text]="s.line"></mr-show-me>
@@ -334,7 +376,14 @@
           }
         </ol>
       }
-      @if (chainLine()) { <p class="chain__text"><strong>{{ chainLine() }}</strong><mr-show-me [text]="chainLine()"></mr-show-me></p> }
+      @if (chainLine()) {
+        <!-- (17 Nov 2026: no "Show me" on the sentence after a Cancel: the person stopped it, there is no place to fix) -->
+        <p class="chain__text"><strong>{{ chainLine() }}</strong>@if (!chainStoppedByCancel() && !chainAsk()) {<mr-show-me [text]="chainLine()"></mr-show-me>}</p>
+        @if (chainAsk(); as ask) {
+          <!-- 17 Nov 2026: the question the Prep step ended with: Show me, Send feedback, and why under "View details" -->
+          <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
+        }
+      }
     </div>
 
     <div class="actions">
@@ -420,16 +469,41 @@
             @if (canMakeStandIns()) {
               <button cdsButton="secondary" size="md" (click)="goOn(true)" [disabled]="goingOn()" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
             }
-            <button cdsButton="danger--tertiary" size="md" (click)="stopWaiting()">Stop</button>
+            <!-- 17 Nov 2026: this button said "Stop": it is the Cancel of the wait (nothing had finished, nothing was changed) -->
+            <button cdsButton="danger--tertiary" size="md" data-show-me="cancel" (click)="stopWaiting()">Cancel</button>
           </div>
           @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
         </div>
+</ng-template>
+
+<ng-template #question let-ask="ask">
+  <!-- 17 Nov 2026 (never stop for a person when the app can fix it): what goes with the question, on both
+       screens. "Show me" opens the place itself and ends on the line that names the problem's cell;
+       "Send feedback" opens the dialog with the problem already written (not for "no AI key": nothing
+       went wrong). Why the assistant could not fix it is for Custom only, under "View details". -->
+  <p class="chain__next" data-test="question">
+    <mr-show-me [to]="askPlace(ask)" [rule]="ask.show_me?.rule_id" [where]="ask.show_me" [open]="true"></mr-show-me>
+    @if (ask.feedback; as fb) {
+      <button type="button" class="link chain__feedback" (click)="feedback.open(fb.ref, fb.note)">Send feedback</button>
+    }
+    @if (!basic && ask.why) {
+      <button type="button" class="link" (click)="askOpen.set(!askOpen())">{{ askOpen() ? "Hide details" : "View details" }}</button>
+    }
+  </p>
+  @if (!basic && askOpen() && ask.why) {
+    <div class="action__result action__result--warn chain__why"><span>{{ ask.why }}</span></div>
+  }
 </ng-template>
 
 <ng-template #result let-s="s" let-which="which" let-bare="bare">
   @if (s.running) {
     <div class="action__progress">
       <cds-progress-bar [label]="s.line" [helperText]="s.detail" [value]="s.fraction === null ? undefined : s.fraction * 100" [max]="100"></cds-progress-bar>
+      @if (!bare && !chainRunning()) {
+        <!-- 17 Nov 2026: Cancel under the bar, for this tile's own work (in Do everything's list, and while
+             Do everything runs, the Cancel beside its button serves) -->
+        <mr-cancel class="action__cancel" [kind]="cancelKind(which)" size="sm"></mr-cancel>
+      }
     </div>
   } @else if (s.line && !bare) {
     <div class="action__done">
