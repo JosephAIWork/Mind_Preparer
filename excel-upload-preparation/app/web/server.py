@@ -82,7 +82,7 @@ from app.models import Finding, Status, aggregate_status  # noqa: E402
 from app.plain_codes import cite_all, glossary, is_com_error, plain_com_error, plain_com_errors_in, plain_error, rule_name  # noqa: E402
 from app.validators import run_rule  # noqa: E402
 from app.readiness import OUTSIDE_RULE, STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
-from app.formula_utils import col_to_num, formula_memo  # noqa: E402
+from app.formula_utils import col_to_num, formula_memo, parse_ref, ref_text  # noqa: E402
 from app.prep import ASSISTANT_OPS, DEFAULT_PIVOT_MODE, PIVOT_MODES, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
 from app.validators.mind_values import environment_values  # noqa: E402
@@ -2900,9 +2900,13 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     else:
         out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
         out["compared_with_original"] = original is not None
+    # 17  Nov 2026 (Palermo): with a Mind loop built, Excel computes the loop's first value, which the
+    # original never computed: which new errors also show without the loop (part of this same job)
+    if out["ran"] and out["new_errors"] and s.loop_built():
+        out["loop_check"] = _loop_check(s, out["formula_errors"])
     if gate is not None:
         gate()
-    # A  recalculation after fixes (v2.1, v2.2, ...) closes the round: the
+    # A recalculation after fixes (v2.1, v2.2, ...) closes the round: the
     # same file becomes the next major version (v3), and the recalculation is its own
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
     if close_round and out["ran"] and current is not None and current.get("minor"):
@@ -2922,7 +2926,119 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     return out
 
 
-# --- did the preparation change what the model computes? ---------------------------------
+def _before_loop(s: Session) -> tuple[dict[str, Any], Moves, list[dict[str, Any]]] | None:
+    """The  last version  before the current line's first Mind loop, how its cells moved since (the
+    loop's own changes and every Apply after it, as the numbers check follows them), and the versions
+    after the loop's;  None when the line has no loop."""
+    path = _lineage(s, s.current_version_id)
+    i = next((k for k, v in enumerate(path) if v.get("source") == "loop"), None)
+    if not i:
+        return None
+    return path[i - 1], Moves(v.get("change_log") or [] for v in path[i:]), path[i + 1:]
+
+
+# what an Apply writes into  a cell (a formula or a  value): an error there is that Apply's
+_CELL_WRITES = ("set_formula", "set_array_formula", "set_value")
+_MAX_WRITTEN_RANGE = 100_000  # cells  of one  written range (an array formula's) that are followed
+
+
+def _written_since(later: list[dict[str, Any]], errors: list[dict[str, Any]]) -> list[bool]:
+    """17  Nov 2026  (review LBr): for each of `errors` (cells of the current version), whether an Apply
+    after the Mind loop wrote that cell -- Prep again, the fixer, an Apply under Advanced. An error  there
+    is that Apply's, not the loop's first value's, and blocks as  any new error does (a later  loop's own
+    writes stay the loop's). Each written  cell is followed to where it is now with the numbers  check's
+    Moves, through classify_errors: an Apply writes its  cells before it inserts its rows, unless the
+    write is for the rows it inserts (`after_inserts`)."""
+    hit = [False] * len(errors)
+    for k, v in enumerate(later):
+        if v.get("source") == "loop":
+            continue
+        log = v.get("change_log") or []
+        for after_inserts in (False, True):
+            cells: list[dict[str, Any]] = []
+            for op in log:
+                if op.get("op") not in _CELL_WRITES or bool(op.get("after_inserts")) != after_inserts:
+                    continue
+                at = parse_ref(str(op.get("cell") or ""))
+                if not at or at.get("whole_column") or at.get("whole_row"):
+                    continue
+                r2, c2 = at.get("r2") or at["r1"], at.get("c2") or at["c1"]
+                if (r2 - at["r1"] + 1) * (c2 - at["c1"] + 1) > _MAX_WRITTEN_RANGE:
+                    r2 = at["r1"] + max(0, _MAX_WRITTEN_RANGE // (c2 - at["c1"] + 1) - 1)
+                cells += [{"sheet": op.get("sheet", ""), "cell": ref_text(c, r)} for r in range(at["r1"], r2 + 1) for c in range(at["c1"], c2 + 1)]
+            if cells:
+                moves = Moves(x.get("change_log") or [] for x in later[k + after_inserts:])
+                cls = classify_errors(errors, cells, None, moves.forward)
+                hit = [h or c["preexisting"] for h, c in zip(hit, cls["errors"])]
+    return hit
+
+
+def _errors_before_loop(s: Session, version_id: str) -> tuple[list[dict[str, Any]] | None, bool, str | None]:
+    """(the  error cells  of `version_id` after a full Excel recalculation, reused?, why not when None).
+    A recalculation the session already holds of that file is reused (the last one, or a baseline);
+    else the file is  recalculated once, on a disposable copy, in an Excel of its  own (as the original's
+    baseline is), and  kept with the baselines for the next  time."""
+    path = s.paths[version_id]
+    last = s.recalc
+    if last and last.get("ran") and last.get("version_id") in s.paths and s.paths[last["version_id"]] == path:
+        return list(last.get("formula_errors") or []) + list(last.get("addin_gap_errors") or []), True, None
+    for key in (str(path), f"before_loop:{path}"):
+        base = s.baselines.get(key)
+        if base is not None and base.get("ran"):
+            return list(base.get("errors") or []), True, None
+    copy_path, _ = make_immutable_copy(path, s.work_dir / "recalc_before_loop")
+    with perf_stage("recalc_before_loop", file=path.name):
+        res = recalculate(copy_path, save=False)  # a disposable copy -- nothing reads it again
+    cancel.check()  # an Excel ended by  a Cancel answers "did not run": the  job puts everything back
+    ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED" and not str(res.get("message", "")).startswith("Excel COM recalculation failed")))
+    if not ran:
+        return None, False, res.get("message")
+    errors = list(res.get("formula_errors") or []) + list(res.get("addin_gap_errors") or [])
+    s.baselines[f"before_loop:{path}"] = {"ran": True, "errors": errors, "ref_formulas": None, "message": res.get("message"), "path": str(path)}
+    return errors, False, None
+
+
+def _loop_check(s: Session, errors: list[dict[str, Any]]) -> dict[str, Any]:
+    """17  Nov 2026  (Palermo: 667 #N/A in Decrements once the loop made Excel compute policy 1, whose
+    projection runs past the mortality table): which of the recalculation's NEW errors also show
+    without the Mind loop. The  version before the loop is recalculated too (or its recalculation
+    reused), and  the two are compared cell by  cell, its cells followed to where they  are now. A new
+    error cell that is no error there shows  only for the loop's first value: it  is marked
+    `loop_only` (in place) and never blocks (app/readiness.py) -- unless an Apply after the loop wrote
+    that cell (`written_after`: counted with the errors that block). When that recalculation cannot
+    run, nothing is guessed: `ran` False, and the errors block as before."""
+    found = _before_loop(s)
+    if found is None:
+        return {"ran": False, "message": "the version before the Mind loop was not found"}
+    before, moves, later = found
+    label = str(before.get("label") or before["id"]).split(" — ")[0]
+    t0 = time.perf_counter()
+    before_errors, reused, why = _errors_before_loop(s, before["id"])
+    seconds = round(time.perf_counter() - t0, 1)
+    if before_errors is None:
+        return {"ran": False, "version_id": before["id"], "label": label, "seconds": seconds, "message": why}
+    new = [e for e in errors if not e.get("preexisting")]
+    cls = classify_errors(new, before_errors, None, moves.forward)
+    # (review LBr: nor a cell an Apply after the loop wrote -- an error there is that Apply's)
+    written = _written_since(later, new)
+    loop_only = [e for e, c, w in zip(new, cls["errors"], written) if not c["preexisting"] and not w]
+    for e in loop_only:
+        e["loop_only"] = True
+    first = loop_only[0] if loop_only else None
+    return {
+        "ran": True,
+        "version_id": before["id"],
+        "label": label,
+        "from_loop": len(loop_only),
+        "also_without": len(new) - len(loop_only),
+        "written_after": sum(1 for c, w in zip(cls["errors"], written) if w and not c["preexisting"]),
+        "example":{"sheet": first.get("sheet", ""), "cell": first.get("cell", ""), "error": first.get("error", "")} if first else None,
+        "reused": reused,
+        "seconds": seconds,
+    }
+
+
+# --- did the preparation change what  the model computes? ---------------------------------
 def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
     """The  versions that  lead to `version_id`, oldest first (a version restored
     from History branches: the list order alone is not the path)."""

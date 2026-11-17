@@ -69,6 +69,16 @@ def prep_run(base: str, sid: str, assistant: bool = True, every: float = 5.0, ht
     }
 
 
+def recalc_ok(rc: dict) -> bool:
+    """17  Nov 2026:  the Recalculate step passes as Start's does -- on the verdict's recalculation, where the
+    errors that show only for the Mind loop's first value do not count (rc["loop_check"]); the bare counts
+    only when  no verdict came with the answer."""
+    verdict = (rc.get("readiness") or {}).get("recalc") or {}
+    if "clean" in verdict:
+        return bool(verdict["clean"])
+    return rc["status"] == "PASS" or rc.get("new_errors") == 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workbook")
@@ -236,7 +246,9 @@ def main() -> int:
     r = requests.post(f"{B}/sessions/{sid}/recalculate", timeout=7200)
     r.raise_for_status()
     rc = r.json()
-    chain["steps"]["recalc"] = {"ok": rc["status"] == "PASS" or (rc.get("new_errors") == 0), "status": rc["status"], "message": rc["message"][:200], "formula_errors": len(rc.get("formula_errors", [])), "new_errors": rc.get("new_errors"), "preexisting_errors": rc.get("preexisting_errors"), "addin_gap": len(rc.get("addin_gap_errors", []))}
+    verdict = (rc.get("readiness") or {}).get("recalc") or {}
+    chain["steps"]["recalc"] = {"ok": recalc_ok(rc), "status": rc["status"], "message": rc["message"][:200], "formula_errors": len(rc.get("formula_errors", [])), "new_errors": rc.get("new_errors"), "preexisting_errors": rc.get("preexisting_errors"), "addin_gap": len(rc.get("addin_gap_errors", [])),
+                                "loop_check": rc.get("loop_check"), "loop_note": verdict.get("loop_note")}
     say("recalc:", json.dumps(chain["steps"]["recalc"])[:300])
 
     st = state()

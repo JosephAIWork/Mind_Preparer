@@ -1494,3 +1494,41 @@ def test_the_cancel_beside_start_sends_its_kinds_and_leaves_a_run_in_mind_and_an
     assert client.post(f"/api/sessions/{sid}/cancel", json={"kinds": "apply"}).status_code == 200  # one kind as text: a list of one
     assert client.post(f"/api/sessions/{sid}/cancel", json={"kinds": {"apply": 1}}).status_code == 422
     _clean(client, sid)
+
+
+def test_a_cancel_during_the_recalculation_of_the_version_before_the_loop_puts_everything_back(client, plain_grid_xlsx, monkeypatch, excels):
+    """17 Nov 2026 (Palermo): after a Mind loop, new errors make the Recalculate step recalculate the version
+    before the loop too. That second Excel is part of the same job: Cancel ends it (only it), and the
+    last recalculation stays as it was."""
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    for source in ("prep", "loop"):  # a version of its own each, as Prep and the loop make
+        p = s.work_dir / f"lb_{source}" / plain_grid_xlsx.name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(s.current_path, p)
+        server._add_version(s, p, source, source, [], True, "0" * 64)
+    _recalculated(s)
+    before, last = _look(s), s.recalc
+    calls: list = []
+
+    def recalculate(path, save=True):
+        calls.append(Path(path))
+        if "recalc_before_loop" in Path(path).parts:
+            assert excels.start(4102).wait(WAIT)  # the extra recalculation: only a Cancel ends it
+            return {"status": "ERROR", "message": "Excel COM recalculation failed: the Excel was closed", "ran": False, "formula_errors": [], "addin_gap_errors": []}
+        errors = [] if "recalc_original" in Path(path).parts else [{"sheet": "Data", "cell": "B4", "error": "#N/A", "formula": "=A4+B3"}]
+        return {"status": "ERROR" if errors else "PASS", "message": "recalculated", "ran": True, "formula_errors": errors, "addin_gap_errors": []}
+
+    monkeypatch.setattr(server, "recalculate", recalculate)
+    pending = _bg(lambda c: c.post(f"/api/sessions/{sid}/recalculate"))
+    for _ in range(500):
+        if 4102 in excels.gone:
+            break
+        time.sleep(0.02)
+    assert 4102 in excels.gone and sum("recalc_before_loop" in p.parts for p in calls) == 1
+    out = _cancel(client, sid, "recalc")
+    assert out["cancelled"] == ["recalc"] and out["message"] == STOPPED
+    _is_stopped(_answer(pending), "recalc")
+    assert excels.killed == [4102]  # only the Excel this job started
+    assert s.recalc is last and _look(s) == before and not any(k.startswith("before_loop:") for k in s.baselines)
+    _clean(client, sid)

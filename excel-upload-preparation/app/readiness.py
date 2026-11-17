@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .plain_codes import cite, cite_all, rule_name, plain_status
+from .plain_codes import cite, cite_all, error_meanings, rule_name, plain_status
 
 BLOCKING_STATUSES = ("ERROR", "REQUIRES_USER_INPUT")
 RECALC_RULE = "READY-001"
@@ -76,16 +76,24 @@ def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, An
     # keep the verdict from turning  green.
     preexisting = int(recalc.get("preexisting_errors") or 0) if "preexisting_errors" in recalc else 0
     new_errors = int(recalc["new_errors"]) if "new_errors" in recalc else len(errors)
+    # 17 Nov 2026 (Palermo): after a Mind  loop, the new errors the version before the loop does not
+    # have  come from the loop's first value only  (server._loop_check): they never block. Only the
+    # new errors that also show without the loop are counted as new here.
+    check = recalc.get("loop_check") if ran else None
+    from_loop = int(check.get("from_loop") or 0) if check and check.get("ran") else 0
+    new_errors = max(0, new_errors - from_loop)
     if ran:
         if not errors:
             message = "full Excel recalculation, no formula error"
+        elif new_errors == 0 and from_loop:
+            message = f"full Excel recalculation: {from_loop} error cell(s) only for the Mind loop's first value" + (f" ({preexisting} more were already in the original)" if preexisting else "")
         elif new_errors == 0:
             message = f"full Excel recalculation: {len(errors)} formula error(s), all already in the original workbook"
         else:
-            message = f"{new_errors} new formula error(s) after a full Excel recalculation" + (f" ({preexisting} more were already in the original)" if preexisting else "")
+            message = f"{new_errors} new formula error(s) after a full Excel recalculation" + (f" ({preexisting} more were already in the original)" if preexisting else "") + (f" ({from_loop} more only for the Mind loop's first value)" if from_loop else "")
     else:
         message = recalc.get("message")
-    return {
+    out = {
         "ran": ran,
         "clean": ran and new_errors == 0,
         "version_id": version_id,
@@ -95,6 +103,37 @@ def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, An
         "addin_gap_errors": len(gaps),
         "message": message,
     }
+    if check:
+        out["loop_errors"] = from_loop
+        note = loop_errors_line(check, new_errors)
+        if note:
+            out["loop_note"] = note
+    return out
+
+
+def _cells(n: int) -> str:
+    return f"{n:,} cell{'' if n == 1 else 's'}"
+
+
+def loop_errors_line(check: dict[str, Any], others: int) -> str:
+    """The  one plain  line on the errors a Mind loop makes (server._loop_check): the cells that show an
+    error only for the loop's first value -- the whole line when they are all the new errors  (`others`
+    0: nothing blocks), one sentence more after the stop when some  new errors also show without the
+    loop  -- or, when the version before the  loop could not be recalculated, that it was not checked."""
+    if not check.get("ran"):
+        return "Whether these errors come only from the Mind loop's first value could not be checked: Excel could not recalculate the version before the loop."
+    n = int(check.get("from_loop") or 0)
+    if not n:
+        return ""
+    ex = check.get("example") or {}
+    where = f"{ex.get('sheet')}!{ex.get('cell')}" if ex.get("sheet") and ex.get("cell") else ""
+    meaning = error_meanings([ex.get("error")]) if ex.get("error") else ""
+    example = f", for example {where}" + (f": {meaning}" if meaning else (f" ({ex['error']})" if ex.get("error") else "")) if where else ""
+    one = n == 1
+    if others:
+        return f"The other {_cells(n)} show{'s' if one else ''} an error only for the Mind loop's first value{example}."
+    return (f"{_cells(n)} show{'s' if one else ''} an error only for the Mind loop's first value{example}. "
+            f"The original never computed {'this cell' if one else 'these cells'}, and Mind will show the same for that value. Check the results in Mind.")
 
 
 LOOP_ERRORS_NOTE = (
@@ -107,7 +146,9 @@ LOOP_ERRORS_NOTE = (
 def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc: dict[str, Any] | None, version_id: str, loop_built: bool = False) -> dict[str, Any]:
     """loop_built:  a Mind  loop was written into this version or one before it (16 Nov 2026, Palermo: the
     loop step put =MM_LOOP(...) where a stored policy row 6000 was, Excel then computed policy 1, whose
-    projection  runs past the mortality table: 667 #N/A cells counted as new  against the original)."""
+    projection  runs past the mortality table: 667 #N/A cells counted as new  against the original).
+    17 Nov 2026: the  recalculation itself now says which new errors  show only for the loop's first value
+    (its `loop_check`): those never block,  and the verdict carries one plain line  on them (`loop_note`)."""
     findings = report.get("findings", [])
     blocking, optional = [], []
     for f in findings:
@@ -136,8 +177,13 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
     elif not rc["clean"]:
         state = "unverified"
         headline = f"Acceptable by Mind, but the recalculation found {rc['new_errors']} new formula error(s)"
-        if loop_built:
+        # (a recalculation saved before 17 Nov 2026 carries no loop check: the guess of 16 Nov stands for it)
+        if loop_built and "loop_errors" not in rc:
             rc["loop_note"] = LOOP_ERRORS_NOTE
+    elif rc.get("loop_errors"):
+        # 17 Nov 2026 (Palermo): the only new errors are the Mind loop's first value's -- the workbook can go to Mind
+        state = "ready"
+        headline = f"Acceptable by Mind: no blocking problem; the recalculation's only new errors ({rc['loop_errors']}) are for the Mind loop's first value"
     else:
         state = "ready"
         headline = "Acceptable by Mind: no blocking problem and a clean Excel recalculation" + (f" ({rc['preexisting_errors']} error cell(s) already in the original)" if rc["preexisting_errors"] else "")
@@ -193,7 +239,7 @@ def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -
                 detail += ". " + rc["loop_note"]
             return {"screen": "recalculate", "label": "Review the new formula errors", "detail": detail}
         return {"screen": "recalculate", "label": "Recalculate in Excel", "detail": "the only way the app can call the file ready"}
-    return {"screen": "reports", "label": "Download or send to Mind", "detail": None}
+    return {"screen": "reports", "label": "Download or send to Mind", "detail": rc.get("loop_note")}
 
 
 def apply_record(outcome: dict[str, Any]) -> dict[str, Any]:

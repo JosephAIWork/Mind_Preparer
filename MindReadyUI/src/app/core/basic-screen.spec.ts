@@ -57,6 +57,28 @@ const estimate = (): ChainEstimate => ({
   basis: { file_mb: 1, scan_s: 1, scan_measured: true, stored_errors: 0, blocking_ops: 0 },
 });
 
+// ---- 17 Nov 2026 (Palermo): the errors that show only for the Mind loop's first value never stop Start ----------
+const LOOP_LINE =
+  "667 cells show an error only for the Mind loop's first value, for example Decrements!M704: #N/A means the value is not available (often: a lookup found nothing). " +
+  "The original never computed these cells, and Mind will show the same for that value. Check the results in Mind.";
+const OTHER_LINE = "The other 10 cells show an error only for the Mind loop's first value, for example Decrements!M704: #N/A means the value is not available (often: a lookup found nothing).";
+const naCells = (n: number) => Array.from({ length: n }, (_, i) => ({ sheet: "Decrements", cell: `M${704 + i}`, error: "#N/A", loop_only: true }));
+/** The Recalculate step's answer after the loop: `real` errors that also show without the loop, `loop` that do not. */
+const afterLoop = (real: number, loop: number) => ({
+  status: "ERROR" as const,
+  message: "recalculated",
+  ran: true,
+  formula_errors: [...naCells(loop), ...Array.from({ length: real }, () => ({ sheet: "Results", cell: "B5", error: "#DIV/0!" }))],
+  addin_gap_errors: [],
+  new_errors: real + loop,
+  preexisting_errors: 0,
+  loop_check: { ran: true, from_loop: loop, also_without: real, seconds: 95 },
+  readiness: {
+    ...readiness(real ? "unverified" : "ready"),
+    recalc: { ran: true, clean: !real, new_errors: real, formula_errors: real + loop, loop_errors: loop, loop_note: real ? OTHER_LINE : LOOP_LINE },
+  },
+});
+
 describe("the three screens: routes and Show me", () => {
   it("has Basic at the root, Custom at /custom and Advanced; each page is told its mode", async () => {
     vi.doMock("carbon-components-angular", () => {
@@ -117,6 +139,15 @@ describe("the end-of-check banner", () => {
     const plain = { ...r, recalc: { ran: true, clean: false, new_errors: 1 } };
     expect(finishState(plain)?.text).toBe("The recalculation found 1 new formula error.");
     expect(finishState(plain)?.reason).toContain("Advanced");
+  });
+
+  it("finishes to an acceptable banner when every new error shows only for the loop's first value, and says so in one line", () => {
+    const r = afterLoop(0, 667).readiness;
+    expect(finishState(r)).toEqual({ acceptable: true, text: "The check is finished. The workbook can be uploaded to Mind.", reason: "", note: LOOP_LINE });
+    // without errors of the loop: as before, no line
+    expect(finishState(readiness("ready"))).toEqual({ acceptable: true, text: "The check is finished. The workbook can be uploaded to Mind.", reason: "" });
+    // some errors also show without the loop: still stopped, and only those are counted
+    expect(finishState(afterLoop(1, 10).readiness)).toMatchObject({ acceptable: false, text: "The recalculation found 1 new formula error.", reason: OTHER_LINE });
   });
 
   it("offers Recalculate only when the recalculation is the one thing left", () => {
@@ -291,6 +322,112 @@ describe("the Basic screen", () => {
     expect(el.querySelector(".finish__text")?.textContent).toBe("The check is finished. The workbook can be uploaded to Mind.");
     expect((el.querySelector(".finish__upload") as HTMLButtonElement).disabled).toBe(false);
     expect(el.querySelector(".finish__upload")?.textContent?.trim()).toBe("Upload to Mind");
+  });
+
+  it("draws the loop's line under an acceptable banner, with Upload usable", () => {
+    open("basic");
+    const f = TestBed.createComponent(Banner);
+    f.componentRef.setInput("readiness", afterLoop(0, 667).readiness);
+    f.detectChanges();
+    const el = f.nativeElement as HTMLElement;
+    expect(el.querySelector(".finish__text")?.textContent).toBe("The check is finished. The workbook can be uploaded to Mind.");
+    expect(el.querySelector(".finish__note")?.textContent).toBe(LOOP_LINE);
+    expect(el.querySelector(".finish__reason")).toBeNull();
+    expect((el.querySelector(".finish__upload") as HTMLButtonElement).disabled).toBe(false);
+    f.componentRef.setInput("readiness", readiness("ready"));
+    f.detectChanges();
+    expect(el.querySelector(".finish__note")).toBeNull();
+    f.destroy();
+  });
+
+  /** Every step but the recalculation stands in and succeeds; the recalculation is the page's own, on `out`. */
+  function realRecalc(out: ReturnType<typeof afterLoop>): void {
+    const p = page as unknown as Record<string, unknown>;
+    for (const name of ["runFixAll", "runPrepare", "runLoop"]) p[name] = async () => true;
+    page.canBuildLoop = () => true;
+    void out;
+  }
+
+  it("Basic goes on to the end when the only new errors are the loop's first value's: the line once, on the banner", async () => {
+    const out = afterLoop(0, 667);
+    open("basic", { recalculate: async () => out } as unknown as Partial<ApiService>);
+    page.openSaved(started("m1"));
+    await settle();
+    realRecalc(out);
+    page.buildLoop.set(true);
+    await page.runAll();
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "done"]);
+    expect(page.recalc()).toMatchObject({ line: LOOP_LINE, tone: "ok" });
+    const lines = page.basicLines();
+    expect(lines[0]).toMatch(/^Everything ran and every check passed \(/);
+    // (not under the end sentence too: the finish banner right below says it, see the banner spec above)
+    expect(lines.slice(1)).toEqual([]);
+    expect(store.readiness()?.state).toBe("ready");
+    expect(finishState(store.readiness())?.note).toBe(LOOP_LINE);
+    // Custom says it on the Recalculate step's own line, and its end sentence stays as it was
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    open("custom", { recalculate: async () => out } as unknown as Partial<ApiService>);
+    page.openSaved(started("m1"));
+    await settle();
+    realRecalc(out);
+    await page.runAll();
+    expect(page.steps().find((s) => s.id === "recalc")).toMatchObject({ state: "done", line: LOOP_LINE });
+    expect(page.chainLine()).toMatch(/^Everything ran and every check passed \(/);
+  });
+
+  it("Basic still stops for the errors that also show without the loop, counts only those, and names the others", async () => {
+    const out = afterLoop(1, 10);
+    open("basic", { recalculate: async () => out } as unknown as Partial<ApiService>);
+    page.openSaved(started("m1"));
+    await settle();
+    realRecalc(out);
+    page.buildLoop.set(true);
+    await page.runAll();
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "failed"]);
+    expect(page.basicLine()).toBe('Stopped at "Recalculate": Recalculated, 1 formula errors (the other 10 only for the Mind loop\'s first value). Fix that under Advanced › Recalculate, then press Start again.');
+    // the general stop keeps its Show me, to the list of errors
+    expect(page.stopPlace()).toEqual(showMeFor('Fix that under Advanced › Recalculate, then press Do everything again.'));
+    expect(page.recalc().detail).toContain(OTHER_LINE);
+  });
+
+  it("counts only the errors that also show without the loop on the stop line, not the ones the original already had (review LBr)", async () => {
+    const base = afterLoop(1, 10);
+    // two more errors the original already had: they never stop Start, and the verdict leaves them out
+    const own = [{ sheet: "Inputs", cell: "C9", error: "#DIV/0!", preexisting: true }, { sheet: "Inputs", cell: "C10", error: "#DIV/0!", preexisting: true }];
+    const out = { ...base, formula_errors: [...base.formula_errors, ...own], preexisting_errors: 2 };
+    open("basic", { recalculate: async () => out } as unknown as Partial<ApiService>);
+    page.openSaved(started("m1"));
+    await settle();
+    realRecalc(out);
+    page.buildLoop.set(true);
+    await page.runAll();
+    // it said "Recalculated, 3 formula errors (the other 10 ...)", while the banner said 1 new
+    expect(page.basicLine()).toBe('Stopped at "Recalculate": Recalculated, 1 formula errors (the other 10 only for the Mind loop\'s first value). Fix that under Advanced › Recalculate, then press Start again.');
+    expect(finishState(store.readiness())?.text).toBe("The recalculation found 1 new formula error.");
+    expect(page.recalc().detail).toContain("2 already in the original");
+  });
+
+  it("says plainly, on the banner under the stop, that the loop's errors could not be checked when the version before the loop did not recalculate", async () => {
+    const COULD_NOT = "Whether these errors come only from the Mind loop's first value could not be checked: Excel could not recalculate the version before the loop.";
+    const base = afterLoop(0, 0);
+    const out = {
+      ...base,
+      formula_errors: naCells(667).map((e) => ({ sheet: e.sheet, cell: e.cell, error: e.error })),
+      new_errors: 667,
+      loop_check: { ran: false, seconds: 3, message: "Excel COM recalculation failed" },
+      readiness: { ...readiness("unverified"), recalc: { ran: true, clean: false, new_errors: 667, formula_errors: 667, loop_errors: 0, loop_note: COULD_NOT } },
+    };
+    open("basic", { recalculate: async () => out } as unknown as Partial<ApiService>);
+    page.openSaved(started("m1"));
+    await settle();
+    realRecalc(out as unknown as ReturnType<typeof afterLoop>);
+    page.buildLoop.set(true);
+    await page.runAll();
+    // the general stop sentence, as Joseph approved it, with its Show me; the banner right under it says why
+    expect(page.basicLine()).toBe('Stopped at "Recalculate": Recalculated, 667 formula errors. Fix that under Advanced › Recalculate, then press Start again.');
+    expect(finishState(store.readiness())).toMatchObject({ acceptable: false, text: "The recalculation found 667 new formula errors.", reason: COULD_NOT });
+    expect(page.recalc().detail).toContain(COULD_NOT);
   });
 
   // ---- 16 Nov 2026 (night): the loading bar while Start runs, and the words when a step runs late --------

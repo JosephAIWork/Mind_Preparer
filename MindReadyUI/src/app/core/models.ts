@@ -96,7 +96,7 @@ export interface Readiness {
   manual_blocking_count: number;
   optional_count: number;
   prep?: { blocking_ops: number; optional_ops: number };
-  recalc?: { ran: boolean; clean: boolean; version_id?: string; formula_errors?: number; new_errors?: number; preexisting_errors?: number; addin_gap_errors?: number; message?: string; loop_note?: string } | null;
+  recalc?: { ran: boolean; clean: boolean; version_id?: string; formula_errors?: number; new_errors?: number; preexisting_errors?: number; addin_gap_errors?: number; message?: string; loop_note?: string; loop_errors?: number } | null;
   next_step?: { screen: string; label: string; detail?: string; rule_id?: string; rule_name?: string | null } | null;
 }
 
@@ -298,10 +298,13 @@ export interface RecalcResult {
   message: string;
   version_id?: string;
   ran: boolean;
-  formula_errors: { sheet: string; cell: string; error: string; formula?: string }[];
+  /** `loop_only`  (17 Nov  2026): the cell shows an error only for the Mind loop's first value */
+  formula_errors: { sheet: string; cell: string; error: string; formula?: string; loop_only?: boolean }[];
   addin_gap_errors: { sheet: string; cell: string; error: string; formula?: string }[];
   new_errors?: number;
   preexisting_errors?: number;
+  /** 17 Nov 2026: after a Mind loop, which new errors also show without it (the version before the loop,  recalculated) */
+  loop_check?: { ran: boolean; from_loop?: number; also_without?: number; written_after?: number; seconds?: number; message?: string | null } | null;
   readiness?: Readiness;
   report?: ValidationReport;
   plan?: PrepAction[];
