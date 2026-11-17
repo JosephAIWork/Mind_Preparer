@@ -41,6 +41,10 @@ from .change_apply import append_change_log, plan_loop_case_fix
 from .excel_com import close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
 from .feedback import failed_op_facts
 from .formula_utils import (
+    REF_RE,
+    _arg_spans,
+    _closing_paren,
+    as_number,
     cell_refs_in_formula,
     col_to_num,
     collapse_na_reference_calls,
@@ -51,6 +55,7 @@ from .formula_utils import (
     parse_ref,
     ref_text,
     reference_arg_problems,
+    strip_storage_prefix,
     undefined_names,
 )
 from .grids import ERROR_LITERALS, all_grids, grid_containing, looks_like_title, parse_flags
@@ -1646,6 +1651,162 @@ def _range_reader(analysis: dict[str, Any], sheet: str, row: int, col: int) -> s
 _USED_NAMES: dict[Any, set[str]] = {}
 
 
+# ---  STR-008: which  formulas need the text of a lone text cell (17 Nov 2026) ----------------------
+# Mind does not import a lone text cell: in Mind it is empty. A formula that gets the same  result from an
+# empty cell does not need it. Phoenix TVOG Calc:  Calc!A259 'LH2_calc' is read only by  MAX($A$7:A304)+1
+# (MAX skips text and empty cells alike),  CFs!E62 only by VLOOKUP(key, CFs!$C$30:$G$110, 5, FALSE)
+# (column E is neither the  column searched, C, nor the one returned,  G). Both stopped Start.
+# Functions that skip text and empty cells alike when given a reference as a whole argument:
+_TEXT_BLIND = frozenset({"SUM", "MAX", "MIN", "AVERAGE", "COUNT", "PRODUCT", "SUMPRODUCT"})
+# Argument  positions (0-based)  where Excel wants a reference, or reads a reference as a table: a single
+# cell there cannot be replaced by its text.
+_REFERENCE_POSITIONS = {
+    "ROW": {0}, "COLUMN": {0}, "ROWS": {0}, "COLUMNS": {0}, "AREAS": {0}, "ISREF": {0}, "CELL": {1}, "OFFSET": {0},
+    "INDEX": {0}, "MATCH": {1}, "XMATCH": {1}, "VLOOKUP": {1}, "HLOOKUP": {1}, "LOOKUP": {1, 2}, "XLOOKUP": {1, 2},
+    "SUMIF": {0, 2}, "AVERAGEIF": {0, 2}, "COUNTIF": {0}, "COUNTBLANK": {0}, "SUBTOTAL": None, "AGGREGATE": None,
+    "SUMIFS": None, "AVERAGEIFS": None, "MAXIFS": None, "MINIFS": None, "COUNTIFS": None, "FILTER": None, "SORT": None, "UNIQUE": None,
+    "ISFORMULA": {0}, "FORMULATEXT": {0}, "SHEET": {0}, "SHEETS": {0}, "GETPIVOTDATA": {1},
+}
+_CALL_NAME_RE = re.compile(r"([^\W\d][\w.]*)\s*$")
+_FORMULA_AT: dict[Any, dict[str, Any]] = {}
+
+
+def _formula_record(analysis: dict[str, Any], owner: str) -> dict[str, Any] | None:
+    # the  very analysis  object is kept with its table and compared by identity: an id() alone can be given to another
+    # workbook's analysis once the first is gone (a server runs for days)
+    cached = _FORMULA_AT.get("table")
+    if cached is None or cached[0] is not analysis:
+        _FORMULA_AT.clear()
+        cached = _FORMULA_AT["table"] = (analysis, {f"{f['sheet']}!{f['cell']}": f for f in analysis["workbooks"][0].get("formulas", []) if isinstance(f.get("formula"), str)})
+    return cached[1].get(owner)
+
+
+def _reference_uses(formula: str, home: str, sheet: str, row: int, col: int) -> list[dict[str, Any]] | None:
+    """Every  A1 reference  in `formula` (written on sheet `home`) that holds `sheet`!(row, col), with what
+    surrounds it: {start, end, single, function (upper case, '' for a bracket or none), position (0-based
+    argument), whole (the reference is  that argument, nothing else), arguments (the call's argument texts)}.
+    None when the  formula reads the sheet in a  way this cannot follow (a 3-D reference,  INDIRECT)."""
+    masked = mask_strings(formula, mask_sheet_quotes=False)
+    if "INDIRECT" in masked.upper():
+        return None
+    uses = []
+    for m in REF_RE.finditer(masked):
+        name = m.group("sheet")
+        if name and name.startswith("'"):
+            name = formula[m.start("sheet") + 1 : m.end("sheet") - 1].replace("''", "'")
+        if name and ":" in name:
+            return None  # a 3-D reference
+        ref = parse_ref(m.group("ref"))
+        if not ref or ref.get("whole_column") or ref.get("whole_row"):
+            continue
+        if (name or home).lower() != sheet.lower() or not (ref["r1"] <= row <= ref["r2"] and ref["c1"] <= col <= ref["c2"]):
+            continue
+        # the call (or bracket) the reference sits in, and  its argument
+        depth, open_at = 0, -1
+        for i in range(m.start() - 1, -1, -1):
+            ch = masked[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth == 0:
+                    open_at = i
+                    break
+                depth -= 1
+        function, position, whole, arguments = "", 0, False, []
+        if open_at >= 0:
+            call = _CALL_NAME_RE.search(masked[:open_at])
+            function = strip_storage_prefix(call.group(1)).upper() if call else ""
+            close = _closing_paren(masked, open_at)
+            if close > 0:
+                spans = _arg_spans(masked, open_at + 1, close)
+                for k, (a, b) in enumerate(spans):
+                    if a <= m.start() < b:
+                        position, whole = k, formula[a:b].strip() == formula[m.start() : m.end()]
+                arguments = [formula[a:b].strip() for a, b in spans]
+        # A1:INDEX(...), INDEX(...):A1 build a range; (A1,B1)  is a union: the cell cannot become a text there
+        in_range = masked[m.end():].lstrip().startswith(":") or masked[: m.start()].rstrip().endswith(":") or (open_at >= 0 and not function and len(arguments) > 1)
+        uses.append({"start": m.start(), "end": m.end(), "single": ref["r1"] == ref["r2"] and ref["c1"] == ref["c2"], "function": function,
+                     "position": position, "whole": whole, "arguments": arguments, "r1": ref["r1"], "c1": ref["c1"], "in_range": in_range})
+    return uses
+
+
+def _use_needs_cell(use: dict[str, Any], row: int, col: int) -> bool:
+    """Does  this one  reference give another result when the cell is empty (as in Mind) than when it holds text?"""
+    fn, pos, args = use["function"], use["position"], use["arguments"]
+    if use["whole"] and fn in _TEXT_BLIND:
+        return False  # SUM / MAX / MIN / AVERAGE / COUNT / PRODUCT / SUMPRODUCT of a  reference skip text and empty cells alike
+    if use["whole"] and not use["single"] and fn in ("VLOOKUP", "HLOOKUP") and pos == 1 and len(args) >= 3:
+        n = as_number(args[2])
+        if n is not None and n == int(n) and n >= 1:
+            offset = (col - use["c1"]) if fn == "VLOOKUP" else (row - use["r1"])
+            return offset in (0, int(n) - 1)  # only the column searched and  the column returned are read
+    return True
+
+
+def _rewritable(use: dict[str, Any]) -> bool:
+    """A  single-cell reference  that its own text can take the place of (not where Excel wants a reference)."""
+    if not use["single"] or use["in_range"]:
+        return False
+    if use["function"].startswith("MM_"):
+        return False  # Mind's own functions (MM_LOOP, MM_INSTANCE ...) take references
+    positions = _REFERENCE_POSITIONS.get(use["function"], set())
+    return positions is not None and use["position"] not in positions
+
+
+def readers_needing(analysis: dict[str, Any], sheet: str, row: int, col: int, used: Any = None) -> list[tuple[str, list[dict[str, Any]] | None]]:
+    """The  readers of  sheet!(row, col) that need its text -- whose result would change if the cell were empty,
+    as Mind leaves a lone text cell -- each with the references to rewrite (None: it  cannot be rewritten:
+    a defined name, a range, a reference-only argument, a  3-D reference or INDIRECT, an array  formula).
+    A reader that is as a whole  N(...) needs nothing (N() of a text is 0, like an  empty cell); a defined name
+    no formula uses  reads nothing (`used`: validators.structure._names_in_use). Whole-column and whole-row
+    reads are left out, as the lone-text rule leaves them out."""
+    from .validators.structure import _names_in_use, _wrapped_in_n
+
+    index = reference_index(analysis)
+    rects = index["rects"].get(sheet) or []
+    if not rects:
+        return []
+    blocks, tall = _row_blocks(index, sheet, rects)
+    owners: list[str] = []
+    seen: set[str] = set()
+    for i in sorted(set(blocks.get(row // _BLOCK_ROWS, ())) | set(tall)):
+        r1, r2, c1, c2, own = rects[i]
+        if r1 <= row <= r2 and c1 <= col <= c2 and own not in seen:
+            seen.add(own)
+            owners.append(own)
+    needing: list[tuple[str, list[dict[str, Any]] | None]] = []
+    for own in owners:
+        if own.startswith("name "):
+            used = used or _names_in_use(analysis)
+            if used(own[5:]):
+                needing.append((own, None))
+            continue
+        if _wrapped_in_n(analysis, own):
+            continue
+        rec = _formula_record(analysis, own)
+        if rec is None:
+            needing.append((own, None))
+            continue
+        uses = _reference_uses(rec["formula"], rec["sheet"], sheet, row, col)
+        if uses is None or not uses:
+            needing.append((own, None))
+            continue
+        need = [u for u in uses if _use_needs_cell(u, row, col)]
+        if need:
+            ok = not rec.get("array_ref") and all(_rewritable(u) for u in need)
+            needing.append((own, need if ok else None))
+    return needing
+
+
+def _with_text(formula: str, uses: list[dict[str, Any]], text: str) -> str:
+    """`formula`  with each  of `uses` (references) replaced by the text as a "..." literal."""
+    literal = '"' + text.replace('"', '""') + '"'
+    out = formula
+    for u in sorted(uses, key=lambda u: u["start"], reverse=True):
+        out = out[: u["start"]] + literal + out[u["end"] :]
+    return out
+
+
 def _planned_value(analysis: dict[str, Any], planned: dict[tuple[str, int, int], Any] | None, sheet: str, row: int, col: int) -> Any:
     """What  the cell  will hold once the operations planned so far in this pass are applied: the text a
     planned label or title writes, None for a cell a planned move empties, else what it  holds today."""
@@ -1676,6 +1837,63 @@ def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, An
         return _op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(first, row), before=None, after=f"Value in {s['cell']}",
                    note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just under the grid {g['ref']}, whose labels in column "
                         f"{num_to_col(first)} stop one row above; with a label beside it the grid takes this row and Mind imports the cell with it")
+    return None
+
+
+_GAP_LABELS_MAX = 5  # labels  written to  close one gap
+_GAP_ROWS_MAX = 20  # rows  between the  grid and the lone cell
+
+
+def _labels_closing_gap_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
+                              planned: dict[tuple[str, int, int], Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any], int] | None:
+    """A  lone cell  a few rows under a grid whose first column stops early: Mind reads a grid down its first
+    column, so a few empty cells there end the table above the cell (Phoenix  TVOG Calc, CFs!F109
+    'Sum of ANNUITYVD', a key of the lookup table  F30:L110 that 3,143 VLOOKUPs read: the  row numbers in
+    B29:B110 skip B101:B103, so Mind's  grid stops at row 100, 2026-11-17). A label in each of  those empty
+    cells ('Row 101') lets the grid  run on down its first column, and the cell is part of it.
+    Only when the grid carries no flag; at most _GAP_LABELS_MAX labels within _GAP_ROWS_MAX rows; every label
+    cell is empty and inside no range a formula reads; and what the longer grid takes in -- the grid's columns,
+    from the row under it to the row where its first column ends --  holds no '#' title and no grid that
+    reaches outside it or has a title or a flag (it would be cut in two, or a title trapped).
+    -> (the label operations, the grid, its new last row), else None."""
+    sheet = s["sheet"]
+    index = reference_index(analysis)
+    if sheet in index["positional"] or sheet in index["text_addressed"]:
+        return None  # an INDIRECT or a 3-D reference may name a label cell by its address
+
+    def value(r: int, c: int) -> Any:
+        v = _planned_value(analysis, planned, sheet, r, c)
+        return None if v == "" else v
+
+    above = [g for g in grids if g["first_col"] < col <= g["last_col"] and g["last_row"] < row - 1 and row - g["last_row"] <= _GAP_ROWS_MAX]
+    for g in sorted(above, key=lambda g: -g["last_row"]):  # the nearest grid above first
+        first, last, end = g["first_col"], g["last_col"], g["last_row"]
+        if g.get("flags") or g.get("inner_title_cells"):
+            continue
+        empty = [r for r in range(end + 1, row + 1) if value(r, first) is None]
+        if not empty or len(empty) > _GAP_LABELS_MAX or any(_planned_value(analysis, planned, sheet, r, first) is not None for r in empty):
+            continue  # a cell holding "" is empty for Mind, but something for Excel: no label goes there
+        bottom = row
+        while value(bottom + 1, first) is not None and bottom - row < 1000:
+            bottom += 1
+        if value(bottom + 1, first) is not None:
+            continue  # a first column that runs on and on: too much to take  in
+        if any(_range_reader(analysis, sheet, r, first) for r in empty):
+            continue  # an empty label cell lies  inside a range a formula reads
+        if index["whole_cols"].get(sheet, {}).get(first) or any(index["whole_rows"].get(sheet, {}).get(r) for r in empty):
+            continue  # a whole  column or row  read by  any function (COUNTIF(B:B,""), SUMPRODUCT(--(B:B=""))) sees a label
+        taken_in = [o for o in grids if o is not g and o["first_col"] <= last and o["last_col"] >= first and o["last_row"] > end and o["first_row"] <= bottom]
+        if any(o["first_col"] < first or o["last_col"] > last or o["last_row"] > bottom or o.get("title_cell") or o.get("inner_title_cells") or o.get("flags") for o in taken_in):
+            continue
+        if any(looks_like_title(value(r, c)) for r in range(end + 1, bottom + 1) for c in range(first, last + 1)):
+            continue
+        labels = [
+            _op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(first, r), before=None, after=f"Row {r}",
+                note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits under the grid {g['ref']}, whose first column {num_to_col(first)} "
+                     f"has empty cells before it; with a label in each the grid runs on to row {bottom} and Mind imports the cell with it")
+            for r in empty
+        ]
+        return labels, g, bottom
     return None
 
 
@@ -1721,6 +1939,36 @@ def _header_joining_grid_beside(analysis: dict[str, Any], grids: list[dict[str, 
             g,
         )
     return None
+
+
+def _text_into_readers(analysis: dict[str, Any], s: dict[str, Any], row: int, col: int, rewriting: set[str] | None = None) -> list[dict[str, Any]] | None:
+    """No  title, label,  header or move fits (17 Nov 2026): each formula that needs the cell's text gets the text
+    itself in place of the reference -- =IF(A259="LH2_calc",...) becomes =IF("LH2_calc"="LH2_calc",...). The
+    text is what the cell  holds, so Excel's value is the same in every use (text  in arithmetic is #VALUE! either
+    way), and  the formula no longer needs a cell  Mind does not import. Only when every such reader names the  cell
+    alone where a value may stand (not  in a range, not where Excel wants a reference, not an array formula, not
+    a defined name) and the text fits in a formula (255 characters). The formulas that read it without needing
+    it (MAX of a range, a lookup column never read) are left as they are.
+    -> the formula operations, else None."""
+    sheet = s["sheet"]
+    text = cell_value(analysis, sheet, row, col)
+    if not isinstance(text, str) or text.startswith("=") or len(text) > 255:
+        return None
+    needing = readers_needing(analysis, sheet, row, col)
+    if not needing or any(uses is None or own in (rewriting or ()) for own, uses in needing):
+        return None
+    ops = []
+    for own, uses in needing:
+        rec = _formula_record(analysis, own)
+        after = _with_text(rec["formula"], uses, text)
+        if len(after) > 8192:
+            return None
+        ops.append(_op("set_formula", "title_lone_text_cells", "STR-008", rec["sheet"], cell=rec["cell"], before=rec["formula"], after=after,
+                       note=f"{sheet}!{s['cell']} = {text[:40]!r} stands alone, and Mind does not import a lone text cell; the formula now holds "
+                            f"that text itself in place of the reference (the same value), so it no longer needs the cell"))
+    if rewriting is not None:
+        rewriting.update(own for own, _uses in needing)
+    return ops
 
 
 def _move_to_free_column(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int, free: dict[str, int]) -> tuple[dict[str, Any], str] | None:
@@ -1790,11 +2038,12 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         if g["sheet"] in on:
             on[g["sheet"]].append(g)
     planned: dict[tuple[str, int, int], Any] = {}
+    rewriting: set[str] = set()  # the formulas this pass already rewrites (a  second cell they read waits for the next pass)
     waiting: set[tuple[str, int, int]] = set()
     for s in sites:
         at = parse_ref(s["cell"])
         waiting.add((s["sheet"], at["r1"], at["c1"]))
-    lone: set[tuple[str, int, int]] = set()  # every text cell standing alone on those  sheets, read or not
+    lone: set[tuple[str, int, int]] = set()  # every text cell  standing alone on those sheets, read or  not
     for sh in analysis["workbooks"][0]["sheets"]:
         if sh["name"] in site_sheets:
             for c in sh.get("standalone_text_cells", []):
@@ -1815,7 +2064,7 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         return f"#{name}"
 
     def grown(g: dict[str, Any], sheet: str, **edge: int) -> None:
-        """the grid one row longer / one column  wider, in this pass's picture of the  sheet"""
+        """the grid one row longer / one column wider, in this pass's picture of the sheet"""
         longer = {**g, **edge, "grown_in_this_pass": True}
         longer["n_rows"], longer["n_cols"] = longer["last_row"] - longer["first_row"] + 1, longer["last_col"] - longer["first_col"] + 1
         longer["ref"] = ref_text(longer["first_col"], longer["first_row"], longer["last_col"], longer["last_row"])
@@ -1836,7 +2085,7 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
             # an empty cell inside a range some formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
             # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
             range_reader = _range_reader(analysis, sheet, row - 1, col)
-            # a title right of another cell this pass handles (a lone text still in its place, or  a header just
+            # a title  right of another cell this pass handles (a lone text still in its place, or a header just
             # planned) is read as one grid with it, and this cell stays alone (three texts on a diagonal,
             # 2026-11-16: the titles of the second and third were trapped that way, and a second pass was needed).
             # A lone label nothing reads on that spot is left as it always was: only this pass's own cells count.
@@ -1855,6 +2104,16 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
             grown(above, sheet, last_row=row)
             waiting.discard((sheet, row, col))
             ops.append(joined)
+            continue
+        closed = _labels_closing_gap_above(analysis, on_sheet, s, row, col, planned)
+        if closed:
+            labels, above, bottom = closed
+            for o in labels:
+                at = parse_ref(o["cell"])
+                planned[(sheet, at["r1"], at["c1"])] = o["after"]
+            grown(above, sheet, last_row=bottom)
+            waiting.discard((sheet, row, col))
+            ops.extend(labels)
             continue
         widened = _header_joining_grid_beside(analysis, on_sheet, lone, s, row, col, planned)
         if widened:
@@ -1875,6 +2134,11 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
             ops.append(move)
             ops.append(_op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=title_cell, before=None, after=heading,
                            note=f"the title of {sheet}!{s['cell']}, moved to {move['to']}: a one-cell grid Mind imports"))
+            continue
+        rewritten = _text_into_readers(analysis, s, row, col, rewriting)
+        if rewritten:
+            waiting.discard((sheet, row, col))
+            ops.extend(rewritten)
         elif range_reader:
             skipped.append(f"{sheet}!{s['cell']}: could not name it -- the empty cell above ({ref_text(col, row - 1)}) lies inside a range {range_reader} reads, and a title there would change that result -- by hand")
         else:
@@ -1962,7 +2226,8 @@ ACTIONS: list[dict[str, Any]] = [
     {"id": "reorder_input_flag", "title": "Add /Input to /Reorder grids", "rule_ids": ["INP-005"], "default_on": True, "level": BLOCKING, "planner": plan_reorder_input_flag},
     {"id": "special_headers", "title": "Correct headers of /ExportSettings, /ProjectSettings, /Parameters, /InputSettings grids", "rule_ids": ["EXP-003", "PRJ-002", "PAR-002", "INP-003"], "default_on": True, "level": BLOCKING, "planner": plan_special_headers},
     {"id": "title_lone_text_cells", "title": "Give a lone text cell that formulas read a title of its own", "rule_ids": ["STR-008"], "default_on": True, "level": BLOCKING,
-     "caution": "writes a '#' title in the empty cell above a text cell that stands alone and is read by a formula: Mind imports grids, not loose text cells, and the formula would get nothing", "planner": plan_title_lone_text_cells},
+     "caution": "writes a '#' title in the empty cell above a text cell that stands alone and is read by a formula: Mind imports grids, not loose text cells, and the formula would get nothing. "
+                "Where no title fits: a label or a header that joins it to the grid next to it, a move to a column of its own, or, last, the text itself written into the formula in place of the reference (the same value; the formula no longer follows that cell)", "planner": plan_title_lone_text_cells},
     {"id": "create_grid_titles", "title": "Give every untitled grid one '#Name' title taken from the cells around it (captions, labels, headers)", "rule_ids": ["STR-004", "STR-002", "STR-001"], "default_on": True, "level": OPTIONAL,
      "level_note": "Mind accepts an untitled grid but lists it as 'Untitled' -- unusable for whoever opens the model", "planner": plan_create_grid_titles},
     {"id": "flag_spelling", "title": "Correct misspelt flags to the documented spelling", "rule_ids": ["FLG-001"], "default_on": True, "level": OPTIONAL, "planner": plan_flag_spelling},

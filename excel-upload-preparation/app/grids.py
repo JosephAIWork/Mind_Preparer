@@ -68,6 +68,30 @@ def looks_like_title(value: Any) -> bool:
         return False
     text = value.strip()
     return text.startswith(TITLE_PREFIX) and text.upper() not in ERROR_LITERALS
+
+
+def is_bare_hash(value: Any) -> bool:
+    """A  cell that  holds the single character '#' and nothing else: no grid name, no flag. As the first
+    header of a table it means "No." (Phoenix TVOG Calc, CFs!B29 '#' over a column of  row numbers,
+    beside the headers C29:L29, 2026-11-17)."""
+    return isinstance(value, str) and value.strip() == TITLE_PREFIX
+
+
+def _header_hash(value: Any, occupied: dict[tuple[int, int], Any], r: int, c: int, assigned: set[tuple[int, int]] | None = None) -> bool:
+    """A  bare '#'  (is_bare_hash) with a cell right of it on its own row that no grid has taken: it is a
+    column header of the table that row starts, not a grid title. Reading  it as a title cut the Phoenix
+    table B29:L100 in pieces (the  '#' titled a grid of its  column only, the headers C29:L29 became a  grid
+    of one row, and four lookup keys inside the table, CFs!F66,  F78, F86, F109, were read as lone  text
+    cells that stopped Start). A '#Name' title, a '#' with a flag, and a bare '#' with nothing right of it
+    are read as before."""
+    if not is_bare_hash(value):
+        return False
+    right = (r, c + 1)
+    if right not in occupied or not is_occupied(occupied[right]) or (assigned is not None and right in assigned):
+        return False
+    beside = occupied[right]
+    beside = beside.value if isinstance(beside, MergedInto) else beside
+    return not (looks_like_title(beside) and not is_bare_hash(beside))  # beside a '#Name' title: a row of titles, not headers
 MARKER_HIDE_COLUMN = "&&hidecolumn"
 MARKER_HIDE_HEADER = "&hide"
 STEP_LABELS_MARKER = "steplabels"
@@ -168,7 +192,7 @@ def detect_grids(sheet_name: str, occupied: dict[tuple[int, int], Any]) -> tuple
             continue
         title_cell: tuple[int, int] | None = None
         ar, ac = r, c
-        if looks_like_title(value) and (r + 1, c) in occupied and (r + 1, c) not in assigned:
+        if looks_like_title(value) and (r + 1, c) in occupied and (r + 1, c) not in assigned and not _header_hash(value, occupied, r, c, assigned):
             title_cell = (r, c)
             ar = r + 1
 
@@ -211,6 +235,7 @@ def _grid(sheet_name: str, occupied: dict[tuple[int, int], Any], ar: int, ac: in
         for rr in range(ar, ar + height)
         for cc in range(ac, ac + width)
         if looks_like_title(occupied.get((rr, cc))) and (rr, cc) != (ar, ac)
+        and not (rr == ar and _header_hash(occupied.get((rr, cc)), occupied, rr, cc))  # a bare '#' among the headers
     ]
     formula_count = sum(
         1 for rr in range(ar, ar + height) for cc in range(ac, ac + width) if is_formula(occupied.get((rr, cc)))

@@ -112,23 +112,26 @@ def test_the_plan_of_one_pass_is_what_the_passes_one_by_one_would_have_done(tmp_
 def test_a_step_whose_label_cell_a_lookup_reads_stops_the_staircase_there(tmp_path):
     """The protection stays: U26 lies inside a range a MATCH reads, so no label goes there, and no title goes into
     a cell a formula reads. The two steps before are still fixed; X26, now right under the grid, moves to a column
-    of its own as such a cell always did (only single cells read it); Y27 is left for a person, the reader named."""
+    of its own as such a cell always did (only single cells read it). Y27 (no title, no label, no move: only G27 reads
+    it, through one reference) gets its text written into G27 in place of the reference (17 Nov 2026; it was left for
+    a person before)."""
     p = _staircase(tmp_path / "roll.xlsx", extra={"A1": '=IFERROR(MATCH("x",$U$26:$U$30,0),0)'})
     a = _action(build_analysis(p, tmp_path / "w", "s"))
     assert [(o["op"], o["cell"], o.get("to") or o["after"]) for o in a["operations"]] == [
-        ("set_value", "U24", "Value in V24"), ("set_value", "U25", "Value in W25"), ("move_cell", "X26", "AB26"), ("set_value", "AB25", "#Roll X26")]
-    assert a["skipped"] == ["Roll!Y27: could not name it -- the empty cell above (Y26) lies inside a range Roll!G26 reads, and a title there would change that result -- by hand"]
+        ("set_value", "U24", "Value in V24"), ("set_value", "U25", "Value in W25"), ("move_cell", "X26", "AB26"), ("set_value", "AB25", "#Roll X26"),
+        ("set_formula", "G27", '=IF("plan_4"="",0,LEN("plan_4"))')]
+    assert a["skipped"] == []
     assert not any(o["cell"] in ("U26", "U27", "X25", "Y26") for o in a["operations"])
 
 
 def test_a_step_that_a_range_reads_and_cannot_join_is_left_for_a_person(tmp_path):
-    """The same, with X26 read through a range as well: it cannot move either, and says so."""
+    """The same, with X26 read through a range as well (COUNTIF needs its text): it cannot move nor take its text into
+    the formula, and says so. Y27 takes its text into G27 (17 Nov 2026)."""
     p = _staircase(tmp_path / "roll.xlsx", extra={"A1": '=IFERROR(MATCH("x",$U$26:$U$30,0),0)', "A2": '=COUNTIF(X26:X27,"plan_3")'})
     a = _action(build_analysis(p, tmp_path / "w", "s"))
-    assert [(o["cell"], o["after"]) for o in a["operations"]] == [("U24", "Value in V24"), ("U25", "Value in W25")]
-    assert len(a["skipped"]) == 2 and all(s.endswith("-- by hand") for s in a["skipped"])
+    assert [(o["cell"], o["after"]) for o in a["operations"]] == [("U24", "Value in V24"), ("U25", "Value in W25"), ("G27", '=IF("plan_4"="",0,LEN("plan_4"))')]
+    assert len(a["skipped"]) == 1 and a["skipped"][0].endswith("-- by hand")
     assert a["skipped"][0].startswith("Roll!X26: the cell above (X25) is taken, and a range or a name over several cells reads it (it cannot move)")
-    assert a["skipped"][1].startswith("Roll!Y27: could not name it -- the empty cell above (Y26) lies inside a range")
 
 
 def test_two_lone_cells_on_the_row_under_a_grid_take_one_label(tmp_path):

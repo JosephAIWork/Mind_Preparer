@@ -265,4 +265,5 @@ def test_whole_column_read_refuses_a_title_only_when_the_function_sees_text(tmp_
     analysis2 = build_analysis(path2, tmp_path / "w2", "t")
     ops2, skipped2 = prep.plan_title_lone_text_cells(analysis2, {"findings": []})
     assert not any(o["cell"] == "C40" for o in ops2), ops2
-    assert any("Parameters!C41" in s and "could not name" in s for s in skipped2), skipped2
+    # 17 Nov 2026: no title goes there; the one formula that reads C41 takes its text instead (was: left for a person)
+    assert [(o["cell"], o["after"]) for o in ops2] == [("A2", '="text A"')] and not skipped2, (ops2, skipped2)
