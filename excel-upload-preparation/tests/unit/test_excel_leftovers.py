@@ -25,6 +25,7 @@ APP_DIR = Path(__file__).resolve().parents[2]
 def started(tmp_path, monkeypatch):
     path = tmp_path / "excel_started.json"
     monkeypatch.setattr(excel_com, "_started_path", lambda: path)
+    monkeypatch.setattr(excel_com, "_MINE", {})  # this process's memory of its Excels: the test's own
     return path
 
 
@@ -211,6 +212,28 @@ def test_kill_excel_ends_an_excel_this_process_started_and_only_once(started, en
         assert ended == [4242]
     finally:
         cancel.end(job)
+
+
+def test_kill_excel_ends_an_excel_of_this_process_whose_line_the_file_lost(started, ended, monkeypatch):
+    # 17 Nov 2026 (R1-4): the write of the list failed (an antivirus), or another app window on the same
+    # data folder wrote over it: this process still knows the Excels it started, and ends only those
+    _fake_processes(monkeypatch, {4242: (EXCEL_EXE, 1111), 4243: (EXCEL_EXE, 2222), 4244: (EXCEL_EXE, 3333)})
+    monkeypatch.setattr(excel_com, "_save_started", lambda data: None)  # every write of the file fails
+    excel_com._remember(4242)
+    excel_com._remember(4244)
+    assert _listed(started) == {}  # the file names none of them
+    assert excel_com.kill_excel(4243) is False and ended == []  # never started here (the person's own Excel)
+    assert excel_com.kill_excel(4242) is True and ended == [4242]
+    assert excel_com.kill_excel(4242) is False and ended == [4242]  # once only
+    _fake_processes(monkeypatch, {4244: (EXCEL_EXE, 9999)})  # our 4244 is gone and Windows gave its id to a new Excel
+    assert excel_com.kill_excel(4244) is False and ended == [4242]
+
+
+def test_closing_the_window_ends_an_excel_whose_line_the_file_lost(started, ended, monkeypatch):
+    _fake_processes(monkeypatch, {4242: (EXCEL_EXE, 1111), 4243: (EXCEL_EXE, 2222)})
+    monkeypatch.setattr(excel_com, "_save_started", lambda data: None)
+    excel_com._remember(4242)
+    assert kill_own_excels() == 1 and ended == [4242]  # 4243 was never started here: left alone
 
 
 def test_kill_excel_leaves_a_real_program_that_holds_a_listed_id(started):

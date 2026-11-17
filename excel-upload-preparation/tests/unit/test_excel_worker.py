@@ -465,3 +465,38 @@ def test_a_retired_or_stopped_worker_lets_its_waiting_callers_go_at_once(tmp_pat
                 assert first.value is None and isinstance(first.error, excel_worker.WorkerUnavailable)
         finally:
             w.stop()
+
+
+def test_an_item_put_just_after_the_worker_was_retired_lets_its_caller_go_at_once(tmp_path, monkeypatch):
+    # 17 Nov 2026 (R1-3): a Cancel of another job retires the worker between a caller's look at
+    # `_stopped` and its put: the item lands behind the end marker, where it never runs and nobody
+    # lets it go -- the caller waited the whole queue time limit (half an hour)
+    import threading
+
+    monkeypatch.setattr(excel_worker, "kill_excel", lambda pid: False)
+    w = excel_worker.ExcelWorker("t-late-put", tmp_path / "apply")
+    real_put = w._q.put
+
+    def put_after_a_cancel(item, *a, **k):
+        if item is not None and not w._stopped:
+            w._retire()  # the Cancel lands here, after the look at `_stopped`
+        return real_put(item, *a, **k)
+
+    monkeypatch.setattr(w._q, "put", put_after_a_cancel)
+    ran: list = []
+    box: dict = {}
+
+    def call() -> None:
+        try:
+            box["value"] = w._wait_for(lambda: ran.append(1), None, 30, 30, False)
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    caller = threading.Thread(target=call, daemon=True)
+    caller.start()
+    caller.join(3.0)
+    try:
+        assert not caller.is_alive(), "the caller still waits (before the fix: for the whole queue time limit)"
+        assert isinstance(box.get("error"), excel_worker.WorkerUnavailable) and ran == []
+    finally:
+        w.stop()

@@ -261,11 +261,16 @@ class ExcelWorker:
         fut: concurrent.futures.Future = concurrent.futures.Future()
         started = threading.Event()
         self._q.put((fn, fut, started, owner))
+        if self._stopped and fut.cancel():
+            # 17 Nov 2026: stopped or retired between the look above and the put (a Cancel of another
+            # job): the item may lie behind the end marker, where it never runs and nobody lets it go --
+            # its caller would wait QUEUE_TIMEOUT_S (half an hour), and its own Cancel could not reach it
+            raise WorkerUnavailable("the Excel worker was stopped")
         if not started.wait(queue_timeout) and fut.cancel():
             raise WorkerUnavailable(f"the Excel worker was busy for {int(queue_timeout)} s")
         if fut.cancelled():
             # 17 Nov 2026: let go while it waited (a Cancel, or the worker was retired or stopped):
-            # `started` was set for it, so this caller returns at once instead of after the timeout
+            # `started` was set for it,  so this caller returns at  once instead of after the timeout
             raise WorkerUnavailable("the Excel worker let this job go before its turn")
         try:
             return fut.result(timeout=timeout)
@@ -273,7 +278,7 @@ class ExcelWorker:
             if not kill_on_timeout:
                 raise WorkerUnavailable(f"the Excel worker did not finish within {int(timeout)} s") from None
             self._retire()
-            kill_excel(self._pid)  # the hung call then fails on the worker thread, which drops everything
+            kill_excel(self._pid)  # the hung  call then fails  on the  worker thread, which drops everything
             raise WorkerUnavailable(f"Excel did not answer within {int(timeout)} s") from None
 
     def _let_go_of_what_waits(self) -> None:
@@ -289,7 +294,7 @@ class ExcelWorker:
                 item[2].set()
 
     def _retire(self) -> None:
-        """No more jobs  for this worker: cancel what  waits, and let worker_for make a new  one."""
+        """No more  jobs for this worker: cancel what waits, and let worker_for make  a new one."""
         self._stopped = self._retired = True
         with _LOCK:
             if WORKERS.get(self.sid) is self:
@@ -298,12 +303,12 @@ class ExcelWorker:
         self._q.put(None)
 
     def cancel_jobs(self, cancelled: list[Any], free: bool = False) -> int:
-        """Cancel (17 Nov  2026). An  item is "theirs" when its owner is one of `cancelled`, or, with
-        `free`, when it has no owner (a check or a recalculation made ahead) or its owner has ended.
-        Every waiting item  that is theirs never runs and its caller returns at once.  When the item
-        running now is theirs:  the two steps of the time limit,  retire then end this worker's Excel
-        (the item then fails on the  worker thread, which drops everything). An item  of a job that is
-        not being cancelled is never touched (but what waits behind a running item that is stopped is
+        """Cancel (17 Nov 2026).  An item is "theirs" when its owner  is one of `cancelled`, or, with
+        `free`, when it has no owner  (a check or a recalculation made ahead)  or its owner has ended.
+        Every waiting item that is theirs never runs and its caller returns at once. When the item
+        running now is theirs: the two steps of the time limit, retire then end this worker's Excel
+        (the item then fails on the worker thread, which drops everything). An item of a job that is
+        not being cancelled is never touched (but what  waits behind a running item that is stopped is
         let go with it, as on the time limit: its caller falls back to an Excel of its own).
         -> how many items were stopped that belong to no job in `cancelled`."""
         def named(owner: Any) -> bool:
@@ -323,7 +328,7 @@ class ExcelWorker:
             if self._busy and (named(self._owner) or nobodys(self._owner)):
                 stopped += not named(self._owner)
                 self._retire()
-                kill_excel(self._pid)  # only  an Excel this process started: kill_excel checks it
+                kill_excel(self._pid)  # only an Excel this process started: kill_excel checks it
         return stopped
 
     # --- jobs (run on the worker thread) ------------------------------------------------------
@@ -350,7 +355,7 @@ class ExcelWorker:
             keep = wb is not None and info.get("opens") is True
             if keep:
                 try:
-                    keep = int(wb.Connections.Count) == 0  # a data connection could refresh while held
+                    keep = int(wb.Connections.Count) == 0  # a data connection could  refresh while held
                 except Exception:
                     keep = False
             if keep and free_mb() < HOLD_MIN_FREE_MB:
@@ -378,7 +383,7 @@ class ExcelWorker:
             and not any(o["op"] == "explicit_colors" for o in operations)
         )
         if not warm:
-            # whatever is held is not this version's copy: delete it, then the old path -- in an
+            # whatever is held  is not this version's copy: delete it,  then the old  path --  in an
             # Excel this worker started, so a hang can be killed
             self._drop()
             held = None
@@ -404,15 +409,15 @@ class ExcelWorker:
         cancelled = False
         res: dict[str, Any] = {}
         try:
-            # 17 Nov 2026: inside  the try (it was above  it) -- this first progress call is  where a
-            # cancelled apply  leaves, and  the open copy must then be let go of like any other end
+            # 17 Nov 2026:  inside the try (it was above it) -- this first progress  call is where a
+            # cancelled apply leaves,  and the open copy must then be  let go of like any other end
             if progress is not None:
                 progress("apply_copy", "The copy was made and opened while the previous version was being analysed", None, done=0, total=len(operations))
             res = apply_operations(Path(source), self.apply_dir, operations, progress=progress, defer_verify=True, run=run)
         except registry.Cancelled:
-            cancelled = True  # Excel lets go of the half-written copy below; then the copy goes
+            cancelled = True  # Excel lets go of the  half-written copy below; then the copy goes
             raise
-        except Exception as exc:  # the text only: the exception's frames hold COM  proxies of this thread
+        except Exception as exc:  # the  text only: the exception's frames hold COM proxies of this thread
             failed = f"{type(exc).__name__}: {str(exc)[:240]}"
             gone = excel_gone(exc)
         finally:
@@ -427,20 +432,20 @@ class ExcelWorker:
                 excel = None
             if cancelled:
                 try:
-                    copy_path.unlink()  # so  the next apply's copy takes this  path again
+                    copy_path.unlink()  # so the next apply's copy takes this path again
                 except OSError:
                     pass
         if failed is not None:
             try:
-                copy_path.unlink()  # the old path makes this copy  again, at this path
+                copy_path.unlink()  # the old path makes this copy again, at this path
             except OSError:
                 pass
             raise WorkerUnavailable(f"the apply in the open copy failed ({failed})")
         return res
 
     def _job_recalc_ahead(self) -> None:
-        """After a Mind loop version, Do everything recalculates  next: do it now, on the copy  held open
-        -- what POST /recalculate does (a full rebuild in a fresh Excel with the add-in, saved, every
+        """After a Mind loop version, Do everything recalculates next: do it now, on the copy held open
+        -- what POST /recalculate does (a full rebuild in a fresh  Excel with the add-in, saved, every
         error cell read), on a byte-identical copy, earlier. The copy then moves to where Recalculate
         would have put it."""
         from .recalc import recalculate_in
@@ -484,20 +489,20 @@ class ExcelWorker:
     # --- public (any thread) ------------------------------------------------------------------
     def preopen(self, version: Path, recalc_ahead: bool = False) -> dict[str, Any]:
         """The opens-in-Excel check of `version`, made by opening the next apply's copy of it.
-        `recalc_ahead`: a  Mind loop version -- recalculate the held copy right after (in the queue,
+        `recalc_ahead`: a Mind loop version -- recalculate the held copy right after (in the queue,
         before any later request), for the Recalculate step that follows."""
         try:
             info = self._submit(lambda: self._job_preopen(Path(version)))
         except WorkerUnavailable as exc:
             return {"available": False, "opens": None, "sheet_count": None, "error": str(exc)[:300]}
         if recalc_ahead and speculative_recalc() and info.get("opens") and not self._stopped:
-            # no owner, on purpose (17 Nov 2026): it outlives the job that made the version, and
-            # only a Cancel of everything, or of a Recalculate, stops it
+            # no owner, on purpose (17 Nov 2026): it outlives the job  that made the version, and
+            # only  a Cancel of everything, or of a  Recalculate, stops it
             self._q.put((self._job_recalc_ahead, concurrent.futures.Future(), threading.Event(), None))
         return info
 
     def take_recalc(self, version: Path) -> tuple[Path, dict[str, Any]] | None:
-        """The recalculation of `version` made ahead (waits for it if it is still running), or None."""
+        """The  recalculation of  `version` made ahead (waits for it if it is still running), or None."""
         try:
             return self._submit(lambda: self._job_take_recalc(Path(version)))
         except WorkerUnavailable:
@@ -510,21 +515,21 @@ class ExcelWorker:
         self._q.put((lambda: self._job_preopen(Path(version)), concurrent.futures.Future(), threading.Event(), None))
 
     def apply(self, source: Path, operations: list[dict[str, Any]], progress: Any = None, defer_verify: bool = False, recalc_ahead: bool = False) -> dict[str, Any]:
-        """apply_operations on `source`,  in the copy held open  when it is this version's. The check
-        that  the result opens  is the  open of the next copy (preopen). Not deferred: done before
-        returning, as apply_operations does. `recalc_ahead`: the result is a Mind loop version."""
+        """apply_operations on  `source`, in the copy held open when it is this version's.  The check
+        that the result opens is  the open of the next copy (preopen).  Not deferred: done before
+        returning, as apply_operations does. `recalc_ahead`: the result is  a Mind loop version."""
         verify = (lambda path: self.preopen(path, recalc_ahead=True)) if recalc_ahead else self.preopen
         res = self._submit(lambda: self._job_apply(Path(source), operations, progress, verify))
         if not defer_verify and "finish" in res:
-            res.pop("finish")()  # a job of its own, after the apply job released its  Excel
+            res.pop("finish")()  # a job of its  own, after the apply job released its Excel
         return res
 
     def release(self) -> None:
-        """Let go of the held workbook and of Excel (before another  Excel user, or a Recalculate)."""
+        """Let go of the held workbook and of Excel (before another Excel user, or a Recalculate)."""
         try:
             self._submit(self._drop, timeout=300, queue_timeout=120, kill_on_timeout=False)
         except WorkerUnavailable:
-            pass  # busy: the  caller goes ahead (memory only); a busy  job is never killed for this
+            pass  # busy: the caller goes ahead (memory only); a busy job is never killed for this
 
     def stop(self) -> None:
         if self._stopped:

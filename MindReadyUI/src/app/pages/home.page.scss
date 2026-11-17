@@ -608,6 +608,14 @@
     max-width: 32rem;
     margin-bottom: $spacing-05;
   }
+
+  // 17 Nov 2026: why Start is greyed while other work of this workbook runs, beside it (a row of its own)
+  &__wait {
+    flex-basis: 100%;
+    margin: 0;
+    @include type.type-style("body-01");
+    color: theme.$text-secondary;
+  }
 }
 
 // 17 Nov 2026: what goes with the question the Prep step ended with, on Basic and on Custom: Show me, Send

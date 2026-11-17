@@ -204,6 +204,46 @@ def test_a_kind_cancels_only_that_kind_of_that_workbook(kills, worker_calls):
         cancel.end(job)
 
 
+def test_a_list_of_kinds_cancels_only_those_kinds(kills, worker_calls):
+    # 17 Nov 2026 (R1-5): Start's Cancel names the kinds of its own steps; a Run in Mind and an
+    # assistant's answer started elsewhere go on
+    steps = ["outside", "autofix", "prep", "apply", "recalc", "scan"]
+    apply_job = cancel.begin("s1", "apply", changes=True)
+    mind = cancel.begin("s1", "mind")
+    chat = cancel.begin("s1", "chat")
+    out = cancel.request("s1", steps)
+    assert out["flagged"] == [apply_job] and not mind.flag.is_set() and not chat.flag.is_set()
+    assert worker_calls[-1][2] is True  # "recalc" among the kinds: the recalculation made ahead goes too
+    assert cancel.request("s1", ("outside", "prep"))["flagged"] == [] and worker_calls[-1][2] is False
+    assert cancel.request("s1", [])["flagged"] == []  # an empty list stops nothing
+    assert not mind.flag.is_set() and not chat.flag.is_set()
+    for job in (apply_job, mind, chat):
+        cancel.end(job)
+
+
+def test_a_commit_alone_waits_for_no_job_that_changes_the_workbook_and_holds_them_off_until_its_end(kills, worker_calls):
+    # 17 Nov 2026 (R1-2): a Recalculate, Suggest names or the reports write what a cancelled Apply's restore puts back
+    writer = cancel.begin("s1", "names")
+    apply_job = cancel.begin("s1", "apply", changes=True)  # began while the writer waited for the model
+    with pytest.raises(cancel.Busy) as refused:
+        writer.commit(alone=True)
+    assert refused.value.kind == "apply" and not writer.committed
+    cancel.end(apply_job)
+    writer.commit(alone=True)
+    assert writer.committed
+    with pytest.raises(cancel.Busy) as held:  # it writes now: no job that changes the workbook begins
+        cancel.begin("s1", "prep", changes=True)
+    assert held.value.kind == "names"
+    reader = cancel.begin("s1", "numbers")  # a job that changes nothing is never held off
+    cancel.end(writer)
+    again = cancel.begin("s1", "prep", changes=True)
+    plain = cancel.begin("s1", "recalc")
+    plain.commit()  # a plain gate holds nothing off
+    cancel.end(again)
+    for job in (reader, plain):
+        cancel.end(job)
+
+
 def test_ahead_says_the_worker_stopped_an_item_of_no_job(kills, monkeypatch):
     monkeypatch.setattr(excel_worker, "cancel", lambda sid, jobs, free=False: 1 if free else 0)
     assert cancel.request("s1") == {"flagged": [], "late": [], "ahead": True}  # only a recalculation made ahead
@@ -405,6 +445,7 @@ def test_a_cancel_while_excel_starts_ends_that_excel(monkeypatch, kills, worker_
         excel_com.start_excel(mm_addin=False)
     assert len(made) == 1 and written == [4242]  # written down first: the checked kill ends only what is listed
     assert kills == [4242] and job.pids == set()
+    assert made[0].quit == 1  # 17 Nov 2026 (R1-4): quit through its own object too, should that kill have found nothing
     cancel.end(job, "cancelled")
 
 
@@ -451,6 +492,7 @@ def test_the_import_macros_excel_is_not_started_for_a_cancelled_job_and_is_ended
     with cancel.bind(late), pytest.raises(cancel.Cancelled):
         outside_inputs._new_excel(macros=False)
     assert len(made) == 1 and kills == [5151]  # it had started: ended by its pid
+    assert made[0].quit == 1  # 17 Nov 2026 (R1-4): and quit through its own object (nobody else holds it)
     with cancel.bind(late), pytest.raises(cancel.Cancelled):
         outside_inputs._new_excel(macros=False)
     assert len(made) == 1  # cancelled already: no second Excel

@@ -6,7 +6,7 @@ import type { AdvancedPage } from "../pages/advanced.page";
 import type { PrepPanel } from "../pages/advanced/prep-panel";
 import type { HomePage } from "../pages/home.page";
 import { ApiService } from "./api.service";
-import { AutoFixStatus, LoopPlan, Operation, OutsideInputs, OutsideRunResult, PrepAction, RecalcResult, SessionStart, Version, outsideAddLine, outsideOutcome } from "./models";
+import { AutoFixStatus, LoopPlan, Operation, OutsideInputs, OutsideRunResult, PrepAction, Readiness, RecalcResult, SessionStart, Version, outsideAddLine, outsideOutcome } from "./models";
 import { SessionStore } from "./session.store";
 import { PAGE_PATHS, PLACE_SIDES, SHOW_ME_PHRASES, SHOW_ME_PLACES, ShowMeId, TAB_NAMES, chatIsAppWords, placeShowMe, planShowMe, showMeFor, showMeForStep } from "./show-me";
 import { ShowMeLink } from "./show-me-link";
@@ -285,7 +285,8 @@ describe("Show me: the clicks to a place", () => {
   it("leads to a rule's own Prep action, and to the list above the tabs from any tab", () => {
     expect(planShowMe({ id: "prep-action", ruleId: "REF-005" }, "advanced")).toEqual([
       { kind: "tab", tab: "prep", targets: [{ el: "tab-prep", text: "Click Prep actions" }] },
-      { kind: "place", targets: [{ el: "prep-for-REF-005", text: "Tick this action, then click Apply" }, { el: "prep-list", text: "The Prep actions are listed here" }] },
+      // (17 Nov 2026: the rule's entry under "By hand" comes before the bare list: Prep may have skipped it)
+      { kind: "place", targets: [{ el: "prep-for-REF-005", text: "Tick this action, then click Apply" }, { el: "hand-REF-005", text: "Prep cannot change this one: fix it by hand" }, { el: "prep-list", text: "The Prep actions are listed here" }] },
     ]);
     expect(planShowMe({ id: "prep-action" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-list"]);
     expect(planShowMe({ id: "stack-apply" }, "advanced")).toEqual([{ kind: "place", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }]);
@@ -634,7 +635,10 @@ describe("Show me: the cell, and going to the place by itself", () => {
         kind: "place",
         targets: [
           { el: "prep-cell", text: "This change is for cell W25 on sheet Roll. Tick the action, then click Apply." },
+          // 17 Nov 2026 (live test L2b-1): Prep skipped the cell: the rule's "By hand" entry, which names it
+          { el: "hand-STR-008", text: "The problem is in cell W25 on sheet Roll. Prep cannot change it: fix it by hand." },
           { el: "prep-for-STR-008", text: "Tick this action, then click Apply" },
+          { el: "hand-STR-008", text: "Prep cannot change this one: fix it by hand" },
           { el: "prep-list", text: "The Prep actions are listed here" },
         ],
       },
@@ -645,13 +649,13 @@ describe("Show me: the cell, and going to the place by itself", () => {
   });
 
   it("leaves the cell's line out when the request names no cell, or no rule for the Findings row", () => {
-    expect(planShowMe({ id: "prep-action", ruleId: "STR-008" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-for-STR-008", "prep-list"]);
+    expect(planShowMe({ id: "prep-action", ruleId: "STR-008" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-for-STR-008", "hand-STR-008", "prep-list"]);
     expect(planShowMe({ id: "assistant-ask", ruleId: "STR-008" }, "advanced")[1].targets.map((t) => t.el)).toEqual(["ask-STR-008", "ask", "findings-list"]);
     // a cell with no rule: the change's own line still (it is marked by the panel), but no row to name
     expect(planShowMe({ id: "prep-action", where: WHERE }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-cell", "prep-list"]);
     expect(planShowMe({ id: "assistant-ask", where: WHERE }, "advanced")[1].targets.map((t) => t.el)).toEqual(["ask", "findings-list"]);
     // half a cell is no cell
-    expect(planShowMe({ id: "prep-action", ruleId: "STR-008", where: { sheet: "Roll", cell: " " } }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-for-STR-008", "prep-list"]);
+    expect(planShowMe({ id: "prep-action", ruleId: "STR-008", where: { sheet: "Roll", cell: " " } }, "advanced")[1].targets.map((t) => t.el)).toEqual(["prep-for-STR-008", "hand-STR-008", "prep-list"]);
     // a place that has no line for a cell is planned as before
     expect(planShowMe({ id: "prep-apply", where: WHERE, open: true }, "custom")).toEqual(planShowMe({ id: "prep-apply" }, "custom"));
   });
@@ -1155,6 +1159,31 @@ describe("Show me: the cell's own line on the Prep panel, the Findings row and t
     look();
     await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(el.querySelector('[data-show-me="prep-list"]')));
     expect(showMe.pointer()?.text).toBe("The Prep actions are listed here");
+  });
+
+  // 17 Nov 2026 (live test L2b-1): the question about a lone text cell Prep skipped (route "prep_skipped")
+  // opened Prep actions with the ring on "Blocking (0)" over "Nothing to change"; the "By hand" entry
+  // that names the cell sat above it, unmarked.
+  it("a cell Prep skipped: the arrow ends on the rule's entry under By hand, which names the cell, not on the empty list", async () => {
+    store.plan.set([titles]); // no Prep action has anything to write for the rule
+    const skipped: Readiness = {
+      state: "blocked",
+      headline: "h",
+      blocking: [{ rule_id: "STR-008", rule_name: "a formula reads a lone text cell", status: "ERROR", message: "Diag!G11 = 'b' is read by Diag!A2: change it by hand.", location: { sheet: "Diag", cell: "G11" }, fix: "prep_skipped" }],
+      blocking_count: 1,
+      manual_blocking_count: 1,
+      optional_count: 0,
+    };
+    store.readiness.set(skipped);
+    const { el, look } = drawn(Prep);
+    showMe.start({ id: "prep-action", ruleId: "STR-008", where: { sheet: "Diag", cell: "G11" }, open: true });
+    look();
+    look();
+    const entry = el.querySelector('[data-show-me="hand-STR-008"]') as HTMLElement;
+    expect(entry.textContent).toContain("Diag!G11");
+    await vi.waitFor(() => expect(showMe.pointer()?.el).toBe(entry));
+    expect(showMe.pointer()).toMatchObject({ text: "The problem is in cell G11 on sheet Diag. Prep cannot change it: fix it by hand.", last: true });
+    expect(showMe.pointer()?.text).not.toMatch(/[A-Z]{2,5}-\d{3}/);
   });
 
   const v1: Version = { id: "ver-001", major: 1, minor: 0, label: "v1 — original", file_name: "model.xlsx", source: "upload" };

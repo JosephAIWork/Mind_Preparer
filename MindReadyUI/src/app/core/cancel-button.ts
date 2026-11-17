@@ -38,23 +38,24 @@ export class CancelButton implements OnInit, OnDestroy {
   /** how  often a  job still on its way out is looked at, in ms (the tests shorten it) */
   static everyMs = 1000;
 
-  /** which work to stop ("apply", "recalc", "mind" ...); null: everything that runs for this workbook */
-  readonly kind = input<string | null>(null);
+  /** which work to stop ("apply", "recalc", "mind" ...); null: everything that runs for this workbook.
+   *  17 Nov 2026  (review R1-5): or a list of kinds (the Cancel beside Start:  only Start's own steps) */
+  readonly kind = input<string | readonly string[] | null>(null);
   /** Carbon's button size */
   readonly size = input<"sm" | "md" | "lg">("md");
-  /** the  workbook, when the store does not hold it yet (the first  check after an upload); else the  open one */
+  /** the  workbook, when the store does not hold  it yet (the first check after an upload); else the open  one */
   readonly session = input<string | null>(null);
-  /** false for the shell's strip: its  button is not one "on screen for the work" (it shows  when none is) */
+  /** false for the shell's strip: its button  is not one "on screen for the work" (it shows when none is) */
   readonly counted = input(true);
-  /** the page knows the stopped  work is still on its way out (its own request has not answered yet, a
+  /** the page knows the stopped work is still on its way out (its own request has not answered yet, a
    *  check that cannot be stopped still runs): the button stays greyed and keeps saying "Stopping…" */
   readonly busy = input(false);
 
   /** at the click, before the server is asked */
   readonly stopping = output<void>();
-  /** the server has really finished; the store already holds the workbook as it is now */
+  /** the server has really finished; the store already holds  the workbook as it is now */
   readonly stopped = output<CancelResult>();
-  /** the server could not be asked (its words): nothing was stopped, the  button is back */
+  /** the server could not be asked (its words): nothing was stopped, the button is back */
   readonly failed = output<string>();
 
   /** the click was made and the server has not finished yet */
@@ -87,8 +88,10 @@ export class CancelButton implements OnInit, OnDestroy {
         // has not put the workbook back yet. Look every second until those kinds are gone, then read
         // the workbook as it is.
         await this.untilGone(id, waitFor);
-        // (a workbook the store does not hold -- the first check after an upload -- has nothing to read back)
-        if (this.store.sessionId() === id) this.keep(id, await this.api.resume(id));
+        // (a workbook the store  does not hold -- the  first check after an upload -- has  nothing to read  back;
+        // 17 Nov  2026, review R2-6: nor does a button whose page was left: it stopped looking, the shell's
+        // strip still shows the work until it has gone)
+        if (!this.gone && this.store.sessionId() === id) this.keep(id, await this.api.resume(id));
       } else if (result.session) {
         this.keep(id, result.session);
       }
@@ -98,30 +101,34 @@ export class CancelButton implements OnInit, OnDestroy {
       return;
     }
     this.working.set(false);
-    void this.work.refresh(); // the strip  goes now, not at its  next look
-    // the page may have taken the  button away already  (its own  request answered first): the store is
-    // right either way, and an output that is gone cannot be given anything
+    void this.work.refresh(); // the strip goes now, not at its next  look
+    // the page may have taken the button away already (its own  request answered first): the store is
+    // right  either way, and an output that is  gone cannot be given anything
     if (!this.gone) this.stopped.emit(result);
   }
 
-  /** The workbook as the server holds it after the stop, into the store (never  onto another workbook). */
+  /** The workbook as the server holds it  after the stop, into the store (never  onto another workbook). */
   private keep(id: string, session: SessionStart | null | undefined): void {
     if (!session || this.store.sessionId() !== id) return;
     this.store.applyAnalysis(session);
     this.store.recalc.set(session.recalc ?? null);
   }
 
-  /** Waits until none of `kinds` is in GET .../jobs  any more (a look every second;  a look that fails is tried again). */
+  /** Waits until none of `kinds` is in GET .../jobs any more (a look every second; a look that fails is tried again).
+   *  17 Nov 2026 (review R2-6): it stops looking as soon as the page took the button away: a job that
+   *  does not stop for minutes was asked about every second, for as long as it ran. */
   private async untilGone(id: string, kinds: string[]): Promise<void> {
     let failures = 0;
     for (;;) {
+      if (this.gone) return;
       await new Promise<void>((res) => setTimeout(res, CancelButton.everyMs));
+      if (this.gone) return;
       try {
         const jobs = await this.api.jobs(id);
         failures = 0;
         if (!jobs.some((j) => kinds.includes(j.kind))) return;
       } catch (e) {
-        if (++failures >= 5) throw e; // the  server is not there any more: say so instead of waiting  for ever
+        if (++failures >= 5) throw e; // the server is not  there any more: say so instead of waiting for ever
       }
     }
   }

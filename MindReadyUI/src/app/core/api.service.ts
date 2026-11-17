@@ -300,19 +300,23 @@ export class ApiService {
   /** 17 Nov 2026: Cancel. Stops what runs on the server for this workbook: one `kind` of work ("apply",
    *  "recalc", ... see `WorkKind`), or everything when  `kind` is null. The answer  comes once the work has
    *  really ended (after  about 20 s  at most  it names what is still `stopping`). The stopped work's own
-   *  request answers 409 by itself (`wasCancelled`), so nothing has to be abandoned on the screen. */
-  cancel(id: string, kind: string | null = null): Promise<CancelResult> {
-    return firstValueFrom(this.http.post<CancelResult>(`${this.s(id)}/cancel`, kind ? { kind } : {}));
+   *  request answers 409 by itself (`wasCancelled`), so nothing has to be abandoned on the screen.
+   *  17 Nov 2026 (review R1-5): `kind` may also  be a list of kinds, sent as {"kinds": [...]}: only work  of
+   *  those kinds is stopped (the Cancel  beside Start stops Start's own steps, never  a Run in Mind or an
+   *  assistant's answer started on another screen). */
+  cancel(id: string, kind: string | readonly string[] | null = null): Promise<CancelResult> {
+    const body = Array.isArray(kind) ? { kinds: [...kind] } : kind ? { kind } : {};
+    return firstValueFrom(this.http.post<CancelResult>(`${this.s(id)}/cancel`, body));
   }
 
-  /** 17 Nov 2026: what runs on the server  for this workbook right now, in plain words (empty: nothing). */
+  /** 17  Nov 2026: what runs on the server  for this workbook right now, in plain words (empty: nothing). */
   async jobs(id: string): Promise<WorkJob[]> {
     const out = await firstValueFrom(this.http.get<{ jobs: WorkJob[] }>(`${this.s(id)}/jobs`));
     return out?.jobs ?? [];
   }
 
-  /** The assistant's  streamed answer (NDJSON over a POST  body): `onEvent` gets phases and text deltas,  the promise the whole reply.
-   *  17 Nov 2026: null when the answer  was stopped with Cancel: the server ended  the stream with its
+  /** The assistant's streamed answer (NDJSON over a POST body): `onEvent` gets phases and text deltas, the promise the whole reply.
+   *  17 Nov 2026: null when the answer was stopped with Cancel: the server ended the stream with its
    *  "cancelled" line, or the `signal` given here aborted the request. */
   async chatStream(id: string, history: ChatMessage[], question: string, focus: FixTarget | undefined, onEvent: (ev: ChatStreamEvent) => void, signal?: AbortSignal): Promise<ChatReply | null> {
     const body = {
@@ -322,7 +326,7 @@ export class ApiService {
         ? { kind: focus.kind ?? "finding", rule_id: focus.rule_id, sheet: focus.sheet, cell: focus.cell, error: focus.error, formula: focus.formula, addin_gap: focus.addin_gap ?? false, cells: focus.cells, cause: focus.cause }
         : undefined,
     };
-    // an aborted request (the click on Cancel) is not a failure: it answers null, as the "cancelled" line does
+    // an aborted request (the click on Cancel)  is not a failure: it answers null, as the "cancelled" line does
     const aborted = (e: unknown) => !!signal?.aborted || (e as { name?: string } | null)?.name === "AbortError";
     let res: Response;
     try {

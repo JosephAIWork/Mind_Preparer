@@ -6,7 +6,8 @@
     <ul class="plain">
       @for (row of byHandRows(); track $index) {
         <!-- no link to its own Prep action: it has nothing left to change (that is why it is here) -->
-        <li>
+        <!-- (17 Nov 2026: `hand-<RULE>`: "Show me" from a question about a cell Prep skipped ends here) -->
+        <li [attr.data-show-me]="'hand-' + row.b.rule_id">
           <strong><mr-code [code]="row.b.rule_id" [name]="row.b.rule_name"></mr-code></strong>
           <div>{{ row.b.message }}<mr-show-me [text]="row.b.message" [rule]="row.b.rule_id" except="prep-action"></mr-show-me></div>
           @if (row.meanings.length) {

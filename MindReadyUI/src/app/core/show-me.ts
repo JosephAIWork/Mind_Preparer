@@ -126,15 +126,20 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
       // is not drawn, and then the list of actions is shown
       // 17 Nov 2026: with a cell, first the  line of the change for that cell (the panel opens the  action's
       // list of changes and puts that  one first, marked `prep-cell`)
+      // 17 Nov 2026 (live  test L2b-1): when Prep has no change for that cell (it  skipped it), the rule's
+      // entry under "By hand",  which names the cell (`hand-<RULE>`): the arrow ended on the empty list
+      // "Blocking (0)", over "Nothing to change"
       targets: [
         { el: "prep-cell", text: `This change is for cell ${CELL} on sheet ${SHEET}. Tick the action, then click Apply.` },
+        { el: `hand-${RULE}`, text: `The problem is in cell ${CELL} on sheet ${SHEET}. Prep cannot change it: fix it by hand.` },
         { el: `prep-for-${RULE}`, text: "Tick this action, then click Apply" },
+        { el: `hand-${RULE}`, text: "Prep cannot change this one: fix it by hand" },
         { el: "prep-list", text: "The Prep actions are listed here" },
       ],
     },
   ],
   "prep-pivots": [{ page: "advanced", tab: "prep", targets: [{ el: "prep-pivots", text: "Choose what happens to the pivot tables here" }] }],
-  // above the tabs: on  any tab of Advanced
+  // above the tabs: on any tab of Advanced
   "stack-apply": [{ page: "advanced", targets: [{ el: "stack-apply", text: "Apply the whole list here" }] }],
   "deliver-numbers": [{ page: "advanced", tab: "deliver", targets: [{ el: "deliver-numbers", text: "Check the numbers here" }] }],
   "assistant-key": [{ page: "advanced", tab: "assistant", targets: [{ el: "assistant-key", text: "Paste the AI key here" }] }],
@@ -142,7 +147,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
     {
       page: "advanced",
       tab: "findings",
-      // 17 Nov 2026: with a cell, first the  "Where" cell of the rule's row (`where-<RULE>`),  which names it
+      // 17 Nov 2026: with a cell, first the "Where" cell of the rule's row (`where-<RULE>`), which names it
       targets: [
         { el: `where-${RULE}`, text: `The problem is in cell ${CELL} on sheet ${SHEET}.` },
         // (17 Nov 2026: the bubble said the rule's code here, "Ask the assistant about FRM-009 here": no code on screen)
@@ -166,7 +171,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
       ],
     },
   ],
-  // the box of the one answer a loop still needs (drawn above the fold only while it is needed), else
+  // the box  of the one answer a loop still needs (drawn above the fold only while it is needed), else
   // the fold that holds every choice
   "loop-choices": [
     {
@@ -188,7 +193,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "outside-add": [{ page: "custom", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "custom", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
   "do-everything": [
-    // (17 Nov 2026:  the bubble said "Click Go"; the button says Start)
+    // (17 Nov 2026: the bubble said "Click Go"; the button says Start)
     { page: "basic", targets: [{ el: "do-everything", text: "Click Start" }] },
     { page: "custom", targets: [{ el: "do-everything", text: "Click Do everything" }] },
   ],
@@ -197,10 +202,10 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
     { page: "basic", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "The check waits here for the input files" }] },
     { page: "custom", targets: [{ el: "outside-waiting-pick", text: "Pick the input files here, then click Go on" }, { el: "outside-waiting", text: "Do everything waits here for the input files" }] },
   ],
-  // the list is drawn only while a saved workbook exists and no workbook is open (the idle main screen)
+  // the list is drawn only while a saved workbook exists and no workbook is open (the idle  main screen)
   "recent-workbooks": [{ page: "basic", targets: [{ el: "recent-workbooks", text: "Open the list of recent workbooks, then Reopen" }] },
     { page: "custom", targets: [{ el: "recent-workbooks", text: "Reopen the workbook here" }] }],
-  // 17 Nov 2026: the Versions tab's list (a fix the assistant wrote by itself is a version of its own there)
+  // 17 Nov 2026: the  Versions tab's list (a fix the assistant  wrote by itself  is a  version of its own there)
   versions: [{ page: "advanced", tab: "versions", targets: [{ el: "versions-list", text: "The versions are listed here" }] }],
   download: [
     { page: "basic", targets: [{ el: "download", text: "Download the file here" }] },

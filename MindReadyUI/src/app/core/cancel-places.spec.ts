@@ -273,12 +273,14 @@ describe("Cancel on Basic and Custom", () => {
     expect(cancel.disabled).toBe(false);
     expect(el.querySelectorAll("mr-cancel")).toHaveLength(1);
 
-    // the click: the server is asked to stop everything for this workbook (no kind)
+    // the click: the server is asked to stop Start's own steps (17 Nov 2026, review R1-5: it asked for
+    // everything, so a Run in Mind or an assistant's answer started on another screen was stopped too)
     const answer = hold<CancelResult>();
     s.onCancel = () => answer.done;
     cancel.click();
     await look();
-    expect(s.calls).toContain("cancel:null");
+    expect(s.calls).toContain("cancel:outside,autofix,prep,apply,recalc,scan");
+    expect(s.calls).not.toContain("cancel:null");
     expect(s.cancelFor).toEqual(["m1"]);
     // while it stops: the button is greyed and says so, the line says so, the bar is gone
     expect(cancel.disabled).toBe(true);
@@ -323,7 +325,8 @@ describe("Cancel on Basic and Custom", () => {
     await look();
     expect(buttons(head)).toEqual(["Running…", "Cancel"]);
 
-    // the click: everything for this workbook (no kind); the request answers "cancelled" by itself
+    // the click: Do everything's own steps (17 Nov 2026, review R1-5: not "everything for this workbook");
+    // the request answers "cancelled" by itself
     s.onCancel = () => {
       s.pending["apply"].fail(cancelled("apply"));
       return Promise.resolve(stopped({ cancelled: ["apply"], session: started() }));
@@ -331,7 +334,7 @@ describe("Cancel on Basic and Custom", () => {
     cancelIn(el, ".chain__buttons")!.click();
     await run;
     await look();
-    expect(s.calls).toContain("cancel:null");
+    expect(s.calls).toContain("cancel:outside,autofix,prep,apply,recalc,scan");
     expect(texts(el, ".chain > .chain__text strong")).toEqual(["Stopped. Your workbook is as it was after the formula errors were fixed."]);
     expect(page.chainStoppedByCancel()).toBe(true); // no "Show me" on this sentence: there is no place to fix
     expect(el.querySelector(".chain > .chain__text mr-show-me")).toBeNull();
@@ -1557,7 +1560,7 @@ describe("the strip under the header: work left running by a page that was left"
 
   const strip = (el: HTMLElement) => el.querySelector(".shell__work");
 
-  it("row 18: shows 'Still working: …' with Cancel when a job runs and no Cancel is drawn; the click stops everything, and the strip goes", async () => {
+  it("row 18: shows 'Still working: …' with Cancel when a job runs and no Cancel is drawn; the click stops that work, and the strip goes", async () => {
     const f = fake([job("autofix", "Fixing the formula errors")]);
     const { el, look } = await draw(f);
     await until(() => f.asked.length > 0);
@@ -1577,7 +1580,9 @@ describe("the strip under the header: work left running by a page that was left"
     cancel.click();
     await look();
     await look();
-    expect(f.cancels).toEqual([["m1", null]]); // everything that runs for this workbook
+    // (17 Nov 2026: the work it names, and only that: it said null, everything for this workbook, which
+    // would also stop a step of Start while the strip shows a Run in Mind left on another screen)
+    expect(f.cancels).toEqual([["m1", "autofix"]]);
     expect(strip(el)).toBeNull();
     expect(store.currentVersion()?.label).toBe("v2"); // the workbook as the server holds it now
   });

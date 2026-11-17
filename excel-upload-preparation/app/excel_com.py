@@ -145,8 +145,14 @@ def start_excel(mm_addin: bool = True) -> Any:
         pid = excel_pid(excel)
         _remember(pid)  # first: an error in the  set-up below must not leave it unlisted
         # 17  Nov 2026: the job this thread works for can now end  it; a Cancel that came while Excel
-        # was  starting ends it here (nobody else knew its pid) and leaves with Cancelled
-        cancel.note_excel(pid)
+        # was  starting ends it here (nobody else knew its pid) and leaves with Cancelled -- and it is
+        # quit through its own object too, in case that end found nothing to end
+        try:
+            cancel.note_excel(pid)
+        except cancel.Cancelled:
+            quit_excel(excel)
+            excel = None
+            raise
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
@@ -235,12 +241,17 @@ def kill_excel(pid: int | None) -> bool:
         data = _load_started()
         entry = data.get(str(pid))
         if not isinstance(entry, dict) or not _started_here(entry):
+            # 17 Nov 2026: not in the file for this process, but in this process's own memory of the
+            # Excels it started (a line the file lost): the same check of the  process below
+            entry = {"excel_created": _MINE[pid]} if pid in _MINE else None
+        if entry is None:
             return False  # not listed, or listed for another process: never ours to end
         if _still_that_excel(pid, entry):
             _terminate(pid)
             ended = True
-        data.pop(str(pid), None)  # ended, or already gone (a stale line): forgotten either way
-        _save_started(data)
+        _MINE.pop(pid, None)
+        if data.pop(str(pid), None) is not None:  # ended, or already gone (a stale line): forgotten either way
+            _save_started(data)
     cancel.forget_excel(pid)
     return ended
 
@@ -270,6 +281,11 @@ def _terminate(pid: int) -> None:
 
 # --- the Excels this app started (see the module's docstring) ----------------------------------
 _REGISTRY_LOCK = threading.Lock()
+# 17  Nov 2026:  the Excels THIS process started and has not quit, kept in memory too (pid -> Excel's
+# creation time): the file can lose a line (a write that failed, another app window on  the same data
+# folder writing over it), and then a Cancel could  not end that job's Excel. Never  an Excel of
+# another process: only `_remember` fills  it, right after this process started that Excel.
+_MINE: dict[int, int] = {}
 
 
 def _started_path() -> Path:
@@ -327,6 +343,7 @@ def _remember(pid: int | None) -> None:
     if excel is None:
         return
     with _REGISTRY_LOCK:
+        _MINE[int(pid)] = excel[1]  # whether  or not  the file below is written
         data = _load_started()
         data[str(pid)] = {"excel_created": excel[1], "app": os.getpid(), "app_created": me[1] if me else 0}
         _save_started(data)
@@ -336,6 +353,7 @@ def _forget(pid: int | None) -> None:
     if not pid:
         return
     with _REGISTRY_LOCK:
+        _MINE.pop(int(pid), None)
         data = _load_started()
         if data.pop(str(pid), None) is not None:
             _save_started(data)
@@ -376,9 +394,14 @@ def kill_own_excels() -> int:
         for pid, entry in mine.items():
             if _still_that_excel(int(pid), entry):
                 _terminate(int(pid))
+        # 17 Nov 2026: and those whose line the file lost (this process's own memory of  them, checked the same way)
+        lost = [pid for pid, created in _MINE.items() if str(pid) not in mine and _still_that_excel(pid, {"excel_created": created})]
+        for pid in lost:
+            _terminate(pid)
+        _MINE.clear()
         if mine:
             _save_started({pid: e for pid, e in data.items() if pid not in mine})
-        return len(mine)
+        return len(mine) + len(lost)
     finally:
         _REGISTRY_LOCK.release()
 

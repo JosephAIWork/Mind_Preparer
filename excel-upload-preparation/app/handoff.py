@@ -44,7 +44,8 @@ MAX_QUESTION_CELLS = 200
 MAX_ARRAY_CELLS = 2000
 
 # How  a problem  ended (the job's `problems[].outcome`).
-OUTCOMES = ("fixed", "no_fix", "too_wide", "not_written", "numbers_changed", "not_cleared", "not_checked", "not_tried")
+# "not_reached" (17 Nov 2026): the call got no answer (no connection, a timeout, a key the gateway refuses)
+OUTCOMES = ("fixed", "no_fix", "too_wide", "not_written", "numbers_changed", "not_cleared", "not_checked", "not_reached", "not_tried")
 
 # Why  the rounds  stopped (run_rounds' `why`).
 CLEAN, NOTHING_WRITTEN, SAME_AGAIN, MAX_PASSES_RUN = "clean", "nothing_written", "same_again", "max_passes"
@@ -369,7 +370,8 @@ def changed_sample(numbers: dict[str, Any] | None) -> str:
     """The  first value  a numbers check found changed, in a few words for the second try's sentence
     ("Calc!D4 showed 100 and would show 0"); "" when the check names none. For the assistant only."""
     samples = (numbers or {}).get("samples") or {}
-    first = next((x for kind in ("good_to_error", "good_to_other", "missing") for x in samples.get(kind) or [] if isinstance(x, dict)), None)
+    # an error  that now shows a value counts too (17 Nov 2026: the  job undoes such a fix: _shown_changed)
+    first = next((x for kind in ("good_to_error", "good_to_other", "missing", "error_to_good") for x in samples.get(kind) or [] if isinstance(x, dict)), None)
     if not first or not first.get("original"):
         return ""
     if "is" in first:
@@ -377,7 +379,7 @@ def changed_sample(numbers: dict[str, Any] | None) -> str:
     return f"{first['original']} ({first.get('was')}) would no longer be a formula"
 
 
-# ---- step  4e: the guard --------------------------------------------------------------------------
+# ----  step 4e: the guard --------------------------------------------------------------------------
 def _own_cells(cells: Iterable[dict[str, str]] | None) -> tuple[list[tuple[str, int, int, int, int]], int]:
     """The  finding's cells  as rectangles (sheet in small letters, r1, c1, r2, c2), and how many cells they are."""
     rects, count = [], 0
@@ -553,6 +555,7 @@ _WHY = {
     "not_cleared": "The assistant's fix did not solve it, so it was taken back.",
     "not_checked": "The assistant's fix could not be checked, so it was taken back.",
     "not_written": "Excel did not accept the assistant's fix.",
+    "not_reached": "The assistant could not be reached.",
     "not_tried": "The assistant was not asked.",
     # not  in the  design: a problem that got smaller twice and is still there
     "fixed": "The assistant fixed part of it.",
@@ -588,10 +591,13 @@ def feedback_note(problem: dict[str, Any], button: str = "Start") -> str:
 
     In: the problem asked about (`rule_name` or `rule_id`, `tries`, `outcome`); `button` as in ask_lines.
     Out: plain words only: "Start could not fix this by  itself: {rule name}. The assistant tried
-         {once | twice}: {what happened}." or  "... The assistant was not asked."  No rule id, no version,
-         no sheet or  cell name: the person reads this note, and the bug report  the server writes from
-         the incident ref already  carries the rule id."""
+         {once | twice}: {what happened}.", "...  The assistant could not be reached."  or "... The
+         assistant was not asked." No  rule id, no version,
+         no sheet or cell name: the person reads  this note, and the bug report the  server writes from
+         the incident ref already carries the rule id."""
     head = f"{button} could not fix this by itself: {_plain_name(problem)}."
+    if problem.get("outcome") == "not_reached":
+        return f"{head} {_WHY['not_reached']}"  # 17 Nov 2026: it never answered, so it did not "try"
     did = _TRIED.get(str(problem.get("outcome") or ""))
     if not did:
         return f"{head} The assistant was not asked."

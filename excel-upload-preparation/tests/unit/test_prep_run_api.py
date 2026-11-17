@@ -553,20 +553,6 @@ def test_a_second_run_on_an_untouched_workbook_makes_no_model_call(prep, plain_g
     assert sid not in server.HANDOFF_MEMO and sid not in server.PREP_RUNS
 
 
-def test_an_assistant_that_never_answered_is_asked_again_next_time(prep, plain_grid_xlsx, monkeypatch):
-    world = World({"problems": {RULE: ["B4"]}})
-    _install(monkeypatch, world)
-    asked = Assistant({"available": False, "text": None, "message": "The AI gateway did not answer."})
-    monkeypatch.setattr(server, "answer_question", asked)
-    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
-    st = _run(prep, sid)
-    assert st["state"] == "ask" and st["problems"][0]["outcome"] == "no_fix" and len(asked.questions) == 2
-    assert server.HANDOFF_MEMO[sid] == {}  # nothing was paid, so nothing is remembered
-    _run(prep, sid)
-    assert len(asked.questions) == 4
-    _free(prep, sid)
-
-
 def test_the_problem_asked_about_comes_from_the_final_blocking_list(prep, plain_grid_xlsx, monkeypatch):
     # two problems after the rounds; the assistant fixes the first and has nothing for the second
     world = World({"problems": {RULE: ["B4"], OTHER: ["A3"]}}, {"problems": {OTHER: ["A3"]}})
@@ -875,7 +861,8 @@ def test_an_error_while_a_written_fix_is_checked_never_leaves_the_fix_current(pr
     st = _run(prep, sid)
     assert st["state"] == "ask" and st["problems"][0]["outcome"] == "not_checked" and len(world.applies) == 2
     assert s.current_version_id == "ver-001" and _look(s) == before and _saved_versions(sid) == ["ver-001"]
-    # the write itself failing is "Excel did not accept it", and the assistant's own call failing is "no fix": nothing to take back
+    # the write itself failing is "Excel did not accept it", and the assistant's own call failing is "could not be
+    # reached" (17 Nov 2026: it was "no fix", and remembered as such): nothing to take back
     server.HANDOFF_MEMO.clear()
     world.apply_error = RuntimeError("Excel went away")
     st = _run(prep, sid)
@@ -887,7 +874,7 @@ def test_an_error_while_a_written_fix_is_checked_never_leaves_the_fix_current(pr
 
     monkeypatch.setattr(server, "answer_question", no_line)
     st = _run(prep, sid)
-    assert st["state"] == "ask" and st["problems"][0]["outcome"] == "no_fix" and _look(s) == before and server.HANDOFF_MEMO[sid] == {}
+    assert st["state"] == "ask" and st["problems"][0]["outcome"] == "not_reached" and _look(s) == before and server.HANDOFF_MEMO[sid] == {}
     _free(prep, sid)
 
 
@@ -946,3 +933,192 @@ def test_night_chain_runs_the_prep_step_through_the_job_and_records_how_it_ended
     assert _answer(applying).status_code == 200
     _free(prep, sid)
     _free(prep, sid2)
+
+
+# --- 17 Nov 2026, after the review ------------------------------------------------------------------
+def _shown(**counts):
+    """compare_workbooks without Excel, with the counts given: an error that now shows a value, or a
+    formula that showed an error and is gone -- no value that was good changed."""
+    def compare_workbooks(original, prepared, moves, progress=None):
+        c = {"compared": 1, "same": 0, "good_to_error": 0, "good_to_other": 0, "error_to_good": 0, "missing": 0, "missing_good": 0, **counts}
+        return {"ran": True, "clean": True, "verdict": "The preparation changed no computed value.", "regressions": [], "counts": c,
+                "samples": {"good_to_error": [], "good_to_other": [], "missing": [],
+                            "error_to_good": [{"original": "Data!B4", "now": "Data!B4", "was": "#REF!", "is": "42"}] if c["error_to_good"] else []}}
+
+    return compare_workbooks
+
+
+@pytest.mark.parametrize("counts", [{"error_to_good": 1}, {"missing": 1}], ids=["an error now shows a number", "a formula that showed an error is gone"])
+def test_a_fix_that_changes_what_an_error_cell_shows_is_undone(prep, plain_grid_xlsx, monkeypatch, counts):
+    # R2-1 (Joseph: "if any value changed, the fix is undone"): #REF! that now shows 42 is a changed
+    # value, even though the numbers check does not call it one (Fix all issues does that on purpose)
+    world = World({"problems": {OTHER: ["B4"]}}, {})  # the guess even clears the problem: the changed value decides
+    _install(monkeypatch, world)
+    asked = Assistant([_fix(formula="=A2+A1")])
+    monkeypatch.setattr(server, "answer_question", asked)
+    monkeypatch.setattr(server, "compare_workbooks", _shown(**counts))
+    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    before = _look(s)
+    st = _run(prep, sid)
+    assert s.current_version_id == "ver-001" and _look(s) == before and _saved_versions(sid) == ["ver-001"]
+    assert [(p["rule_id"], p["tries"], p["outcome"]) for p in st["problems"]] == [(OTHER, 2, "numbers_changed")]
+    assert st["state"] == "ask" and st["assistant_fixed"] == 0
+    assert st["ask"]["why"] == "The assistant's fix changed a result, so it was taken back."
+    if counts.get("error_to_good"):
+        assert "Your first proposal changed a computed result (Data!B4 showed #REF! and would show 42)" in asked.questions[1]
+    # what the numbers check reports elsewhere is unchanged
+    assert server._changed_values(_shown(**counts)(None, None, None)) == 0
+    _free(prep, sid)
+
+
+def _unreachable(monkeypatch, how: str) -> list:
+    """The real answer_question and chat_completion, with a key saved; only the network call is a fake
+    that fails as `how` says. -> the list of calls tried."""
+    import requests
+
+    from app import llm
+
+    posts: list = []
+
+    class Refused:
+        status_code = {"401": 401, "500": 500}.get(how, 200)
+        text = "refused"
+        headers = {"content-type": "application/json"}
+
+        def raise_for_status(self):
+            raise requests.HTTPError(f"{self.status_code} Client Error")
+
+        def close(self):
+            pass
+
+    def post(*a, **k):
+        posts.append(how)
+        if how == "connection":
+            raise requests.ConnectionError("the gateway did not answer")
+        if how == "timeout":
+            raise requests.Timeout("read timed out")
+        return Refused()
+
+    monkeypatch.setattr(llm, "find_api_key", lambda: ("a-key", "http://127.0.0.1:9"))
+    monkeypatch.setattr(requests, "post", post)
+    return posts
+
+
+@pytest.mark.parametrize("how", ["connection", "timeout", "401", "500"])
+def test_an_assistant_that_could_not_be_reached_is_not_remembered_and_is_asked_again_next_time(prep, plain_grid_xlsx, monkeypatch, how):
+    # R2-2: a call that failed comes back "available" with no text: never "it had no fix"
+    world = World({"problems": {RULE: ["B4"]}})
+    _install(monkeypatch, world)
+    posts = _unreachable(monkeypatch, how)
+    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
+    st = _run(prep, sid)
+    assert st["state"] == "ask" and [(p["tries"], p["outcome"]) for p in st["problems"]] == [(1, "not_reached")]  # no second try
+    assert server.HANDOFF_MEMO[sid] == {}  # never remembered as "no fix"
+    assert st["ask"]["why"] == "The assistant could not be reached."
+    assert st["ask"]["feedback"]["note"] == f"Start could not fix this by itself: {LINE_BREAK}. The assistant could not be reached."
+    assert _last_incident()["what"] == "left for a person: the assistant could not be reached"
+    first = len(posts)
+    assert first >= 1
+    _run(prep, sid)  # the connection is back, or not: the next Start asks again
+    assert len(posts) > first
+    _free(prep, sid)
+
+
+def test_after_an_assistant_that_could_not_be_reached_the_next_problems_are_not_asked(prep, plain_grid_xlsx, monkeypatch):
+    world = World({"problems": {RULE: ["B4"], OTHER: ["A3"]}})
+    _install(monkeypatch, world)
+    posts = _unreachable(monkeypatch, "connection")
+    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
+    st = _run(prep, sid)
+    assert [p["outcome"] for p in st["problems"]] == ["not_reached", "not_tried"] and len(posts) == 1
+    _free(prep, sid)
+
+
+@pytest.mark.parametrize("body", [{"content": [], "stop_reason": "refusal"}, {"id": "msg_1", "type": "message"}], ids=["no text", "a shape not known"])
+def test_a_model_that_answered_with_no_fix_is_no_fix_and_is_not_asked_again(prep, plain_grid_xlsx, monkeypatch, body):
+    # the refuter's check of R2-2: the gateway answered (200), the model gave no text, or a reply in a
+    # shape not known. That is an answer: "no fix", remembered, never "could not be reached"
+    import requests
+
+    from app import llm
+
+    posts: list = []
+
+    class Answered:
+        status_code = 200
+        text = "{}"
+        headers = {"content-type": "application/json"}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return dict(body)
+
+        def close(self):
+            pass
+
+    def post(*a, **k):
+        posts.append(1)
+        return Answered()
+
+    monkeypatch.setattr(llm, "find_api_key", lambda: ("a-key", "http://127.0.0.1:9"))
+    monkeypatch.setattr(llm, "meter", lambda *a, **k: None)  # never a row in the real token meter
+    monkeypatch.setattr(requests, "post", post)
+    world = World({"problems": {RULE: ["B4"]}})
+    _install(monkeypatch, world)
+    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
+    st = _run(prep, sid)
+    assert st["state"] == "ask" and [(p["tries"], p["outcome"]) for p in st["problems"]] == [(2, "no_fix")]
+    assert st["ask"]["why"] != "The assistant could not be reached." and len(server.HANDOFF_MEMO[sid]) == 1
+    asked = len(posts)
+    st = _run(prep, sid)  # remembered: the next Start does not pay for the same question again
+    assert len(posts) == asked and [p["outcome"] for p in st["problems"]] == ["no_fix"]
+    _free(prep, sid)
+
+
+def test_a_key_taken_away_while_start_runs_says_no_ai_key_is_saved(prep, plain_grid_xlsx, monkeypatch):
+    # the refuter's check of R2-2: no key when the question is sent is not "could not be reached"
+    from app import llm
+
+    keys = ["a-key"]
+    real = server.answer_question
+
+    def asked(*a, **k):
+        keys.clear()  # the person deletes the key under Advanced > Assistant while Start runs
+        return real(*a, **k)
+
+    monkeypatch.setattr(llm, "find_api_key", lambda: ("a-key", "http://127.0.0.1:9") if keys else None)
+    monkeypatch.setattr(server, "llm_available", lambda: bool(keys))
+    monkeypatch.setattr(server, "answer_question", asked)
+    world = World({"problems": {RULE: ["B4"], OTHER: ["A3"]}})
+    _install(monkeypatch, world)
+    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
+    st = _run(prep, sid)
+    assert st["state"] == "no_key" and st["ask"]["lines"][0] == "Something is left that needs the assistant, and no AI key is saved."
+    assert [(p["tries"], p["outcome"]) for p in st["problems"]] == [(0, "not_tried"), (0, "not_tried")]
+    assert server.HANDOFF_MEMO[sid] == {} and _incidents() == 0
+    _free(prep, sid)
+
+
+def test_nothing_of_the_fix_is_saved_by_the_check_before_it_is_judged(prep, plain_grid_xlsx, monkeypatch):
+    # R2-7: the check of the workbook with the fix (step h) does not write the state file: the fix is
+    # not judged yet, and a crash then would reopen the workbook on it
+    world = World({"problems": {RULE: ["B4"]}}, {})
+    _install(monkeypatch, world)
+    monkeypatch.setattr(server, "answer_question", Assistant([_fix()]))
+    monkeypatch.setattr(server, "compare_workbooks", _numbers())
+    sid = _upload(prep, plain_grid_xlsx)["sessionId"]
+    seen: list = []
+    real = server.handoff.judge
+
+    def judge(*a, **k):
+        seen.append(_saved_versions(sid))  # what a crash right now would reopen
+        return real(*a, **k)
+
+    monkeypatch.setattr(server.handoff, "judge", judge)
+    st = _run(prep, sid)
+    assert seen == [["ver-001"]] and len(world.scans) == 2  # the check ran, and saved nothing
+    assert st["state"] == "done" and _saved_versions(sid) == ["ver-001", "ver-002"]  # judged and kept: now it is saved
+    _free(prep, sid)

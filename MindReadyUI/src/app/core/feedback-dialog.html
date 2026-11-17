@@ -24,7 +24,7 @@
       </div>
     } @else {
       <p class="fb__text">
-        {{ d.ref ? "Something went wrong. The message says where in the app it stopped and why, in codes we can read." : "Tell us what works, what does not, and what is missing." }}
+        {{ lead(d) }}
         Nothing from your workbook is in it: no file name, no sheet names, no cell addresses, no values.
       </p>
       <!-- 17 Nov 2026: opened with the problem already written (Start could not fix something): the box is not empty, so its label says what the words are -->

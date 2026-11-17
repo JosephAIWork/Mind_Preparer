@@ -360,7 +360,36 @@ def _begin_job(s: Session, kind: str, on_flag: Callable[[], Any] | None = None) 
     try:
         return cancel.begin(s.id, kind, changes=kind in _BUSY_WORDS, on_flag=on_flag)
     except cancel.Busy as busy:
-        raise HTTPException(status_code=409, detail=f"Wait a moment: {_BUSY_WORDS.get(busy.kind, 'changes are still being written')}.") from None
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_busy_words(busy.kind)}.") from None
+
+
+# what a job that passed  its gate with `alone` is still writing  (cancel.Job.commit): no job that
+# changes the workbook begins meanwhile
+_ALONE_WORDS = {"recalc": "a recalculation is still being saved", "names": "the suggested names are still being saved", "reports": "the reports are still being saved"}
+
+
+def _busy_words(kind: str) -> str:
+    return _BUSY_WORDS.get(kind) or _ALONE_WORDS.get(kind) or "changes are still being written"
+
+
+def _refuse_while_changing(s: Session) -> None:
+    """17  Nov 2026:  409 "Wait a moment: ..." while a job that changes the workbook is registered. For
+    the routes that write what that job's restore puts back after a Cancel (the recalculation, the
+    input files,  the suggested names, the report files, the plan): written meanwhile, it  would be
+    taken back after the person  was told it was done."""
+    job = cancel.changing(s.id)
+    if job is not None:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_busy_words(job.kind)}.")
+
+
+def _commit_alone(job: cancel.Job) -> None:
+    """The  gate of  such a route's job, when its work is long (a recalculation, a model's answer): a
+    job that changes the workbook may have begun since the route was asked. 409 "Wait a moment:  ..."
+    then, and nothing is written; once passed, no such job begins  until this one has ended."""
+    try:
+        job.commit(alone=True)
+    except cancel.Busy as busy:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_busy_words(busy.kind)}.") from None
 
 
 def _job_route(s: Session, kind: str, work: Callable[[cancel.Job], Any]) -> Any:
@@ -951,10 +980,12 @@ def _convert(s: Session, path: Path, progress) -> Path:
     return out
 
 
-def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
+def _run_scan(s: Session, path: Path | None = None, save: bool = True) -> dict[str, Any]:
     """One  scan of  `path` (default: the current version) with the session's
     ignore list, converting an .xlsb first, reporting every stage into
-    `s.scan` (GET /status) -- one at a time per session."""
+    `s.scan` (GET /status) -- one at a time per session. `save=False` (17 Nov 2026): the  state file is
+    not written, the caller saves (the check of an  assistant's fix that is not judged  yet: a crash
+    before the judge must not  reopen the workbook on that fix)."""
     if not s.lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="a scan is already running for this session")
     try:
@@ -969,28 +1000,31 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
             with perf_stage("scan", file=path.name):
                 out = _analyze(s, path, progress)
         except cancel.Cancelled:
-            # 17 Nov 2026: the status is  closed where it was opened (a cancelled scan inside the fixer  or
-            # the bring-in would leave it "running",  and the workbook "still being analysed", for  good);
+            # 17 Nov 2026: the status is  closed where it was opened (a cancelled  scan inside the fixer or
+            # the bring-in would leave it "running", and the workbook "still being analysed", for good);
             # not saved here: the job's restore saves
             _scan_finish(s, cancelled=True)
             raise
         except HTTPException as exc:
-            if cancel.flagged():  # a set flag wins over  any error (the convert's Excel was ended)
+            if cancel.flagged():  # a set flag wins over any error (the convert's Excel was ended)
                 _scan_finish(s, cancelled=True)
                 raise cancel.Cancelled() from None
             _scan_finish(s, error=str(exc.detail))
-            _save(s)
+            if save:
+                _save(s)
             raise
         except Exception as exc:
             if cancel.flagged():
                 _scan_finish(s, cancelled=True)
                 raise cancel.Cancelled() from None
             _scan_finish(s, error=f"analysis failed: {plain_error(exc)}")
-            _save(s)
+            if save:
+                _save(s)
             raise HTTPException(status_code=500, detail=f"analysis failed: {plain_error(exc)}") from exc
         _scan_finish(s)
         s.pending = False
-        _save(s)
+        if save:
+            _save(s)
         current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
         return {**out, "version": current, "versions": s.versions, "size": s.size, "scan": _scan_snapshot(s)}
     finally:
@@ -1708,6 +1742,7 @@ def set_pivot_mode(session_id: str, payload: dict[str, Any] = Body(...)) -> dict
     mode = str(payload.get("mode") or "")
     if mode not in PIVOT_MODES:
         raise HTTPException(status_code=422, detail=f"mode must be one of {', '.join(PIVOT_MODES)}")
+    _refuse_while_changing(s)  # 17 Nov 2026: a  cancelled job's restore would put the old plan back under the  new mode
     s.pivot_mode = mode
     if s.result:
         s.plan = plan_actions(s.result["workbook_analysis"], s.result["validation_report"], s.grid_names or None, s.pivot_mode)
@@ -1739,32 +1774,48 @@ def scan_status(session_id: str) -> dict[str, Any]:
     return _scan_snapshot(_session(session_id))
 
 
+def _cancel_kinds(payload: dict[str, Any]) -> frozenset[str] | None:
+    """The  kinds of  work a Cancel is for, from its body: "kind" (one), "kinds" (a list; with "kind"
+    too, both), or None for every job of the workbook. An empty list stops nothing."""
+    kind = str(payload.get("kind") or "").strip()
+    raw = payload.get("kinds")
+    if raw is None:
+        return frozenset([kind]) if kind else None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="kinds: a list of kinds of work")
+    return frozenset({str(k).strip() for k in raw if str(k or "").strip()} | ({kind} if kind else set()))
+
+
 @app.post("/api/sessions/{session_id}/cancel")
 def cancel_work(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """The  Cancel button  (17 Nov 2026). Body {"kind": "<kind>"} for one kind of work, or {} for
-    everything that runs for this workbook. Always 200 (404 for an unknown workbook).
+    """The  Cancel button  (17 Nov 2026). Body {"kind": "<kind>"} for one kind of work, {"kinds":
+    ["<kind>", ...]} for those kinds only (Start's Cancel: the kinds of its own steps, so a Run in Mind
+    or an  assistant's answer started elsewhere goes on), or {} for everything that  runs for this
+    workbook. Always 200 (404  for an unknown workbook, 422 when "kinds"  is not a list).
 
-    It sets the flag of every  job that has not passed its gate, ends the Excels those  jobs started
-    (only Excels this app started)  and lets go of their place in  the session's Excel worker; ends a
-    wait for the input files as  POST .../outside-inputs/stop does; closes a waiting sign-in  window;
+    It sets the flag of every job that  has not passed its gate, ends the  Excels those jobs started
+    (only Excels this app started) and lets go of their place in the session's Excel worker; ends a
+    wait for the input files as POST .../outside-inputs/stop does; closes a waiting sign-in window;
     then waits up to CANCEL_WAIT_S for the flagged jobs to end, and answers:
 
     {cancelled: [kinds stopped by this call], late: [kinds whose result stands: they had passed their
-    gate, or ended by themselves], stopping: [kinds still on their way out: look at GET .../jobs],
+    gate, or  ended by themselves], stopping: [kinds still on their way out: look at GET .../jobs],
     ahead: a recalculation made ahead was stopped, message, session: the workbook as GET
-    /api/sessions/{id} gives it after the restore (null while  anything is still stopping, and before
+    /api/sessions/{id} gives it after the restore (null while anything is still stopping, and before
     the first check), mind: the project a stopped Run in Mind left in Mind, or null}."""
     s = _session(session_id)
-    kind = str(payload.get("kind") or "").strip() or None
-    found = cancel.request(s.id, kind)
+    kinds = _cancel_kinds(payload)
+    found = cancel.request(s.id, kinds)
     flagged: list[cancel.Job] = list(found.get("flagged") or [])
     cancelled: list[str] = []
     late = [j.kind for j in found.get("late") or []]
-    if kind in (None, "outside") and (s.outside_run or {}).get("state") == "waiting_for_inputs":
+    if (kinds is None or "outside" in kinds) and (s.outside_run or {}).get("state") == "waiting_for_inputs":
         _end_wait(s)  # the wait is no job: it held nothing, so it is simply over (state "stopped")
         cancelled.append("outside")
     sign_in_closed = False
-    if kind in (None, "mind") and MIND_SIGN_IN["state"] == "waiting":
+    if (kinds is None or "mind" in kinds) and MIND_SIGN_IN["state"] == "waiting":
         MIND_SIGN_IN["stop"] = True  # the Edge window closes on its own thread
         sign_in_closed = True
     deadline = time.time() + CANCEL_WAIT_S
@@ -1776,7 +1827,7 @@ def cancel_work(session_id: str, payload: dict[str, Any] = Body(default={})) -> 
             stopping.append(job.kind)
         elif job.outcome == "cancelled":
             cancelled.append(job.kind)
-        else:  # it finished, or failed, before it saw the flag: its result stands
+        else:  # it finished, or failed, before it saw  the flag: its result stands
             late.append(job.kind)
     ahead = bool(found.get("ahead"))
     mind = _mind_fields(s.id, MIND_LOOPS.get(s.id)) if "mind" in cancelled else None
@@ -1794,7 +1845,7 @@ def cancel_work(session_id: str, payload: dict[str, Any] = Body(default={})) -> 
         message = "Nothing was running."
     return {
         "cancelled": cancelled, "late": late, "stopping": stopping, "ahead": ahead, "message": message,
-        # never while a job is still on its way out: its restore has not happened yet
+        # never  while a job is still on its  way out: its  restore has  not happened yet
         "session": _session_public(s) if s.result and not stopping else None,
         "mind": mind["project"] if mind is not None else None,
     }
@@ -1952,6 +2003,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    _refuse_while_changing(s)  # 17 Nov 2026: a  cancelled job's restore would drop the names  (their tokens paid)
     analysis = s.result["workbook_analysis"]
     labels = standalone_labels(analysis)
     targets = []
@@ -1968,7 +2020,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     def work(job: cancel.Job) -> dict[str, Any]:
         with _ai_scope(s):
             res = suggest_names(contexts)
-        cancel.check()  # 17 Nov 2026: a  call given up on a Cancel is  not "the assistant is not there"
+        cancel.check()  # 17 Nov 2026: a call given up on a  Cancel is not "the assistant is not  there"
         if not res["available"]:
             return {"available": False, "names": [], "message": res.get("message"), "applied": False}
         proposed = res["names"]
@@ -1987,7 +2039,7 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
         ]
         applied = bool(payload.get("apply", True))
         if applied:
-            job.commit()  # the gate before the one write:  cancelled before it, the names and the  plan stay as they were
+            _commit_alone(job)  # the gate before the one write: cancelled before it, the names and the plan stay as they were
             s.grid_names.update({k: v for k, v in proposed.items() if v})
             s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
             _save(s)
@@ -2775,27 +2827,28 @@ def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
 def recalc(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     _refuse_while_fixing(session_id)
+    _refuse_while_changing(s)  # 17  Nov 2026:  an Apply's Cancel would take this recalculation back
     if session_id in RECALCULATING:
         raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
 
     def work(job: cancel.Job) -> dict[str, Any]:
         with perf_stage("recalc_endpoint", file=s.current_path.name):
-            # After  a Mind  loop the session's Excel worker recalculated this version while it
-            # was being analysed; otherwise (or when that did not happen) as before, in its own Excel
+            # After a Mind loop the session's Excel worker recalculated this version while it
+            # was being analysed; otherwise (or when that did not happen) as before,  in its own Excel
             ew = excel_worker.WORKERS.get(s.id)
             ahead = ew.take_recalc(s.current_path) if ew is not None and not ew._stopped else None
-            cancel.check()  # 17 Nov 2026: a wait in the  worker's queue ended by a Cancel never falls through to an  Excel of its own
-            excel_worker.release(s.id)  # one Excel per  session
+            cancel.check()  # 17 Nov 2026: a wait in the worker's  queue ended by a Cancel never  falls through to an Excel of its  own
+            excel_worker.release(s.id)  # one Excel per session
             if ahead is not None:
                 copy_path, res = ahead
                 perf_record("recalc_ahead_used", 0.0, file=s.current_path.name)
             else:
                 copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
                 res = recalculate(copy_path)
-            # its Excel ended by a Cancel answers  "did not run": never stored over the last good recalculation
+            # its Excel ended by a Cancel answers "did  not run": never stored over the last  good recalculation
             cancel.check()
             with perf_stage("recalc_out", file=s.current_path.name):
-                return _recalc_out(s, res, copy_path, gate=job.commit)
+                return _recalc_out(s, res, copy_path, gate=lambda: _commit_alone(job))
 
     RECALCULATING.add(session_id)
     try:
@@ -3140,6 +3193,17 @@ def _changed_values(numbers: dict[str, Any] | None) -> int:
     """The  computed values  a numbers check found changed: now an error, another value, or no longer a formula."""
     c = (numbers or {}).get("counts") or {}
     return int(c.get("good_to_error", 0)) + int(c.get("good_to_other", 0)) + int(c.get("missing_good", 0))
+
+
+def _shown_changed(numbers: dict[str, Any] | None) -> int:
+    """17  Nov 2026,  for the assistant's fix in the Prep job only (Joseph: "if any value changed, the fix is
+    undone"): the cells that show something else now -- the computed values that changed, AND  an
+    error that now shows a value, AND a formula that showed  an error and is gone. A  guessed repair of
+    #REF! that shows 42 is  a changed value: undone, and the person is asked. Elsewhere the  numbers
+    check counts only `_changed_values` (Fix all issues  turns errors into values on purpose)."""
+    c = (numbers or {}).get("counts") or {}
+    gone_errors = max(0, int(c.get("missing", 0)) - int(c.get("missing_good", 0)))
+    return _changed_values(numbers) + int(c.get("error_to_good", 0)) + gone_errors
 
 
 def _mind_inputs_refused(compared: dict[str, Any], v_import: dict[str, Any]) -> str:
@@ -3591,6 +3655,7 @@ def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str
     (no rescan; INP-010 says the new counts)."""
     s = _session(session_id)
     _refuse_while_bringing_in(s)
+    _refuse_while_changing(s)  # 17 Nov 2026: a cancelled job's restore would drop the file from the  list
     picked = [f for f in files if (f.filename or "").strip()]
     if not picked:
         raise HTTPException(status_code=422, detail="Pick the input files to add.")
@@ -3605,10 +3670,10 @@ def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str
     return {"inputs": _inputs_public(s), "outsideInputs": _outside_public(s), "readiness": s.readiness()}
 
 
-# --- next quarter's Mind input files (app/next_quarter_inputs.py)  ---------------------------------
-# Each quarter the client gets new RAW input files (the files  the model's import macro opens). Mind
-# cannot  take them: its Inputs window wants one  file per /Input grid, shaped like the grid. The app
-# runs the  model's own import macro again on a  copy of the version the outside files were first
+# --- next quarter's Mind input  files (app/next_quarter_inputs.py) ---------------------------------
+# Each quarter the client  gets new RAW input files (the files  the model's import macro opens). Mind
+# cannot take them: its Inputs window  wants one file per /Input grid, shaped  like the grid. The app
+# runs the model's own import macro again on a copy of the version the outside files were first
 # brought into, with the new files, and writes each grid's block out under the grid's name: a zip for
 # Mind's Inputs window. No new model upload, no new version.
 _NEXT_QUARTER_TITLES = {"start": "Starting", "import": "Running the model's import macro with the new files", "files": "Writing the Mind input files", "done": "Done"}
@@ -4215,6 +4280,13 @@ def _prep_run_work(s: Session, st: dict[str, Any], use_assistant: bool, hold: di
         if _prep_run_problem(s, st, stage, problem, no, len(asked), hold):
             kept += 1
             st.update(assistant_fixed=kept)
+        if problem.get("outcome") == "not_reached":
+            if not llm_available():
+                # the key was taken away while Start ran: nothing was sent, so the assistant was not asked,
+                # and the end says that no AI key is saved (as when there was none from  the start)
+                st["no_key"] = True
+                problem.update(outcome="not_tried", tries=0)
+            break  # 17 Nov 2026: not reached for this problem: the next ones stay "not_tried" (not asked)
     if kept and handoff.pass_ops(s.plan):  # step 5: a kept fix left Prep work -- the rounds once more, no second turn of the assistant
         rounds()
 
@@ -4254,13 +4326,15 @@ def _prep_run_problem(s: Session, st: dict[str, Any], stage: Callable[..., None]
         st.update(updated=time.time())
         if outcome == "fixed":
             kept = True  # a rule that got smaller and  is still blocking gets its second try  on what is left
+        if outcome == "not_reached":
+            break  # 17 Nov 2026: the assistant could not be reached: no second try (it would wait as long again)
     finding = _prep_run_finding(s, rule)
     if finding is None:
         problem["outcome"] = "fixed"
-    elif answered:
+    elif answered and problem["outcome"] != "not_reached":
         # it ends not fixed: remembered under the cells as they are now (after a fix that was kept, what is
-        # left of it). Not when the assistant never answered (no connection): nothing was paid, and
-        # the next Start asks again.
+        # left of it). Not when the assistant was not reached on its last try (no connection, a timeout, a
+        # key the gateway refuses):  the next Start asks again.
         memo[handoff.memo_key(finding, s.result["workbook_analysis"])] = {"outcome": problem["outcome"], "tries": problem["tries"]}
     return kept
 
@@ -4287,7 +4361,12 @@ def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: di
         # c. the question, as the Assistant tab's "Propose a fix" for this finding, with every cell named
         reply = answer_question([], handoff.question_for(finding, cells, earlier, detail), s.result["workbook_analysis"], s.result["validation_report"], s.plan)
         cancel.check()
-        heard = bool(reply.get("available", True))
+        # 17 Nov 2026: heard only when an answer came. A call that failed (no connection, a timeout, a key
+        # the gateway refuses, a 500) comes back with "reached" False: never "it had no fix". A model
+        # that answered with no text (it declined) did  answer: "no_fix", remembered like any other.
+        heard = bool(reply.get("available", True)) and reply.get("reached", True) is not False
+        if not heard:
+            return "not_reached", "", heard
         ops = list(reply.get("proposal") or [])
         errors = [str(e) for e in reply.get("proposal_errors") or []]
         if not ops or errors:  # d.
@@ -4304,17 +4383,17 @@ def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: di
         if failed:
             undo()
             return "not_written", str(failed[0].get("error") or "")[:300], heard
-        # g. the numbers check itself, between  the version just before the fix and the version with
+        # g. the numbers check itself, between the version just before the fix and the version with
         # it: only the fix is judged. A check that could not run is never a pass.
         stage("numbers", handoff.NUMBERS_MESSAGE)
         excel_worker.release(s.id)
         numbers = compare_workbooks(s.paths[before], s.current_path, Moves([out["version"].get("change_log") or []]))
-        cancel.check()  # its Excel ended by a Cancel answers "could not be compared": that is no verdict
-        changed = _changed_values(numbers) if numbers.get("ran") else None
+        cancel.check()  # its Excel ended by a Cancel answers "could not be  compared": that is no verdict
+        changed = _shown_changed(numbers) if numbers.get("ran") else None
         blocking_after = None
         if changed == 0:  # h.
             stage("check", handoff.CHECK_MESSAGE)
-            _run_scan(s)
+            _run_scan(s, save=False)  # 17  Nov 2026: the fix is not judged  yet: nothing of  it reaches  the state file
             blocking_after = handoff.sites_by_rule(s.readiness()["blocking"])
         outcome = handoff.judge(blocking_before, blocking_after, rule, changed)  # i.
         if outcome == "fixed":
@@ -4327,8 +4406,8 @@ def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: di
     except Exception as exc:  # j. an error between the write and the judge never leaves the fix current
         if cancel.flagged():  # a set flag wins over any error
             raise cancel.Cancelled() from None
-        if hold["undo"] is None:  # before the write: there is no fix to take back, and none to check
-            return "no_fix", "", heard
+        if hold["undo"] is None:  # before the write: there is no fix  to take back, and none to check
+            return ("no_fix" if heard else "not_reached"), "", heard
         undo()
         return ("not_written" if writing else "not_checked"), plain_error(exc)[:300], heard
 
@@ -4353,8 +4432,9 @@ def _prep_run_end(s: Session, st: dict[str, Any], button: str) -> None:
         first = final[0]
         ref = None
         with contextlib.suppress(Exception):  # the question never waits  on its report
-            asked = first.get("outcome") != "not_tried"
-            ref = _report_problem(None, "Assistant", s, rule_id=first.get("rule_id"), what="not fixed by the assistant" if asked else "left for a person: the assistant was not asked")["ref"]
+            what = {"not_tried": "left for a person: the assistant was not asked",
+                    "not_reached": "left for a person: the assistant could not be reached"}.get(str(first.get("outcome")), "not fixed by the assistant")
+            ref = _report_problem(None, "Assistant", s, rule_id=first.get("rule_id"), what=what)["ref"]
         ask = handoff.build_ask(final, s.plan, ref, button)
         end = {"state": "ask", "title": "Something is left", "message": " ".join(ask["lines"]), "ask": ask}
     now = time.time()
@@ -4457,8 +4537,12 @@ def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
     if s.model_map is None or refresh or s.model_map_version_id != s.current_version_id:
+        analysis = s.result["workbook_analysis"]
         try:
-            s.model_map = json.loads(json.dumps(build_model_map(s.result["workbook_analysis"]), default=str))  # dates and openpyxl values as text
+            # 17 Nov 2026: through cancel.call, so a job's Cancel is heard while a big model's map is built
+            # (38 s on Palermo): the job  leaves at once and the map, built to its end, is  dropped
+            built = cancel.call(lambda: build_model_map(analysis))
+            s.model_map = json.loads(json.dumps(built, default=str))  # dates and openpyxl values as text
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"model map failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
         s.model_map_version_id = s.current_version_id
@@ -4522,13 +4606,20 @@ def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={}))
     what was shown) into a new version and re-analyse it."""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
-    plan = _loop_plan_of(s, payload)
-    ops = plan["operations"]
-    if not ops:
-        raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan["notes"]) or "no loop could be built"))
-    out = _job_route(s, "apply", lambda _job: _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True))))
-    out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
-    return out
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        # 17 Nov 2026: the plan is built inside the job.  On a new version it builds the model map first
+        # (38 s  on Palermo): a Cancel in those  seconds must find the job, not "Nothing  was running."
+        plan = _loop_plan_of(s, payload)
+        cancel.check()
+        ops = plan["operations"]
+        if not ops:
+            raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan["notes"]) or "no loop could be built"))
+        out = _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True)))
+        out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
+        return out
+
+    return _job_route(s, "apply", work)
 
 
 # --- Mind instances (one copy of the model per key  of the model-point table) ----------------
@@ -4640,11 +4731,18 @@ def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default
     a failure of  the main-workbook step is reported in `warnings`,  not raised: the version stays."""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
-    plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"), payload.get("loops"), payload.get("results"), payload.get("loop_choices"), payload.get("macro"))
-    ops = list(plan.get("operations") or [])
-    if not ops:
-        raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))
-    return _job_route(s, "apply", lambda _job: _instances_apply(s, plan, ops, payload))
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        # 17 Nov 2026: the plan is built  inside the job (as for the Mind  loop): a Cancel while the model
+        # map of a new version is built finds the job
+        plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"), payload.get("loops"), payload.get("results"), payload.get("loop_choices"), payload.get("macro"))
+        cancel.check()
+        ops = list(plan.get("operations") or [])
+        if not ops:
+            raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))
+        return _instances_apply(s, plan, ops, payload)
+
+    return _job_route(s, "apply", work)
 
 
 def _instances_apply(s: Session, plan: dict[str, Any], ops: list[dict[str, Any]], payload: dict[str, Any]) -> dict[str, Any]:
@@ -4942,6 +5040,7 @@ def reports(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    _refuse_while_changing(s)  # 17  Nov 2026:  a cancelled job's restore would drop the two files from the downloads
     analysis = s.result["workbook_analysis"]
     report = s.result["validation_report"]
     copy_path = Path(analysis["source"]["copy_path"])
@@ -4951,9 +5050,9 @@ def reports(session_id: str) -> dict[str, Any]:
     def work(job: cancel.Job) -> dict[str, Any]:
         excel_worker.release(s.id)
         standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
-        cancel.check()  # 17  Nov 2026:  between the two files
+        cancel.check()  # 17 Nov 2026: between the two files
         built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
-        job.commit()  # the gate before the one write: cancelled before it, the two files are not registered
+        _commit_alone(job)  # the gate before the one write: cancelled before it, the two files are not  registered
         out = {
             "standalone_name": _register_file(s, standalone),
             "workbook_name": _register_file(s, Path(built.path)),

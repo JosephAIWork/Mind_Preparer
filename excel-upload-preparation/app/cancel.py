@@ -19,7 +19,7 @@ import contextlib
 import contextvars
 import threading
 import time
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 CALL_SLICE_S = 0.25  # how  often a  waiting `call` looks at the flag
 
@@ -59,23 +59,34 @@ class Job:
         self.flag = threading.Event()   # Cancel was pressed for this job
         self.ended = threading.Event()  # `end` was called: nothing of it runs any more
         self.committed = False          # it  passed its gate: its result stands, a Cancel is too late
-        self.outcome: str | None = None  # "done"  | "cancelled" | "error", written by  `end`
-        self.pids: set[int] = set()     # the Excels this job started and has  not quit
-        self.on_flag = on_flag          # called once, under the registry's lock, when the flag is  set
+        self.alone = False              # it  passed its gate with `alone`: until  its end no job that changes the  workbook begins
+        self.outcome: str | None = None  # "done" | "cancelled" | "error", written by `end`
+        self.pids: set[int] = set()     # the Excels this  job started and has not quit
+        self.on_flag = on_flag          # called once,  under the registry's lock, when the flag is set
 
     def check(self) -> None:
-        """Leave with `Cancelled` when Cancel was pressed  for this job."""
+        """Leave with `Cancelled` when Cancel was pressed for this job."""
         if self.flag.is_set():
             raise Cancelled()
 
-    def commit(self) -> None:
+    def commit(self, alone: bool = False) -> None:
         """The gate, the point of no return. Flag set: `Cancelled`. Else the job is committed, and a
-        Cancel that comes later finds it in `late` and does not touch it. A second call does nothing."""
+        Cancel that comes later finds it in `late` and does not touch it. A second call does nothing.
+
+        `alone` (17 Nov 2026), for a job that writes what the  restore of a cancelled job that changes
+        the workbook puts back (the recalculation, the suggested names, the report files): `Busy` while
+        such a job is registered -- its Cancel would take the write back -- and, once passed, no such
+        job begins until this one has ended (`begin` raises `Busy` with this job's kind)."""
         with _LOCK:
             if self.committed:
                 return
             if self.flag.is_set():
                 raise Cancelled()
+            if alone:
+                for other in _JOBS.get(self.sid, ()):
+                    if other is not self and other.changes:
+                        raise Busy(other.kind)
+                self.alone = True
             self.committed = True
 
     def __repr__(self) -> str:
@@ -85,12 +96,13 @@ class Job:
 
 def begin(sid: str, kind: str, changes: bool = False, on_flag: Callable[[], Any] | None = None) -> Job:
     """Register  a job  for the workbook `sid`. With `changes`: `Busy` while another job that changes
-    this workbook is registered (it stays registered until its `end`, which comes after its restore)."""
+    this workbook is registered (it stays registered until its `end`, which comes after its restore),
+    or while a job that passed  its gate with `alone` is still writing."""
     job = Job(sid, kind, changes, on_flag)
     with _LOCK:
         if job.changes:
             for other in _JOBS.get(sid, ()):
-                if other.changes:
+                if other.changes or other.alone:
                     raise Busy(other.kind)
         _JOBS.setdefault(sid, []).append(job)
     return job
@@ -223,23 +235,26 @@ def changing(sid: str) -> Job | None:
     return None
 
 
-def request(sid: str, kind: str | None = None) -> dict[str, Any]:
-    """Cancel  was pressed  for the workbook `sid` (for its jobs of `kind` when given).
+def request(sid: str, kind: str | Iterable[str] | None = None) -> dict[str, Any]:
+    """Cancel  was pressed  for the workbook `sid` (for its jobs of `kind` when given: one kind, or a
+    list of kinds -- 17 Nov 2026: Start's Cancel names the kinds of its own steps, so  a Run in Mind or
+    an assistant's answer started elsewhere goes on).
 
-    Under the lock, every registered job: committed or ended goes to `late` (its result stands);
-    else its flag is set, `on_flag` is  called the first time, and it is collected. Then, outside the
-    lock:  the Excels those jobs started are  ended (`excel_com.kill_excel` ends only an Excel this
-    process  started) and their items in the session's Excel worker are let  go; with no kind, or
-    kind "recalc", the  recalculation made ahead too (it belongs to no job).
+    Under  the lock, every registered job: committed  or ended goes to `late` (its result  stands);
+    else its flag is set, `on_flag` is called the first time,  and it is collected. Then, outside the
+    lock:  the Excels those jobs started are ended (`excel_com.kill_excel` ends only an Excel this
+    process started) and their items in the session's Excel worker are let go; with no kind, or
+    with "recalc" among the kinds, the recalculation made ahead too (it belongs to no job).
 
     -> {"flagged": [jobs], "late": [jobs], "ahead": bool}. Nothing running: empty lists. A second
     call does the same harmless things."""
+    kinds = None if kind is None else frozenset([kind] if isinstance(kind, str) else kind)
     hit: list[Job] = []
     late: list[Job] = []
     pids: list[int] = []
     with _LOCK:
         for job in list(_JOBS.get(sid, ())):
-            if kind is not None and job.kind != kind:
+            if kinds is not None and job.kind not in kinds:
                 continue
             if job.committed or job.ended.is_set():
                 late.append(job)
@@ -250,7 +265,7 @@ def request(sid: str, kind: str | None = None) -> dict[str, Any]:
                 try:
                     job.on_flag()
                 except Exception:
-                    pass  # a status line that could not be written never holds a Cancel
+                    pass  # a status  line that could not be written never holds a Cancel
             hit.append(job)
             pids.extend(sorted(job.pids))
             job.pids.clear()  # taken: an Excel this job starts from now on is ended by note_excel
@@ -258,5 +273,5 @@ def request(sid: str, kind: str | None = None) -> dict[str, Any]:
 
     for pid in pids:
         excel_com.kill_excel(pid)
-    stopped = excel_worker.cancel(sid, hit, free=kind in (None, "recalc"))
+    stopped = excel_worker.cancel(sid, hit, free=kinds is None or "recalc" in kinds)
     return {"flagged": hit, "late": late, "ahead": bool(stopped)}

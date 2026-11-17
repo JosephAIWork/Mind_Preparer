@@ -48,11 +48,16 @@ export class FeedbackDialog implements OnInit {
       .catch(() => {});
   }
 
+  /** The dialog's  first sentence (17 Nov 2026, live  test L2b-7). */
+  lead(d: { ref: string | null; note: string }): string {
+    return feedbackLead(d);
+  }
+
   value(event: Event): string {
     return (event.target as HTMLTextAreaElement).value;
   }
 
-  /** Step 1:  the message from the backend (the  assistant may take a few seconds), shown  to be read. */
+  /** Step 1: the message from the  backend (the assistant may take a few seconds), shown to be  read. */
   async prepare(): Promise<void> {
     if (this.busy()) return;
     this.busy.set(true);
@@ -73,7 +78,7 @@ export class FeedbackDialog implements OnInit {
     }
   }
 
-  /** Step 2, on its own click: the browser lets  a page copy and open an email  only right after a click. */
+  /** Step 2, on its own click: the  browser lets a page copy and open an email only right after a click. */
   async send(): Promise<void> {
     const m = this.message();
     if (!m) return;
@@ -141,6 +146,18 @@ function saveFile(name: string, text: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** The  dialog's first  sentence. For a problem the backend reported: "Something went wrong. ..."; for the
+ *  question Start asks when it could not fix one problem by itself (opened with the problem already
+ *  written in the  note) nothing went wrong, so it does not say so (17  Nov 2026, live test L2b-7); from  the
+ *  header: what to tell us. */
+export function feedbackLead(d: { ref: string | null; note: string }): string {
+  const codes = d.ref ? " The message says where in the app it stopped and why, in codes we can read." : "";
+  // (only  Start's question  opens the dialog with a note: the problem, already written)
+  if (d.note) return `The app could not fix one problem by itself.${codes}`;
+  if (d.ref) return `Something went wrong.${codes}`;
+  return "Tell us what works, what does not, and what is missing.";
 }
 
 /** How  much of  the note goes into the email's body: some mail programs cut a long `mailto:` address. */

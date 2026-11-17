@@ -1338,3 +1338,159 @@ def test_remove_and_the_bring_in_are_refused_while_a_run_is_cancelling(client, p
     server.MIND_LOOPS[sid]["state"] = "cancelled"
     assert not server._loop_busy(sid) and server._mind_in_use() is None
     server._free_for_bring_in(s, sid)  # free again
+
+
+# --- 17 Nov 2026, after the review ------------------------------------------------------------------
+BUSY_APPLY = "Wait a moment: changes are still being written."
+
+
+def _slow_model_map(monkeypatch) -> Gate:
+    """The model map of a new version is built slowly (38 s on Palermo): it waits at the gate."""
+    gate = Gate()
+
+    def build_model_map(analysis):
+        gate.started.set()
+        assert gate.go.wait(WAIT), "the model map was never let go"
+        return {"inputs": [], "loops": [], "outputs": []}
+
+    monkeypatch.setattr(server, "build_model_map", build_model_map)
+    return gate
+
+
+def test_a_cancel_while_the_loop_plan_is_built_stops_the_loop_step(client, plain_grid_xlsx, monkeypatch):
+    # R1-1: the job is registered before the plan is built, and the build of the model map hears the Cancel
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    before = _look(s)
+    calls: list = []
+    monkeypatch.setattr(server, "apply_operations", _fake_apply(calls))
+    monkeypatch.setattr(server, "build_loop_plan", lambda *a, **k: {"operations": [dict(o, action_id="loop", rule_id="LOOP") for o in OPS], "notes": []})
+    gate = _slow_model_map(monkeypatch)
+    pending = _bg(lambda c: c.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={}))
+    try:
+        assert gate.started.wait(WAIT)
+        assert [j["kind"] for j in _jobs(client, sid)] == ["apply"]  # the job is there while the plan is built
+        out = _cancel(client, sid, "apply")
+        assert out["cancelled"] == ["apply"] and out["message"] == STOPPED  # not "Nothing was running."
+        _is_stopped(_answer(pending), "apply")  # at once: the model map is still being built
+        assert calls == [] and _look(s) == before
+    finally:
+        gate.go.set()
+    _clean(client, sid)
+
+
+def test_a_cancel_while_the_instances_plan_is_built_stops_the_instances_step(client, plain_grid_xlsx, monkeypatch):
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    before = _look(s)
+    gate = _slow_model_map(monkeypatch)
+    pending = _bg(lambda c: c.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={}))
+    try:
+        assert gate.started.wait(WAIT)
+        assert [j["kind"] for j in _jobs(client, sid)] == ["apply"]
+        assert _cancel(client, sid, "apply")["cancelled"] == ["apply"]
+        _is_stopped(_answer(pending), "apply")
+        assert _look(s) == before
+    finally:
+        gate.go.set()
+    _clean(client, sid)
+
+
+def test_a_loop_or_instances_plan_with_nothing_to_write_still_answers_422_and_leaves_no_job(client, plain_grid_xlsx, monkeypatch):
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    monkeypatch.setattr(server, "_loop_plan_of", lambda s, payload: {"operations": [], "notes": ["no loop in the macros"]})
+    res = client.post(f"/api/sessions/{sid}/mind-loop-plan/apply", json={})
+    assert res.status_code == 422 and res.json()["detail"] == "nothing to write: no loop in the macros"
+    monkeypatch.setattr(server, "_instance_plan_of", lambda s, *a: {"operations": [], "notes": []})
+    res = client.post(f"/api/sessions/{sid}/mind-instances-plan/apply", json={})
+    assert res.status_code == 422 and res.json()["detail"] == "nothing to write: no instances could be built"
+    _clean(client, sid)
+
+
+def _hold_an_apply(client, sid, monkeypatch):
+    gate = Gate()
+    monkeypatch.setattr(server, "apply_operations", _fake_apply([], gate))
+    pending = _bg(lambda c: c.post(f"/api/sessions/{sid}/apply", json={"operations": OPS, "reanalyze": True}))
+    assert gate.started.wait(WAIT)
+    return gate, pending
+
+
+def test_what_a_cancelled_apply_would_take_back_is_refused_while_it_runs(client, plain_grid_xlsx, monkeypatch):
+    # R1-2: the restore of a cancelled Apply puts back the recalculation, the input files, the names, the
+    # files and the plan: written meanwhile, each was lost after the person was told it was done
+    import io
+
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    recalcs: list = []
+    monkeypatch.setattr(server, "recalculate", lambda path, save=True: recalcs.append(path) or {"status": "OK", "message": "recalculated clean", "ran": True, "formula_errors": [], "addin_gap_errors": []})
+    monkeypatch.setattr(server, "suggest_names", lambda contexts, **kw: {"available": True, "names": {"CF!B8:C8": "Cash flows"}, "message": None})
+    before = _look(s)
+    gate, applying = _hold_an_apply(client, sid, monkeypatch)
+    try:
+        refused = {
+            "recalculate": client.post(f"/api/sessions/{sid}/recalculate"),
+            "inputs": client.post(f"/api/sessions/{sid}/inputs", files=[("files", ("rates_2026Q3.csv", io.BytesIO(b"a,b\n1,2\n"), "text/csv"))]),
+            "grid-names": client.post(f"/api/sessions/{sid}/grid-names", json={"apply": True}),
+            "reports": client.post(f"/api/sessions/{sid}/reports"),
+            "pivot-mode": client.post(f"/api/sessions/{sid}/pivot-mode", json={"mode": "values"}),
+        }
+        assert {k: (r.status_code, r.json()["detail"]) for k, r in refused.items()} == {k: (409, BUSY_APPLY) for k in refused}
+        assert recalcs == [] and s.inputs == [] and s.grid_names == {}
+        out = _cancel(client, sid, "apply")
+    finally:
+        gate.go.set()
+    _is_stopped(_answer(applying), "apply")
+    assert out["cancelled"] == ["apply"] and _look(s) == before
+    _clean(client, sid)
+
+
+def test_names_whose_answer_comes_after_an_apply_began_are_not_written(client, section_heading_grids_xlsx, monkeypatch):
+    # R1-2, the other order: Suggest names waits for the model, an Apply begins meanwhile. Its Cancel
+    # would take the names back, so they are not written (409); the Apply is never refused for them.
+    sid = _upload(client, section_heading_grids_xlsx)["sessionId"]
+    s = server.SESSIONS[sid]
+    plan = id(s.plan)
+    asked, answer = Gate(), threading.Event()
+
+    def suggest(contexts, **kw):
+        asked.started.set()
+        assert answer.wait(WAIT)
+        return {"available": True, "names": {"CF!B8:C8": "Cash flows"}, "message": None}
+
+    monkeypatch.setattr(server, "suggest_names", suggest)
+    naming = _bg(lambda c: c.post(f"/api/sessions/{sid}/grid-names", json={"apply": True}))
+    assert asked.started.wait(WAIT)
+    gate, applying = _hold_an_apply(client, sid, monkeypatch)
+    try:
+        answer.set()
+        res = _answer(naming)
+        assert (res.status_code, res.json()["detail"]) == (409, BUSY_APPLY)
+        assert s.grid_names == {} and id(s.plan) == plan
+    finally:
+        gate.go.set()
+    assert _answer(applying).status_code == 200
+    _clean(client, sid)
+
+
+def test_the_cancel_beside_start_sends_its_kinds_and_leaves_a_run_in_mind_and_an_answer_alone(client, plain_grid_xlsx, monkeypatch):
+    # R1-5: the Cancel beside Start (and Do everything) sends the kinds of its own steps
+    sid = _upload(client, plain_grid_xlsx)["sessionId"]
+    mind = cancel.begin(sid, "mind")
+    chat = cancel.begin(sid, "chat")
+    gate, applying = _hold_an_apply(client, sid, monkeypatch)
+    try:
+        res = client.post(f"/api/sessions/{sid}/cancel", json={"kinds": ["outside", "autofix", "prep", "apply", "recalc", "scan"]})
+        assert res.status_code == 200, res.text
+        out = res.json()
+        assert out["cancelled"] == ["apply"] and out["message"] == STOPPED
+        assert not mind.flag.is_set() and not chat.flag.is_set()  # they go on
+        assert sorted(j["kind"] for j in _jobs(client, sid)) == ["chat", "mind"]
+    finally:
+        gate.go.set()
+        cancel.end(mind)
+        cancel.end(chat)
+    _is_stopped(_answer(applying), "apply")
+    assert client.post(f"/api/sessions/{sid}/cancel", json={"kinds": "apply"}).status_code == 200  # one kind as text: a list of one
+    assert client.post(f"/api/sessions/{sid}/cancel", json={"kinds": {"apply": 1}}).status_code == 422
+    _clean(client, sid)

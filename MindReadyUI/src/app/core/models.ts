@@ -1080,6 +1080,13 @@ export interface MindLoopStatus {
 /** The kinds of work the server knows (the only values of `kind`). */
 export type WorkKind = "scan" | "apply" | "autofix" | "recalc" | "numbers" | "reports" | "outside" | "next_quarter" | "names" | "finder" | "chat" | "mind" | "prep";
 
+/** 17  Nov 2026  (review R1-5): the kinds of work Start / Do everything itself runs on the server, and so
+ *  the only ones the Cancel beside its button stops: the outside files (outside), Fix all  issues
+ *  (autofix), the Prep step and the fixes after the loop (prep),  the loop's Apply (apply), the
+ *  recalculation (recalc),  and a check of the workbook (scan).  A Run in Mind (mind) or an assistant's
+ *  answer (chat) started on  another screen is not one of Start's  steps and goes on. */
+export const START_KINDS: readonly WorkKind[] = ["outside", "autofix", "prep", "apply", "recalc", "scan"];
+
 /** One  job running  on the server for the open workbook (GET .../jobs). */
 export interface WorkJob {
   kind: WorkKind | string;
@@ -1302,7 +1309,7 @@ export function chainStoppedLine(last: ChainStepId | null): string {
 
 // ----  the Prep  step as one job on the server (17 Nov 2026): POST and GET .../prep-run ------------------
 /** How the assistant's try at one problem ended (app/handoff.py OUTCOMES). */
-export type PrepOutcome = "fixed" | "no_fix" | "too_wide" | "not_written" | "numbers_changed" | "not_cleared" | "not_checked" | "not_tried";
+export type PrepOutcome = "fixed" | "no_fix" | "too_wide" | "not_written" | "numbers_changed" | "not_cleared" | "not_checked" | "not_tried" | "not_reached";
 
 /** One  blocking problem  the Prep step looked at. */
 export interface PrepProblem {
@@ -1377,9 +1384,30 @@ export interface PrepRunStatus {
  *  fixed 1: see  Advanced › Versions." Nothing written at  all: "" (the caller says what that  means). */
 export function prepDoneWords(applied: number | null | undefined, assistantFixed: number | null | undefined = 0): string {
   const n = Math.max(0, Number(applied) || 0);
+  const said = assistantFixedWords(n, assistantFixed);
+  if (!n) return said;
+  return said ? `${n} changes applied. ${said}` : `${n} changes applied`;
+}
+
+/** The  sentence of  DESIGN 5.4 alone, when the assistant fixed something by itself: "The assistant fixed
+ *  2 more: see Advanced › Versions." after changes the Prep rounds wrote, "The assistant fixed 1: see
+ *  Advanced › Versions."  when they wrote none; "" when it fixed nothing. 17 Nov  2026 (live test L2b-9):
+ *  Basic says it  too, under "Everything ran and every check  passed", with its "Show me" to Versions. */
+export function assistantFixedWords(applied: number | null | undefined, assistantFixed: number | null | undefined): string {
+  const n = Math.max(0, Number(applied) || 0);
   const m = Math.max(0, Number(assistantFixed) || 0);
-  if (!n) return m ? `The assistant fixed ${m}: see Advanced › Versions.` : "";
-  return m ? `${n} changes applied. The assistant fixed ${m} more: see Advanced › Versions.` : `${n} changes applied`;
+  if (!m) return "";
+  return n ? `The assistant fixed ${m} more: see Advanced › Versions.` : `The assistant fixed ${m}: see Advanced › Versions.`;
+}
+
+/** 17  Nov 2026  (review R2-3): Start / Do everything ran every step, but blocking problems are still left
+ *  (the finish banner below says the workbook is blocked): never "every check passed" then. `count`: how
+ *  many (as  the banner counts them); `first`: the first one, by its plain  name when it has one. */
+export function blockingLeftLine(count: number, first: { rule_name?: string | null } | null | undefined): string {
+  const n = Math.max(1, Math.round(Number(count) || 0));
+  const name = first?.rule_name?.trim();
+  if (n === 1) return `Everything ran, but 1 blocking problem is left${name ? `: ${name}` : ""}.`;
+  return `Everything ran, but ${n} blocking problems are left.${name ? ` The first: ${name}.` : ""}`;
 }
 
 /** The  two sentences  when something is left that needs the assistant and no AI key is saved (the server

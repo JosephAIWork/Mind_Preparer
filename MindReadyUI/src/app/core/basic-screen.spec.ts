@@ -10,13 +10,14 @@ import { CancelButton } from "./cancel-button";
 import type { FeedbackDialog } from "./feedback-dialog";
 import { FeedbackService } from "./feedback.service";
 import { finishState } from "./finish-banner";
-import { ChainEstimate, LoopPlan, OutsideInputs, PrepAction, PrepAsk, PrepRunStatus, Readiness, STOPPED_NOTHING_CHANGED, SavedWorkbook, ScanStatus, SessionStart, Version } from "./models";
+import { ChainEstimate, LoopPlan, OutsideInputs, PrepAction, PrepAsk, PrepRunStatus, Readiness, STOPPED_NOTHING_CHANGED, SavedWorkbook, ScanStatus, SessionStart, Version, WorkJob } from "./models";
 import type { RunBar } from "./run-bar";
 import { planShowMe, PAGE_LINKS, ShowMeRequest, showMeFor } from "./show-me";
 import { ShowMeLink } from "./show-me-link";
 import { ShowMeService } from "./show-me.service";
 import { SessionStore } from "./session.store";
 import { Thinking } from "./thinking";
+import { WorkService } from "./work.service";
 
 // ---- 1.15.0: three screens (Basic - Custom - Advanced), the end-of-check banner, Remove all -------------
 
@@ -1361,6 +1362,470 @@ describe("the Basic screen", () => {
     expect(el.querySelector("mr-cancel")).toBeNull();
     expect(page.steps()[0]).toMatchObject({ state: "stopped", line: STOPPED_NOTHING_CHANGED });
     fixture.destroy();
+  });
+
+  // ---- 17 Nov 2026: the morning's review and live tests (screens) -------------------------------------
+  const blockedBy = (n: number, fix: "assistant" | "prep_skipped" = "assistant"): Readiness => ({
+    ...readiness("blocked", n),
+    blocking: [{ rule_id: "FRM-011", rule_name: "a formula compares an empty cell with a number", status: "ERROR", message: "m", location: { sheet: "Calc", cell: "B2" }, fix }],
+  });
+  const running = (kind: string, title: string): WorkJob => ({ kind, title, started: 1_763_330_000, elapsed_s: 3, stopping: false });
+
+  it("review R2-3: a blocking problem the loop made that no Prep action repairs goes to the assistant too: the Prep job runs again", async () => {
+    const f = prepFake([done(954), done(0, 1)]);
+    f.after = { ...f.after, readiness: readiness("ready") };
+    // after the loop nothing is left for Prep to write, but the readiness lists a problem only the assistant can fix
+    await withLoop(f, Promise.resolve({ ...started("m1"), version: ver(5), plan: [], readiness: blockedBy(1) }));
+    await page.runAll();
+    expect(f.calls.filter((c) => c === "start")).toHaveLength(2);
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "done"]);
+    expect(page.steps()[2].line).toBe("3 loop formulas written. The assistant fixed 1: see Advanced › Versions.");
+    // only the outside files left: those are the outside step's, not the assistant's
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const g = prepFake([done(954)]);
+    const outside: Readiness = { ...readiness("blocked", 1), blocking: [{ rule_id: "INP-001", status: "ERROR", message: "m", fix: "outside_inputs" }] };
+    await withLoop(g, Promise.resolve({ ...started("m1"), version: ver(5), plan: [], readiness: outside }));
+    await page.runAll();
+    expect(g.calls.filter((c) => c === "start")).toHaveLength(1);
+  });
+
+  it("review R2-3: every step ran but the workbook is still blocked: it says how many problems are left, with Show me to the first, never 'every check passed'", async () => {
+    const f = prepFake([done(3)]);
+    const { fixture, el, look, shown } = await drawOn("basic", f.api);
+    others();
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(blockedBy(2)), true);
+    await page.runAll();
+    await look();
+    expect(sentences(el)).toEqual(["Everything ran, but 2 blocking problems are left. The first: a formula compares an empty cell with a number."]);
+    expect(page.basicLine()).not.toContain("every check passed");
+    linkIn(el, ".basic__next")!.click();
+    expect(shown).toEqual([{ id: "assistant-ask", ruleId: "FRM-011", where: { sheet: "Calc", cell: "B2" }, open: true }]);
+    fixture.destroy();
+    TestBed.resetTestingModule();
+    // one problem; a cell Prep skipped leads to its Prep action (its "By hand" entry)
+    open("custom");
+    const r = blockedBy(1, "prep_skipped");
+    page.openSaved(started("m1"));
+    await settle();
+    stub();
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(r), true);
+    await page.runAll();
+    expect(page.chainLine()).toBe("Everything ran, but 1 blocking problem is left: a formula compares an empty cell with a number.");
+    expect(page.stopPlace()).toEqual({ id: "prep-action", ruleId: "FRM-011", where: { sheet: "Calc", cell: "B2" }, open: true });
+  });
+
+  it("live test L2b-9: on Basic the assistant's own fixes are said under 'Everything ran', with Show me to Versions; Custom says it on the step", async () => {
+    const f = prepFake([done(0, 1)]);
+    const { fixture, el, look, shown } = await drawOn("basic", f.api);
+    others();
+    await page.runAll();
+    await look();
+    expect(sentences(el)).toEqual([expect.stringMatching(/^Everything ran and every check passed \(/), "The assistant fixed 1: see Advanced › Versions."]);
+    linkIn(el, ".basic__next")!.click();
+    expect(shown).toEqual([{ id: "versions", open: true }]);
+    // the next run: the assistant fixed nothing, so the sentence goes
+    f.looks.push(done(5));
+    await page.runAll();
+    await look();
+    expect(sentences(el)).toHaveLength(1);
+    fixture.destroy();
+    TestBed.resetTestingModule();
+    // after changes of the Prep rounds: "more", as on Custom's step
+    const g = prepFake([done(954, 2)]);
+    await openedFor("basic", g);
+    others();
+    await page.runAll();
+    expect(page.basicLines()[1]).toBe("The assistant fixed 2 more: see Advanced › Versions.");
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const h = prepFake([done(954, 2)]);
+    await openedFor("custom", h);
+    others();
+    await page.runAll();
+    expect(page.chainNote()).toBe("");
+    expect(page.steps()[1].line).toBe("954 changes applied. The assistant fixed 2 more: see Advanced › Versions.");
+  });
+
+  it("live test L2b-6: the step count does not change in the middle of a run", async () => {
+    open("basic");
+    page.openSaved(started("m1"));
+    await settle();
+    // a workbook with no loop: three steps from the first one on (it said "Step 2 of 4", then "Step 3 of 3")
+    let gates = held();
+    page.canBuildLoop = () => false;
+    let run = page.runAll();
+    await settle();
+    expect(page.basicLines()[0]).toMatch(/^Step 1 of 3: fixing/);
+    expect(page.steps().find((s) => s.id === "loop")).toMatchObject({ state: "skipped", line: "No run loop in this workbook" });
+    await endStep(gates, "fixAll");
+    expect(page.basicLines()[0]).toMatch(/^Step 2 of 3: changing/);
+    await endStep(gates, "prepare");
+    expect(page.basicLines()[0]).toMatch(/^Step 3 of 3: recalculating/);
+    await endStep(gates, "recalc");
+    await run;
+    // a loop that can no longer be built when its turn comes keeps its number
+    gates = held();
+    let buildable = true;
+    page.canBuildLoop = () => buildable;
+    run = page.runAll();
+    await settle();
+    expect(page.basicLines()[0]).toMatch(/^Step 1 of 4: /);
+    buildable = false;
+    await endStep(gates, "fixAll");
+    expect(page.basicLines()[0]).toMatch(/^Step 2 of 4: /);
+    await endStep(gates, "prepare");
+    expect(page.basicLines()[0]).toMatch(/^Step 4 of 4: recalculating/);
+    await endStep(gates, "recalc");
+    await run;
+    // the box not ticked: left out from the start
+    gates = held();
+    page.buildLoop.set(false);
+    run = page.runAll();
+    await settle();
+    expect(page.basicLines()[0]).toMatch(/^Step 1 of 3: /);
+    for (const step of ["fixAll", "prepare", "recalc"] as const) await endStep(gates, step);
+    await run;
+  });
+
+  it("live test L2b-5: a step is late only when its own time is over, and never in its first minute", async () => {
+    clockAt(T0);
+    const e = estimate();
+    e.steps = e.steps.map((s) => (s.id === "loop" ? { ...s, low_s: 2, mid_s: 3, high_s: 4 } : s)); // one round through Excel
+    open("basic", { estimate: async () => e });
+    page.openSaved(started("m1"));
+    await settle();
+    const gates = held();
+    const run = page.runAll();
+    await settle();
+    for (const step of ["fixAll", "prepare"] as const) await endStep(gates, step);
+    expect(page.basicLines()[0]).toMatch(/^Step 3 of 4: building the Mind loop/);
+    later(5); // it said "taking longer than usual" here
+    expect(page.basicLine()).not.toContain("longer than usual");
+    later(50);
+    expect(page.basicLine()).not.toContain("longer than usual");
+    later(10);
+    expect(page.basicLines()[1]).toMatch(/^This step is taking longer than usual; /);
+    await endStep(gates, "loop");
+    // a step estimated as nothing (as if skipped) has no time of its own: never late
+    (page as unknown as { estimate: { set(v: ChainEstimate): void } }).estimate.set({ ...e, steps: e.steps.map((s) => (s.id === "recalc" ? { ...s, low_s: 0, mid_s: 0, high_s: 0 } : s)) });
+    later(600);
+    expect(page.basicLine()).not.toContain("longer than usual");
+    await endStep(gates, "recalc");
+    await run;
+  });
+
+  it("live test L2b-2: Start is greyed with the reason while other work of this workbook runs", async () => {
+    const { fixture, el, look } = await drawOn("basic", {});
+    const work = TestBed.inject(WorkService);
+    const go = () => el.querySelector(".basic__go") as HTMLButtonElement;
+    expect(go().disabled).toBe(false);
+    work.jobs.set([running("recalc", "Recalculating")]); // Recalculate, pressed under Advanced
+    await look();
+    expect(go().disabled).toBe(true);
+    expect(go().getAttribute("title")).toBe("Still working: Recalculating. Press Start once it has finished.");
+    expect(el.querySelector('[data-test="start-wait"]')?.textContent?.trim()).toBe("Still working: Recalculating. Press Start once it has finished.");
+    work.jobs.set([]);
+    await look();
+    expect(go().disabled).toBe(false);
+    expect(el.querySelector('[data-test="start-wait"]')).toBeNull();
+    // while Start waits for the input files after a reload, the bring-in's own wait is not "other work"
+    page.outsideWaiting.set(true);
+    work.jobs.set([running("outside", "Bringing in the input files")]);
+    expect(page.startBlocked()).toBe(false);
+    page.outsideWaiting.set(false);
+    work.jobs.set([]);
+    fixture.destroy();
+  });
+
+  it("live test L2b-2: a step the server would not start says the server's sentence, not 'Not started.'", async () => {
+    open("basic", { startAutoFix: () => Promise.reject({ status: 409, error: { detail: "a recalculation is running for this workbook: wait for it to finish" } }) });
+    page.openSaved(started("m1"));
+    await settle();
+    page.canBuildLoop = () => true;
+    await page.runAll();
+    expect(page.basicLine()).toBe("A recalculation is running for this workbook: wait for it to finish. Press Start again once that has finished.");
+    expect(page.basicLine()).not.toContain("Not started");
+    expect(page.basicLine()).not.toContain("Fix all issues");
+    // and the server's "Wait a moment: ..." of any step, on Custom in its own words
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    open("custom");
+    page.openSaved(started("m1"));
+    await settle();
+    stub();
+    (page as unknown as Record<string, unknown>)["runPrepare"] = async () => (page.prepare.set({ running: false, fraction: null, line: "Not started", detail: "Wait a moment: changes are still being written.", tone: "error" }), false);
+    await page.runAll();
+    expect(page.chainLine()).toBe("Wait a moment: changes are still being written. Press Do everything again once that has finished.");
+  });
+
+  it("live test L2b-3: when Start ends, its steps leave the list of running work before its Cancel leaves the screen", async () => {
+    await opened();
+    stub();
+    const work = TestBed.inject(WorkService);
+    const run = page.runAll();
+    work.jobs.set([running("recalc", "Recalculating"), running("mind", "Uploading to Mind")]); // the last look while Start ran
+    await run;
+    expect(work.jobs().map((j) => j.kind)).toEqual(["mind"]); // a Run in Mind started elsewhere still shows in the strip
+  });
+
+  it("live test L2b-4: after a reload in the middle of Start, one line says the rest of Start did not run", async () => {
+    sessionStorage.removeItem("mindReady.startRunning");
+    // Start sets the mark while it runs, and takes it away when it ends here
+    await opened();
+    stub();
+    const run = page.runAll();
+    expect(JSON.parse(sessionStorage.getItem("mindReady.startRunning") ?? "null")).toMatchObject({ id: "m1", left: 0 });
+    await run;
+    expect(sessionStorage.getItem("mindReady.startRunning")).toBeNull();
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+
+    // the page was reloaded while the Prep step ran: the step still runs on the server
+    sessionStorage.setItem("mindReady.startRunning", "m1");
+    let jobs: WorkJob[] = [running("prep", "Fixing the formulas and the structure")];
+    open("basic", { jobs: async () => jobs });
+    page.openSaved(started("m1"));
+    await (page as unknown as { checkInterrupted: () => Promise<void> }).checkInterrupted();
+    expect(page.basicLines()).toEqual(["Start was interrupted when the page was reloaded or left. Press Start again when this step ends."]);
+    expect(page.stopPlace()?.id).toBe("do-everything"); // Show me: the Start button
+    // the step ended (the shell's list no longer has it): press Start to finish; the tab forgets it
+    const work = TestBed.inject(WorkService);
+    work.jobs.set([]);
+    TestBed.tick();
+    expect(page.basicLines()).toEqual(["Start was interrupted when the page was reloaded or left. Press Start again to finish."]);
+    expect(sessionStorage.getItem("mindReady.startRunning")).toBeNull();
+    // a later reload says nothing; nor does a workbook Start never ran on
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    jobs = [];
+    open("basic", { jobs: async () => jobs });
+    page.openSaved(started("m1"));
+    await (page as unknown as { checkInterrupted: () => Promise<void> }).checkInterrupted();
+    expect(page.basicLines()).toEqual([]);
+    sessionStorage.setItem("mindReady.startRunning", "other");
+    await (page as unknown as { checkInterrupted: () => Promise<void> }).checkInterrupted();
+    expect(page.basicLines()).toEqual([]);
+    sessionStorage.removeItem("mindReady.startRunning");
+  });
+
+  // ---- 17 Nov 2026, repair round: what the check of the first fixes found ----------------------------------
+  const MARK = "mindReady.startRunning";
+  const checkInterrupted = () => (page as unknown as { checkInterrupted: () => Promise<void> }).checkInterrupted();
+  const job = (kind: string, title: string, startedMs: number): WorkJob => ({ kind, title, started: startedMs / 1000, elapsed_s: 3, stopping: false });
+
+  it("repair round (L2b-4): a page left or reloaded during Start's last step leaves no 'interrupted' line; one left before it does", async () => {
+    sessionStorage.removeItem(MARK);
+    await opened();
+    let gates = held();
+    let run = page.runAll();
+    await settle();
+    for (const step of ["fixAll", "prepare", "loop"] as const) await endStep(gates, step);
+    expect(page.chainStep()?.id).toBe("recalc");
+    expect(JSON.parse(sessionStorage.getItem(MARK) ?? "null")).toMatchObject({ id: "m1", kinds: ["recalc"], last: true });
+    page.ngOnDestroy(); // left for Advanced while Recalculate runs: nothing of Start is left once it ends
+    expect(sessionStorage.getItem(MARK)).toBeNull();
+    await endStep(gates, "recalc");
+    await run;
+    TestBed.resetTestingModule();
+    open("basic", { jobs: async () => [] });
+    page.openSaved(started("m1"));
+    await checkInterrupted();
+    expect(page.basicLines()).toEqual([]); // it said "Start was interrupted ... Press Start again to finish."
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+
+    // a reload (no ngOnDestroy, only "pagehide") in the last step: the same
+    await opened();
+    gates = held();
+    run = page.runAll();
+    await settle();
+    for (const step of ["fixAll", "prepare", "loop"] as const) await endStep(gates, step);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(sessionStorage.getItem(MARK)).toBeNull();
+    const reloaded = page;
+    TestBed.resetTestingModule();
+    open("basic", { jobs: async () => [job("recalc", "Recalculating", Date.now() - 5000)] });
+    page.openSaved(started("m1"));
+    await checkInterrupted();
+    expect(page.basicLines()).toEqual([]);
+    reloaded.ngOnDestroy();
+    await endStep(gates, "recalc");
+    await run;
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+
+    // left in an earlier step: the rest of Start did not run, and the next page says so
+    await opened();
+    gates = held();
+    run = page.runAll();
+    await settle();
+    await endStep(gates, "fixAll");
+    page.ngOnDestroy();
+    expect(JSON.parse(sessionStorage.getItem(MARK) ?? "null")).toMatchObject({ id: "m1", kinds: ["prep"], last: false });
+    await endStep(gates, "prepare");
+    await run;
+    TestBed.resetTestingModule();
+    open("basic", { jobs: async () => [] });
+    page.openSaved(started("m1"));
+    await checkInterrupted();
+    expect(page.basicLines()).toEqual(["Start was interrupted when the page was reloaded or left. Press Start again to finish."]);
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+
+    // a mark of the last step whose leaving was never heard (the tab was ended): nothing is said either
+    sessionStorage.setItem(MARK, JSON.stringify({ id: "m1", kinds: ["recalc"], last: true, left: 0 }));
+    open("basic", { jobs: async () => [] });
+    page.openSaved(started("m1"));
+    await checkInterrupted();
+    expect(page.basicLines()).toEqual([]);
+    expect(sessionStorage.getItem(MARK)).toBeNull();
+  });
+
+  it("repair round (L2b-4): after Start was left, only the step that ran then is Start's: a Recalculate or a Prep run pressed under Advanced afterwards is not", async () => {
+    sessionStorage.removeItem(MARK);
+    clockAt(T0);
+    await opened();
+    const work = TestBed.inject(WorkService);
+    const gates = held();
+    const run = page.runAll();
+    await settle();
+    await endStep(gates, "fixAll");
+    expect(page.chainStep()?.id).toBe("prepare");
+    work.jobs.set([job("prep", "Fixing the formulas and the structure", T0 + 1000)]); // the shell's last look
+    later(30);
+    page.ngOnDestroy(); // left for Advanced, 30 s into the Prep step
+    expect(JSON.parse(sessionStorage.getItem(MARK) ?? "null")).toEqual({ id: "m1", kinds: ["prep"], last: false, left: (T0 + 30_000) / 1000 });
+    gates.prepare.end(true); // the page stopped following the job: it may still run on the server
+    await run;
+    expect(work.jobs().map((j) => j.kind)).toEqual(["prep"]); // the list keeps it (it was dropped, and the strip went)
+    TestBed.resetTestingModule();
+
+    // under Advanced, once the Prep step ended: Recalculate pressed at T0 + 60 s
+    let jobs: WorkJob[] = [job("recalc", "Recalculating", T0 + 60_000)];
+    open("basic", { jobs: async () => jobs });
+    page.openSaved(started("m1"));
+    await checkInterrupted();
+    expect(page.basicLines()).toEqual(["Start was interrupted when the page was reloaded or left. Press Start again to finish."]);
+    expect(sessionStorage.getItem(MARK)).toBeNull(); // said once
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+
+    // a Prep run pressed under Advanced after the page was left is not Start's either; Start's own one is
+    for (const [startedAt, line] of [
+      [T0 + 60_000, "Start was interrupted when the page was reloaded or left. Press Start again to finish."],
+      [T0 + 1000, "Start was interrupted when the page was reloaded or left. Press Start again when this step ends."],
+    ] as const) {
+      sessionStorage.setItem(MARK, JSON.stringify({ id: "m1", kinds: ["prep"], last: false, left: (T0 + 30_000) / 1000 }));
+      jobs = [job("prep", "Fixing the formulas and the structure", startedAt)];
+      open("basic", { jobs: async () => jobs });
+      page.openSaved(started("m1"));
+      await checkInterrupted();
+      expect(page.basicLines()).toEqual([line]);
+      // the shell's next look: Advanced's Recalculate is no step of that Start
+      if (startedAt === T0 + 1000) {
+        TestBed.inject(WorkService).jobs.set([job("recalc", "Recalculating", T0 + 90_000)]);
+        TestBed.tick();
+        expect(page.basicLines()).toEqual(["Start was interrupted when the page was reloaded or left. Press Start again to finish."]);
+      }
+      page.ngOnDestroy();
+      TestBed.resetTestingModule();
+    }
+    sessionStorage.removeItem(MARK);
+  });
+
+  it("repair round (L2b-2): an assistant's answer or a Run in Mind does not grey Start; work Start cannot begin beside does", () => {
+    open("basic");
+    page.openSaved(started("m1"));
+    const work = TestBed.inject(WorkService);
+    for (const [kind, title] of [["chat", "The assistant is answering"], ["mind", "Uploading to Mind"], ["numbers", "Comparing the numbers"], ["finder", "Looking for instances"]]) {
+      work.jobs.set([running(kind, title)]);
+      expect(page.startBlocked()).toBe(false);
+      expect(page.startHint()).toBe("");
+    }
+    for (const [kind, title] of [["recalc", "Recalculating"], ["apply", "Writing the changes"], ["names", "Suggesting names"], ["next_quarter", "Making next quarter's input files"]]) {
+      work.jobs.set([running(kind, title)]);
+      expect(page.startBlocked()).toBe(true);
+      expect(page.startHint()).toBe(`Still working: ${title}. Press Start once it has finished.`);
+    }
+    // both at once: the one that holds Start back is named
+    work.jobs.set([running("mind", "Uploading to Mind"), running("recalc", "Recalculating")]);
+    expect(page.startHint()).toBe("Still working: Recalculating. Press Start once it has finished.");
+    work.jobs.set([]);
+  });
+
+  it("repair round (R2-3): a problem the Prep step's assistant already tried does not start the Prep job again after the loop; a new one does", async () => {
+    const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-011", sheet: "Calc", cell: "B2" } });
+    const f = prepFake([asks(ask, 10), done(0)]);
+    f.after = { ...f.after, readiness: blockedBy(1) };
+    // after the loop the same problem is still there, and nothing new
+    await withLoop(f, Promise.resolve({ ...started("m1"), version: ver(5), plan: [], readiness: blockedBy(1) }));
+    await page.runAll();
+    expect(f.calls.filter((c) => c === "start")).toHaveLength(1); // it was 2: a whole Prep job for no new answer
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "done"]);
+    expect(page.chainAsk()).toBe(ask); // Start asks about it at the end
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    // the loop made another problem as well: the job runs again for it
+    const g = prepFake([asks(ask, 10), done(0, 1)]);
+    g.after = { ...g.after, readiness: blockedBy(1) };
+    const two: Readiness = { ...blockedBy(2), blocking: [...blockedBy(1).blocking, { rule_id: "FRM-011", rule_name: "r", status: "ERROR", message: "m", location: { sheet: "Calc", cell: "B9" }, fix: "assistant" }] };
+    await withLoop(g, Promise.resolve({ ...started("m1"), version: ver(5), plan: [], readiness: two }));
+    await page.runAll();
+    expect(g.calls.filter((c) => c === "start")).toHaveLength(2);
+  });
+
+  it("repair round (L2b-6): Start pressed while the loop plan is still being read counts the loop step, and the count stays", async () => {
+    for (const found of [true, false]) {
+      const read = hold<{ version_id: string; plan: LoopPlan }>();
+      open("basic", { mindLoopPlan: () => read.done });
+      page.openSaved(started("m1"));
+      await settle();
+      const gates = held();
+      page.canBuildLoop = () => !!page.loopPlan()?.found;
+      const run = page.runAll();
+      await settle();
+      expect(page.basicLines()[0]).toMatch(/^Step 1 of 4: /); // it said "Step 1 of 3", then "Step 3 of 4" once the plan came
+      await endStep(gates, "fixAll");
+      read.end({ version_id: "ver-002", plan: { ...loopPlan(), found } });
+      await settle();
+      await endStep(gates, "prepare");
+      if (found) {
+        expect(page.basicLines()[0]).toMatch(/^Step 3 of 4: building the Mind loop/);
+        await endStep(gates, "loop");
+      }
+      expect(page.basicLines()[0]).toMatch(/^Step 4 of 4: recalculating/);
+      await endStep(gates, "recalc");
+      await run;
+      page.ngOnDestroy();
+      TestBed.resetTestingModule();
+    }
+  });
+
+  it("review R2-5: Basic says Start where Custom says Do everything: the waiting box and the hint on a greyed button", () => {
+    open("basic");
+    store.outsideInputs.set({ ...twoFiles(), rows: [{ ...twoFiles().rows[0], file: null }], missing: ["BBA_01"], matched: 0 });
+    page.chainRunning.set(true);
+    page.outsideWaiting.set(true);
+    expect(page.waitingLine()).toBe("Start is waiting for 1 input file: BBA_01. Pick it.");
+    expect(page.busyHint()).toBe("Start is waiting for the input files");
+    page.outsideWaiting.set(false);
+    expect(page.busyHint()).toBe("Start is running");
+    page.chainRunning.set(false);
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    // Custom keeps its own words
+    open("custom");
+    page.chainRunning.set(true);
+    expect(page.busyHint()).toBe("Do everything is running");
+    page.chainRunning.set(false);
+  });
+
+  it("review R2-4: the thinking dots go beside the words of the assistant at work", () => {
+    open("basic");
+    expect(page.aiWords("Making the missing input files with the assistant…")).toBe(true);
+    expect(page.aiWords("Make them with AI")).toBe(true);
+    expect(page.aiWords("Waiting for 2 input files: BBA_01, BBA_02")).toBe(false);
   });
 });
 

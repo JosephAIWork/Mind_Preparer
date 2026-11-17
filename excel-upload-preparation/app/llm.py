@@ -369,7 +369,10 @@ def chat_completion(
             on_delta(text)  # not streamed: hand over the whole reply at once
         return _finish(text, body.get("stop_reason"), on_delta)
     except Exception as exc:
-        return {"available": True, "text": None, "message": f"Request failed: {exc}"}
+        # 17 Nov 2026: "reached" False only here -- no answer came (no connection, a timeout, a key the
+        # gateway refuses, a 500, a reply cut off). A model that answered with no text, or in a shape
+        # not known, did answer: those results carry no "reached" (app/web/server.py _prep_run_try).
+        return {"available": True, "text": None, "message": f"Request failed: {exc}", "reached": False}
 
 
 def suggest_formula_fix(finding: dict[str, Any], formula_text: str, model_id: str = DEFAULT_MODEL_ID) -> dict[str, Any]:

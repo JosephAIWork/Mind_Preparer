@@ -258,4 +258,19 @@ describe("the Send feedback dialog", () => {
     await detect();
     expect(noteBox(page)?.value).toBe("");
   });
+
+  // 17 Nov 2026 (live test L2b-7): opened from Start's question nothing went wrong: the app could not fix one
+  // problem by itself. The rest of the dialog stays as it is.
+  it("opened from Start's question it does not lead with 'Something went wrong.'", async () => {
+    const lead = (page: HTMLElement) => (page.querySelector(".fb__text")?.textContent ?? "").replace(/\s+/g, " ").trim();
+    const asked = await draw("ABCD-1234", NOTE);
+    expect(lead(asked.page)).toBe("The app could not fix one problem by itself. The message says where in the app it stopped and why, in codes we can read. Nothing from your workbook is in it: no file name, no sheet names, no cell addresses, no values.");
+    expect(asked.page.textContent).not.toContain("Something went wrong");
+    // a question that came with no incident: no codes to speak of
+    const plain = await draw(null, NOTE);
+    expect(lead(plain.page)).toMatch(/^The app could not fix one problem by itself\. Nothing from your workbook is in it/);
+    // the problem box under the header and the header's own button are as before
+    expect(lead((await draw("ABCD-1234")).page)).toMatch(/^Something went wrong\. The message says where in the app it stopped and why/);
+    expect(lead((await draw(null)).page)).toMatch(/^Tell us what works, what does not, and what is missing\./);
+  });
 });

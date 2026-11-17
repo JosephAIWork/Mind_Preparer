@@ -113,7 +113,7 @@
         <!-- (17 Nov 2026: the button and its Cancel keep together) -->
         <div class="basic__run">
         @if (!chainRunning()) {
-          <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Start again" : "Start" }}</button>
+          <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="startBlocked()" [title]="startHint()">{{ steps().length ? "Start again" : "Start" }}</button>
         } @else if (outsideWaiting()) {
           <button cdsButton="primary" size="lg" class="basic__go" disabled>Waiting for the input files</button>
         } @else {
@@ -126,9 +126,14 @@
         @if (chainRunning() && (!outsideWaiting() || chainStopping())) {
           <!-- 17 Nov 2026: Cancel, beside the button: it stops the step that runs (on the server) and keeps the
                steps that finished. While Start waits for the input files, the box below has its own Cancel. -->
-          <mr-cancel class="basic__cancel" [kind]="null" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
+          <mr-cancel class="basic__cancel" [kind]="startKinds" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
         }
         </div>
+        @if (!chainRunning() && otherWork() && !interruptedLine()) {
+          <!-- 17 Nov 2026 (live test L2b-2): other work of this workbook runs (a Recalculate pressed under
+               Advanced): Start is greyed, and this says why, beside it -->
+          <p class="basic__wait" data-test="start-wait">{{ startHint() }}</p>
+        }
       </div>
       @if (basicLine()) {
         <div class="basic__said">
@@ -144,8 +149,10 @@
                cell) and "Send feedback". None after a Cancel: the person stopped it, there is no place to fix. -->
           @if (chainAsk(); as ask) {
             <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
-          } @else if (stopPlace()) {
-            <p class="basic__next"><mr-show-me [text]="chainLine()" [open]="true"></mr-show-me></p>
+          } @else if (stopPlace(); as p) {
+            <!-- (17 Nov 2026: the place the line names, or the one given with it: the first blocking problem
+                 left at the end, the Versions tab for the assistant's fixes) -->
+            <p class="basic__next"><mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me></p>
           }
         }
         </div>
@@ -333,7 +340,7 @@
         </div>
         <div class="chain__buttons">
         @if (!chainRunning()) {
-          <button cdsButton="primary" size="lg" data-show-me="do-everything" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
+          <button cdsButton="primary" size="lg" data-show-me="do-everything" (click)="runAll()" [disabled]="startBlocked()" [title]="startHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
         } @else if (chainStep()?.id === "fixAll" && !fixAll().stopping) {
           <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
         } @else if (outsideWaiting()) {
@@ -345,7 +352,7 @@
           <!-- 17 Nov 2026: Cancel, beside "Running…" and beside "Stop, keep what is fixed" (which keeps what the
                fixer has fixed so far; Cancel throws the running step away and keeps the steps that finished).
                While Do everything waits for the input files, the box below has its own Cancel. -->
-          <mr-cancel class="chain__cancel" [kind]="null" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
+          <mr-cancel class="chain__cancel" [kind]="startKinds" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
         }
         </div>
       </div>
@@ -376,9 +383,10 @@
           }
         </ol>
       }
-      @if (chainLine()) {
-        <!-- (17 Nov 2026: no "Show me" on the sentence after a Cancel: the person stopped it, there is no place to fix) -->
-        <p class="chain__text"><strong>{{ chainLine() }}</strong>@if (!chainStoppedByCancel() && !chainAsk()) {<mr-show-me [text]="chainLine()"></mr-show-me>}</p>
+      @if (endLine()) {
+        <!-- (17 Nov 2026: no "Show me" on the sentence after a Cancel: the person stopped it, there is no place to fix;
+             a place given with the line -- the first blocking problem left at the end -- opens by itself) -->
+        <p class="chain__text"><strong>{{ endLine() }}</strong>@if (!chainStoppedByCancel() && !chainAsk()) {@if (endPlace(); as p) {<mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me>} @else {<mr-show-me [text]="endLine()"></mr-show-me>}}</p>
         @if (chainAsk(); as ask) {
           <!-- 17 Nov 2026: the question the Prep step ended with: Show me, Send feedback, and why under "View details" -->
           <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
