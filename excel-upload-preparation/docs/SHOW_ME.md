@@ -107,7 +107,9 @@ the assistant could not fix a problem, carry a link that does the clicks for the
   Advanced tab, and points at the place only. The AI-key box is reached this way.
 - `[where]="{sheet, cell}"` names the cell the problem is about. The Prep panel then opens the action's
   list with that cell's change first (`prep-cell`), and the Findings row shows where it is (`where-<rule>`).
-- New places: `versions` (`versions-list`, the Versions table), `prep-cell`, `where-<rule>`.
+- New places: `versions` (`versions-list`, the Versions table), `prep-cell`, `where-<rule>`, and
+  `hand-<rule>` (a rule's entry in Prep's "By hand" list: the question's Show me lands there when Prep
+  has no change for that cell, never on an empty "Blocking (0)" list).
 - After a Cancel there is no link: the user stopped the work, so there is no place to fix.
 
 To add one: put `<mr-show-me [text]="…">` next to the instruction. When it names a new place, add
