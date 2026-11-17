@@ -100,6 +100,16 @@ for each Advanced tab, and the places (`prep-apply`, `prep-for-<rule>` on each P
 `findings-list`, `recalc-run`, `recalc-errors`, `main-recalc`, `loop-choices`, `mind-run`,
 `outside-card`, `outside-add`, `outside-bring-in`, `do-everything`, `download`).
 
+Opening the place itself (17 Nov 2026). A stop sentence of Start, and the question the app asks when
+the assistant could not fix a problem, carry a link that does the clicks for the user:
+
+- `<mr-show-me to="…" [open]="true">` goes to the screen (the workbook stays in the address), opens the
+  Advanced tab, and points at the place only. The AI-key box is reached this way.
+- `[where]="{sheet, cell}"` names the cell the problem is about. The Prep panel then opens the action's
+  list with that cell's change first (`prep-cell`), and the Findings row shows where it is (`where-<rule>`).
+- New places: `versions` (`versions-list`, the Versions table), `prep-cell`, `where-<rule>`.
+- After a Cancel there is no link: the user stopped the work, so there is no place to fix.
+
 To add one: put `<mr-show-me [text]="…">` next to the instruction. When it names a new place, add
 the place to `SHOW_ME_PLACES`, its words to `SHOW_ME_PHRASES`, `data-show-me` on the element, and
 the text to `FOUND` in `show-me.spec.ts` (that test lists every text that sends the user somewhere:

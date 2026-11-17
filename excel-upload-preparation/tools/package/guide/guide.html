@@ -85,11 +85,12 @@
   <h2>Use it</h2>
   <ol>
     <li><b>Drop a workbook</b> (<code>.xlsx</code>, <code>.xlsm</code> or <code>.xlsb</code>).</li>
-    <li>On the <b>Basic</b> screen click <b>Start</b> (on <b>Custom</b>: <b>Do everything</b>). It runs the fixes, each followed by its check, and stops at the first check that fails.<br>
+    <li>On the <b>Basic</b> screen click <b>Start</b> (on <b>Custom</b>: <b>Do everything</b>). It runs the fixes, each followed by its check. A fix is repeated while it still changes something. What is still blocking after that goes to the assistant (when an AI key is saved): its fix is kept only when no value of the model changed, and is undone otherwise. The app asks you only about a problem it could not fix itself: two plain sentences, with <b>Show me</b> (it opens the place) and <b>Send feedback</b> (the problem is already written in the message).<br>
       <span class="small">On Custom, you can also tick <b>Do everything right after the upload</b> before you drop the file: it then runs from start to end without stopping to ask anything.</span></li>
     <li>Read the message at the end of the check: <b>The workbook can be uploaded to Mind</b> (Basic has an <b>Upload to Mind</b> button there), or the problems left, each with where it is and why it was not fixed.</li>
     <li>Click <b>Download this version</b>. You can also download the report, or the workbook with the report added as sheets.</li>
   </ol>
+  <div class="note"><b>Cancel.</b> While the app works there is a <b>Cancel</b> button next to the progress: one click, no question. The step that was running is thrown away and the workbook is as it was before it (<i>&ldquo;Stopped. Nothing was changed.&rdquo;</i>); the steps of Start that had already finished are kept. Only the hidden Excel the app itself started is closed, never an Excel you have open. During <b>Upload to Mind</b> the project already made in Mind is kept: the app says its name and shows <b>Delete it from Mind</b>; nothing is deleted without that click.</div>
   <div class="note warn"><b>Keep the computer awake during a long run.</b> A small model takes a few minutes. A model with about
   1.4 million formulas took about 1 hour 35 minutes. If the computer sleeps, the run waits until it wakes up.</div>
   <p class="small">Everything else is under <b>Advanced</b>: the findings rule by rule, each fix to tick or untick, the Mind loop choices
@@ -143,7 +144,8 @@ What happened
     <li><b><code>MM_INSTANCE(cell, k)</code> with k above 1</b> shows 0 in Mind's upload check before the first run. That is a false alarm: after a run Mind shows the right values.</li>
     <li><b>Pivot tables</b>: Mind refuses every pivot table, so the app turns them into values (or formulas, under Advanced, on the Prep screen).</li>
     <li><b>External links</b> are frozen to the values Excel last kept for them.</li>
-    <li><b>Some problems stay for a person</b>, each listed with the reason: for example an array formula over several cells, or a text cell that a lookup reads inside a range.</li>
+    <li><b>Some problems stay for a person</b>, each listed with the reason: for example an array formula over several cells, or a text cell that a lookup reads inside a range. With an AI key saved the assistant tries them first; a fix that would change a value of the model is undone.</li>
+    <li><b>The assistant's tries take time on a big model</b>: each try is checked by recalculating the model in Excel, at most 5 problems a run and 2 tries for each.</li>
   </ul>
 
   <h2 class="newpage">What is done</h2>
@@ -160,7 +162,8 @@ What happened
     <tr><td>Mind instances</td><td>The macro's run loop as one copy of the model per key (a tariff, a product, a group), a loop inside each copy, and a main workbook with the keys and the results. Two files in one zip, uploaded together to one Mind project. Checked in Mind on the example model: converted, ran, and both result grids equal to Excel's sums by group.</td><td class="st"><span class="tag done">Done</span></td></tr>
     <tr><td>Where instances could help</td><td>Reads every formula and the macro and points to what repeats: a column the loop could split on, blocks or sheets that compute the same, near copies with the edits that would unify them. Ranked, with the evidence and whether instances, a loop or leaving it fit. It writes nothing; Use as the key fills the instances builder.</td><td class="st"><span class="tag done">New</span></td></tr>
     <tr><td>Recalculate and compare</td><td>Recalculates in Excel with the MM for Excel add-in and compares every formula cell with the original, following any rows inserted.</td><td class="st"><span class="tag done">Done</span></td></tr>
-    <tr><td>Do everything</td><td>The steps in order, each with its check; the box to start it right after the upload.</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Start / Do everything</td><td>The steps in order, each with its check; a fix repeats while it still changes something; the assistant tries what is left, and its fix is kept only when no value changed. The box to start it right after the upload (Custom).</td><td class="st"><span class="tag done">Done</span></td></tr>
+    <tr><td>Cancel</td><td>A Cancel button wherever the app works. It stops the work, closes only the Excel the app itself started, and puts the workbook back as it was before the step. In Mind the half-made project is kept and offered for deletion.</td><td class="st"><span class="tag done">New</span></td></tr>
     <tr><td>Assistant</td><td>Grid names from context, questions about the model, explaining and suggesting fixes. It only advises: nothing is applied until you click Apply.</td><td class="st"><span class="tag done">Done</span></td></tr>
     <tr><td>Feedback</td><td>The button above, with the coded message.</td><td class="st"><span class="tag done">Done</span></td></tr>
   </table>

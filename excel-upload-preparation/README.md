@@ -28,6 +28,22 @@ All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
 
+- **Cancel on every piece of work** (1.15.0, `app/cancel.py`): a **Cancel** button wherever the app
+  works. It stops the work on the server, ends only the Excel the app itself started for it, and puts
+  the workbook back as it was before the step ("Stopped. Nothing was changed."). In the middle of Start
+  the finished steps are kept. During Upload to Mind / Run in Mind the half-made Mind project is kept,
+  named, and offered with **Delete it from Mind** (`mind_projects.json` in the data folder holds the
+  names; nothing is deleted without a click). Routes: `POST .../cancel`, `GET .../jobs`,
+  `POST .../mind-loop/delete-project`.
+- **Start does not stop for a person when the app can fix it** (1.15.0, `app/handoff.py`,
+  `POST` / `GET .../prep-run`): the Prep rounds go on while a round still changes something; what is
+  left goes to the assistant, whose fix is kept only when the numbers check finds no value changed
+  and the problem got smaller (else it is undone); only then is the person asked, with **Show me**
+  and **Send feedback**. The cost: at most 5 problems a run, 2 tries each, a try being up to 5 model
+  calls plus an Apply and a recalculation of two versions (at most 50 model calls a run; minutes per
+  try on a big model). With no AI key the app stops and says so.
+- **Basic shows progress** (1.15.0): a bar with a percentage under the step line and pulsing dots on
+  the button while Start runs. Lone text cells are fixed in one Prep round.
 - **Three screens** (1.15.0): **Basic** (upload, one tick box, **Go**, the end-of-check message with
   **Upload to Mind** and **Download**), **Custom** (the former main screen) and **Advanced**; **Remove all**
   empties the Recent workbooks list (keeping what another copy or a running step holds).

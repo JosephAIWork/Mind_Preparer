@@ -2,6 +2,23 @@
 
 ## 1.15.0 (13 November 2026): Basic, Custom and Advanced screens, Remove all, range-read and numbers-check fixes, a copy of the project that stands on its own
 
+### Cancel on every piece of work, and Start that does not stop for a person (17 Nov 2026)
+
+- **Cancel.** Wherever the app works there is a **Cancel** button: Start / Do everything and each of its steps, the first check, Prep's Apply, Recalculate, the numbers check, the Mind loop and the instances builders, bringing in the outside files and making the stand-ins, next quarter, Suggest names, the assistant's answer, Upload to Mind / Run in Mind. One click, no question; the button says "Stopping…" until the work has really stopped on the server.
+  - The step that was running is thrown away and the workbook is put back as it was before it: "Stopped. Nothing was changed." In the middle of Start the finished steps are kept: "Stopped. Your workbook is as it was after <the last finished step>."
+  - Only the Excel the app itself started for that work is ended (checked against the list of Excels this copy of the app opened). An Excel the user has open is never touched.
+  - During Upload to Mind / Run in Mind the half-made Mind project is kept: the app says its name and offers **Delete it from Mind**. Nothing is deleted without that click. The names are kept in `mind_projects.json` in the data folder.
+  - When the work goes on after you leave its screen, a strip at the top says "Still working: …" with its own Cancel.
+  - For developers: `app/cancel.py` (the jobs of each workbook), `POST /api/sessions/{id}/cancel`, `GET /api/sessions/{id}/jobs`, `POST /api/sessions/{id}/mind-loop/delete-project`. A cancelled blocking request answers 409 `{"detail": "Stopped. Nothing was changed.", "cancelled": true, "kind": ...}`; the status routes say `cancelled`.
+- **Start does not stop for a person when the app can fix it.**
+  - The Prep step repeats while a round still changes something and stops only when a round changes nothing.
+  - What is still blocking then goes to the assistant. Its fix is written, then the numbers check and a new scan judge it: if any value changed, or the problem did not get smaller, the fix is undone. Only then is the person asked, in two plain sentences, with **Show me** (it opens the place) and **Send feedback** (the problem is already written in the draft).
+  - Every stop sentence on Basic has a **Show me**. With no AI key saved the app stops and says so.
+  - The cost: at most 5 problems a run and 2 tries for each. A try is one turn of the assistant (up to 5 model calls) plus an Apply and a recalculation of two versions in Excel, so a run is at most 50 model calls, and on a big model a try takes minutes. A problem the assistant could not fix is remembered for the workbook while the app runs and is not paid for again.
+  - For developers: `app/handoff.py`, `POST` / `GET /api/sessions/{id}/prep-run`; `scripts/night_chain.py` uses the same job (`--no-assistant` runs the rounds only).
+- **Lone text cells are fixed in one round.** The Prep planner now sees the sheet as its own earlier changes leave it, so a diagonal "staircase" of lone text cells (each one became lone only after the one before it was fixed) no longer takes one round per cell.
+- **Basic shows progress.** A bar under the step line fills with a percentage (a moving bar while there is no estimate yet), the button shows pulsing dots while Start runs, and a step that runs late says one thing: "This step is taking longer than usual; about 7 min left (around 22:09), maybe more."
+
 ### Also
 
 - `scripts/night_chain.py` now skips the outside-files step the way the screen does when no cell names the files (or no macro brings them in): their data stays inside the model, and the chain goes on instead of stopping (found on Phoenix).
