@@ -36,11 +36,12 @@ export type ShowMeId =
   | "outside-bring-in" // main screen: the card's button that brings the files in
   | "outside-waiting" // main screen: the box under Do everything while it waits for the input files (1.14.0)
   | "do-everything" // main screen: Do everything
-  | "recent-workbooks" // main screen: the Recent workbooks list (a saved workbook to open again)
-  | "versions" // Advanced › Versions: the list of versions ("The assistant fixed 2 more: see Advanced  › Versions.")
-  | "download"; // main screen: Download this  version; on Advanced: Run in Mind (send  it to Mind)
+  | "fix-all" // Custom: the Fix all issues button (19 Nov 2026: where "Show me" leads when a Cancel stopped that step)
+  | "recent-workbooks" // main screen: the Recent workbooks list (a  saved workbook to open again)
+  | "versions" // Advanced  › Versions: the list of versions ("The  assistant fixed 2  more: see  Advanced › Versions.")
+  | "download"; // main screen: Download this version; on Advanced: Run in Mind (send it to Mind)
 
-/** The  cell a  pointer is about: the problem Start could not fix by itself (17 Nov 2026). */
+/** The cell a pointer is about: the problem Start could not fix by itself (17 Nov  2026). */
 export interface ShowMeWhere {
   sheet: string;
   cell: string;
@@ -192,6 +193,7 @@ export const SHOW_ME_PLACES: Record<ShowMeId, ShowMeWay[]> = {
   "outside-card": [{ page: "custom", targets: [OUTSIDE_CARD] }],
   "outside-add": [{ page: "custom", targets: [{ el: "outside-add", text: "Add the input files here" }, OUTSIDE_CARD] }],
   "outside-bring-in": [{ page: "custom", targets: [{ el: "outside-bring-in", text: "Bring in the outside files here" }, OUTSIDE_CARD] }],
+  "fix-all": [{ page: "custom", targets: [{ el: "main-fix-all", text: "Fix all issues runs from here" }] }],
   "do-everything": [
     // (17 Nov 2026: the bubble said "Click Go"; the button says Start)
     { page: "basic", targets: [{ el: "do-everything", text: "Click Start" }] },
@@ -259,6 +261,7 @@ export const SHOW_ME_PHRASES: { words: RegExp; id: ShowMeId }[] = [
   // "See the box under Do everything." (the Outside files card while Do everything waits for the input files)
   { words: /\bthe box under Do everything\b/i, id: "outside-waiting" },
   { words: /\bpress Do everything\b/i, id: "do-everything" },
+  { words: /\bthe Fix all issues button\b/i, id: "fix-all" },
   { words: /\bDownload or send to Mind\b/i, id: "download" },
   // "The assistant fixed 2 more: see Advanced  › Versions." (the Prep step, 17 Nov 2026)
   { words: under("Versions"), id: "versions" },

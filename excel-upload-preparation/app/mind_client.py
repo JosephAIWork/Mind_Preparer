@@ -75,9 +75,20 @@ def sign_in_failure(exc: BaseException) -> str:
     said = f"{type(exc).__name__}: {exc}".lower()
     if "msedge" in said and ("is not found" in said or "not found at" in said or "doesn't exist" in said):
         return EDGE_NOT_FOUND
-    if "launch_persistent_context" in said and "closed" in said:
+    # the same  error comes from an Edge that ends  at its start for another reason (a crash, a policy): "already
+    # open" is said only when Edge really holds the profile
+    if "launch_persistent_context" in said and "closed" in said and profile_in_use():
         return EDGE_ALREADY_OPEN
     return EDGE_DID_NOT_OPEN
+
+
+def profile_in_use() -> bool:
+    """Is  an Edge  running on the app's profile? Edge keeps a file named 'lockfile' in the profile folder for as
+    long as it runs on it (seen on 19 Nov 2026: there while the window  is open, gone once it has closed)."""
+    try:
+        return (PROFILE_DIR / "lockfile").exists()
+    except OSError:
+        return False
 
 
 def closed_while_open(exc: BaseException) -> bool:

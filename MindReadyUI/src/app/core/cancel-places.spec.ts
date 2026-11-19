@@ -336,8 +336,11 @@ describe("Cancel on Basic and Custom", () => {
     await look();
     expect(s.calls).toContain("cancel:outside,autofix,prep,apply,recalc,scan");
     expect(texts(el, ".chain > .chain__text strong")).toEqual(["Stopped. Your workbook is as it was after the formula errors were fixed."]);
-    expect(page.chainStoppedByCancel()).toBe(true); // no "Show me" on this sentence: there is no place to fix
-    expect(el.querySelector(".chain > .chain__text mr-show-me")).toBeNull();
+    expect(page.chainStoppedByCancel()).toBe(true);
+    // 19 Nov 2026 (Joseph): "Show me" beside the sentence leads to the step that was stopped -- here "Fix the
+    // formulas and the structure", which runs by itself under Advanced, Prep actions
+    expect(page.endPlace()).toEqual({ id: "prep-apply" });
+    expect(el.querySelector(".chain > .chain__text mr-show-me")).not.toBeNull();
     expect(page.steps().map((x) => x.state)).toEqual(["done", "stopped", "waiting", "waiting"]);
     expect(buttons(head)).toEqual(["Do everything again"]);
     expect(count(s, "loop")).toBe(0);
@@ -672,6 +675,7 @@ describe("Cancel on Basic and Custom", () => {
       expect(page.chainLine()).toBe("Stopped. Your workbook is as it was before you pressed Do everything.");
       if (mode === "basic") expect(page.basicLine()).toBe(`Stopped. Your workbook is as it was before you pressed ${word}.`);
       expect(page.steps().map((x) => x.state)).toEqual(["stopped", "waiting", "waiting", "waiting"]);
+      expect(page.endPlace()).toEqual({ id: "fix-all" }); // 19 Nov 2026: "Show me" leads to the step that was stopped
       expect(page.fixAll()).toMatchObject({ line: STOPPED, tone: "idle" });
       expect(page.chainRunning()).toBe(false);
       expect(page.chainStopping()).toBe(false);
@@ -695,6 +699,7 @@ describe("Cancel on Basic and Custom", () => {
     expect(page.basicLine()).toBe("Stopped. Your workbook is as it was after the formula errors were fixed.");
     // the finished step keeps its state, the running one says "Stopped."
     expect(page.steps().map((x) => [x.state, x.line])).toEqual([["done", "Every formula error is fixed"], ["stopped", "Stopped."], ["waiting", ""], ["waiting", ""]]);
+    expect(page.endPlace()).toEqual({ id: "prep-apply" }); // 19 Nov 2026: "Show me" leads to the step that was stopped
     expect(s.calls).toEqual(["startAutoFix", "apply"]);
   });
 
@@ -715,6 +720,7 @@ describe("Cancel on Basic and Custom", () => {
     await run;
     expect(page.chainLine()).toBe("Stopped. Your workbook is as it was after the Mind loop was built.");
     expect(page.steps().map((x) => x.state)).toEqual(["done", "done", "done", "stopped"]);
+    expect(page.endPlace()).toEqual({ id: "recalc-run" }); // 19 Nov 2026: "Show me" leads to the step that was stopped
     expect(page.recalc()).toMatchObject({ line: STOPPED, tone: "idle" });
     expect(store.currentVersion()?.label).toBe("v5");
   });
@@ -796,6 +802,7 @@ describe("Cancel on Basic and Custom", () => {
     await run;
     expect(page.chainLine()).toBe("Stopped. Your workbook is as it was after the Mind loop was built.");
     expect(page.steps().map((x) => x.state)).toEqual(["done", "done", "stopped", "waiting"]);
+    expect(page.endPlace()).toEqual({ id: "prep-apply" }); // 19 Nov 2026: "Show me" leads to the step that was stopped
     expect(page.steps()[2].line).toBe("3 loop formulas written; the fixes after the loop were stopped");
     expect(count(s, "recalc")).toBe(0);
     expect(store.currentVersion()?.label).toBe("v5");
@@ -833,6 +840,7 @@ describe("Cancel on Basic and Custom", () => {
     heard();
     await run;
     expect(page.steps().map((x) => [x.state, x.line])).toEqual([["done", "Every formula error is fixed"], ["done", "1 changes applied"], ["waiting", ""], ["waiting", ""]]);
+    expect(page.endPlace()).toEqual({ id: "loop-build" }); // 19 Nov 2026: "Show me" leads to the step that was stopped
     expect(page.basicLine()).toBe("Stopped. Your workbook is as it was after the formulas and the structure were fixed.");
     expect(store.currentVersion()?.label).toBe("v4"); // its result stands
     expect(count(s, "loop")).toBe(0); // and the chain stops after it

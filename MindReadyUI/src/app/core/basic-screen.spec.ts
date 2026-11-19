@@ -287,6 +287,31 @@ describe("the Basic screen", () => {
     expect(f.componentInstance.signInLine()).toContain("Not signed in to Mind");
   });
 
+  it("19 Nov 2026, a sign-in that could not start: Basic shows the plain sentence and Send feedback with the incident", async () => {
+    const sentence = "Microsoft Edge was not found. Run in Mind needs Edge: install it, then press Sign in to Mind again.";
+    open("basic", {
+      mindSignIn: async () => ({ state: "failed", message: sentence, last_login: null, checked: null, elapsed_s: 1, detail: "RuntimeError: Chromium distribution 'msedge' is not found", feedback_ref: "R9PS-0727", kept_in: "C:\\data\\edge-profile" }),
+    });
+    store.setSession(started("m1"));
+    const f = TestBed.createComponent(Banner);
+    f.componentRef.setInput("readiness", readiness("ready"));
+    f.detectChanges();
+    await f.componentInstance.upload();
+    f.detectChanges();
+    const box = f.nativeElement as HTMLElement;
+    expect(f.componentInstance.signInLine()).toBe(sentence);
+    expect(box.textContent).toContain(sentence);
+    expect(box.textContent).not.toContain("RuntimeError");
+    expect(box.textContent).not.toContain("edge-profile"); // where it is kept is said under Advanced only
+    (box.querySelector('[data-test="finish-sign-in-feedback"]') as HTMLButtonElement).click();
+    expect(TestBed.inject(FeedbackService).dialog()).toEqual({ ref: "R9PS-0727", note: sentence });
+    TestBed.inject(FeedbackService).close();
+    // without an incident (the person closed the window): no button
+    f.componentInstance.signIn.set({ state: "failed", message: "Not signed in: the Edge window was closed before the sign-in finished.", last_login: null, checked: null, elapsed_s: 4, feedback_ref: null });
+    f.detectChanges();
+    expect(box.querySelector('[data-test="finish-sign-in-feedback"]')).toBeNull();
+  });
+
   it("Upload to Mind makes the same call as Run in Mind once signed in, and reads the answer back", async () => {
     const calls: string[] = [];
     open("basic", {
@@ -1400,7 +1425,7 @@ describe("the Basic screen", () => {
     fixture.destroy();
   });
 
-  it("Basic draws the question kept for the end of Start the same way, and no Show me when everything ran or after a Cancel", async () => {
+  it("Basic draws the question kept for the end of Start the same way, no Show me when everything ran, and after a Cancel one to the step that was stopped", async () => {
     const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-009", sheet: "Calc", cell: "B2" }, feedback: { ref: null, note: NOTE } });
     const f = prepFake([asks(ask, 12)]);
     const { fixture, el, look, shown } = await drawOn("basic", f.api);
@@ -1436,7 +1461,11 @@ describe("the Basic screen", () => {
     await run;
     await look();
     expect(sentences(el)).toEqual(["Stopped. Your workbook is as it was after the formula errors were fixed."]);
-    expect(el.querySelector(".basic__said mr-show-me")).toBeNull();
+    // 19 Nov 2026 (Joseph): one "Show me", to the step that was stopped ("Fix the formulas and the structure": the Prep actions)
+    expect(buttonsIn(el.querySelector('[data-test="cancelled-show-me"]'))).toEqual(["Show me"]);
+    expect(el.querySelectorAll(".basic__said mr-show-me")).toHaveLength(1);
+    linkIn(el, '[data-test="cancelled-show-me"]')!.click();
+    expect(shown[shown.length - 1]).toEqual({ id: "prep-apply", open: true });
     expect(el.querySelector('[data-test="question"]')).toBeNull();
     fixture.destroy();
   });

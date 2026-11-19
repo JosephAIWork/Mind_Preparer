@@ -134,7 +134,8 @@ def test_sign_in_opens_the_window_in_the_background_and_reports_back(client, mon
     monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
     st = client.post("/api/mind/sign-in", json={}).json()
     assert st["state"] == "waiting"
-    assert client.post("/api/mind/sign-in", json={}).status_code == 409  # one window at a time
+    again = client.post("/api/mind/sign-in", json={})  # one window at a time
+    assert again.status_code == 409 and again.json()["detail"] == mc.EDGE_ALREADY_OPEN
     st = _wait_sign_in(client)
     assert st["state"] == "done" and st["checked"]["signed_in"] is True and calls == [600]
 
@@ -168,19 +169,22 @@ _PROFILE_IN_USE = ("BrowserType.launch_persistent_context: Target page, context 
                    f"<launching> {_EDGE_EXE} --disable-field-trial-config --no-first-run")
 
 
-@pytest.mark.parametrize("error, sentence", [
-    (RuntimeError(f"Chromium distribution 'msedge' is not found at {_EDGE_EXE}"), "EDGE_NOT_FOUND"),
-    (TargetClosedError(_PROFILE_IN_USE), "EDGE_ALREADY_OPEN"),  # the real text of a second start, 19 Nov 2026
-    (OSError("[WinError 5] Access is denied"), "EDGE_DID_NOT_OPEN"),
-    (ModuleNotFoundError("No module named 'playwright'"), "EDGE_DID_NOT_OPEN"),
+@pytest.mark.parametrize("error, held, sentence", [
+    (RuntimeError(f"Chromium distribution 'msedge' is not found at {_EDGE_EXE}"), False, "EDGE_NOT_FOUND"),
+    (TargetClosedError(_PROFILE_IN_USE), True, "EDGE_ALREADY_OPEN"),  # the real text of a second start, 19 Nov 2026
+    # the same text from an Edge that ended at its start with nobody on the profile (a crash, a policy): no "already open"
+    (TargetClosedError(_PROFILE_IN_USE), False, "EDGE_DID_NOT_OPEN"),
+    (OSError("[WinError 5] Access is denied"), True, "EDGE_DID_NOT_OPEN"),
+    (ModuleNotFoundError("No module named 'playwright'"), False, "EDGE_DID_NOT_OPEN"),
 ])
-def test_each_way_the_window_fails_to_open_gets_its_plain_sentence(client, monkeypatch, error, sentence):
+def test_each_way_the_window_fails_to_open_gets_its_plain_sentence(client, monkeypatch, error, held, sentence):
     from app import feedback
     from app import mind_client as mc
 
     def fails(**_k):
         raise error
 
+    monkeypatch.setattr(mc, "profile_in_use", lambda: held)
     monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
     monkeypatch.setattr(mc, "sign_in", fails)
     client.post("/api/mind/sign-in", json={})
@@ -211,6 +215,17 @@ def test_a_window_the_person_closed_early_is_no_error_to_report(client, monkeypa
     st = _wait_sign_in(client)
     assert st["state"] == "failed" and st["message"] == "Not signed in: the Edge window was closed before the sign-in finished."
     assert st["feedback_ref"] is None and st["detail"].startswith("TargetClosedError: Page.goto")
+
+
+def test_edge_holds_the_profile_exactly_while_its_lockfile_is_there(tmp_path, monkeypatch):
+    from app import mind_client as mc
+
+    monkeypatch.setattr(mc, "PROFILE_DIR", tmp_path / "edge-profile")
+    assert mc.profile_in_use() is False  # no folder yet
+    (tmp_path / "edge-profile").mkdir()
+    assert mc.profile_in_use() is False
+    (tmp_path / "edge-profile" / "lockfile").write_bytes(b"")
+    assert mc.profile_in_use() is True
 
 
 def test_the_screen_is_told_where_the_sign_in_is_kept(client):

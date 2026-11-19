@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit, computed, inject, input, signal } from "@angular/core";
 import { ApiService, errorText } from "./api.service";
 import { CancelButton } from "./cancel-button";
+import { FeedbackService } from "./feedback.service";
 import { MIND_KEPT_LEAD, MIND_NOTHING_UPLOADED, MindDelete, MindLoopOptions, MindLoopStatus, MindProject, MindSignIn, Readiness, mindDeleteByHand, mindDeleteGone, mindEarlierLine, mindStoppedLine } from "./models";
 import { RecalcNow } from "./recalc-now";
 import { NOT_SIGNED_IN, SIGN_IN_WAITING } from "./sign-in-text";
@@ -96,6 +97,10 @@ export interface ProjectLine {
             <p>{{ signInLine() }}</p>
             <div class="finish__row">
               <button type="button" class="cds--btn cds--btn--tertiary cds--btn--md finish__signin-open" (click)="openSignIn()" [disabled]="signIn()?.state === 'waiting'">Sign in to Mind</button>
+              @if (signIn()?.state === "failed" && signIn()?.feedback_ref) {
+                <!-- 19 Nov 2026: a sign-in that could not start: the program's own error goes with Send feedback, never on the screen -->
+                <button type="button" class="cds--btn cds--btn--ghost cds--btn--md" data-test="finish-sign-in-feedback" (click)="signInFeedback()">Send feedback</button>
+              }
               @if (signIn()?.state === "waiting") {
                 <!-- 17 Nov 2026: the upload waits for the sign-in window: Cancel closes it, nothing is uploaded -->
                 <mr-cancel kind="mind" size="md" (stopping)="onStopping()"></mr-cancel>
@@ -223,6 +228,7 @@ export interface ProjectLine {
 })
 export class FinishBanner implements OnInit, OnDestroy {
   private api = inject(ApiService);
+  private feedback = inject(FeedbackService);
   private store = inject(SessionStore);
 
   /** how  often the  run in Mind (and the sign-in window) is looked at, in ms (the tests shorten it) */
@@ -292,7 +298,13 @@ export class FinishBanner implements OnInit, OnDestroy {
     return NOT_SIGNED_IN;
   }
 
-  /** Upload to Mind: the sign-in first (asked for when missing), then the same run as Run in Mind. */
+  /** "Send feedback" beside a sign-in that could not start: the incident the server wrote, the sentence as the note. */
+  signInFeedback(): void {
+    const s = this.signIn();
+    if (s?.state === "failed" && s.feedback_ref) this.feedback.open(s.feedback_ref, s.message || "");
+  }
+
+  /** Upload to Mind:  the sign-in first (asked for when missing), then the same run  as Run in Mind. */
   async upload(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.running() || !this.state()?.acceptable) return;
@@ -306,7 +318,7 @@ export class FinishBanner implements OnInit, OnDestroy {
     this.progress.set("Checking the Mind sign-in…");
     try {
       const s = await this.api.mindSignIn(true);
-      if (this.cancelled) return this.stoppedBefore(); // Cancel during the check  (10 to 40 s): nothing starts
+      if (this.cancelled) return this.stoppedBefore(); // Cancel during the  check (10 to 40 s): nothing starts
       this.signIn.set(s);
       if (!s.checked?.signed_in) {
         this.running.set(false);
@@ -322,7 +334,7 @@ export class FinishBanner implements OnInit, OnDestroy {
     }
   }
 
-  /** Opens the Edge window; when the  sign-in is done the upload starts  by itself. */
+  /** Opens  the Edge window; when the sign-in is done the upload starts  by itself. */
   async openSignIn(): Promise<void> {
     this.cancelled = false; // the person's own click: a Cancel  before it is over
     try {
@@ -340,7 +352,7 @@ export class FinishBanner implements OnInit, OnDestroy {
     this.timer = setTimeout(async () => {
       try {
         const s = await this.api.mindSignIn(false);
-        if (this.cancelled) return; // 17 Nov 2026: Cancel while the sign-in window  waited: no upload starts
+        if (this.cancelled) return; // 17 Nov 2026: Cancel while the sign-in window waited: no upload starts
         this.signIn.set(s);
         if (s.state === "waiting") return this.watchSignIn();
         if (s.checked?.signed_in || s.state === "done") {
@@ -353,14 +365,14 @@ export class FinishBanner implements OnInit, OnDestroy {
     }, FinishBanner.everyMs);
   }
 
-  /** 17 Nov 2026: the  click on Cancel (the button's `stopping`, before the server is asked). The button
+  /** 17 Nov 2026: the click on Cancel (the button's `stopping`, before the server is asked). The button
    *  itself tells the server (kind "mind": a run is stopped, the sign-in window is closed). Here: nothing
-   *  more starts. A run the server already has is followed until the server says "cancelled"; before
+   *  more starts. A run the server already has is followed until the server says "cancelled";  before
    *  that (the sign-in check cannot be stopped half-way) the line says "Stopping…" until the check is back. */
   onStopping(): void {
     this.cancelled = true;
     if (!this.running()) {
-      // the wait  for the sign-in window: it ends here, and nothing was uploaded
+      // the wait for the sign-in window: it ends here, and nothing was uploaded
       if (this.timer) clearTimeout(this.timer);
       this.signIn.set(null);
       this.askSignIn.set(false);
@@ -400,8 +412,8 @@ export class FinishBanner implements OnInit, OnDestroy {
       this.fail(errorText(e));
       return;
     }
-    // Cancel was clicked while the start was on its way: the server had no run to stop then, and has  one
-    // now. Ask again; the run  is followed to its "cancelled" like any  other.
+    // Cancel was  clicked while the start was  on its way: the server had no  run to stop  then, and  has one
+    // now. Ask again; the run is followed to its "cancelled" like any other.
     if (this.cancelled) await this.cancelAgain(id);
     await this.poll(id, 0);
   }
@@ -410,7 +422,7 @@ export class FinishBanner implements OnInit, OnDestroy {
     try {
       await this.api.cancel(id, "mind");
     } catch {
-      /* the run then  goes on  and its result is shown: nothing was promised */
+      /* the run then goes on and its result is shown: nothing was promised */
     }
   }
 
@@ -420,12 +432,12 @@ export class FinishBanner implements OnInit, OnDestroy {
     try {
       const s: MindLoopStatus = await this.api.mindLoopStatus(id, after);
       next = s.next ?? after;
-      // (the look does not end at the click: it goes on until the server says cancelled, done or error)
+      // (the look does not end at  the click: it goes on until the server says cancelled, done  or error)
       if (s.state === "cancelling" || this.stoppingNow()) this.progress.set("Stopping…");
       else if (s.timing?.stage_title) this.progress.set(`${s.timing.stage_title}…`);
       if (s.state === "cancelled") {
-        // 17 Nov 2026: stopped with Cancel:  the server's sentence names the project it left in Mind (the
-        // project  is kept: nothing is deleted without  a click); under it, each kept project  with its button
+        // 17 Nov 2026: stopped with  Cancel: the server's sentence names the project  it left in Mind (the
+        // project is kept: nothing is deleted without  a click); under it, each kept project  with its button
         this.running.set(false);
         this.stoppingNow.set(false);
         this.progress.set("");
@@ -434,7 +446,7 @@ export class FinishBanner implements OnInit, OnDestroy {
         return;
       }
       if (s.state === "done" || s.state === "error") {
-        // (also after a Cancel that came too late: the  run's result stands and is shown)
+        // (also after a Cancel that came too late: the run's result stands and is shown)
         this.running.set(false);
         this.stoppingNow.set(false);
         this.progress.set("");
@@ -447,7 +459,7 @@ export class FinishBanner implements OnInit, OnDestroy {
         return;
       }
     } catch {
-      /* the next  look tries again */
+      /* the next look tries again */
     }
     this.timer = setTimeout(() => void this.poll(id, next), FinishBanner.everyMs);
   }
@@ -477,8 +489,8 @@ export class FinishBanner implements OnInit, OnDestroy {
     this.timer = setTimeout(() => void this.poll(id, s.next ?? 0), FinishBanner.everyMs);
   }
 
-  /** The sentence of a run that was stopped with Cancel (the server's: it names the project the run left in
-   *  Mind, or  says that nothing was uploaded). Not an error. */
+  /** The sentence of  a run that was stopped with Cancel (the server's: it names the project the run left in
+   *  Mind, or says that nothing was uploaded). Not an error. */
   private showStopped(s: MindLoopStatus): void {
     this.failed.set(false);
     this.outcome.set(mindStoppedLine(s));
@@ -495,7 +507,7 @@ export class FinishBanner implements OnInit, OnDestroy {
 
   /** "Delete it from Mind": about a minute, no Cancel. The server says in one sentence what Mind did; the
    *  button goes when Mind no longer has the project, and stays (with the link "Open Mind" when Mind
-   *  refused) when it still does. */
+   *  refused) when it still  does. */
   async deleteProject(name: string): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.deleting() !== null || this.running()) return;
@@ -507,18 +519,18 @@ export class FinishBanner implements OnInit, OnDestroy {
       answer = await this.api.deleteMindProject(id, name);
       note = answer.message;
     } catch (e) {
-      note = errorText(e); // "Mind is busy. Try again in a moment.": the button stays
+      note = errorText(e); // "Mind is busy. Try again  in a moment.": the button stays
     }
     const url = answer?.url || this.kept().find((p) => p.name === name)?.url || null;
     this.answers.update((all) => ({ ...all, [name]: { message: note, openMind: mindDeleteByHand(answer) ? url : null } }));
     const gone = mindDeleteGone(answer);
     let seen = false;
     try {
-      // the list as the server has it now  says whether the button stays
+      // the list  as the server  has it  now says whether the button stays
       const s = await this.api.mindLoopStatus(id, 0);
       if (this.store.sessionId() === id) {
         this.showProjects(s);
-        // the  stopped run's sentence follows what was done  to its project  ("... was  deleted from Mind.")
+        // the stopped run's sentence follows what was done to its project ("... was deleted from Mind.")
         if (this.stoppedRun && s.state === "cancelled" && !this.running()) this.showStopped(s);
         seen = true;
       }
@@ -527,7 +539,7 @@ export class FinishBanner implements OnInit, OnDestroy {
     }
     if (gone) {
       this.kept.update((list) => list.filter((p) => p.name !== name));
-      // the list could not be read again: a sentence that still says "is still in Mind" would be wrong now
+      // the list could not  be read again: a sentence that still says "is still in  Mind" would be wrong now
       if (!seen && this.stoppedRun && this.outcome().includes(name)) {
         this.outcome.set("");
         this.stoppedRun = false;

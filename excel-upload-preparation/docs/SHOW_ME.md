@@ -98,7 +98,7 @@ Elements are found by their `data-show-me` words, never by their text: `nav-basi
 for each Advanced tab, and the places (`prep-apply`, `prep-for-<rule>` on each Prep action's card,
 `prep-list`, `prep-pivots`, `stack-apply`, `deliver-numbers`, `assistant-key`, `ask`, `ask-<rule>`,
 `findings-list`, `recalc-run`, `recalc-errors`, `main-recalc`, `loop-choices`, `mind-run`,
-`outside-card`, `outside-add`, `outside-bring-in`, `do-everything`, `download`).
+`outside-card`, `outside-add`, `outside-bring-in`, `do-everything`, `main-fix-all`, `download`).
 
 Opening the place itself (17 Nov 2026). A stop sentence of Start, and the question the app asks when
 the assistant could not fix a problem, carry a link that does the clicks for the user:
@@ -110,7 +110,11 @@ the assistant could not fix a problem, carry a link that does the clicks for the
 - New places: `versions` (`versions-list`, the Versions table), `prep-cell`, `where-<rule>`, and
   `hand-<rule>` (a rule's entry in Prep's "By hand" list: the question's Show me lands there when Prep
   has no change for that cell, never on an empty "Blocking (0)" list).
-- After a Cancel there is no link: the user stopped the work, so there is no place to fix.
+- After a Cancel of Start / Do everything (19 Nov 2026) the sentence has a link to the step that was stopped: the place
+  where that step runs by itself (`outside-card`, `fix-all` = the Fix all issues button on Custom, `prep-apply`,
+  `loop-build`, `recalc-run`; `PLACE_OF_STEP` in `home.page.ts`). When the click came too late to stop the
+  running step, it is the next step, the one that did not start. The sentence's own words still name no place.
+  A Cancel inside an Advanced panel has no link: the user is already at that step.
 
 To add one: put `<mr-show-me [text]="…">` next to the instruction. When it names a new place, add
 the place to `SHOW_ME_PLACES`, its words to `SHOW_ME_PHRASES`, `data-show-me` on the element, and

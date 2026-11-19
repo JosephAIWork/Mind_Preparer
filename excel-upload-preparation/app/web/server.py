@@ -2475,9 +2475,11 @@ def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, 
         in_use = _mind_in_use()
         if in_use == "loop":
             raise HTTPException(status_code=409, detail="Run in Mind is using Mind right now: sign in when it has finished")
-        if in_use in ("waiting", "checking"):
-            raise HTTPException(status_code=409, detail="the sign-in window is already open")
-        if in_use:  # 17 Nov 2026: a project is being  deleted from Mind
+        if in_use == "waiting":  # 19 Nov 2026: the sentence the screens  use for it (app/mind_client.py)
+            raise HTTPException(status_code=409, detail="The app's Edge window is already open. Close it (look on the taskbar), then press Sign in to Mind again.")
+        if in_use == "checking":
+            raise HTTPException(status_code=409, detail="The sign-in is being checked right now. Press Sign in to Mind again in a moment.")
+        if in_use:  # 17 Nov 2026: a project is being deleted  from Mind
             raise HTTPException(status_code=409, detail=_MIND_BUSY)
         MIND_SIGN_IN.update(state="waiting", message="Opening Edge on Mind...", started=time.time(), finished=None, stop=False, detail=None, feedback_ref=None)
 
@@ -2493,7 +2495,7 @@ def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, 
                 MIND_SIGN_IN.update(state="done", message="Signed in to Mind.", checked={"signed_in": True, "at": res.get("last_login")})
             else:
                 MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {res.get('reason')}.")
-        except Exception as exc:  # no Edge, the profile in use...
+        except Exception as exc:  # no Edge, the profile in  use...
             raw = f"{type(exc).__name__}: {exc}"[:2000]
             if mc.closed_while_open(exc):
                 MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {mc.CLOSED_BEFORE_SIGN_IN}.", detail=raw)
@@ -2501,7 +2503,7 @@ def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, 
                 ref = None
                 try:
                     ref = _report_problem(exc, "Sign in to Mind").get("ref")
-                except Exception:  # the report must never  be what fails the sign-in
+                except Exception:  # the report must never be what fails  the sign-in
                     ref = None
                 MIND_SIGN_IN.update(state="failed", message=mc.sign_in_failure(exc), detail=raw, feedback_ref=ref)
         finally:

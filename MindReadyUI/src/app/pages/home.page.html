@@ -155,6 +155,13 @@
             <p class="basic__next"><mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me></p>
           }
         }
+        @if (!chainRunning() && chainStoppedByCancel()) {
+          <!-- 19 Nov 2026 (Joseph): after a Cancel, "Show me" leads to the step that was stopped: the place where
+               that step runs by itself -->
+          @if (endPlace(); as p) {
+            <p class="basic__next" data-test="cancelled-show-me"><mr-show-me [to]="p.id" [open]="true"></mr-show-me></p>
+          }
+        }
         </div>
       }
       @if (basicBar(); as bar) {
@@ -386,7 +393,7 @@
       @if (endLine()) {
         <!-- (17 Nov 2026: no "Show me" on the sentence after a Cancel: the person stopped it, there is no place to fix;
              a place given with the line -- the first blocking problem left at the end -- opens by itself) -->
-        <p class="chain__text"><strong>{{ endLine() }}</strong>@if (!chainStoppedByCancel() && !chainAsk()) {@if (endPlace(); as p) {<mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me>} @else {<mr-show-me [text]="endLine()"></mr-show-me>}}</p>
+        <p class="chain__text"><strong>{{ endLine() }}</strong>@if (!chainAsk()) {@if (endPlace(); as p) {<mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me>} @else if (!chainStoppedByCancel()) {<mr-show-me [text]="endLine()"></mr-show-me>}}</p>
         @if (chainAsk(); as ask) {
           <!-- 17 Nov 2026: the question the Prep step ended with: Show me, Send feedback, and why under "View details" -->
           <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
@@ -402,7 +409,7 @@
         <p class="action__fact">{{ errorCount() }} error findings now</p>
         <div class="action__row">
           @if (!fixAll().running) {
-            <button cdsButton="primary" size="lg" (click)="runFixAll()" [disabled]="busy()" [title]="busyHint()">Fix all issues</button>
+            <button cdsButton="primary" size="lg" data-show-me="main-fix-all" (click)="runFixAll()" [disabled]="busy()" [title]="busyHint()">Fix all issues</button>
           } @else if (!fixAll().stopping) {
             <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
           } @else {
