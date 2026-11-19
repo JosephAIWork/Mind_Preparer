@@ -1,17 +1,17 @@
 """Build  Mind Ready  as a compiled package (Nuitka): a folder with MindReady.exe that needs no Python.
 
     <build venv>\\Scripts\\python.exe tools/package/build.py <out dir> [--onefile]
-        [--expires YYYY-MM-DD | --no-expiry] [--contact "Name"]
+        [--expires YYYY-MM-DD | --no-expiry] [--contact "Name"] [--jobs N]
 
-The build venv holds requirements.txt and nuitka (nothing else,  so nothing else is pulled in). Nuitka
-fetches its own C compiler  the first time. The result is  <out dir>/MindReady/, the folder to zip:
-MindReady.exe plus  what the app reads next to it (rules, references, config, settings.yaml,  VERSION)
-and the built screens in ui/ (run  `npx ng build --configuration production` in MindReadyUI first).
+The build venv holds requirements.txt and nuitka  (nothing else, so nothing else is pulled in). Nuitka
+fetches its own  C compiler the first time. The  result is <out dir>/MindReady/, the folder to  zip:
+MindReady.exe plus what the app reads next to it (rules, references,  config, settings.yaml, VERSION)
+and the built screens in  ui/ (run `npx ng build --configuration production` in MindReadyUI first).
 Every build starts with a fresh compiler cache (the old one is wiped, see the zig-cache note below), so a second build
 is not shorter; Nuitka's own downloads (the C compiler) are reused.
 
 --onefile makes one file instead, <out dir>/MindReady.exe, to share as a link: it unpacks itself the
-first time it starts (into %LOCALAPPDATA%\\MindReady-program\\<version and build  time>, so later
+first time it starts (into %LOCALAPPDATA%\\MindReady-program\\<version  and build time>, so later
 starts are quick) and reads a settings.yaml placed next to it (mind_ready_app.py).
 
 A copy to share stops working after an end date (docs/SHARING.md, app/expiry.py): --expires is the
@@ -19,8 +19,12 @@ last day it works, local time (by default 15 December 2026), --contact the perso
 to ask for a new copy. Both go into a small file EXPIRY next to VERSION in the package. A copy that
 never stops needs --no-expiry, said explicitly.
 
-The package takes the screens as built in MindReadyUI/dist: build them first  (npx ng build in
-MindReadyUI). A  copy with an end date is never  built from screens  made before  the end date was added
+--jobs N lets at most N C compilers run at  once (Nuitka's own --jobs). Without  it Nuitka starts one
+per processor, which on  17 November 2026  took more  memory than the laptop had free: a machine short
+of memory builds with fewer (4, say), more slowly.
+
+The package takes the screens as built in MindReadyUI/dist: build them first (npx ng build  in
+MindReadyUI). A copy with an end date is never built from  screens made before the end date  was added
 (they could not show it).
 """
 from __future__ import annotations
@@ -66,6 +70,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     when.add_argument("--expires", default=DEFAULT_EXPIRES, metavar="YYYY-MM-DD", help="the last day the copy works, local time (default: %(default)s)")
     when.add_argument("--no-expiry", action="store_true", help="a copy that never stops working")
     parser.add_argument("--contact", default="", help='who to ask for a new copy, named in the message (e.g. "Joseph Gestetner")')
+    parser.add_argument("--jobs", type=int, default=None, metavar="N", help="at most N C compilers at once (default: one per processor); fewer when the machine is short of memory")
     return parser.parse_args(argv)
 
 
@@ -106,7 +111,7 @@ def screens_show_end_date(ui: Path) -> bool:
     return False
 
 
-def nuitka_command(out: Path, version: str, onefile: bool, expiry_file: Path | None) -> list[str]:
+def nuitka_command(out: Path, version: str, onefile: bool, expiry_file: Path | None, jobs: int | None = None) -> list[str]:
     cmd = [
         sys.executable, "-m", "nuitka", str(APP / "mind_ready_app.py"),
         "--standalone", "--assume-yes-for-downloads", "--lto=no",
@@ -131,11 +136,16 @@ def nuitka_command(out: Path, version: str, onefile: bool, expiry_file: Path | N
     if onefile:
         # unpacked once  per build (a rebuild of the  same version must not reuse an older  unpacking)
         cmd += ["--onefile", f"--onefile-tempdir-spec={{CACHE_DIR}}/MindReady-program/{version}-{time.strftime('%Y%m%d-%H%M')}"]
+    if jobs:
+        cmd.append(f"--jobs={jobs}")  # fewer C compilers at once: less memory, a longer build
     return cmd
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.jobs is not None and args.jobs < 1:
+        print(f"--jobs should be 1 or more (the number of C compilers at once), not {args.jobs}")
+        return 2
     out = Path(args.out).resolve()
     version = (APP / "VERSION").read_text(encoding="utf-8").strip()
     if not (UI / "index.html").is_file():
@@ -153,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         (data / "EXPIRY").unlink(missing_ok=True)  # an  earlier build's  date, so nobody mistakes it for this one's
     until = f"This copy works until {long_date(last_day)}." if last_day else "This copy never stops working (--no-expiry)."
     print(until, flush=True)
-    cmd = nuitka_command(out, version, args.onefile, expiry_file)
+    cmd = nuitka_command(out, version, args.onefile, expiry_file, args.jobs)
     print(" ".join(cmd), flush=True)
     # A fresh compiler cache for every build. Zig (Nuitka's C compiler here) caches an object by its C
     # source, and the files that embed the  program's constants and the onefile payload (`#embed

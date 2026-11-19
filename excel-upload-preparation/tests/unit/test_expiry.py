@@ -411,6 +411,26 @@ def test_the_build_packages_it_next_to_version(build, tmp_path):
     assert not any(c.endswith("=EXPIRY") for c in build.nuitka_command(tmp_path, "1.12.4", True, None))
 
 
+def test_the_build_runs_fewer_compilers_at_once_only_when_asked(build, tmp_path, monkeypatch):
+    """19 Nov 2026: Nuitka starts one C compiler per processor, more than the laptop's free memory held."""
+    assert build.parse_args(["out", "--onefile"]).jobs is None
+    assert build.parse_args(["out", "--onefile", "--jobs", "4"]).jobs == 4
+    assert not any(c.startswith("--jobs") for c in build.nuitka_command(tmp_path, "1.15.0", True, None))
+    assert not any(c.startswith("--jobs") for c in build.nuitka_command(tmp_path, "1.15.0", True, None, None))
+    assert "--jobs=4" in build.nuitka_command(tmp_path, "1.15.0", True, None, 4)
+    # 0 or less is refused in plain words, before anything is built
+    started = []
+    monkeypatch.setattr(build.subprocess, "call", lambda *a, **k: started.append(a) or 0)
+    assert build.main([str(tmp_path / "o"), "--jobs", "0"]) == 2 and build.main([str(tmp_path / "o"), "--jobs", "-2"]) == 2
+    assert started == []
+    # ... and main() hands it on to Nuitka (1: main() ends at the call)
+    sent: list[list[str]] = []
+    monkeypatch.setattr(build, "subprocess", SimpleNamespace(call=lambda cmd, **kw: sent.append(cmd) or 1))
+    monkeypatch.setattr(build, "UI", _screens(tmp_path / "screens", 'selectors:[["mr-expired-notice"]]'))
+    assert build.main([str(tmp_path / "o"), "--onefile", "--expires", "2099-12-31", "--jobs", "4"]) == 1 and "--jobs=4" in sent[0]
+    assert build.main([str(tmp_path / "o"), "--onefile", "--expires", "2099-12-31"]) == 1 and not any(c.startswith("--jobs") for c in sent[1])
+
+
 def test_the_build_expires_on_15_december_unless_told_otherwise(build):
     today = dt.date(2026, 11, 9)
     args = build.parse_args(["out", "--onefile"])

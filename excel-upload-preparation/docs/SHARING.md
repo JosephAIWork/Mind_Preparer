@@ -25,6 +25,8 @@ python tools/package/build.py <out dir> --onefile --expires 2026-12-15 --contact
   says "the person who shared it".
 - A copy that never stops needs `--no-expiry`, written out. A date already past stops the build.
 - Screens that cannot show the end date stop the build too, with a message to build them first.
+- `--jobs N` lets at most N C compilers run at once, for a machine short of memory (the build is
+  slower). Without it there is one per processor.
 
 The build writes a small file `EXPIRY` (the date, the contact and when it was built) into the
 package, next to `VERSION`. It never writes it next to the source's `VERSION`.

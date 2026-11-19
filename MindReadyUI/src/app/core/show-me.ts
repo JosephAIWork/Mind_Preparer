@@ -315,10 +315,10 @@ export function showMeForStep(step: ShowMeNextStep | null | undefined): ShowMeRe
   }
 }
 
-/** The  links to  each screen: the header's, else the one on the page itself. Below 66rem (a window
- *  snapped to half a screen, a laptop at 125 %) Carbon hides the header's links and the  app has no side
- *  menu, so the page's own link is the  way: "Advanced" at the foot of  the Custom screen, "Back to Basic"
- *  and "Custom"  at the top of Advanced. */
+/** The  links to  each screen: the header's, else the one on the page itself. Below 66rem Carbon hides
+ *  the header's links; since 18 Nov 2026 styles.scss keeps them (smaller), and the page's own link stays
+ *  the  way when they are still not drawn: "Advanced" at the foot  of the Custom screen, "Back to  Basic"
+ *  and "Custom" at the top of Advanced. */
 export const PAGE_LINKS: Record<ShowMePage, ShowMeTarget[]> = {
   advanced: [
     { el: "nav-advanced", text: "Click Advanced" },

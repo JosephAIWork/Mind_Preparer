@@ -269,7 +269,7 @@ describe("Show me: the readiness verdict's next step", () => {
 describe("Show me: the clicks to a place", () => {
   it("goes through Advanced and the tab from the main screen, through the tab only on Advanced", () => {
     expect(planShowMe({ id: "prep-apply" }, "custom")).toEqual([
-      // the header's link, else the page's own (Carbon hides the header's below 66rem)
+      // the header's link, else the page's own (for when the header's is not drawn; since 18 Nov 2026 styles.scss keeps it below 66rem too)
       { kind: "page", page: "advanced", targets: [{ el: "nav-advanced", text: "Click Advanced" }, { el: "link-advanced", text: "Click Advanced" }] },
       { kind: "tab", tab: "prep", targets: [{ el: "tab-prep", text: "Click Prep actions" }] },
       { kind: "place", targets: [{ el: "prep-apply", text: "Apply the blocking repairs here" }] },
@@ -452,7 +452,7 @@ describe("Show me: the pointer", () => {
   it("in a narrow window, where Carbon hides the header's links, points at the page's own link", async () => {
     vi.useFakeTimers();
     store.advancedTab.set("findings");
-    draw("nav-advanced", { width: 0, height: 0 }); // .cds--header__nav { display: none } below 66rem
+    draw("nav-advanced", { width: 0, height: 0 }); // the header's link not drawn (Carbon's own rule below 66rem, before styles.scss kept it)
     const link = draw("link-advanced"); // "Advanced" at the foot of the main screen
     showMe.start({ id: "prep-apply" });
     expect(showMe.pointer()).toMatchObject({ el: link, text: "Click Advanced", last: false });
