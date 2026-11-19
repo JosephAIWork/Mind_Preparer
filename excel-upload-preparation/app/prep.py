@@ -1669,6 +1669,12 @@ _REFERENCE_POSITIONS = {
     "SUMIFS": None, "AVERAGEIFS": None, "MAXIFS": None, "MINIFS": None, "COUNTIFS": None, "FILTER": None, "SORT": None, "UNIQUE": None,
     "ISFORMULA": {0}, "FORMULATEXT": {0}, "SHEET": {0}, "SHEETS": {0}, "GETPIVOTDATA": {1},
 }
+# 19  Nov 2026  (CNHI 'Cost data'!AF10, the criterion of SUMIFS in 20 formulas): in the ...IFS functions only the ranges
+# must stay references. A criterion is a value, and the cell's own text does the  same there:
+# SUMIFS($H:$H,$C:$C,$AF10) = SUMIFS($H:$H,$C:$C,"Deliveries and inpatient services").
+# SUMIFS / AVERAGEIFS / MAXIFS  / MINIFS (values, range 1, criterion  1, ...): the criteria are arguments 2,  4, 6 ...
+# counted from 0; COUNTIFS (range 1, criterion 1, ...):  arguments 1, 3, 5 ...
+_CRITERION_FIRST = {"SUMIFS": 2, "AVERAGEIFS": 2, "MAXIFS": 2, "MINIFS": 2, "COUNTIFS": 1}
 _CALL_NAME_RE = re.compile(r"([^\W\d][\w.]*)\s*$")
 _FORMULA_AT: dict[Any, dict[str, Any]] = {}
 
@@ -1727,19 +1733,26 @@ def _reference_uses(formula: str, home: str, sheet: str, row: int, col: int) -> 
                 arguments = [formula[a:b].strip() for a, b in spans]
         # A1:INDEX(...), INDEX(...):A1 build a range; (A1,B1)  is a union: the cell cannot become a text there
         in_range = masked[m.end():].lstrip().startswith(":") or masked[: m.start()].rstrip().endswith(":") or (open_at >= 0 and not function and len(arguments) > 1)
+        # 19 Nov 2026: so is a reference beside the intersection operator (a space: D5 $A:$A), and one in a bracket
+        # that is itself an end of a range -- (D5):E5, E5:(D5). Excel refuses a text in those places.
+        if not in_range:
+            in_range = _beside_a_reference(masked, m.start(), m.end())
+        if not in_range and open_at >= 0 and not function:
+            shut = _closing_paren(masked, open_at)
+            in_range = shut < 0 or masked[shut + 1 :].lstrip().startswith(":") or masked[:open_at].rstrip().endswith(":") or _beside_a_reference(masked, open_at, shut + 1)
         uses.append({"start": m.start(), "end": m.end(), "single": ref["r1"] == ref["r2"] and ref["c1"] == ref["c2"], "function": function,
                      "position": position, "whole": whole, "arguments": arguments, "r1": ref["r1"], "c1": ref["c1"], "in_range": in_range,
                      "r2": ref["r2"], "c2": ref["c2"], "home": home, "masked": masked})
     return uses
 
 
-# 19 Nov 2026, CNHI: 332 column headings "Per Capita Cost" stopped Start. Eight formulas cover the yearly tables of
+# 19 Nov 2026, CNHI: 332 column headings "Per Capita Cost" stopped Start. Eight formulas cover the  yearly tables of
 # 'RAC Baseline' with INDEX($X$237:$MI$705, 1+(active_year-proj_year-1)*117, MATCH(...)): the row is always
 # 1 + a whole number x 117 (the 'Specialised Services' line of each year), never a heading row.
-# A reference INDEX returns can still be moved  or stretched afterwards, and then other rows are read:
+# A reference INDEX returns can still be moved or stretched afterwards, and then other rows are read:
 # OFFSET(INDEX(...),8,0); INDEX(...):A9, A1:INDEX(...), and x:A9 with x a LET name that holds it (any ':' that does not
 # sit between two plain cells); INDEX(...)#; a function that is not Excel's own -- a macro's, a LAMBDA name, Mind's
-# MM_COLUMN -- which can do anything with the reference. Such a formula is left alone.
+# MM_COLUMN  -- which can do anything  with the reference. Such a formula is  left alone.
 _REFERENCE_MOVERS = frozenset({"OFFSET", "INDIRECT", "LET", "LAMBDA", "ANCHORARRAY"})
 _ANY_CALL_RE = re.compile(r"([^\W\d][\w.]*)\s*\(")
 _STEP_TOKEN_RE = re.compile(
@@ -1906,6 +1919,14 @@ def _row_steps(analysis: dict[str, Any], text: str, home: str) -> tuple[int, int
     return steps if steps is not None and spot == len(tokens) else None
 
 
+def _beside_a_reference(masked: str, start: int, end: int) -> bool:
+    """Is  masked[start:end] joined  to what stands before or after it by nothing but a space -- Excel's intersection
+    operator? (After a comma, a bracket or an operator a space is only a space.)"""
+    after, before = masked[end:], masked[:start]
+    nxt, prev = after.lstrip()[:1], before.rstrip()[-1:]
+    return bool((after[:1].isspace() and nxt and (nxt.isalnum() or nxt in "$'(_")) or (before[-1:].isspace() and prev and (prev.isalnum() or prev in "$')_")))
+
+
 def _use_needs_cell(use: dict[str, Any], row: int, col: int, analysis: dict[str, Any] | None = None) -> bool:
     """Does  this one  reference give another result when the cell is empty (as in Mind) than when it holds text?"""
     fn, pos, args = use["function"], use["position"], use["arguments"]
@@ -1938,7 +1959,10 @@ def _rewritable(use: dict[str, Any]) -> bool:
     if use["function"].startswith("MM_"):
         return False  # Mind's own functions (MM_LOOP, MM_INSTANCE ...) take references
     positions = _REFERENCE_POSITIONS.get(use["function"], set())
-    return positions is not None and use["position"] not in positions
+    if positions is None:
+        first = _CRITERION_FIRST.get(use["function"])
+        return first is not None and use["position"] >= first and (use["position"] - first) % 2 == 0
+    return use["position"] not in positions
 
 
 def readers_needing(analysis: dict[str, Any], sheet: str, row: int, col: int, used: Any = None) -> list[tuple[str, list[dict[str, Any]] | None]]:
@@ -2140,7 +2164,8 @@ def _text_into_readers(analysis: dict[str, Any], s: dict[str, Any], row: int, co
     -> the formula operations, else None."""
     sheet = s["sheet"]
     text = cell_value(analysis, sheet, row, col)
-    if not isinstance(text, str) or text.startswith("=") or len(text) > 255:
+    # 255 characters as Excel counts them (two for a character outside  the basic plane)
+    if not isinstance(text, str) or text.startswith("=") or len(text.encode("utf-16-le")) // 2 > 255:
         return None
     needing = readers_needing(analysis, sheet, row, col)
     if not needing or any(uses is None or own in (rewriting or ()) for own, uses in needing):
