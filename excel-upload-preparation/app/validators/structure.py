@@ -478,7 +478,10 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     A cell no formula needs the text of is not listed (17 Nov 2026, prep.readers_needing): every formula that
     reads it gets the same result with the cell empty, as Mind leaves it -- MAX($A$7:A304) skips text and empty
     cells alike,  VLOOKUP(key, C30:G110, 5, FALSE) reads  only columns C and G. The first  reader that is  wholly
-    N(...) still  lets the cell through without the others being looked at (known, left as it is)."""
+    N(...) still  lets the cell through without the others being looked at (known, left as it is).
+    19 Nov 2026 (CNHI, 332 column headings "Per Capita Cost"): a text on a row INDEX cannot  return is not needed
+    either. INDEX(X237:MI705, 1+(active_year-proj_year-1)*117, ...) returns every 117th row  of its range, as long as
+    the  years are typed-in whole numbers, or a  Mind loop over such numbers (prep._row_steps)."""
     from ..prep import readers_needing, reference_index, referenced_by, standalone_labels
 
     try:
@@ -490,17 +493,17 @@ def lone_text_cells_read(rule, analysis: dict[str, Any], config: dict[str, Any],
     for lab in standalone_labels(analysis):
         owner = referenced_by(index, lab["sheet"], lab["row"], lab["col"])
         if owner and owner in (index["whole_cols"].get(lab["sheet"], {}).get(lab["col"]), index["whole_rows"].get(lab["sheet"], {}).get(lab["row"])):
-            # read only as part of a whole column / row: the formula reads the sheet's table there,  not this
-            # cell (VLOOKUP(x, BBA_04!$A:$B, 2, FALSE) gave Excel's values in Mind  with a lone 'Result' in A1,
-            # the  Tokyo IFRS 17 tool, 2026-11-08); a range  over the cell itself still counts
+            # read only as part of a  whole column / row: the formula reads  the sheet's table there, not this
+            # cell (VLOOKUP(x, BBA_04!$A:$B, 2, FALSE) gave Excel's values in Mind with a lone 'Result' in A1,
+            # the Tokyo IFRS 17 tool, 2026-11-08); a range over the cell itself still counts
             owner = next((o for r1, r2, c1, c2, o in index["rects"].get(lab["sheet"], ()) if r1 <= lab["row"] <= r2 and c1 <= lab["col"] <= c2), None)
         if owner and owner.startswith("name "):
             used = used or _names_in_use(analysis)
             owner = _reader_in_use(index, used, lab["sheet"], lab["row"], lab["col"])
         if owner and _wrapped_in_n(analysis, owner):
-            continue  # =N(VLOOKUP(...)): N() of a text is  0 and of a blank is 0,  so a lost cell changes nothing
+            continue  # =N(VLOOKUP(...)): N() of a text is 0 and of a blank is 0, so a lost cell changes nothing
         if owner:
-            # 17 Nov 2026: only the readers that need the text count -- a range that MAX or SUM reads, or a lookup
+            # 17 Nov 2026: only the readers that need the text  count -- a range that MAX or SUM reads, or a lookup
             # table column that VLOOKUP neither searches nor returns, gives the same result with the cell empty
             # (Phoenix Calc!A259 under MAX($A$7:A304)+1, CFs!E62 under VLOOKUP(key, $C$30:$G$110, 5, FALSE))
             used = used or _names_in_use(analysis)

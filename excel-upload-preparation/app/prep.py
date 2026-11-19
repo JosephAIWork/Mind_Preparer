@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ from .change_apply import append_change_log, plan_loop_case_fix
 from .excel_com import close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
 from .feedback import failed_op_facts
 from .formula_utils import (
+    ERROR_LITERAL_RE,
     REF_RE,
     _arg_spans,
     _closing_paren,
@@ -1726,11 +1728,185 @@ def _reference_uses(formula: str, home: str, sheet: str, row: int, col: int) -> 
         # A1:INDEX(...), INDEX(...):A1 build a range; (A1,B1)  is a union: the cell cannot become a text there
         in_range = masked[m.end():].lstrip().startswith(":") or masked[: m.start()].rstrip().endswith(":") or (open_at >= 0 and not function and len(arguments) > 1)
         uses.append({"start": m.start(), "end": m.end(), "single": ref["r1"] == ref["r2"] and ref["c1"] == ref["c2"], "function": function,
-                     "position": position, "whole": whole, "arguments": arguments, "r1": ref["r1"], "c1": ref["c1"], "in_range": in_range})
+                     "position": position, "whole": whole, "arguments": arguments, "r1": ref["r1"], "c1": ref["c1"], "in_range": in_range,
+                     "r2": ref["r2"], "c2": ref["c2"], "home": home, "masked": masked})
     return uses
 
 
-def _use_needs_cell(use: dict[str, Any], row: int, col: int) -> bool:
+# 19 Nov 2026, CNHI: 332 column headings "Per Capita Cost" stopped Start. Eight formulas cover the yearly tables of
+# 'RAC Baseline' with INDEX($X$237:$MI$705, 1+(active_year-proj_year-1)*117, MATCH(...)): the row is always
+# 1 + a whole number x 117 (the 'Specialised Services' line of each year), never a heading row.
+# A reference INDEX returns can still be moved  or stretched afterwards, and then other rows are read:
+# OFFSET(INDEX(...),8,0); INDEX(...):A9, A1:INDEX(...), and x:A9 with x a LET name that holds it (any ':' that does not
+# sit between two plain cells); INDEX(...)#; a function that is not Excel's own -- a macro's, a LAMBDA name, Mind's
+# MM_COLUMN -- which can do anything with the reference. Such a formula is left alone.
+_REFERENCE_MOVERS = frozenset({"OFFSET", "INDIRECT", "LET", "LAMBDA", "ANCHORARRAY"})
+_ANY_CALL_RE = re.compile(r"([^\W\d][\w.]*)\s*\(")
+_STEP_TOKEN_RE = re.compile(
+    r"\s*(?:(?P<num>\d+(?:\.\d+)?)(?![\w.])"
+    r"|(?P<cell>(?:(?:'(?:[^']|'')+'|[\w.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7})(?![\w.(:!#\[])"
+    r"|(?P<name>[^\W\d][\w.]*)(?![\w.(:!#\[])"
+    r"|(?P<op>[-+*()]))"
+)
+_ONE_CELL_RE = re.compile(r"^=?(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^'!]+))!\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>\d{1,7})$")
+_MIND_LOOP_RE = re.compile(r"^=\s*(?:[\w.]+\.)?MM_LOOP\s*\(", re.IGNORECASE)
+_LOOP_CELLS_MAX = 10_000
+_WHOLE_AT: dict[str, Any] = {}
+
+
+def _index_result_may_move(masked: str) -> bool:
+    """Could  this formula  read cells around the one INDEX returns? `masked`: the formula, its "..." texts blanked."""
+    from .validators.excel_functions import EXCEL_FUNCTIONS
+
+    for m in _ANY_CALL_RE.finditer(masked):
+        fn = strip_storage_prefix(m.group(1)).upper()
+        if fn in _REFERENCE_MOVERS or fn not in EXCEL_FUNCTIONS:
+            return True
+    rest = REF_RE.sub(" ", masked)
+    return ":" in rest or "#" in ERROR_LITERAL_RE.sub("", rest)
+
+
+def _whole_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value).is_integer()
+
+
+def _cell_at(analysis: dict[str, Any], target: str, home: str) -> tuple[str, int, int] | None:
+    """(sheet  as the  workbook spells it, row, column) of a one-cell reference, with or without its sheet."""
+    target = target.strip()
+    if "!" in target:
+        m = _ONE_CELL_RE.match(target)
+        if not m:
+            return None
+        sheet = m.group("quoted").replace("''", "'") if m.group("quoted") is not None else m.group("plain").strip()
+        ref = parse_ref(m.group("col") + m.group("row"))
+    else:
+        sheet, ref = home, parse_ref(target.lstrip("=").replace("$", ""))
+    if not ref or ref.get("whole_column") or ref.get("whole_row") or (ref["r1"], ref["c1"]) != (ref["r2"], ref["c2"]):
+        return None
+    known = next((s["name"] for s in analysis["workbooks"][0].get("sheets", []) if str(s.get("name", "")).lower() == str(sheet).lower()), None)
+    return (known, ref["r1"], ref["c1"]) if known else None
+
+
+def _loop_values_whole(analysis: dict[str, Any], formula: str, home: str) -> bool:
+    """=MM_LOOP("Name",  range) and  nothing else, every cell of the range a typed-in whole number: the cell takes
+    those values in turn (what Build the Mind loop writes in a driver cell)."""
+    masked = mask_strings(formula, mask_sheet_quotes=False)
+    if not _MIND_LOOP_RE.match(masked):
+        return False
+    open_at = masked.index("(")
+    close = _closing_paren(masked, open_at)
+    if close < 0 or masked[close + 1 :].strip():
+        return False
+    spans = _arg_spans(masked, open_at + 1, close)
+    if len(spans) != 2:
+        return False
+    over = formula[spans[1][0] : spans[1][1]].strip()
+    first, _, last = over.partition(":")
+    start = _cell_at(analysis, first, home)
+    end = start if not last else (None if (not start or "!" in last) else _cell_at(analysis, last, start[0]))
+    if not start or not end:
+        return False
+    sheet, r1, c1 = start
+    r2, c2 = end[1], end[2]
+    if r2 < r1 or c2 < c1 or (r2 - r1 + 1) * (c2 - c1 + 1) > _LOOP_CELLS_MAX:
+        return False
+    return all(_whole_number(cell_value(analysis, sheet, r, c)) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1))
+
+
+def _holds_whole(analysis: dict[str, Any], kind: str, token: str, home: str) -> bool:
+    """Does  this cell  -- or the one cell this name stands for -- hold a whole number today: one typed in, or the
+    values of a Mind loop that are all typed-in whole numbers? Anything  else (a formula, a text, an empty cell, a
+    name of a  range or of two sheets) is  not known to be whole."""
+    cached = _WHOLE_AT.get("table")
+    if cached is None or cached[0] is not analysis:
+        _WHOLE_AT.clear()
+        cached = _WHOLE_AT["table"] = (analysis, {})
+    key = (kind, token.upper(), home)
+    if key not in cached[1]:
+        where = None
+        if kind == "name":
+            found = [d for d in analysis["workbooks"][0].get("defined_names", []) if str(d.get("name") or "").upper() == token.upper()]
+            # a name of  one sheet only is not followed: which formulas it serves is  not worked out here
+            if len(found) == 1 and found[0].get("local_sheet_id") is None and "!" in str(found[0].get("value") or ""):
+                where = _cell_at(analysis, str(found[0]["value"]), home)
+        else:
+            where = _cell_at(analysis, token, home)
+        value = cell_value(analysis, *where) if where else None
+        cached[1][key] = _whole_number(value) or (isinstance(value, str) and value.startswith("=") and _loop_values_whole(analysis, value, where[0]))
+    return cached[1][key]
+
+
+def _row_steps(analysis: dict[str, Any], text: str, home: str) -> tuple[int, int] | None:
+    """The  rows an  INDEX row number can ask for when it is plain whole-number arithmetic: (first, every) stands for
+    first + every x n, n any whole number -- every 0: the one row `first`;  every 1: any row.
+    None when that cannot be told: only +  - * and brackets are followed,  over whole constants and single cells (or
+    names  of one cell) that hold a whole number today. INDEX cuts  a fraction off its row number, so  one operand
+    that may not be whole and the row can land anywhere.
+    1+(active_year-proj_year-1)*117 gives (1, 117)."""
+    tokens: list[tuple[str, str]] = []
+    text, at = text.strip(), 0
+    while at < len(text):
+        m = _STEP_TOKEN_RE.match(text, at)
+        if not m or len(tokens) >= 200:
+            return None
+        tokens.append((m.lastgroup, m.group(m.lastgroup)))
+        at = m.end()
+    spot = 0
+
+    def peek() -> tuple[str | None, str | None]:
+        return tokens[spot] if spot < len(tokens) else (None, None)
+
+    def factor() -> tuple[int, int] | None:
+        nonlocal spot
+        kind, token = peek()
+        if kind is None:
+            return None
+        spot += 1
+        if kind == "num":
+            whole, _, fraction = token.partition(".")
+            return (int(whole), 0) if not fraction.strip("0") else None
+        if kind != "op":
+            return (0, 1) if _holds_whole(analysis, kind, token, home) else None
+        if token in "+-":
+            inner = factor()
+            return None if inner is None else (inner[0] if token == "+" else -inner[0], inner[1])
+        if token == "(":
+            inner = total()
+            if inner is None or peek() != ("op", ")"):
+                return None
+            spot += 1
+            return inner
+        return None
+
+    def product() -> tuple[int, int] | None:
+        nonlocal spot
+        left = factor()
+        while left is not None and peek() == ("op", "*"):
+            spot += 1
+            right = factor()
+            if right is None:
+                return None
+            # (a + g.m)(b + h.n) = a.b + a.h.n + b.g.m + g.h.m.n
+            left = (left[0] * right[0], math.gcd(left[0] * right[1], right[0] * left[1], left[1] * right[1]))
+        return left
+
+    def total() -> tuple[int, int] | None:
+        nonlocal spot
+        left = product()
+        while left is not None and peek() in (("op", "+"), ("op", "-")):
+            sign = 1 if tokens[spot][1] == "+" else -1
+            spot += 1
+            right = product()
+            if right is None:
+                return None
+            left = (left[0] + sign * right[0], math.gcd(left[1], right[1]))
+        return left
+
+    steps = total()
+    return steps if steps is not None and spot == len(tokens) else None
+
+
+def _use_needs_cell(use: dict[str, Any], row: int, col: int, analysis: dict[str, Any] | None = None) -> bool:
     """Does  this one  reference give another result when the cell is empty (as in Mind) than when it holds text?"""
     fn, pos, args = use["function"], use["position"], use["arguments"]
     if use["whole"] and fn in _TEXT_BLIND:
@@ -1740,6 +1916,18 @@ def _use_needs_cell(use: dict[str, Any], row: int, col: int) -> bool:
         if n is not None and n == int(n) and n >= 1:
             offset = (col - use["c1"]) if fn == "VLOOKUP" else (row - use["r1"])
             return offset in (0, int(n) - 1)  # only the column searched and  the column returned are read
+    if analysis is not None and use["whole"] and not use["single"] and fn == "INDEX" and pos == 0 and len(args) >= 2 and use["r2"] > use["r1"] and not _index_result_may_move(use["masked"]):
+        # 19 Nov  2026 (CNHI): INDEX(range, 1+(year-first_year)*117, column) returns every  117th row only. A range
+        # of one row is left alone: its  one index runs along the row.
+        steps = _row_steps(analysis, args[1], use["home"])
+        if steps is not None:
+            first, every = steps
+            nth = row - use["r1"] + 1  # the cell's  row inside the range, counted from 1
+            if every == 0:
+                return first < 1 or nth == first  # one fixed row; row 0 is the whole column
+            if every > 1 and first % every:
+                return (nth - first) % every == 0
+            # every 1: any row. first a multiple of every: the row can be 0, and INDEX then returns the whole column
     return True
 
 
@@ -1791,7 +1979,7 @@ def readers_needing(analysis: dict[str, Any], sheet: str, row: int, col: int, us
         if uses is None or not uses:
             needing.append((own, None))
             continue
-        need = [u for u in uses if _use_needs_cell(u, row, col)]
+        need = [u for u in uses if _use_needs_cell(u, row, col, analysis)]
         if need:
             ok = not rec.get("array_ref") and all(_rewritable(u) for u in need)
             needing.append((own, need if ok else None))
