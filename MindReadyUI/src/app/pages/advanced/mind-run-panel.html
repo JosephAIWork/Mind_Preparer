@@ -4,7 +4,8 @@
   <!-- the Mind sign-in: the app's own Edge profile, signed in once (about a week) -->
   <div class="result" [class.result--ok]="signedIn()" [class.result--warn]="signIn()?.state === 'failed' || signIn()?.checked?.signed_in === false">
     <strong>Mind sign-in</strong>
-    <span>{{ signInLine() }}</span>
+    <span data-test="mind-sign-in-line">{{ signInLine() }}</span>
+    @if (keptIn()) { <span class="hint" data-test="mind-sign-in-kept">{{ keptIn() }}</span> }
     <div class="row">
       @if (signIn()?.state === "waiting") {
         <button cdsButton="secondary" size="sm" (click)="stopSignIn()">Close the sign-in window</button>
@@ -20,6 +21,10 @@
       }
     </div>
     @if (signInError()) { <span class="card__caution">{{ signInError() }}</span> }
+    <!-- 19 Nov 2026: a start that failed says what to do in a plain sentence; the program's own error goes with Send feedback -->
+    @if (signIn()?.state === "failed" && signIn()?.feedback_ref) {
+      <div class="row"><button cdsButton="ghost" size="sm" data-test="mind-sign-in-feedback" (click)="signInFeedback()">Send feedback</button></div>
+    }
   </div>
 
   @if (!running()) {

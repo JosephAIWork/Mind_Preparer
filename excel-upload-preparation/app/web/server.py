@@ -2422,7 +2422,10 @@ def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={}))
 
 
 # --- signing in to Mind (the browser profile the loop uses) ------------------------------
-MIND_SIGN_IN: dict[str, Any] = {"state": "idle", "message": None, "started": None, "finished": None, "stop": False, "checked": None}
+# 19 Nov 2026: `detail` is the raw error of a start that failed (never on a screen: Send feedback only);
+# `feedback_ref` the incident written for  it.
+MIND_SIGN_IN: dict[str, Any] = {"state": "idle", "message": None, "started": None, "finished": None, "stop": False, "checked": None,
+                                "detail": None, "feedback_ref": None}
 
 
 def _sign_in_public() -> dict[str, Any]:
@@ -2431,7 +2434,8 @@ def _sign_in_public() -> dict[str, Any]:
     sess = mc.load_session()
     st = MIND_SIGN_IN
     return {"state": st["state"], "message": st["message"], "last_login": sess.get("last_login"), "checked": st.get("checked"),
-            "elapsed_s": round((st.get("finished") or time.time()) - st["started"]) if st.get("started") else None}
+            "elapsed_s": round((st.get("finished") or time.time()) - st["started"]) if st.get("started") else None,
+            "detail": st.get("detail"), "feedback_ref": st.get("feedback_ref"), "kept_in": str(mc.PROFILE_DIR)}
 
 
 @app.get("/api/mind/sign-in")
@@ -2475,7 +2479,7 @@ def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, 
             raise HTTPException(status_code=409, detail="the sign-in window is already open")
         if in_use:  # 17 Nov 2026: a project is being  deleted from Mind
             raise HTTPException(status_code=409, detail=_MIND_BUSY)
-        MIND_SIGN_IN.update(state="waiting", message="Opening Edge on Mind...", started=time.time(), finished=None, stop=False)
+        MIND_SIGN_IN.update(state="waiting", message="Opening Edge on Mind...", started=time.time(), finished=None, stop=False, detail=None, feedback_ref=None)
 
     def tell(message: str) -> None:
         MIND_SIGN_IN["message"] = message
@@ -2490,7 +2494,16 @@ def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, 
             else:
                 MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {res.get('reason')}.")
         except Exception as exc:  # no Edge, the profile in use...
-            MIND_SIGN_IN.update(state="failed", message=f"The sign-in window could not open: {type(exc).__name__}: {exc}"[:300])
+            raw = f"{type(exc).__name__}: {exc}"[:2000]
+            if mc.closed_while_open(exc):
+                MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {mc.CLOSED_BEFORE_SIGN_IN}.", detail=raw)
+            else:
+                ref = None
+                try:
+                    ref = _report_problem(exc, "Sign in to Mind").get("ref")
+                except Exception:  # the report must never  be what fails the sign-in
+                    ref = None
+                MIND_SIGN_IN.update(state="failed", message=mc.sign_in_failure(exc), detail=raw, feedback_ref=ref)
         finally:
             MIND_SIGN_IN["finished"] = time.time()
 

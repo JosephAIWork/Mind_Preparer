@@ -3,6 +3,7 @@ import { ApiService, errorText } from "./api.service";
 import { CancelButton } from "./cancel-button";
 import { MIND_KEPT_LEAD, MIND_NOTHING_UPLOADED, MindDelete, MindLoopOptions, MindLoopStatus, MindProject, MindSignIn, Readiness, mindDeleteByHand, mindDeleteGone, mindEarlierLine, mindStoppedLine } from "./models";
 import { RecalcNow } from "./recalc-now";
+import { NOT_SIGNED_IN, SIGN_IN_WAITING } from "./sign-in-text";
 import { Thinking } from "./thinking";
 import { SessionStore } from "./session.store";
 
@@ -286,9 +287,9 @@ export class FinishBanner implements OnInit, OnDestroy {
 
   signInLine(): string {
     const s = this.signIn();
-    if (s?.state === "waiting") return s.message || "An Edge window is open on Mind: sign in there, then the upload goes on by itself.";
+    if (s?.state === "waiting") return s.message || SIGN_IN_WAITING;
     if (s?.state === "failed" && s.message) return s.message;
-    return "Not signed in to Mind, or the sign-in has expired. Sign in once (it lasts about a week); the upload then goes on by itself.";
+    return NOT_SIGNED_IN;
   }
 
   /** Upload to Mind: the sign-in first (asked for when missing), then the same run as Run in Mind. */

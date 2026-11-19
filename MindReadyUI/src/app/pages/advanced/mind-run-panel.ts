@@ -3,9 +3,11 @@ import { Component, OnDestroy, OnInit, computed, effect, inject, signal, untrack
 import { ButtonModule } from "carbon-components-angular";
 import { ApiService, errorText } from "../../core/api.service";
 import { CancelButton } from "../../core/cancel-button";
+import { FeedbackService } from "../../core/feedback.service";
 import { MIND_KEPT_LEAD, MIND_NOTHING_UPLOADED, MindLoopEvent, MindLoopIteration, MindLoopReport, MindLoopStatus, MindProject, MindRunOptionsInfo, MindRunTiming, MindRunVersion, MindSignIn, mindDeleteByHand, mindDeleteGone, mindEarlierLine, mindStoppedLine } from "../../core/models";
 import { SessionStore } from "../../core/session.store";
 import { ShowMeLink } from "../../core/show-me-link";
+import { NOT_SIGNED_IN, SIGN_IN_WAITING, keptInLine } from "../../core/sign-in-text";
 
 /** One  line under  a stopped run: a project it left in Mind, with its "Delete it from Mind" button. */
 export interface KeptRow {
@@ -32,6 +34,7 @@ export interface KeptRow {
 })
 export class MindRunPanel implements OnInit, OnDestroy {
   private api = inject(ApiService);
+  private feedback = inject(FeedbackService);
   readonly store = inject(SessionStore);
 
   readonly maxIterations = signal(4);
@@ -157,14 +160,25 @@ export class MindRunPanel implements OnInit, OnDestroy {
   signInLine(): string {
     const s = this.signIn();
     if (!s) return "";
-    if (s.state === "waiting") return s.message || "An Edge window is open on Mind: sign in there.";
+    if (s.state === "waiting") return s.message || SIGN_IN_WAITING;
     // 17  Nov 2026: Cancel during this  tab's own check: the check cannot be  stopped on the  server, the  line says the screen is on its way out
     if (s.state === "checking") return this.checking() && this.cancelled() ? "Stopping…" : "Checking the Mind sign-in…";
     if (s.state === "failed" && s.message) return s.message;
     const when = (t: string | null | undefined) => (t ? new Date(t).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "");
-    if (s.checked) return s.checked.signed_in ? `Signed in to Mind (checked ${when(s.checked.at)}).` : "Not signed in to Mind, or the sign-in has expired: sign in again.";
+    if (s.checked) return s.checked.signed_in ? `Signed in to Mind (checked ${when(s.checked.at)}).` : NOT_SIGNED_IN;
     if (s.last_login) return `Last signed in ${when(s.last_login)}. A sign-in lasts about a week: check it, or sign in again.`;
-    return "Not signed in to Mind yet: Run in Mind needs it once (about a week).";
+    return NOT_SIGNED_IN;
+  }
+
+  /** 19 Nov 2026: where the sign-in is kept, as the server names the folder ("" until it has). */
+  keptIn(): string {
+    return keptInLine(this.signIn()?.kept_in);
+  }
+
+  /** "Send feedback" beside a start that  failed: the incident the server wrote, with the sentence on screen  as the note. */
+  signInFeedback(): void {
+    const s = this.signIn();
+    if (s?.state === "failed" && s.feedback_ref) this.feedback.open(s.feedback_ref, s.message || "");
   }
 
   signedIn(): boolean {
@@ -178,9 +192,9 @@ export class MindRunPanel implements OnInit, OnDestroy {
       this.watchSignIn();
       return;
     }
-    // 17 Nov 2026: the check loads Mind (10 to 40 s) and the server has no job for it, so Cancel cannot
-    // stop it  there. The Cancel beside the line sets `cancelled`; it is read  when the check answers, and
-    // a Run  in Mind pressed meanwhile waits for this  check (`start`) and then does not start.
+    // 17 Nov 2026: the  check loads Mind (10 to 40 s)  and the server has no job for it, so Cancel cannot
+    // stop  it there. The Cancel beside the line  sets `cancelled`; it is read when the check answers, and
+    // a Run in Mind pressed meanwhile waits for this check (`start`) and then does not start.
     if (this.checking()) return;
     this.cancelled.set(false);
     this.nothingUploaded.set(false);
@@ -190,11 +204,11 @@ export class MindRunPanel implements OnInit, OnDestroy {
     await work;
     if (this.checkWork === work) this.checkWork = null;
     this.checking.set(false);
-    if (this.cancelled() && !this.starting()) this.nothingUploaded.set(true); // a waiting start() says it  itself
+    if (this.cancelled() && !this.starting()) this.nothingUploaded.set(true); // a waiting start() says it itself
     this.watchSignIn();
   }
 
-  /** One read of the sign-in (`check`: Mind  itself is loaded); never throws. */
+  /** One read of the sign-in (`check`: Mind itself is loaded); never throws. */
   private async readSignIn(check: boolean): Promise<void> {
     try {
       if (check) this.signIn.update((s) => (s ? { ...s, state: "checking" } : s));
@@ -235,7 +249,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
       try {
         this.signIn.set(await this.api.mindSignIn(false));
       } catch {
-        /* try again */
+        /* try  again */
       }
       this.watchSignIn();
     }, 2000);
@@ -258,7 +272,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
       this.options.set(o);
       this.ticked.set(new Set(o.choices.filter((c) => c.default_on).map((c) => c.id)));
     } catch {
-      /* the panel still works  without it: the loop then chooses by itself */
+      /* the panel still works without it: the loop then chooses by itself */
     }
   }
 
@@ -281,8 +295,8 @@ export class MindRunPanel implements OnInit, OnDestroy {
     this.error.set("");
     // 17 Nov 2026, "before the server has a job": the Cancel is on screen from this click on, and the
     // server has nothing to stop until the run is started. So `cancelled` is taken back here and read
-    // after the tab's own sign-in check and after its options, when one is still on its way (both open
-    // or feed the run: the check holds Mind's sign-in, the options are the ticks this run sends).
+    // after the  tab's own sign-in check and  after its options, when one is still  on its way  (both open
+    // or  feed the run: the check holds Mind's sign-in, the options are the ticks this run sends).
     this.cancelled.set(false);
     this.nothingUploaded.set(false);
     this.starting.set(true);
@@ -303,8 +317,8 @@ export class MindRunPanel implements OnInit, OnDestroy {
       this.next = 0;
       this.drift.set(0);
       this.state.set("running");
-      // the click on Cancel  came while the start itself  was on its way: the server had  no run to  stop
-      // then, and  has one now
+      // the click on Cancel came while the start itself was on its way: the server had  no run to stop
+      // then, and has one now
       if (this.cancelled()) void this.api.cancel(id, "mind").catch(() => undefined);
       void this.poll();
     } catch (e) {
@@ -315,23 +329,23 @@ export class MindRunPanel implements OnInit, OnDestroy {
     }
   }
 
-  /** Cancel came before the run was started: nothing more starts, and the line says so. */
+  /** Cancel came before the  run was started: nothing more starts,  and the line says so. */
   private stoppedBefore(): void {
     this.nothingUploaded.set(true);
   }
 
-  /** The Cancel button's `stopping`: the click, before the server is asked. */
+  /** The Cancel button's  `stopping`: the click, before the server is asked. */
   onStopping(): void {
     this.cancelled.set(true);
   }
 
-  /** The Cancel call itself could  not be made (the server's words): nothing was stopped, the work  goes on. */
+  /** The Cancel call itself  could not be made (the server's words):  nothing was stopped, the work goes on. */
   cancelFailed(why: string): void {
     this.cancelled.set(false);
     this.error.set(why);
   }
 
-  /** The Cancel button's `stopped`: the  server has finished; look at the run  now, not at the next tick. */
+  /** The Cancel button's `stopped`: the server has finished; look at the run now, not at the next tick. */
   onStopped(): void {
     if (this.timer) clearTimeout(this.timer);
     void this.poll();
@@ -343,13 +357,13 @@ export class MindRunPanel implements OnInit, OnDestroy {
     const seq = ++this.pollSeq;
     try {
       const s = await this.api.mindLoopStatus(id, this.next);
-      if (seq !== this.pollSeq) return; // a newer look is on its  way: it reads the same events again
+      if (seq !== this.pollSeq) return; // a newer look is on its way: it reads the same events again
       this.take(s);
     } catch {
-      /* the  next tick tries again */
+      /* the next tick tries again */
     }
     // 17 Nov 2026: the looks never end at the click on Cancel: they go on through "cancelling" until
-    // the server says cancelled, done or error
+    // the server says cancelled, done  or error
     if (this.live && seq === this.pollSeq && this.running()) this.timer = setTimeout(() => void this.poll(), 2000);
   }
 
@@ -380,7 +394,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
     if (fresh.length) this.seen.set([...seen, ...fresh]);
   }
 
-  /** "Delete it from Mind", for a project a stopped run  left there. Blocking, about a minute, no Cancel.
+  /** "Delete it from Mind", for a project a stopped run left there. Blocking, about a minute, no Cancel.
    *  Nothing is deleted without this click. Afterwards the button goes or stays as the server's own list
    *  says (GET .../mind-loop `kept`); when that cannot be read, as the answer itself says. */
   async deleteProject(name: string): Promise<void> {
@@ -397,19 +411,19 @@ export class MindRunPanel implements OnInit, OnDestroy {
       } catch {
         if (mindDeleteGone(d)) {
           this.takeKept(this.kept().filter((p) => p.name !== name));
-          // the sentence above must not go on saying "is still in Mind" for it (the server's words for both)
+          // the sentence above must not go on saying "is  still in Mind" for it  (the server's words for both)
           if (this.project()?.name === name) this.message.set(d.result === "deleted" ? `Stopped. The project ${name} was deleted from Mind.` : `Stopped. The project ${name} is not in Mind.`);
         }
       }
     } catch (e) {
-      // refused before Mind was asked ("Mind is busy. Try again in a moment."): the server's words, the button stays
+      // refused before Mind  was asked ("Mind  is busy.  Try again in a moment."): the server's words, the button stays
       this.deleteNotes.update((n) => ({ ...n, [name]: { text: errorText(e), openMind: null } }));
     } finally {
       this.deleting.set(null);
     }
   }
 
-  /** the newest line of the run, in plain words  (no "iteration n:" prefix) */
+  /** the newest line of the run, in plain words (no "iteration n:" prefix) */
   latestLine(): string {
     const e = this.events();
     const last = e.length ? e[e.length - 1] : null;
@@ -441,7 +455,7 @@ export class MindRunPanel implements OnInit, OnDestroy {
     return isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
   }
 
-  /** 754 ->  "12:34" */
+  /** 754 -> "12:34" */
   clockText(s: number): string {
     const t = Math.max(0, Math.round(s));
     const h = Math.floor(t / 3600);
@@ -450,13 +464,13 @@ export class MindRunPanel implements OnInit, OnDestroy {
     return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m)) + ":" + String(sec).padStart(2, "0");
   }
 
-  /** 754 -> "13 min" (rounded up: the  estimate stays on  the long  side) */
+  /** 754 -> "13 min" (rounded up: the  estimate stays on the long side) */
   minutes(s: number): string {
     const m = Math.max(1, Math.ceil(s / 60));
     return m >= 90 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
   }
 
-  /** Clock time when it should be done, e.g. "14:35" */
+  /** Clock time when it should be  done, e.g. "14:35" */
   doneBy(): string {
     const d = new Date(Date.now() + this.remaining() * 1000);
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

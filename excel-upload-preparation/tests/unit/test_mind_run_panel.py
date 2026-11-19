@@ -154,7 +154,106 @@ def test_a_failed_or_impossible_sign_in_says_why(client, monkeypatch):
     monkeypatch.setattr(mc, "sign_in", no_edge)
     client.post("/api/mind/sign-in", json={})
     st = _wait_sign_in(client)
-    assert st["state"] == "failed" and "could not open" in st["message"] and "msedge" in st["message"]
+    # 19 Nov 2026: a plain sentence on the screen; the raw error is kept for Send feedback only
+    assert st["state"] == "failed" and st["message"] == mc.EDGE_NOT_FOUND
+    assert st["detail"] == "RuntimeError: Chromium distribution 'msedge' is not found" and st["feedback_ref"]
+
+
+class TargetClosedError(Exception):
+    """Stands in for Playwright's error of the same name."""
+
+
+_EDGE_EXE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+_PROFILE_IN_USE = ("BrowserType.launch_persistent_context: Target page, context or browser has been closed\nBrowser logs:\n\n"
+                   f"<launching> {_EDGE_EXE} --disable-field-trial-config --no-first-run")
+
+
+@pytest.mark.parametrize("error, sentence", [
+    (RuntimeError(f"Chromium distribution 'msedge' is not found at {_EDGE_EXE}"), "EDGE_NOT_FOUND"),
+    (TargetClosedError(_PROFILE_IN_USE), "EDGE_ALREADY_OPEN"),  # the real text of a second start, 19 Nov 2026
+    (OSError("[WinError 5] Access is denied"), "EDGE_DID_NOT_OPEN"),
+    (ModuleNotFoundError("No module named 'playwright'"), "EDGE_DID_NOT_OPEN"),
+])
+def test_each_way_the_window_fails_to_open_gets_its_plain_sentence(client, monkeypatch, error, sentence):
+    from app import feedback
+    from app import mind_client as mc
+
+    def fails(**_k):
+        raise error
+
+    monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
+    monkeypatch.setattr(mc, "sign_in", fails)
+    client.post("/api/mind/sign-in", json={})
+    st = _wait_sign_in(client)
+    assert st["state"] == "failed" and st["message"] == getattr(mc, sentence)
+    # nothing of the error itself on the screen: no type name, no path, no Playwright wording
+    for word in (type(error).__name__, "Error", "Traceback", "launch_persistent_context", "msedge.exe", "\\", "playwright"):
+        assert word not in st["message"], word
+    assert st["detail"] == f"{type(error).__name__}: {error}"[:2000]
+    incident = feedback.find(st["feedback_ref"])
+    assert incident and incident["step"] == "Sign in to Mind"
+    # the next start begins clean
+    monkeypatch.setattr(mc, "sign_in", lambda **_k: {"ok": True, "reason": None, "url": mc.MAIN_URL, "last_login": "2026-11-19T20:00:00Z"})
+    client.post("/api/mind/sign-in", json={})
+    st = _wait_sign_in(client)
+    assert st["state"] == "done" and st["detail"] is None and st["feedback_ref"] is None
+
+
+def test_a_window_the_person_closed_early_is_no_error_to_report(client, monkeypatch):
+    from app import mind_client as mc
+
+    def closed(**_k):
+        raise TargetClosedError("Page.goto: Target page, context or browser has been closed")
+
+    monkeypatch.setitem(server.MIND_SIGN_IN, "state", "idle")
+    monkeypatch.setattr(mc, "sign_in", closed)
+    client.post("/api/mind/sign-in", json={})
+    st = _wait_sign_in(client)
+    assert st["state"] == "failed" and st["message"] == "Not signed in: the Edge window was closed before the sign-in finished."
+    assert st["feedback_ref"] is None and st["detail"].startswith("TargetClosedError: Page.goto")
+
+
+def test_the_screen_is_told_where_the_sign_in_is_kept(client):
+    from app import mind_client as mc
+
+    st = client.get("/api/mind/sign-in").json()
+    assert st["kept_in"] == str(mc.PROFILE_DIR) and st["kept_in"].endswith("edge-profile")
+
+
+@pytest.mark.parametrize("front_fails", [False, True])
+def test_the_window_is_asked_to_the_front_and_the_waiting_sentence_says_where_to_look(monkeypatch, front_fails):
+    from contextlib import contextmanager
+
+    from app import mind_client as mc
+
+    seen = []
+
+    class Page:
+        url = mc.MAIN_URL
+
+        def goto(self, url, wait_until=None):
+            seen.append(("goto", url))
+
+        def bring_to_front(self):
+            seen.append(("front",))
+            if front_fails:
+                raise RuntimeError("Windows said no")
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    @contextmanager
+    def fake_session(headed=False):
+        seen.append(("headed", headed))
+        yield None, Page()
+
+    said = []
+    monkeypatch.setattr(mc, "mind_session", fake_session)
+    monkeypatch.setattr(mc, "_ensure_dirs", lambda: None)
+    out = mc.sign_in(timeout_s=5, progress=said.append, should_stop=lambda: True)
+    assert out == {"ok": False, "reason": "stopped", "url": None}  # a failed bring_to_front never fails the sign-in
+    assert seen == [("headed", True), ("goto", mc.MAIN_URL), ("front",)]
+    assert said == [mc.SIGN_IN_WAITING] and "taskbar" in mc.SIGN_IN_WAITING and "Chrome" in mc.SIGN_IN_WAITING
 
 
 def test_check_loads_mind_headless_and_says_whether_the_sign_in_still_works(client, monkeypatch):

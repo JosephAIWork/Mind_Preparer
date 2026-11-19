@@ -949,6 +949,12 @@ export interface MindSignIn {
   last_login: string | null;
   checked: { signed_in: boolean; at: string | null; error?: string } | null;
   elapsed_s: number | null;
+  /** 19  Nov 2026:  the program's own error text of a start that failed. Never shown: "Send feedback" only. */
+  detail?: string | null;
+  /** the incident written for that error ("Send feedback" opens with it) */
+  feedback_ref?: string | null;
+  /** the folder on this PC that holds  the sign-in (the app's own Edge profile) */
+  kept_in?: string | null;
 }
 
 export interface MindRunTiming {

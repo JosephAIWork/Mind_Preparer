@@ -56,6 +56,35 @@ _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "/auth", "oauth", "adfs",
                 "microsoftonline", "okta", "b2clogin", "authorize", "logon", "idp")
 _LAUNCH_ARGS = ["--no-first-run", "--no-default-browser-check", "--start-maximized"]
 
+# 19  Nov 2026:  what the screens say about the sign-in (Joseph's wording). No Python error text goes on a screen:
+# the raw error is kept beside it for Send feedback.
+SIGN_IN_WAITING = ("Sign in to Mind in the Edge window the app opened (also when this page is in Chrome). It closes by itself. "
+                   "If you do not see it, look for Edge on the taskbar.")
+EDGE_NOT_FOUND = "Microsoft Edge was not found. Run in Mind needs Edge: install it, then press Sign in to Mind again."
+EDGE_ALREADY_OPEN = "The app's Edge window is already open. Close it (look on the taskbar), then press Sign in to Mind again."
+EDGE_DID_NOT_OPEN = "The Edge window could not open. Close any Edge window the app opened and try again, or press Send feedback."
+CLOSED_BEFORE_SIGN_IN = "the Edge window was closed before the sign-in finished"
+
+
+def sign_in_failure(exc: BaseException) -> str:
+    """The  sentence for  an error that kept the sign-in window from opening.
+    Edge is not installed: Playwright says "Chromium distribution 'msedge' is not found at ...".
+    The app's profile is in use (its window is still  open, or another copy of the app holds it): the second  Edge
+    hands over to the first and  ends, and Playwright says "BrowserType.launch_persistent_context: Target page,
+    context  or browser has been closed" (seen on 19 Nov 2026)."""
+    said = f"{type(exc).__name__}: {exc}".lower()
+    if "msedge" in said and ("is not found" in said or "not found at" in said or "doesn't exist" in said):
+        return EDGE_NOT_FOUND
+    if "launch_persistent_context" in said and "closed" in said:
+        return EDGE_ALREADY_OPEN
+    return EDGE_DID_NOT_OPEN
+
+
+def closed_while_open(exc: BaseException) -> bool:
+    """The  window did  open and was then closed by the person (not an error of the start itself)."""
+    said = f"{type(exc).__name__}: {exc}".lower()
+    return "closed" in said and "target" in said and "launch_persistent_context" not in said
+
 
 def _ensure_dirs() -> None:
     for d in (PROFILE_DIR, DOWNLOAD_DIR, RECON_DIR):
@@ -265,7 +294,11 @@ def sign_in(timeout_s: int = 600, progress: Any = None, should_stop: Any = None)
     _ensure_dirs()
     with mind_session(headed=True) as (_ctx, page):
         page.goto(MAIN_URL, wait_until="domcontentloaded")
-        tell("An Edge window is open on Mind: sign in there (it closes by itself when you are in).")
+        try:
+            page.bring_to_front()  # best effort: Windows may still leave it behind the browser the person is in
+        except Exception:
+            pass
+        tell(SIGN_IN_WAITING)
         deadline = time.time() + timeout_s
         stable_since: float | None = None
         while time.time() < deadline:

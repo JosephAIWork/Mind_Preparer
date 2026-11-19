@@ -14,6 +14,7 @@ import type { StackBar } from "../pages/advanced/stack-bar";
 import type { ApiService } from "./api.service";
 import type { CancelButton } from "./cancel-button";
 import type { ChangeStack } from "./change-stack";
+import type { FeedbackService } from "./feedback.service";
 import { CancelResult, FinderResult, InstancePlan, LoopPlan, MindDelete, MindLoopStatus, MindProject, MindRunTiming, MindSignIn, Operation, PrepAction, RecalcResult, SessionStart, Version } from "./models";
 import type { SessionStore } from "./session.store";
 
@@ -75,6 +76,7 @@ describe("Cancel in the Advanced panels", () => {
   let Store: typeof SessionStore;
   let Stack: typeof ChangeStack;
   let Cancel: typeof CancelButton;
+  let Feedback: typeof FeedbackService;
   let Recalc: typeof RecalcPanel;
   let Bar: typeof StackBar;
   let Prep: typeof PrepPanel;
@@ -99,6 +101,7 @@ describe("Cancel in the Advanced panels", () => {
     Store = (await import("./session.store")).SessionStore;
     Stack = (await import("./change-stack")).ChangeStack;
     Cancel = (await import("./cancel-button")).CancelButton;
+    Feedback = (await import("./feedback.service")).FeedbackService;
     Recalc = (await import("../pages/advanced/recalc-panel")).RecalcPanel;
     Bar = (await import("../pages/advanced/stack-bar")).StackBar;
     Prep = (await import("../pages/advanced/prep-panel")).PrepPanel;
@@ -824,14 +827,51 @@ describe("Cancel in the Advanced panels", () => {
   });
 
   it("row 8, 'Close the sign-in window' stays as it is", async () => {
-    const waiting: MindSignIn = { state: "waiting", message: "An Edge window is open on Mind: sign in there.", last_login: null, checked: null, elapsed_s: 3 };
+    const waiting: MindSignIn = { state: "waiting", message: null, last_login: null, checked: null, elapsed_s: 3 };
     const { page, mind, detect } = await drawMind(run(), { mindSignIn: () => Promise.resolve(waiting) });
+    // 19 Nov 2026: with no sentence from the server yet, the screen's own says where the window is
+    expect(text(page.querySelector('[data-test="mind-sign-in-line"]'))).toBe(
+      "Sign in to Mind in the Edge window the app opened (also when this page is in Chrome). It closes by itself. If you do not see it, look for Edge on the taskbar.",
+    );
     const close = buttonSaying(page, "Close the sign-in window")!;
     expect(page.querySelector("mr-cancel")).toBeNull();
     close.click();
     await detect();
     expect(mind.signInStops).toBe(1);
     expect(cancels).toEqual([]);
+  });
+
+  it("19 Nov 2026, a sign-in that could not start: the plain sentence, never the program's error, and Send feedback with the incident", async () => {
+    const kept = "C:\\Users\\me\\AppData\\Local\\MindReady\\edge-profile";
+    const sentence = "The Edge window could not open. Close any Edge window the app opened and try again, or press Send feedback.";
+    const failed: MindSignIn = {
+      state: "failed", message: sentence, last_login: null, checked: null, elapsed_s: 2,
+      detail: "OSError: [WinError 5] Access is denied", feedback_ref: "R9PS-0727", kept_in: kept,
+    };
+    const { page, detect } = await drawMind(run(), { mindSignIn: () => Promise.resolve(failed) });
+    expect(text(page.querySelector('[data-test="mind-sign-in-line"]'))).toBe(sentence);
+    expect(text(page.querySelector('[data-test="mind-sign-in-kept"]'))).toBe(`The sign-in is kept on this PC only, in ${kept}.`);
+    expect(text(page)).not.toContain("OSError");
+    expect(text(page)).not.toContain("WinError");
+    (page.querySelector('[data-test="mind-sign-in-feedback"]') as HTMLButtonElement).click();
+    await detect();
+    expect(TestBed.inject(Feedback).dialog()).toEqual({ ref: "R9PS-0727", note: sentence });
+  });
+
+  it("19 Nov 2026, not signed in: one sentence that says what to press, and no Send feedback without an incident", async () => {
+    const notSignedIn = "Not signed in to Mind. Press Sign in to Mind and sign in once in the Edge window that opens. It lasts about a week.";
+    const never = await drawMind(run());
+    expect(text(never.page.querySelector('[data-test="mind-sign-in-line"]'))).toBe(notSignedIn);
+    expect(never.page.querySelector('[data-test="mind-sign-in-kept"]')).toBeNull(); // the server named no folder
+    expect(never.page.querySelector('[data-test="mind-sign-in-feedback"]')).toBeNull();
+    const expired: MindSignIn = { state: "idle", message: null, last_login: "2026-11-01T10:00:00", checked: { signed_in: false, at: "2026-11-19T20:00:00" }, elapsed_s: null };
+    const again = await drawMind(run(), { mindSignIn: () => Promise.resolve(expired) });
+    expect(text(again.page.querySelector('[data-test="mind-sign-in-line"]'))).toBe(notSignedIn);
+    const closedByHand: MindSignIn = { state: "failed", message: "Not signed in: the Edge window was closed before the sign-in finished.", last_login: null, checked: null, elapsed_s: 9, detail: "TargetClosedError: Page.goto", feedback_ref: null };
+    const closed = await drawMind(run(), { mindSignIn: () => Promise.resolve(closedByHand) });
+    expect(text(closed.page.querySelector('[data-test="mind-sign-in-line"]'))).toBe(closedByHand.message);
+    expect(closed.page.querySelector('[data-test="mind-sign-in-feedback"]')).toBeNull();
+    expect(text(closed.page)).not.toContain("TargetClosedError");
   });
 
   it("row 8, after a stopped run: every project it left in Mind has its button, and the earlier rounds are named", async () => {
