@@ -33,7 +33,8 @@ from .readiness import OUTSIDE_RULE
 # ----  the limits  ---------------------------------------------------------------------------------
 # A safety cap only: the rounds stop by themselves when a round changes nothing. Only an endless
 # repair gets here (a row insert that moves its own row every round).
-MAX_PASSES = 20
+# 19 Nov 2026  (Joseph): 10 rounds, down from 20. The real models needed 1  to 4.
+MAX_PASSES = 10
 # How  many problems  the assistant is given in one run; the others are "not_tried".
 MAX_PROBLEMS = 5
 # Tries  per problem.  One try is one assistant turn = up to 5 model calls (chat_context.py).
@@ -42,6 +43,9 @@ MAX_TRIES = 2
 MAX_QUESTION_CELLS = 200
 # An  array formula  over more cells than this is never "narrow", whatever the finding lists.
 MAX_ARRAY_CELLS = 2000
+# 19  Nov 2026  (Joseph: "allow the fix to find other cells cautiously"): how many cells that are NOT the problem's own
+# one fix may also rewrite. Only cells that hold a formula now count (see  narrow_problem).
+MAX_OTHER_CELLS = 5
 
 # How  a problem  ended (the job's `problems[].outcome`).
 # "not_reached" (17 Nov 2026): the call got no answer (no connection, a timeout, a key the gateway refuses)
@@ -312,12 +316,13 @@ _ABOUT_FINDING = (
 )
 PROPOSE = "Propose a fix"
 # Said  with the  cells, so the first proposal is one the guard (narrow) can let through.
-_ONLY_THESE = "Change only these cells, or write a label into one empty cell: nothing wider is written without a person."
+_ONLY_THESE = (f"Change these cells; when the fix needs it, also at most {MAX_OTHER_CELLS} other cells that hold a formula now, or write a label into one empty cell: "
+               "a typed-in value, a range or anything that moves cells is not written without a person.")
 
 # Why  the first  try failed, for the second try. For the assistant only (never on screen).
 _EARLIER = {
     "no_fix": "Your first answer held no change the app could apply{detail}: end your answer with one changes block.",
-    "too_wide": "Your first proposal was too wide to write without a person{detail}: change only the cells listed, or write a label into one empty cell.",
+    "too_wide": "Your first proposal was too wide to write without a person{detail}: change the cells listed, at most " + str(MAX_OTHER_CELLS) + " other cells that hold a formula now, or write a label into one empty cell.",
     "not_written": "Excel refused your first proposal{detail}: propose a different change.",
     "numbers_changed": "Your first proposal changed a computed result{detail}, so it was taken back: propose a change that leaves every result as it is.",
     "not_cleared": "Your first proposal was written, but it did not make this problem smaller or it made another one worse{detail}, so it was taken back: propose a different change.",
@@ -403,10 +408,15 @@ def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[st
            - set_value or clear_cell  on ONE cell that is one of  the finding's own cells;
            - set_value on ONE cell that is empty now (`before` is None: a label beside the problem, as
              Prep's own lone-text fix writes);
+           - 19 Nov 2026 (Joseph: "allow the fix to find other cells cautiously"): set_formula on ONE cell
+             that is not the finding's own but HOLDS A FORMULA NOW (`before` starts with "="), on at most
+             MAX_OTHER_CELLS such cells, and  only for a finding that names cells of its own. The formula
+             that reads a lone text cell is the usual case. A typed-in value is never replaced, by a value
+             or by a formula: the numbers check compares formula cells, and would not see an input change;
          and there are no more than 2 x cells + 2 operations. Else a few words on the first thing that
-         is too wide (a range, an insert, a rename, hide, unprotect, a cell with content elsewhere, too
-         many  operations): for the second try's sentence, never for the screen.
-    Why so narrow: the numbers check sees formula cells at today's inputs only, and until tonight a
+         is too wide (a range, an insert, a rename, hide, unprotect, a cell with content elsewhere,  too
+         many operations): for the second  try's sentence, never for the screen.
+    Why so  narrow: the numbers  check sees  formula cells at today's inputs only, and until tonight a
     person read every proposal before Apply."""
     ops = list(ops or [])
     if not ops:
@@ -416,6 +426,7 @@ def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[st
     def own(sheet: str, row: int, col: int) -> bool:
         return any(s == sheet and r1 <= row <= r2 and c1 <= col <= c2 for s, r1, c1, r2, c2 in rects)
 
+    others: set[tuple[str, int, int]] = set()  # the formula cells changed that are not the finding's own
     if len(ops) > 2 * count + 2:
         return f"{len(ops)} operations for a problem in {count} cell{'' if count == 1 else 's'}"
     for i, o in enumerate(ops, start=1):
@@ -437,7 +448,14 @@ def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[st
                 continue
             if kind == "set_value" and "before" in o and o["before"] is None:
                 continue  # a label in an empty cell
-            return f"operation {i} ({kind}) changes {sheet}!{num_to_col(ref['c1'])}{ref['r1']}, which is not one of the problem's own cells" + (" and is not empty" if kind == "set_value" else "")
+            before = o.get("before")
+            if kind == "set_formula" and count and isinstance(before, str) and before.startswith("="):
+                others.add((sheet.lower(), ref["r1"], ref["c1"]))  # another cell that  holds a formula now
+                if len(others) > MAX_OTHER_CELLS:
+                    return f"operation {i} ({kind}) changes a formula cell outside the problem's own cells, and that makes {len(others)} of them: at most {MAX_OTHER_CELLS}"
+                continue
+            return (f"operation {i} ({kind}) changes {sheet}!{num_to_col(ref['c1'])}{ref['r1']}, which is not one of the problem's own cells"
+                    + (" and is not empty" if kind == "set_value" else " and holds no formula now" if kind == "set_formula" else ""))
         else:
             return f"operation {i} ({kind or 'no op'}) is not a change to one of the problem's own cells"
     return None

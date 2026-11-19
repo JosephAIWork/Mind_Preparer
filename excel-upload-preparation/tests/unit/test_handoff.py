@@ -15,7 +15,7 @@ import pytest
 
 from app import handoff
 from app.handoff import (
-    MAX_PASSES, MAX_PROBLEMS, MAX_QUESTION_CELLS, MAX_TRIES, ask_lines, assistant_message, build_ask, cells_of, changed_sample, done_lines,
+    MAX_OTHER_CELLS, MAX_PASSES, MAX_PROBLEMS, MAX_QUESTION_CELLS, MAX_TRIES, ask_lines, assistant_message, build_ask, cells_of, changed_sample, done_lines,
     feedback_note, judge, left_key, memo_key, narrow, narrow_problem, no_key_ask, pass_ops, problems_left, question_for, round_message,
     rounds_go_on, rounds_stop, run_rounds, show_me_for, sites_by_rule, stops_start, undo_message, why_line,
 )
@@ -54,7 +54,8 @@ class FakePrep:
 
 # ---- the limits ---------------------------------------------------------------------------------
 def test_the_limits_are_the_designs():
-    assert (MAX_PASSES, MAX_PROBLEMS, MAX_TRIES) == (20, 5, 2)
+    # 19 Nov 2026 (Joseph): 10 rounds, down from 20; and at most 5 formula cells outside the problem's own
+    assert (MAX_PASSES, MAX_PROBLEMS, MAX_TRIES, MAX_OTHER_CELLS) == (10, 5, 2, 5)
 
 
 # ---- the rounds ---------------------------------------------------------------------------------
@@ -233,7 +234,14 @@ def _aop(op: str, cell: str, before="=A1", sheet: str = "Calc", **kw) -> dict:
     [_aop("set_value", "A1", before=None, sheet="Other")],  # a label in a cell that is empty now, anywhere
     [_aop("set_formula", "B2"), _aop("set_value", "A2", before=None), _aop("clear_cell", "C7")],
     [_aop("set_formula", "B2")] * 10,  # 2 x 4 cells + 2
-], ids=["formula-own", "formula-own-in-range", "capitals", "array-own", "array-part", "value-own", "clear-own", "label-empty", "mixed", "at-the-limit"])
+    # 19 Nov 2026 (Joseph: "allow the fix to find other cells cautiously"): a cell that is not the finding's own but holds a formula now
+    [_aop("set_formula", "D4")],
+    [_aop("set_formula", "B2", sheet="Other")],  # ... also on another sheet (the formula that reads the problem cell)
+    [_aop("set_formula", "B2"), _aop("set_formula", "D4"), _aop("set_formula", "D5", before="=SUM(A1:A9)")],
+    [_aop("set_formula", f"D{r}") for r in range(4, 9)],  # five other formula cells: the most
+    [_aop("set_formula", "D4")] * 3,  # the same other cell three times is one cell
+], ids=["formula-own", "formula-own-in-range", "capitals", "array-own", "array-part", "value-own", "clear-own", "label-empty", "mixed", "at-the-limit",
+        "formula-elsewhere", "formula-other-sheet", "own-and-others", "five-others", "one-other-thrice"])
 def test_narrow_lets_through_each_allowed_shape(ops):
     assert narrow_problem(ops, OWN) is None
     assert narrow(ops, OWN) is True
@@ -248,19 +256,24 @@ def test_narrow_lets_through_each_allowed_shape(ops):
     ([{"action_id": "assistant", "rule_id": "CHAT", "sheet": "Calc", "op": "rename_sheet", "before": "Calc", "after": "Calc2"}], "rename_sheet"),  # a rename
     ([{"action_id": "assistant", "rule_id": "CHAT", "sheet": "Calc", "op": "set_sheet_visibility", "after": False}], "set_sheet_visibility"),
     ([{"action_id": "assistant", "rule_id": "CHAT", "sheet": "Calc", "op": "unprotect_sheet"}], "unprotect_sheet"),
-    ([_aop("set_formula", "D4")], "not one of the problem's own cells"),  # a cell with content elsewhere
-    ([_aop("set_value", "D4", before=12)], "not one of the problem's own cells"),
+    ([_aop("set_value", "D4", before=12)], "not one of the problem's own cells"),  # a typed-in value elsewhere: never
     ([_aop("clear_cell", "D4", before="text")], "not one of the problem's own cells"),
-    ([_aop("set_formula", "B2", sheet="Other")], "not one of the problem's own cells"),  # the same cell on another sheet
+    ([_aop("clear_cell", "D4")], "not one of the problem's own cells"),  # another formula cell may be rewritten, not emptied
+    ([_aop("set_value", "D4")], "not one of the problem's own cells"),  # ... nor turned into a value
+    ([_aop("set_formula", "D4", before=12)], "holds no formula now"),  # a typed-in value is not replaced by a formula either
+    ([_aop("set_formula", "D4", before="text")], "holds no formula now"),
+    ([_aop("set_formula", "D4", before="part of array formula D4:D6")], "holds no formula now"),
     ([_aop("set_formula", "D4", before=None)], "not one of the problem's own cells"),  # a formula into an empty cell is no label
+    ([_aop("set_formula", f"D{r}") for r in range(4, 10)], "at most 5"),  # a sixth formula cell outside the problem's own
     ([_aop("set_value", "D4", before="part of array formula D4:D6")], "not one of the problem's own cells"),  # not empty in Excel
     ([_aop("set_array_formula", "C7:C10", range="C7:C10")], "outside the problem's own cells"),  # the array reaches one cell further
     ([_aop("set_array_formula", "A1:XFD1048576", range="A1:XFD1048576")], "outside the problem's own cells"),
     ([_aop("set_formula", "B2")] * 11, "11 operations"),  # too many operations
     ([_aop("set_formula", "B2"), {"action_id": "assistant", "sheet": "Calc", "op": "insert_row", "row": 2}], "insert_row"),  # one wide operation is enough
     ([], "no change"),
-], ids=["formula-range", "value-range", "clear-range", "insert-row", "insert-column", "rename", "hide", "unprotect", "formula-elsewhere", "value-elsewhere",
-        "clear-elsewhere", "other-sheet", "formula-empty", "array-member", "array-wider", "array-huge", "too-many", "one-wide", "nothing"])
+], ids=["formula-range", "value-range", "clear-range", "insert-row", "insert-column", "rename", "hide", "unprotect", "value-elsewhere",
+        "clear-elsewhere", "clear-formula-elsewhere", "value-over-formula-elsewhere", "formula-over-value", "formula-over-text", "formula-over-array-member",
+        "formula-empty", "six-others", "array-member", "array-wider", "array-huge", "too-many", "one-wide", "nothing"])
 def test_narrow_refuses_anything_wider(ops, why):
     assert narrow(ops, OWN) is False
     assert why in narrow_problem(ops, OWN)
@@ -270,7 +283,7 @@ def test_narrow_with_no_cells_allows_only_two_labels():
     label = _aop("set_value", "A1", before=None)
     assert narrow([label, label], []) is True
     assert narrow([label, label, label], []) is False
-    assert narrow([_aop("set_formula", "B2")], []) is False
+    assert narrow([_aop("set_formula", "B2")], []) is False  # a problem that names no cell: no formula cell is "another" one
     # a missing `before` is not "empty now": only what the validator read as empty counts
     assert narrow([{"op": "set_value", "sheet": "Calc", "cell": "A1", "after": "x"}], []) is False
 
@@ -313,8 +326,11 @@ def test_the_real_pieces_fit_the_finding_the_plan_the_validator_and_the_guard(tm
     own = cells_of(finding)
     # a label in the empty cell above (the validator read it as empty) and a change to the cell itself: narrow
     assert narrow(proposed({"op": "set_value", "sheet": "roll sheet", "cell": "$G$8", "value": "#Label"}, {"op": "set_value", "sheet": "Roll sheet", "cell": "G9", "value": "Alone"}), own)
-    # the formula that reads it is another cell with content; an insert moves everything under it
-    assert "not one of the problem's own cells" in narrow_problem(proposed({"op": "set_formula", "sheet": "Roll sheet", "cell": "H12", "formula": "=G9"}), own)
+    # 19 Nov 2026: the formula that reads it is another cell that holds a formula now, so it may be rewritten too
+    # (whether the fix is kept is the numbers check's and the judge's word); a typed-in value may not
+    assert narrow_problem(proposed({"op": "set_formula", "sheet": "Roll sheet", "cell": "H12", "formula": "=G9"}), own) is None
+    assert "holds no formula now" in narrow_problem(proposed({"op": "set_formula", "sheet": "Roll sheet", "cell": "B4", "formula": "=1"}), own)
+    # an insert moves everything under it
     assert "insert_row" in narrow_problem(proposed({"op": "insert_row", "sheet": "Roll sheet", "row": 9}), own)
     assert "range" in narrow_problem(proposed({"op": "clear_cell", "sheet": "Roll sheet", "cell": "G9:J20"}), own)
 
@@ -410,7 +426,8 @@ def test_the_question_names_every_cell():
     for c in cells:
         assert f"{SHEET}!{c}" in q
     line = q.split("\n")[1]
-    assert line == "Cells: " + ", ".join(f"{SHEET}!{c}" for c in cells) + ". Change only these cells, or write a label into one empty cell: nothing wider is written without a person."
+    assert line == "Cells: " + ", ".join(f"{SHEET}!{c}" for c in cells) + (". Change these cells; when the fix needs it, also at most 5 other cells that hold a formula now, or write a label into one empty cell: "
+                                                                             "a typed-in value, a range or anything that moves cells is not written without a person.")
     assert len(q.split("\n")) == 2  # a first try says nothing about an earlier one
 
 
