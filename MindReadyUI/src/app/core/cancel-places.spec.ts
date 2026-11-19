@@ -846,6 +846,24 @@ describe("Cancel on Basic and Custom", () => {
     expect(count(s, "loop")).toBe(0); // and the chain stops after it
   });
 
+  it("19 Nov 2026, after a late Cancel 'Show me' leads to the next step that would really run, not to one left out", async () => {
+    const s = server();
+    await opened("basic", s);
+    page.buildLoop.set(false); // the loop is left out
+    const run = page.runAll();
+    await until(() => s.calls.includes("startAutoFix"));
+    s.fixer = fixerDone();
+    await until(() => s.calls.includes("apply"));
+    click();
+    s.pending["apply"].end(applied(4)); // the click reached the server too late: the round was written
+    heard();
+    await run;
+    expect(page.basicLine()).toBe("Stopped. Your workbook is as it was after the formulas and the structure were fixed.");
+    expect(page.endPlace()).toEqual({ id: "recalc-run" }); // not the Mind loop: that step would not have run
+    expect(count(s, "loop")).toBe(0);
+    expect(count(s, "recalc")).toBe(0);
+  });
+
   it("the chain: the fixer ending 'done' after the click counts as finished and is named", async () => {
     const s = server();
     await opened("custom", s);

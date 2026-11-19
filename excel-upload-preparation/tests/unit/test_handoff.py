@@ -234,14 +234,18 @@ def _aop(op: str, cell: str, before="=A1", sheet: str = "Calc", **kw) -> dict:
     [_aop("set_value", "A1", before=None, sheet="Other")],  # a label in a cell that is empty now, anywhere
     [_aop("set_formula", "B2"), _aop("set_value", "A2", before=None), _aop("clear_cell", "C7")],
     [_aop("set_formula", "B2")] * 10,  # 2 x 4 cells + 2
-    # 19 Nov 2026 (Joseph: "allow the fix to find other cells cautiously"): a cell that is not the finding's own but holds a formula now
-    [_aop("set_formula", "D4")],
-    [_aop("set_formula", "B2", sheet="Other")],  # ... also on another sheet (the formula that reads the problem cell)
-    [_aop("set_formula", "B2"), _aop("set_formula", "D4"), _aop("set_formula", "D5", before="=SUM(A1:A9)")],
-    [_aop("set_formula", f"D{r}") for r in range(4, 9)],  # five other formula cells: the most
-    [_aop("set_formula", "D4")] * 3,  # the same other cell three times is one cell
+    # 19 Nov 2026 (Joseph: "allow the fix to find other cells cautiously"): a cell that is not the finding's own, but
+    # holds a formula now that reads one of the finding's cells
+    [_aop("set_formula", "D4", before="=B2*2")],
+    [_aop("set_formula", "B2", before="=Calc!C8+1", sheet="Other")],  # ... also on another sheet
+    [_aop("set_formula", "D4", before="=IF('calc'!$b$2=\"x\",1,2)")],  # the sheet in quotes and small letters, the cell with dollars
+    [_aop("set_formula", "B2"), _aop("set_formula", "D4", before="=B2"), _aop("set_formula", "D5", before="=SUM(C1:C20)")],  # a range over C7:C9
+    [_aop("set_formula", "D4", before="=SUM(C:C)")],  # a whole column
+    [_aop("set_formula", "D4", before="=SUM(7:7)")],  # a whole row
+    [_aop("set_formula", f"D{r}", before="=$B$2") for r in range(4, 9)],  # five other formula cells: the most
+    [_aop("set_formula", "D4", before="=B2")] * 3,  # the same other cell three times is one cell
 ], ids=["formula-own", "formula-own-in-range", "capitals", "array-own", "array-part", "value-own", "clear-own", "label-empty", "mixed", "at-the-limit",
-        "formula-elsewhere", "formula-other-sheet", "own-and-others", "five-others", "one-other-thrice"])
+        "reader-elsewhere", "reader-other-sheet", "reader-quoted-sheet", "own-and-readers", "reader-whole-column", "reader-whole-row", "five-readers", "one-reader-thrice"])
 def test_narrow_lets_through_each_allowed_shape(ops):
     assert narrow_problem(ops, OWN) is None
     assert narrow(ops, OWN) is True
@@ -264,7 +268,16 @@ def test_narrow_lets_through_each_allowed_shape(ops):
     ([_aop("set_formula", "D4", before="text")], "holds no formula now"),
     ([_aop("set_formula", "D4", before="part of array formula D4:D6")], "holds no formula now"),
     ([_aop("set_formula", "D4", before=None)], "not one of the problem's own cells"),  # a formula into an empty cell is no label
-    ([_aop("set_formula", f"D{r}") for r in range(4, 10)], "at most 5"),  # a sixth formula cell outside the problem's own
+    ([_aop("set_formula", f"D{r}", before="=B2") for r in range(4, 10)], "at most 5"),  # a sixth formula cell outside the problem's own
+    # after the refuter: another formula cell only when it is tied to the problem and the numbers check can compare it
+    ([_aop("set_formula", "D4")], "does not read one of them"),  # =A1: no tie to the problem
+    ([_aop("set_formula", "D4", before="=Other!B2+Other!C8")], "does not read one of them"),  # the same addresses on another sheet
+    ([_aop("set_formula", "B2", before="=B2+1", sheet="Other")], "does not read one of them"),  # Other!B2 reading Other!B2
+    ([_aop("set_formula", "D4", before="=Calc2!B2")], "does not read one of them"),
+    ([_aop("set_formula", "D4", before="=my_name*2")], "does not read one of them"),  # through a name: not followed
+    ([_aop("set_formula", "D4", before="=B2+RAND()")], "numbers check cannot compare"),
+    ([_aop("set_formula", "D4", before="=IF(B2>today(),1,2)")], "numbers check cannot compare"),
+    ([_aop("set_formula", "D4", before="=B2", after="=B2+NOW()")], "numbers check cannot compare"),  # the new formula
     ([_aop("set_value", "D4", before="part of array formula D4:D6")], "not one of the problem's own cells"),  # not empty in Excel
     ([_aop("set_array_formula", "C7:C10", range="C7:C10")], "outside the problem's own cells"),  # the array reaches one cell further
     ([_aop("set_array_formula", "A1:XFD1048576", range="A1:XFD1048576")], "outside the problem's own cells"),
@@ -273,10 +286,32 @@ def test_narrow_lets_through_each_allowed_shape(ops):
     ([], "no change"),
 ], ids=["formula-range", "value-range", "clear-range", "insert-row", "insert-column", "rename", "hide", "unprotect", "value-elsewhere",
         "clear-elsewhere", "clear-formula-elsewhere", "value-over-formula-elsewhere", "formula-over-value", "formula-over-text", "formula-over-array-member",
-        "formula-empty", "six-others", "array-member", "array-wider", "array-huge", "too-many", "one-wide", "nothing"])
+        "formula-empty", "six-readers", "no-tie", "no-tie-other-sheet", "no-tie-same-address", "no-tie-like-name", "through-a-name", "volatile-rand",
+        "volatile-today", "volatile-after", "array-member", "array-wider", "array-huge", "too-many", "one-wide", "nothing"])
 def test_narrow_refuses_anything_wider(ops, why):
     assert narrow(ops, OWN) is False
     assert why in narrow_problem(ops, OWN)
+
+
+def test_another_cell_must_be_a_formula_cell_of_the_scan_not_a_text_that_looks_like_one():
+    op = [_aop("set_formula", "D4", before="=B2*2")]
+    assert narrow_problem(op, OWN) is None  # the scan's list not given: `before` alone is trusted
+    assert narrow_problem(op, OWN, [("Calc", "B2"), ("calc", "$D$4")]) is None  # capitals and dollars do not matter
+    assert narrow(op, OWN, iter([("Calc", "D4")])) is True  # any iterable, read once
+    assert "typed-in text, not a formula" in narrow_problem(op, OWN, [("Calc", "B2"), ("Other", "D4")])
+    assert "typed-in text, not a formula" in narrow_problem(op, OWN, [])
+    # the finding's own cells need no listing
+    assert narrow_problem([_aop("set_formula", "B2")], OWN, []) is None
+
+
+def test_the_cells_the_numbers_check_skips_are_the_ones_the_guard_keeps_out():
+    from app import handoff
+    from app.autofix import VOLATILE_FUNCS
+
+    for fn in VOLATILE_FUNCS:
+        assert handoff._VOLATILE_RE.search(f"=B2+{fn}()"), fn
+        assert "numbers check cannot compare" in narrow_problem([_aop("set_formula", "D4", before=f"=B2+{fn.lower()} ()")], OWN), fn
+    assert not handoff._VOLATILE_RE.search("=B2+BRAND(1)+KNOWN(2)")  # a name that only ends like one
 
 
 def test_narrow_with_no_cells_allows_only_two_labels():
@@ -426,8 +461,8 @@ def test_the_question_names_every_cell():
     for c in cells:
         assert f"{SHEET}!{c}" in q
     line = q.split("\n")[1]
-    assert line == "Cells: " + ", ".join(f"{SHEET}!{c}" for c in cells) + (". Change these cells; when the fix needs it, also at most 5 other cells that hold a formula now, or write a label into one empty cell: "
-                                                                             "a typed-in value, a range or anything that moves cells is not written without a person.")
+    assert line == "Cells: " + ", ".join(f"{SHEET}!{c}" for c in cells) + (". Change these cells. When the fix needs it, you may also give a new formula to at most 5 other cells whose formula reads one of these cells, "
+                                                                             "and you may write a label into one empty cell. Nothing else is written without a person: no typed-in value is changed, no range, nothing that moves cells.")
     assert len(q.split("\n")) == 2  # a first try says nothing about an earlier one
 
 

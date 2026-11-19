@@ -4247,10 +4247,10 @@ def start_prep_run(session_id: str, payload: dict[str, Any] = Body(default={})) 
     Prep action that is on by default, round after round while a round still changes something;
     then, with `assistant` (default true), each  blocking problem that is left goes to the assistant
     (five problems at  most, two tries each); a fix  it proposes is written only when it  changes the
-    problem's own cells (since 19 Nov 2026 also at most  5 other cells that hold a formula  now; or labels one empty cell), and kept only when the numbers check finds no
+    problem's own cells (since 19 Nov 2026 also at most  5 other formula cells that read one  of them; or labels one empty cell), and kept only when the numbers check finds no
     computed value changed and the check of the workbook finds the problem smaller and no other
     one worse -- else it is taken back. The end is `done`, or `ask` (something is left for a
-    person: the two sentences, where "Show me" leads, the note for Send feedback, and  whether Start
+    person: the two sentences, where "Show me" leads, the note for Send feedback,  and whether Start
     stops here), or `no_key` (something is left and no AI key is saved; the rounds are kept).
 
     Body (all optional): assistant (false: the rounds only; what is left is asked about), button
@@ -4266,8 +4266,8 @@ def start_prep_run(session_id: str, payload: dict[str, Any] = Body(default={})) 
     use_assistant = bool(payload.get("assistant", True))
     button = str(payload.get("button") or "").strip()
     button = button if button in _PREP_RUN_BUTTONS else _PREP_RUN_BUTTONS[0]
-    # the job begins here, before the thread starts, so a Cancel  in the first millisecond finds  it
-    # (409 while another job changes the workbook);  the snapshot is  the workbook  a cancelled run goes back to
+    # the job begins here, before the thread starts, so a  Cancel in the first millisecond  finds it
+    # (409 while another job changes the  workbook); the snapshot  is the  workbook a cancelled run goes back to
     job = _begin_job(s, "prep")
     state: dict[str, Any] = {}
     try:
@@ -4502,7 +4502,10 @@ def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: di
         errors = [str(e) for e in reply.get("proposal_errors") or []]
         if not ops or errors:  # d.
             return "no_fix", (errors[0][:300] if errors else ""), heard
-        wide = handoff.narrow_problem(ops, cells)  # e. the guard (handoff.narrow_problem): what may be written without a person
+        # e. the guard (handoff.narrow_problem): what may be written without a person. It is told which cells the
+        # scan lists as formula cells: a text typed as "=..." is a typed-in value, and those are never replaced
+        formulas_now = ((f.get("sheet"), f.get("cell")) for f in s.result["workbook_analysis"]["workbooks"][0].get("formulas", []))
+        wide = handoff.narrow_problem(ops, cells, formulas_now)
         if wide:
             return "too_wide", wide, heard
         stage("write", handoff.WRITE_MESSAGE)  # f. nothing of the fix is saved until it is judged
@@ -4515,29 +4518,29 @@ def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: di
             undo()
             return "not_written", str(failed[0].get("error") or "")[:300], heard
         # g. the numbers check itself, between the version just before the fix and the version with
-        # it: only the fix is judged. A check that could not run is never a pass.
+        # it: only the fix is  judged. A check that could  not run is never a pass.
         stage("numbers", handoff.NUMBERS_MESSAGE)
         excel_worker.release(s.id)
         numbers = compare_workbooks(s.paths[before], s.current_path, Moves([out["version"].get("change_log") or []]))
-        cancel.check()  # its Excel ended by a Cancel answers "could not be compared": that is no  verdict
+        cancel.check()  # its Excel  ended by a  Cancel answers  "could not be compared": that is no verdict
         changed = _shown_changed(numbers) if numbers.get("ran") else None
         blocking_after = None
         if changed == 0:  # h.
             stage("check", handoff.CHECK_MESSAGE)
-            _run_scan(s, save=False)  # 17 Nov 2026: the fix  is not judged yet: nothing of it  reaches the state  file
+            _run_scan(s, save=False)  # 17 Nov 2026: the fix is not judged yet: nothing of it reaches the state file
             blocking_after = handoff.sites_by_rule(s.readiness()["blocking"])
         outcome = handoff.judge(blocking_before, blocking_after, rule, changed)  # i.
         if outcome == "fixed":
             hold["undo"] = None
-            _save(s)  # the version  is kept
+            _save(s)  # the version is kept
             return outcome, "", heard
         stage("undo", handoff.undo_message(outcome))
         undo()
         return outcome, (handoff.changed_sample(numbers) if outcome == "numbers_changed" else ""), heard
-    except Exception as exc:  # j. an error between the write and the judge never leaves the fix current
-        if cancel.flagged():  # a set flag wins over any error
+    except Exception as exc:  # j. an error between the write  and the judge never leaves the fix current
+        if cancel.flagged():  # a set flag wins  over any error
             raise cancel.Cancelled() from None
-        if hold["undo"] is None:  # before the write: there is no fix to take back, and  none to check
+        if hold["undo"] is None:  # before the write: there  is no fix to take back, and  none to check
             return ("no_fix" if heard else "not_reached"), "", heard
         undo()
         return ("not_written" if writing else "not_checked"), plain_error(exc)[:300], heard

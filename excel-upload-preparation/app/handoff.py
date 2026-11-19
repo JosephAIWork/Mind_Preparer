@@ -26,14 +26,14 @@ import hashlib
 import re
 from typing import Any, Callable, Iterable
 
-from .formula_utils import num_to_col, parse_ref
+from .formula_utils import REF_RE, mask_strings, num_to_col, parse_ref
 from .plain_codes import rule_name
 from .readiness import OUTSIDE_RULE
 
 # ----  the limits  ---------------------------------------------------------------------------------
 # A safety cap only: the rounds stop by themselves when a round changes nothing. Only an endless
 # repair gets here (a row insert that moves its own row every round).
-# 19 Nov 2026  (Joseph): 10 rounds, down from 20. The real models needed 1  to 4.
+# 19 Nov 2026  (Joseph): 10 rounds, down from 20. On the models run so  far the rounds ended after 1  to 4.
 MAX_PASSES = 10
 # How  many problems  the assistant is given in one run; the others are "not_tried".
 MAX_PROBLEMS = 5
@@ -44,8 +44,11 @@ MAX_QUESTION_CELLS = 200
 # An  array formula  over more cells than this is never "narrow", whatever the finding lists.
 MAX_ARRAY_CELLS = 2000
 # 19  Nov 2026  (Joseph: "allow the fix to find other cells cautiously"): how many cells that are NOT the problem's own
-# one fix may also rewrite. Only cells that hold a formula now count (see  narrow_problem).
+# one fix may also rewrite. Only formula cells that read one of the problem's  cells count (see narrow_problem).
 MAX_OTHER_CELLS = 5
+# The  numbers check  does not compare a cell whose formula uses one of these (autofix.VOLATILE_FUNCS;
+# tests/unit/test_handoff.py fails when the two drift apart): such a cell is never one of the "other" cells.
+_VOLATILE_RE = re.compile(r"\b(?:NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY)\s*\(", re.IGNORECASE)
 
 # How  a problem  ended (the job's `problems[].outcome`).
 # "not_reached" (17 Nov 2026): the call got no answer (no connection, a timeout, a key the gateway refuses)
@@ -97,7 +100,7 @@ def left_key(plan: Iterable[dict[str, Any]] | None) -> frozenset[str]:
     Out: one text per operation of pass_ops(plan): "action_id | rule_id | op | sheet  | cell or range".
          Equal sets before and after a round mean  the same operations came back: writing  them again
          would change nothing. What an operation  would write is not part of the key on purpose (a
-         repair  that rewrites its own cell every round  must not run 20 rounds)."""
+         repair  that rewrites its own cell every round  must not run every round up to the cap)."""
     return frozenset(" | ".join(str(x or "") for x in (o.get("action_id"), o.get("rule_id"), o.get("op"), o.get("sheet"), _op_place(o))) for o in pass_ops(plan))
 
 
@@ -316,13 +319,13 @@ _ABOUT_FINDING = (
 )
 PROPOSE = "Propose a fix"
 # Said  with the  cells, so the first proposal is one the guard (narrow) can let through.
-_ONLY_THESE = (f"Change these cells; when the fix needs it, also at most {MAX_OTHER_CELLS} other cells that hold a formula now, or write a label into one empty cell: "
-               "a typed-in value, a range or anything that moves cells is not written without a person.")
+_ONLY_THESE = (f"Change these cells. When the fix needs it, you may also give a new formula to at most {MAX_OTHER_CELLS} other cells whose formula reads one of these cells, "
+               "and you may write a label into one empty cell. Nothing else is written without a person: no typed-in value is changed, no range, nothing that moves cells.")
 
 # Why  the first  try failed, for the second try. For the assistant only (never on screen).
 _EARLIER = {
     "no_fix": "Your first answer held no change the app could apply{detail}: end your answer with one changes block.",
-    "too_wide": "Your first proposal was too wide to write without a person{detail}: change the cells listed, at most " + str(MAX_OTHER_CELLS) + " other cells that hold a formula now, or write a label into one empty cell.",
+    "too_wide": "Your first proposal was too wide to write without a person{detail}: change the cells listed, give a new formula to at most " + str(MAX_OTHER_CELLS) + " other cells whose formula reads one of them, or write a label into one empty cell.",
     "not_written": "Excel refused your first proposal{detail}: propose a different change.",
     "numbers_changed": "Your first proposal changed a computed result{detail}, so it was taken back: propose a change that leaves every result as it is.",
     "not_cleared": "Your first proposal was written, but it did not make this problem smaller or it made another one worse{detail}, so it was taken back: propose a different change.",
@@ -397,7 +400,28 @@ def _own_cells(cells: Iterable[dict[str, str]] | None) -> tuple[list[tuple[str, 
     return rects, count
 
 
-def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[str, str]] | None) -> str | None:
+def _reads_own(formula: str, home: str, rects: list[tuple[str, int, int, int, int]]) -> bool:
+    """Does  `formula`, written  on sheet `home`, name one of the problem's own cells -- alone, or inside a range, a
+    whole column or a whole row? Only references written out in the formula are followed  (no defined name, no
+    3-D reference): what cannot be followed does not  count as reading."""
+    masked = mask_strings(formula, mask_sheet_quotes=False)
+    for m in REF_RE.finditer(masked):
+        name = m.group("sheet")
+        if name and name.startswith("'"):
+            name = formula[m.start("sheet") + 1 : m.end("sheet") - 1].replace("''", "'")
+        if name and ":" in name:
+            continue
+        ref = parse_ref(m.group("ref"))
+        if not ref:
+            continue
+        sheet = (name or home).lower()
+        if any(s == sheet and ref["r1"] <= r2 and r1 <= ref["r2"] and ref["c1"] <= c2 and c1 <= ref["c2"] for s, r1, c1, r2, c2 in rects):
+            return True
+    return False
+
+
+def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[str, str]] | None,
+                   formula_cells: Iterable[tuple[Any, Any]] | None = None) -> str | None:
     """Why  a proposal  is too wide to be written without a person, or None when it is narrow (step 4e).
 
     In: `ops` = the assistant's operations as prep.validate_proposal returns them (`op`, `sheet`,
@@ -409,14 +433,23 @@ def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[st
            - set_value on ONE cell that is empty now (`before` is None: a label beside the problem, as
              Prep's own lone-text fix writes);
            - 19 Nov 2026 (Joseph: "allow the fix to find other cells cautiously"): set_formula on ONE cell
-             that is not the finding's own but HOLDS A FORMULA NOW (`before` starts with "="), on at most
-             MAX_OTHER_CELLS such cells, and  only for a finding that names cells of its own. The formula
-             that reads a lone text cell is the usual case. A typed-in value is never replaced, by a value
-             or by a formula: the numbers check compares formula cells, and would not see an input change;
-         and there are no more than 2 x cells + 2 operations. Else a few words on the first thing that
-         is too wide (a range, an insert, a rename, hide, unprotect, a cell with content elsewhere,  too
-         many operations): for the second  try's sentence, never for the screen.
-    Why so  narrow: the numbers  check sees  formula cells at today's inputs only, and until tonight a
+             that is not the finding's own, when all of this holds:
+               . it HOLDS A FORMULA NOW: `before` starts with "=", and  the scan lists it as a formula cell
+                 (`formula_cells`, (sheet, cell) pairs; not given: `before` alone is trusted). A text typed
+                 as "=..." is a typed-in value;
+               . that formula READS ONE OF THE FINDING'S OWN CELLS (the formula that reads a lone text cell
+                 is the usual case); a cell with no tie to the problem is not touched;
+               . neither that formula nor the new one (`after`) uses NOW, TODAY, RAND, RANDBETWEEN or
+                 RANDARRAY: the numbers check does not compare such a cell;
+               . there are  at most MAX_OTHER_CELLS such cells,  and the finding names cells of its  own.
+             A typed-in value  is never  replaced, by a value or by a formula: the numbers check compares
+             formula cells, and would not see an input change. What the numbers check cannot see at all --
+             a result that  differs only at other inputs than today's -- is as true  of these cells as of the
+             finding's  own: the reason they are few and  tied to the problem;
+         and there are no more than 2 x  cells + 2 operations. Else a few  words on the first thing that
+         is too wide (a range, an insert, a rename, hide, unprotect, a cell with content elsewhere, too
+         many operations): for the second try's sentence, never for the screen.
+    Why so narrow: the numbers check sees formula cells at today's inputs only, and until tonight a
     person read every proposal before Apply."""
     ops = list(ops or [])
     if not ops:
@@ -426,7 +459,8 @@ def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[st
     def own(sheet: str, row: int, col: int) -> bool:
         return any(s == sheet and r1 <= row <= r2 and c1 <= col <= c2 for s, r1, c1, r2, c2 in rects)
 
-    others: set[tuple[str, int, int]] = set()  # the formula cells changed that are not the finding's own
+    others: set[tuple[str, int, int]] = set()  # the formula cells changed that are not the finding's  own
+    known: set[tuple[str, str]] | None = None  # the scan's formula cells, read once and only when needed
     if len(ops) > 2 * count + 2:
         return f"{len(ops)} operations for a problem in {count} cell{'' if count == 1 else 's'}"
     for i, o in enumerate(ops, start=1):
@@ -448,23 +482,34 @@ def narrow_problem(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[st
                 continue
             if kind == "set_value" and "before" in o and o["before"] is None:
                 continue  # a label in an empty cell
-            before = o.get("before")
+            before, after = o.get("before"), o.get("after")
+            place = f"{sheet}!{num_to_col(ref['c1'])}{ref['r1']}"
             if kind == "set_formula" and count and isinstance(before, str) and before.startswith("="):
-                others.add((sheet.lower(), ref["r1"], ref["c1"]))  # another cell that  holds a formula now
+                # another cell that holds a formula now: with care (19 Nov 2026, see above)
+                if formula_cells is not None:
+                    if known is None:
+                        known = {(str(sh or "").lower(), str(c or "").replace("$", "").upper()) for sh, c in formula_cells}
+                    if (sheet.lower(), f"{num_to_col(ref['c1'])}{ref['r1']}") not in known:
+                        return f"operation {i} ({kind}) changes {place}, which is not one of the problem's own cells and holds a typed-in text, not a formula"
+                if _VOLATILE_RE.search(before) or (isinstance(after, str) and _VOLATILE_RE.search(after)):
+                    return f"operation {i} ({kind}) changes {place}, which is not one of the problem's own cells, and its result changes by itself (NOW, TODAY, RAND): the numbers check cannot compare it"
+                if not _reads_own(before, sheet, rects):
+                    return f"operation {i} ({kind}) changes {place}, which is not one of the problem's own cells and does not read one of them"
+                others.add((sheet.lower(), ref["r1"], ref["c1"]))
                 if len(others) > MAX_OTHER_CELLS:
                     return f"operation {i} ({kind}) changes a formula cell outside the problem's own cells, and that makes {len(others)} of them: at most {MAX_OTHER_CELLS}"
                 continue
-            return (f"operation {i} ({kind}) changes {sheet}!{num_to_col(ref['c1'])}{ref['r1']}, which is not one of the problem's own cells"
+            return (f"operation {i} ({kind}) changes {place}, which is not one of the problem's own cells"
                     + (" and is not empty" if kind == "set_value" else " and holds no formula now" if kind == "set_formula" else ""))
         else:
             return f"operation {i} ({kind or 'no op'}) is not a change to one of the problem's own cells"
     return None
 
 
-def narrow(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[str, str]] | None) -> bool:
+def narrow(ops: Iterable[dict[str, Any]] | None, cells: Iterable[dict[str, str]] | None, formula_cells: Iterable[tuple[Any, Any]] | None = None) -> bool:
     """True  when the  assistant's fix may be written by itself (see narrow_problem for the rule and the
     inputs). False: outcome "too_wide", nothing is written."""
-    return narrow_problem(ops, cells) is None
+    return narrow_problem(ops, cells, formula_cells) is None
 
 
 # ---- step 4i: the judge --------------------------------------------------------------------------
