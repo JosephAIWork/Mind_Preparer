@@ -17,7 +17,7 @@ from app import handoff
 from app.handoff import (
     MAX_OTHER_CELLS, MAX_PASSES, MAX_PROBLEMS, MAX_QUESTION_CELLS, MAX_TRIES, ask_lines, assistant_message, build_ask, cells_of, changed_sample, done_lines,
     feedback_note, judge, left_key, memo_key, narrow, narrow_problem, no_key_ask, pass_ops, problems_left, question_for, round_message,
-    rounds_go_on, rounds_stop, run_rounds, show_me_for, sites_by_rule, stops_start, undo_message, why_line,
+    prep_fix_left, rounds_go_on, rounds_stop, run_rounds, show_me_for, sites_by_rule, stops_start, undo_message, why_line,
 )
 from app.plain_codes import rule_name
 
@@ -73,8 +73,10 @@ def test_a_round_is_every_operation_of_the_blocking_actions_that_are_on_by_defau
         f"title_lone_text_cells | STR-008 | set_value | {SHEET} | A2",
         f"fix_broken_refs | REF-001 | set_formula | {SHEET} | D1",
     }
-    assert stops_start(plan) is True
-    assert pass_ops([]) == [] and pass_ops(None) == [] and left_key(None) == frozenset() and stops_start([]) is False
+    assert prep_fix_left(plan) is True
+    assert pass_ops([]) == [] and pass_ops(None) == [] and left_key(None) == frozenset() and prep_fix_left([]) is False
+    # 20 Nov 2026 (Joseph: "App tries, never stops"): Start never stops at the Prep step any more
+    assert stops_start(plan) is False and stops_start([]) is False
 
 
 def test_the_key_tells_apart_operations_with_no_cell():
@@ -618,12 +620,13 @@ def test_the_whole_ask():
     assert ask == {
         "lines": [f"2 things are left that the app could not fix. The first: {NAME}, on sheet {SHEET}, cell W25.", "Fix it by hand, then press Start again."],
         "why": "The assistant's fix changed a result, so it was taken back.",
-        "stops_start": True,  # a blocking Prep action that is on by default still has changes
+        "stops_start": False,  # 20 Nov 2026: Start goes on and asks at its end
+        "prep_fix_left": True,  # a blocking Prep action that is on by default still has changes
         "show_me": {"id": "prep-action", "rule_id": "STR-008", "sheet": SHEET, "cell": "W25"},
         "feedback": {"ref": "ABCD-1234", "note": f"Start could not fix this by itself: {NAME}. The assistant tried twice: its change altered a result and was undone."},
     }
     # nothing left for Prep: the question does not stop Start (it is asked at the end)
-    assert build_ask(left[1:], [_action([])], None)["stops_start"] is False
+    assert build_ask(left[1:], [_action([])], None)["stops_start"] is False and build_ask(left[1:], [_action([])], None)["prep_fix_left"] is False
     assert build_ask(left[1:], [_action([])], None, "Do everything")["lines"][1] == "Fix it by hand, then press Do everything again."
     assert build_ask([], plan) is None
 
@@ -631,7 +634,7 @@ def test_the_whole_ask():
 def test_no_ai_key():
     ask = no_key_ask()
     assert ask["lines"] == ["Something is left that needs the assistant, and no AI key is saved.", "Paste an AI key under Advanced › Assistant, then press Start again."]
-    assert ask["show_me"]["id"] == "assistant-key" and ask["stops_start"] is True and ask["feedback"] is None
+    assert ask["show_me"]["id"] == "assistant-key" and ask["stops_start"] is False and ask["feedback"] is None
     assert no_key_ask("Do everything")["lines"][1] == "Paste an AI key under Advanced › Assistant, then press Do everything again."
 
 

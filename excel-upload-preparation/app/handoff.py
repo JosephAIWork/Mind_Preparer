@@ -162,14 +162,22 @@ def run_rounds(plan_now: Callable[[], Iterable[dict[str, Any]] | None], write_ro
 
 
 def stops_start(plan: Iterable[dict[str, Any]] | None) -> bool:
-    """`ask.stops_start`:  a blocking  Prep action that is on by default still has changes in the plan.
-    This is the rule by which the Prep step stopped Start before tonight; other blocking problems are
-    asked about at  the end of Start and do not stop it."""
+    """`ask.stops_start`:  always False  since 20 Nov 2026. Until then Start stopped at the Prep step when a
+    blocking Prep action that is on by default still had changes in the plan, or when no AI  key was saved.
+    Joseph, 20 Nov 2026: "App tries, never stops" --  Start goes on with the Mind  loop and the recalculation,
+    and what is left  is asked at its end (the screens ask only when it  still blocks then). `plan` is kept
+    so the  field's callers stay as they are; prep_fix_left says whether a Prep fix is still left."""
+    return False
+
+
+def prep_fix_left(plan: Iterable[dict[str, Any]] | None) -> bool:
+    """A  blocking Prep  action that is on by default still has changes in the plan (the rule that stopped
+    Start until 20 Nov 2026)."""
     return bool(pass_ops(plan))
 
 
-# ---- step 2:  what is left -----------------------------------------------------------------------
-# The lists a  finding's `observed` may hold its places in,  as readiness._site_count reads them.
+# ---- step 2: what is left -----------------------------------------------------------------------
+# The lists a finding's `observed` may  hold its places in, as readiness._site_count reads them.
 _SITE_KEYS = ("sites", "cells", "call_sites", "problems")
 
 
@@ -683,6 +691,7 @@ def build_ask(problems: list[dict[str, Any]], plan: Iterable[dict[str, Any]] | N
         "lines": ask_lines(problems, button),
         "why": why_line(first.get("outcome")),
         "stops_start": stops_start(plan),
+        "prep_fix_left": prep_fix_left(plan),
         "show_me": show_me_for(first),
         "feedback": {"ref": ref, "note": feedback_note(first, button)},
     }
@@ -694,7 +703,7 @@ def no_key_ask(button: str = "Start") -> dict[str, Any]:
     return {
         "lines": ["Something is left that needs the assistant, and no AI key is saved.", f"Paste an AI key under Advanced › Assistant, then press {button} again."],
         "why": why_line("not_tried"),
-        "stops_start": True,
+        "stops_start": False,  # 20 Nov 2026: Start goes on, and asks  at its end
         "show_me": {"id": "assistant-key", "rule_id": None, "sheet": "", "cell": ""},
         "feedback": None,
     }

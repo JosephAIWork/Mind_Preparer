@@ -279,9 +279,9 @@ def test_the_same_changes_coming_back_stop_the_rounds_and_a_refused_change_alone
     sid = _upload(prep, plain_grid_xlsx)["sessionId"]
     st = _run(prep, sid, assistant=False)
     assert (st["pass_no"], st["applied"], st["refused"]) == (3, 2, 3) and len(world.applies) == 3
-    # what is left is asked about, in the words of the Prep route: Start stopped here before tonight too
+    # what is left is asked about, in the words of the Prep route; since 20 Nov 2026 Start goes on and asks at its end
     assert st["state"] == "ask" and st["left"] == 1 and asked.questions == []
-    assert st["ask"]["stops_start"] is True and st["ask"]["show_me"] == {"id": "prep-action", "rule_id": PREP_RULE, "sheet": "Data", "cell": "A2"}
+    assert st["ask"]["stops_start"] is False and st["ask"]["prep_fix_left"] is True and st["ask"]["show_me"] == {"id": "prep-action", "rule_id": PREP_RULE, "sheet": "Data", "cell": "A2"}
     assert st["problems"] == [{"rule_id": PREP_RULE, "rule_name": LONE_TEXT, "sheet": "Data", "cell": "A2", "cells": 1, "route": "prep", "tries": 0, "outcome": "not_tried"}]
     # the same work coming back unchanged stops after ONE round
     again = World(both)
@@ -589,8 +589,9 @@ def test_prep_runs_once_more_after_a_kept_fix_and_what_it_leaves_is_asked_about_
     _free(prep, sid)
 
 
-def test_stops_start_is_true_with_a_prep_action_left_and_false_with_none(prep, plain_grid_xlsx, monkeypatch):
-    # a Prep change Excel refuses every time, and nothing from the assistant: the rule by which this step stopped Start before tonight
+def test_start_never_stops_at_prep_even_with_a_prep_action_left(prep, plain_grid_xlsx, monkeypatch):
+    # a Prep change Excel refuses every time, and nothing from the assistant: until 20 Nov 2026 this stopped Start;
+    # since then (Joseph: "App tries, never stops") Start goes on, and the question says a Prep fix is left
     world = World({"problems": {PREP_RULE: ["A2", "B2"]}, "prep": [_prep_op("Z9")]})
     world.refuse = lambda ops: list(ops)
     _install(monkeypatch, world)
@@ -598,15 +599,16 @@ def test_stops_start_is_true_with_a_prep_action_left_and_false_with_none(prep, p
     sid = _upload(prep, plain_grid_xlsx)["sessionId"]
     st = _run(prep, sid)
     assert (st["state"], st["pass_no"], st["applied"], st["refused"]) == ("ask", 1, 0, 1)
-    assert st["ask"]["stops_start"] is True and st["ask"]["show_me"] == {"id": "prep-action", "rule_id": PREP_RULE, "sheet": "Data", "cell": "A2"}
+    assert st["ask"]["stops_start"] is False and st["ask"]["prep_fix_left"] is True
+    assert st["ask"]["show_me"] == {"id": "prep-action", "rule_id": PREP_RULE, "sheet": "Data", "cell": "A2"}
     assert st["ask"]["lines"][0] == f"One thing is left that the app could not fix: {LONE_TEXT}, in 2 cells; the first is A2 on sheet Data."
     assert st["problems"][0]["route"] == "prep" and st["problems"][0]["outcome"] == "no_fix"
-    # with no Prep action left the same question does not stop Start: it goes on and asks at its end
+    # with no Prep action left: the same, and no Prep fix is left
     other = World({"problems": {RULE: ["B4"]}})
     _install(monkeypatch, other)
     sid2 = _upload(prep, plain_grid_xlsx)["sessionId"]
     st2 = _run(prep, sid2)
-    assert st2["state"] == "ask" and st2["ask"]["stops_start"] is False and st2["ask"]["show_me"]["id"] == "assistant-ask"
+    assert st2["state"] == "ask" and st2["ask"]["stops_start"] is False and st2["ask"]["prep_fix_left"] is False and st2["ask"]["show_me"]["id"] == "assistant-ask"
     _free(prep, sid)
     _free(prep, sid2)
 
@@ -623,7 +625,7 @@ def test_no_ai_key_says_so_and_keeps_the_rounds(prep, plain_grid_xlsx, monkeypat
     assert st["state"] == "no_key" and asked.questions == []
     assert st["ask"] == {
         "lines": ["Something is left that needs the assistant, and no AI key is saved.", "Paste an AI key under Advanced › Assistant, then press Start again."],
-        "why": "The assistant was not asked.", "stops_start": True, "show_me": {"id": "assistant-key", "rule_id": None, "sheet": "", "cell": ""}, "feedback": None,
+        "why": "The assistant was not asked.", "stops_start": False, "show_me": {"id": "assistant-key", "rule_id": None, "sheet": "", "cell": ""}, "feedback": None,
     }
     # the round that ran is kept
     assert (st["pass_no"], st["applied"], st["left"]) == (1, 1, 1) and [v["source"] for v in s.versions] == ["upload", "prep"]

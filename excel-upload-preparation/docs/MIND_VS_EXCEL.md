@@ -563,6 +563,23 @@ a gap in a table's first column (Phoenix), and anything inside a loop.
 The four sandbox projects were kept: `zzz_mindready_probe_20nov_raw` (the first build, conversion stopped),
 `zzz_mindready_probe_20nov_b_raw`, `zzz_mindready_probe_20nov_c_raw`, `zzz_mindready_probe_20nov_c_prepared`.
 
+## A label beside a lone text inside a range: the made-up probe of 2026-11-20 (day)
+
+The probe above left five cells for a person: a lone text inside a range a formula reads as a whole (COUNTA, an
+INDEX that returns it), where a title above would sit inside the range and the cell cannot move. Joseph, 20 Nov 2026:
+"App tries, never stops". Prep's last try (`prep._label_beside`) writes a label in the empty cell beside it, left
+first, else right, so the two touching texts are a small grid -- the shape Mind imported on 8 Oct 2026 (Lone!F3
+'Name' beside G3 'Line 4'). `scripts/build_lone_text_probe.py`'s sheet ColN, twice, built by
+`scripts/build_label_probe.py`: ColR!A15 (nothing left of it, the label goes right, B15) and ColL!C15 (B empty,
+the label goes left), each read by `COUNTA($x$7:$x$23)` (13 in Excel) and `INDEX($x$7:$x$23,9)` ('Second part'),
+and the INDEX result in brackets.
+
+Prep wrote the two labels, the numbers check was clean, and the app listed nothing more. Uploaded to Mind
+(`zzz_mindready_label_probe_20nov_prepared`, kept, not run): **"Upload successful"**, with no "with warnings":
+Mind agrees with Excel on all six. Without the label the same layout gave COUNTA 12 and an empty INDEX (the probe
+above, ColN). The app stays careful: no label where any formula or name reads the label's cell (even a SUM), on a
+sheet an OFFSET, an `INDEX(...):` range, an INDIRECT or a 3-D reference reaches, or where another cell touches the pair.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

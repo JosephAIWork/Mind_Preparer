@@ -226,7 +226,9 @@ def test_two_lone_cells_in_one_formula_are_rewritten_one_pass_at_a_time(tmp_path
     a = _action(build_analysis(p, tmp_path / "w", "s"))
     rewrites = [(o["cell"], o["after"]) for o in a["operations"] if o["op"] == "set_formula"]
     assert rewrites == [("H1", '="abc"&J5')]
-    assert any(s.startswith("S!J5:") for s in a["skipped"])  # the next pass takes it
+    # 20 Nov 2026: J5 no longer waits for the next pass -- its formula is taken this pass, so it gets a label beside it
+    labels = [o["cell"] for o in a["operations"] if o["op"] == "set_value" and o["after"] == "Text in J5"]
+    assert len(labels) == 1 and labels[0] in ("I5", "K5") and not any(s.startswith("S!J5:") for s in a["skipped"])
 
 
 @needs_excel

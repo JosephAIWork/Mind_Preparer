@@ -37,9 +37,10 @@ from app.mind_client import (  # noqa: E402
 def read_deterministic_differences(page) -> list[str] | None:
     """After  "Upload successful  (with warnings)": Display Logs -> the "Deterministic Differences" tab ->
     every line "<wb> > <sheet> > <cell>: Excel value: x Mind value: y".
-    None = the list could not be read (no button,  no tab, a click timed out): NOT the same as an  empty list,
-    which means Mind agrees with  Excel (Phoenix 1.15.0, 2026-11-13: "0 differences" had  been printed for a page
-    that said "Upload successful with warnings" --  the old code returned [] for every  failure)."""
+    None = the list could not be read (no button,  no tab, a click timed out, no line drawn after 30  s; since
+    20 Nov 2026 never an  empty list): whether Mind agrees is then  read from the page itself ("Upload successful"
+    with no "with warnings") (Phoenix  1.15.0, 2026-11-13: "0 differences" had been printed  for a page
+    that said "Upload successful with warnings" -- the old code returned [] for every failure)."""
     from app.mind_client import body_text, screenshot
 
     btn = page.get_by_role("button", name=re.compile(r"Display Logs|View logs|Display Error Logs", re.I))
@@ -71,7 +72,8 @@ def read_deterministic_differences(page) -> list[str] | None:
         page.get_by_role("button", name=re.compile(r"^\s*Hide Logs\s*$", re.I)).first.click(timeout=4000)
     except Exception:
         pass
-    return lines
+    # 20 Nov 2026 (Haiku 5.5 refuter): no line drawn after 30 s is  not proof that Mind agrees -- it is "not read"
+    return lines or None
 
 
 def main() -> int:
@@ -118,9 +120,14 @@ def main() -> int:
             print("  error:", e[:300])
         if conv["success"]:
             lines = read_deterministic_differences(page)
-            result["deterministic_differences"] = len(lines)
-            (shots / "deterministic.txt").write_text("\n".join(lines), encoding="utf-8")
-            print(f"deterministic differences: {len(lines)} cell(s)" + (f" -> {shots / 'deterministic.txt'}" if lines else " (none: Mind agrees with Excel)"))
+            if lines is None:
+                # 20  Nov 2026:  a plain "Upload successful" (no "with warnings") has no list to read; say so, do not crash
+                result["deterministic_differences"] = None
+                print("deterministic differences: the list could not be read (a plain 'Upload successful' has none) -- see convert.png")
+            else:
+                result["deterministic_differences"] = len(lines)
+                (shots / "deterministic.txt").write_text("\n".join(lines), encoding="utf-8")
+                print(f"deterministic differences: {len(lines)} cell(s)" + (f" -> {shots / 'deterministic.txt'}" if lines else " (none: Mind agrees with Excel)"))
         if conv["success"] and args.run:
             added = add_template(page)
             result["template_added"] = added

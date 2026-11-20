@@ -1345,9 +1345,9 @@ export interface PrepShowMe {
 
 /** The  question the  Prep step ends with when the app could not fix everything by itself (also for
  *  "no AI key"). `lines`: two plain sentences, drawn one per line on Basic. `why`: never a line  on
- *  Basic; Custom shows it under "View details". `stops_start`: Start stops here  (a Prep fix is still
- *  left, or  no AI key); false: Start goes on  and asks at its end. `feedback`: what "Send feedback" opens
- *  with (null:  nothing to send, the app is not  at fault). */
+ *  Basic; Custom shows it under "View details". `stops_start`: Start stops here;  since 20 Nov 2026 the
+ *  server always  says false (a Prep fix still left,  or no AI key): Start goes on and asks at its  end. `feedback`: what "Send feedback" opens
+ *  with (null:  nothing to send, the app is not at fault). */
 export interface PrepAsk {
   lines: string[];
   why?: string | null;
@@ -1426,7 +1426,7 @@ export function prepNoKeyAsk(button: string): PrepAsk {
   return {
     lines: ["Something is left that needs the assistant, and no AI key is saved.", `Paste an AI key under Advanced › Assistant, then press ${button} again.`],
     why: "The assistant was not asked.",
-    stops_start: true,
+    stops_start: false,
     show_me: { id: "assistant-key", rule_id: null, sheet: "", cell: "" },
     feedback: null,
   };

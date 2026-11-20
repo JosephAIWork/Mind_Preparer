@@ -749,7 +749,7 @@ describe("the Basic screen", () => {
   const WHY = "The assistant's fix changed a result, so it was taken back.";
   const NOTE = "Start could not fix this by itself: a formula reads a lone text cell. The assistant tried twice: its change altered a result and was undone.";
   const question = (over: Partial<PrepAsk> = {}): PrepAsk => ({ lines: ASK_LINES, why: WHY, stops_start: true, show_me: { id: "prep-action", rule_id: "STR-008", sheet: "Roll", cell: "W25" }, feedback: { ref: "ABCD-1234", note: NOTE }, ...over });
-  const noKey = (): PrepAsk => ({ lines: NO_KEY_LINES, why: "The assistant was not asked.", stops_start: true, show_me: { id: "assistant-key", rule_id: null, sheet: "", cell: "" }, feedback: null });
+  const noKey = (): PrepAsk => ({ lines: NO_KEY_LINES, why: "The assistant was not asked.", stops_start: false, show_me: { id: "assistant-key", rule_id: null, sheet: "", cell: "" }, feedback: null });
 
   const round = (n: number, changes = 966): PrepRunStatus => ({ state: "running", stage: "pass", pass_no: n, message: `Round ${n}: writing ${changes} changes through Excel…` });
   const done = (applied: number, fixed = 0, refused = 0): PrepRunStatus => ({ state: "done", stage: "done", applied, refused, assistant_fixed: fixed, left: 0, ask: null });
@@ -901,6 +901,29 @@ describe("the Basic screen", () => {
     expect(page.chainStoppedByCancel()).toBe(false);
   });
 
+  it("a later step that stops Start keeps the Prep question's first sentence after its own (20 Nov 2026)", async () => {
+    const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-009", sheet: "Calc", cell: "B2" } });
+    const f = prepFake([asks(ask, 12)]);
+    await openedFor("basic", f);
+    const ran = others();
+    const still: Readiness = { ...readiness("blocked", 1), blocking: [{ rule_id: "FRM-009", status: "ERROR", message: "m", fix: "assistant" }] };
+    (page as unknown as Record<string, unknown>)["runLoop"] = async () => (ran.push("loop"), store.readiness.set(still), false);
+    await page.runAll();
+    expect(ran).toEqual(["fixAll", "loop"]);
+    expect(page.chainLine()).toContain("Stopped at");
+    expect(page.chainLine().endsWith(` ${ASK_LINES[0]}`)).toBe(true);
+    // its problem gone by then: the stop sentence alone
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const g = prepFake([asks(ask, 12)]);
+    await openedFor("basic", g);
+    others();
+    (page as unknown as Record<string, unknown>)["runLoop"] = async () => (store.readiness.set(readiness("blocked", 1)), false);
+    await page.runAll();
+    expect(page.chainLine()).toContain("Stopped at");
+    expect(page.chainLine()).not.toContain(ASK_LINES[0]);
+  });
+
   it("a question whose problem the later steps made go is not asked: Everything ran", async () => {
     const ask = question({ stops_start: false, show_me: { id: "assistant-ask", rule_id: "FRM-009", sheet: "Calc", cell: "B2" } });
     const f = prepFake([asks(ask, 12)]);
@@ -923,8 +946,9 @@ describe("the Basic screen", () => {
     expect(page.basicLines()).toEqual(ASK_LINES);
   });
 
-  it("a question that stops Start: the step is false, nothing follows, and the stop line is the two sentences", async () => {
-    const ask = question();
+  it("a server that says stop still stops Start: the step is false, nothing follows, and the stop line is the two sentences", async () => {
+    // since 20 Nov 2026 the server never says so (Joseph: "App tries, never stops"); the screen still obeys it if it does
+    const ask = question({ stops_start: true });
     const f = prepFake([round(1, 954), asks(ask)], { version: ver(4) });
     await openedFor("basic", f);
     const ran = others();
@@ -941,13 +965,16 @@ describe("the Basic screen", () => {
     expect(store.currentVersion()?.label).toBe("v4"); // the rounds that ran are kept
   });
 
-  it("with no AI key Start stops and says so, in the server's two sentences or in the page's own", async () => {
+  it("with no AI key Start goes on and says so at its end while the workbook is still blocked, in the server's two sentences or in the page's own", async () => {
+    // 20 Nov 2026 (Joseph: "App tries, never stops"): until then Start stopped here
+    const still: Readiness = { ...readiness("blocked", 1), blocking: [{ rule_id: "FRM-009", status: "ERROR", message: "m", fix: "assistant" }] };
     const f = prepFake([{ state: "no_key", stage: "done", applied: 3, left: 1, ask: noKey() }]);
     await openedFor("basic", f);
     const ran = others();
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (ran.push("recalc"), store.readiness.set(still), true);
     await page.runAll();
-    expect(ran).toEqual(["fixAll"]);
-    expect(page.steps()[1].state).toBe("failed");
+    expect(ran).toEqual(["fixAll", "loop", "recalc"]);
+    expect(page.steps().map((s) => s.state)).toEqual(["done", "done", "done", "done"]);
     expect(page.basicLines()).toEqual(NO_KEY_LINES);
     expect(page.askPlace(page.chainAsk()!)).toBe("assistant-key");
     expect(page.chainAsk()?.feedback).toBeNull(); // nothing went wrong in the app: nothing to send
@@ -958,11 +985,22 @@ describe("the Basic screen", () => {
       const g = prepFake([{ state: "no_key", ask: null }]);
       await openedFor(mode, g);
       others();
+      (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(still), true);
       await page.runAll();
       expect(page.chainAsk()?.lines).toEqual([NO_KEY_LINES[0], `Paste an AI key under Advanced › Assistant, then press ${button} again.`]);
       expect(page.askPlace(page.chainAsk()!)).toBe("assistant-key");
-      expect(page.steps()[1].state).toBe("failed");
+      expect(page.steps()[1].state).toBe("done");
     }
+    // nothing blocks at the end (the loop or the recalculation made it go): no question, Everything ran
+    page.ngOnDestroy();
+    TestBed.resetTestingModule();
+    const h = prepFake([{ state: "no_key", stage: "done", applied: 3, left: 1, ask: noKey() }]);
+    await openedFor("basic", h);
+    others();
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(readiness("ready")), true);
+    await page.runAll();
+    expect(page.chainAsk()).toBeNull();
+    expect(page.basicLine()).toMatch(/^Everything ran and every check passed/);
   });
 
   it("Cancel in the second round throws the whole Prep step away: one job, so nothing of it is kept", async () => {
@@ -1416,6 +1454,8 @@ describe("the Basic screen", () => {
     const f = prepFake([{ state: "no_key", stage: "done", applied: 3, left: 1, ask: noKey() }]);
     const { fixture, el, look, shown } = await drawOn("basic", f.api);
     others();
+    const still: Readiness = { ...readiness("blocked", 1), blocking: [{ rule_id: "FRM-009", status: "ERROR", message: "m", fix: "assistant" }] };
+    (page as unknown as Record<string, unknown>)["runRecalc"] = async () => (store.readiness.set(still), true);
     await page.runAll();
     await look();
     expect(sentences(el)).toEqual(NO_KEY_LINES);

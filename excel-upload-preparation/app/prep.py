@@ -1439,7 +1439,12 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
             skipped.append(f"{where}: {site.get('issue') or 'no rewrite proposed'}")
             continue
         targets = sorted({c["target"] for c in site.get("calls", []) if c.get("target")})
-        note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed); a text built from a changed input would no longer be followed"
+        listed = sorted({c["by_position"] for c in site.get("calls", []) if c.get("by_position")})
+        if listed:
+            # INDIRECT("Cluster"&n) over the names Cluster1..Cluster20: INDEX over their  cells gives the same cell for every whole n
+            note = "INDIRECT replaced by INDEX over the cells the names " + ", ".join(listed) + " stand for (" + ", ".join(targets[:3]) + "): the same cell for every number the formula builds, and Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed)"
+        else:
+            note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed); a text built from a changed input would no longer be followed"
         if site.get("issue"):
             note += "; " + site["issue"]
         if site.get("unscanned_sheets"):
@@ -1452,7 +1457,7 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-# --- REF-002: external links frozen to the values  Excel keeps ------------------------
+# --- REF-002: external links frozen to the values Excel keeps ------------------------
 def plan_freeze_external_links(analysis, report) -> tuple[list[dict], list[str]]:
     """REF-002:  each reference  to another workbook becomes the value Excel shows for it (the
     copy kept in the link's cache: a number, a text, TRUE/FALSE), or NA() where Excel kept none
@@ -2184,6 +2189,66 @@ def _text_into_readers(analysis: dict[str, Any], s: dict[str, Any], row: int, co
     return ops
 
 
+_MOVED_OVER: dict[str, frozenset[str]] = {}
+_MOVER_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?OFFSET\s*\(|INDEX\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*:|:\s*(?:_xlfn\.)?INDEX\s*\(", re.I)
+
+
+def _sheets_moved_over(analysis: dict[str, Any]) -> frozenset[str]:
+    """The  sheets a  formula reads through OFFSET, or through a range one of whose ends is INDEX(...): the cells it
+    reaches depend on numbers worked out at run time (Haiku 5.5 refuter, 20 Nov 2026).  Once per analysis."""
+    wb0 = analysis["workbooks"][0]
+    key = str(analysis.get("analysis_id") or id(analysis)) + ":" + str(wb0.get("copy_path"))
+    if key not in _MOVED_OVER:
+        sheets: set[str] = set()
+        for f in wb0.get("formulas", []):
+            formula = f.get("formula") or ""
+            if ("OFFSET" not in formula.upper() and "INDEX" not in formula.upper()) or not _MOVER_RE.search(mask_strings(formula)):
+                continue
+            for r in cell_refs_in_formula(formula):
+                sheets.add(r.get("sheet") or f["sheet"])
+        if len(_MOVED_OVER) > 8:
+            _MOVED_OVER.clear()
+        _MOVED_OVER[key] = frozenset(sheets)
+    return _MOVED_OVER[key]
+
+
+def _label_beside(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
+                  planned: dict[tuple[str, int, int], Any] | None = None) -> dict[str, Any] | None:
+    """The  last try  before a lone text cell is left (20 Nov 2026, Joseph: "App tries, never stops"): a label in
+    the empty cell beside it, left first, else right, so that the two touching  texts are a small grid Mind
+    imports (a label next to a  value, no title: Lone!F3 'Name' beside  G3 'Line 4' came back as Excel  has it,
+    2026-10-08). For a cell inside a range a formula reads  (ColN!A15 inside COUNTA(ColN!$A$7:$A$23)), where no
+    title can go  above it and the range keeps it from moving.
+    Only when the label's cell is empty, in no grid, inside no range or name a formula reads (a label there
+    would be read as a value), on no whole row or column read, on a sheet no INDIRECT or 3-D reference
+    addresses; and every other cell around the pair is empty and in no  grid (the pair is a grid of its own,
+    joined to nothing). -> the label's operation, else None."""
+    sheet = s["sheet"]
+    index = reference_index(analysis)
+    if sheet in index["positional"] or sheet in index["text_addressed"] or index["whole_rows"].get(sheet, {}).get(row):
+        return None
+    if sheet in _sheets_moved_over(analysis):
+        return None  # OFFSET(H3,0,-3) or INDEX(...):A9 may reach the label's cell, and no index of ranges shows it
+
+    def empty(r: int, c: int) -> bool:
+        return r < 1 or c < 1 or (_planned_value(analysis, planned, sheet, r, c) is None and not grid_containing(grids, r, c))
+
+    for side in (-1, 1):
+        at = col + side
+        if at < 1 or at > 16384 or not empty(row, at):
+            continue
+        if _range_reader(analysis, sheet, row, at) or index["whole_cols"].get(sheet, {}).get(at):
+            continue
+        pair = {(row, col), (row, at)}
+        around = {(r, c) for r in (row - 1, row, row + 1) for c in range(min(col, at) - 1, max(col, at) + 2)} - pair
+        if not all(empty(r, c) for r, c in around):
+            continue
+        return _op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(at, row), before=None, after=f"Text in {s['cell']}",
+                   note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} inside a range, so no title can go above it and it cannot move; "
+                        f"with a label {'left' if side < 0 else 'right'} of it the two are a small grid, and Mind imports the cell with it")
+    return None
+
+
 def _move_to_free_column(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int, free: dict[str, int]) -> tuple[dict[str, Any], str] | None:
     """No  room for  a title above and no grid to join (Base!J414 = 'N', read by LH3!I103, under a row of
     numbers, flags and dates; 2026-10-26): the cell moves -- Excel's cut and paste, so  every formula and
@@ -2220,16 +2285,17 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     the cell. With no empty cell above  it: a label joining it to the grid just above
     (_label_joining_grid_above), else  a header joining it to the grid  just beside
     (_header_joining_grid_beside), else the cell moves to a free column with its title
-    (_move_to_free_column), else it is left for a person.
+    (_move_to_free_column), else the text goes into the formulas that need it (_text_into_readers), else a
+    label beside it makes the two a small grid (_label_beside, 20 Nov 2026), else it is left for a person.
 
-    One pass fixes every cell it can (2026-11-16, the Tokyo IFRS 17 tool: W25, X26, Y27 under the grid
+    One pass fixes every cell it can (2026-11-16, the Tokyo IFRS 17 tool: W25, X26, Y27 under  the grid
     U21:AA24, one row and one column further each time; each cell above is read by a formula, so only
-    the first could join the grid,  the next one pass later, the third a pass after that -- and Do
+    the first could join the grid, the next one pass later, the third a pass after that -- and Do
     everything ran out of passes). The cells are taken in reading order and each sees the sheet as the
     operations planned before it will leave it: the grid one row longer for each label (`on`), the
-    labels and titles written and the moved cells gone (`planned`). So the second step of a staircase
-    joins the grid the first one lengthened, and no title is planned where an earlier one of the  same
-    pass would be read as  one grid with it."""
+    labels and titles written and the moved cells gone  (`planned`). So the second step  of a staircase
+    joins the grid the first  one lengthened, and  no title  is planned where an earlier one of the same
+    pass would be read as one grid with it."""
     from .validators.structure import lone_text_cells_read
 
     ops, skipped = [], []
@@ -2241,22 +2307,22 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     if not sites:
         return ops, skipped
     used = {g["name"].strip().lower() for g in all_grids(analysis) if g.get("name")}
-    free: dict[str, int] = {}  # per sheet, the next  free column a  cell can  move to
+    free: dict[str, int] = {}  # per sheet, the next free column a cell can move to
     site_sheets = {s["sheet"] for s in sites}
-    # the sheet as this pass will leave it: its grids (a grid a label lengthens is replaced by a longer
-    # copy -- the analysis' own records are never changed), what the  planned operations write or empty,
-    # and which of the cells handled here  still stand alone where they were  (`waiting`)
+    # the sheet as this pass  will leave it: its grids (a grid a label lengthens is  replaced by a longer
+    # copy -- the  analysis' own records are never changed), what  the planned operations write or empty,
+    # and which of the cells handled  here still stand alone where they were  (`waiting`)
     on: dict[str, list[dict[str, Any]]] = {name: [] for name in site_sheets}
     for g in all_grids(analysis):
         if g["sheet"] in on:
             on[g["sheet"]].append(g)
     planned: dict[tuple[str, int, int], Any] = {}
-    rewriting: set[str] = set()  # the formulas this pass already rewrites (a  second cell they read waits for the next pass)
+    rewriting: set[str] = set()  # the formulas this pass already rewrites (a second cell they read waits for the next pass)
     waiting: set[tuple[str, int, int]] = set()
     for s in sites:
         at = parse_ref(s["cell"])
         waiting.add((s["sheet"], at["r1"], at["c1"]))
-    lone: set[tuple[str, int, int]] = set()  # every text cell  standing alone on those sheets, read or  not
+    lone: set[tuple[str, int, int]] = set()  # every text cell standing alone on those sheets, read or not
     for sh in analysis["workbooks"][0]["sheets"]:
         if sh["name"] in site_sheets:
             for c in sh.get("standalone_text_cells", []):
@@ -2295,13 +2361,13 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         above_taken = row == 1 or _planned_value(analysis, planned, sheet, row - 1, col) is not None or bool(grid_containing(on_sheet, row - 1, col))
         range_reader = beside = None
         if not above_taken:
-            # an empty cell inside a range some formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
+            # an empty cell inside a range some formula  reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
             # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
             range_reader = _range_reader(analysis, sheet, row - 1, col)
-            # a title  right of another cell this pass handles (a lone text still in its place, or a header just
+            # a title right of another cell this pass handles (a lone text still in its place, or a header just
             # planned) is read as one grid with it, and this cell stays alone (three texts on a diagonal,
             # 2026-11-16: the titles of the second and third were trapped that way, and a second pass was needed).
-            # A lone label nothing reads on that spot is left as it always was: only this pass's own cells count.
+            # A lone label nothing reads  on that spot is left  as it always was: only this pass's  own cells count.
             left = (sheet, row - 1, col - 1)
             if not range_reader and ((left in waiting and not grid_containing(on_sheet, row - 1, col - 1)) or planned.get(left) is not None):
                 beside = ref_text(col - 1, row - 1)
@@ -2352,6 +2418,13 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         if rewritten:
             waiting.discard((sheet, row, col))
             ops.extend(rewritten)
+            continue
+        labelled = _label_beside(analysis, on_sheet, s, row, col, planned)
+        if labelled:
+            at = parse_ref(labelled["cell"])
+            planned[(sheet, at["r1"], at["c1"])] = labelled["after"]
+            waiting.discard((sheet, row, col))
+            ops.append(labelled)
         elif range_reader:
             skipped.append(f"{sheet}!{s['cell']}: could not name it -- the empty cell above ({ref_text(col, row - 1)}) lies inside a range {range_reader} reads, and a title there would change that result -- by hand")
         else:

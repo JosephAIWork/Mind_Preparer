@@ -163,7 +163,15 @@ def formula_facts(item: dict[str, Any]) -> list[str]:
 
 # --- masking ------------------------------------------------------------------------------
 _MASKS = [
-    (re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\s'\"<>|]*"), "<path>"),
+    # a  path, its  folder names with spaces included ("OneDrive - Milliman Inc"; until 20 Nov 2026 the mask stopped
+    # at the first space and the rest stayed), with \ or /; its last part with  spaces too when it ends in a file type
+    # A folder name  holds at most four words, so  a sentence after a path is not  taken for one (Haiku 5.5 refuter).
+    (re.compile(
+        r"(?:(?<![\w])[A-Za-z]:[\\/]|\\\\)"
+        r"(?:[^\\/\s'\"<>|:*?]+(?: [^\\/\s'\"<>|:*?]+){0,3}[\\/])*"
+        r"(?:(?:[^\\/\s'\"<>|:*?]+ ){0,3}[^\\/\s'\"<>|:*?]*\.(?:xls[xmb]?|xlam|xla|csv|py|json|tmp|txt|log|pkl|yaml)\b|[^\s\\/'\"<>|:*?]*)",
+        re.I,
+    ), "<path>"),
     (re.compile(r"[^\s'\"\\/]+\.(?:xls[xmb]?|xlam|xla|csv|py|json|tmp)\b", re.I), "<file>"),
     (re.compile(r"'[^']*'!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?"), "<cell>"),
     (re.compile(r"\b[\w.]+!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?"), "<cell>"),

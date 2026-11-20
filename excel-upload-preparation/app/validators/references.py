@@ -821,6 +821,317 @@ def _enclosing_function(masked: str, pos: int) -> str | None:
     return None
 
 
+# INDIRECT("Cluster"&n) where the names Cluster1..ClusterN are N neighbouring single cells of one column
+# (or one row), in order: the same cell as INDEX(<those  N cells>, n) for every whole n from 1 to N,  and
+# #REF! in both for a whole  n above N. CNHI, 2026-11-19: 2,320 such  formulas, n built from ROW, COLUMN,
+# ROUNDUP and COUNTA, so the text  cannot be worked out from constants. Only  a whole n that is never below 1
+# is accepted: INDEX truncates 2.5 where INDIRECT finds no name "Cluster2.5", INDEX(..., 0) is the whole list
+# and INDEX(..., -1) #VALUE! where INDIRECT gives #REF! (Haiku 5.5 refuter, 20 Nov 2026).
+_NAMED_LIST_ARG_RE = re.compile(r'^\s*"([A-Za-z_\\][\w.]*)"\s*&\s*(.+?)\s*$', re.S)
+_COUNTS = frozenset({"COUNT", "COUNTA", "COUNTBLANK", "COUNTIF", "COUNTIFS"})
+_ROUNDINGS = frozenset({"ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC"})
+_INF = float("inf")
+_BIG = 10**11  # more  than the  cells of a sheet (1,048,576 x 16,384): no count, row or column number reaches it
+_MAX_ROW, _MAX_COL = 1_048_576, 16_384
+
+
+def _top_level_args(text: str) -> list[str]:
+    """The  arguments of  a call's inside, split at the commas of its own level (strings already masked)."""
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch in ",;" and depth == 0:
+            out.append(text[start:i])
+            start = i + 1
+    out.append(text[start:])
+    return out
+
+
+def _to_whole(name: str, x):
+    """ROUND  / ROUNDUP  / ROUNDDOWN / TRUNC to 0 digits (away from or towards zero, as Excel), INT (down)."""
+    import math
+    from fractions import Fraction
+
+    if x in (_INF, -_INF):
+        return x
+    x = Fraction(x)
+    if name == "INT":
+        return Fraction(math.floor(x))
+    sign, a = (-1 if x < 0 else 1), abs(x)
+    whole = math.ceil(a) if name == "ROUNDUP" else math.floor(a + Fraction(1, 2)) if name == "ROUND" else math.floor(a)
+    return Fraction(sign * whole)
+
+
+def _times(a, b):
+    return 0 if a == 0 or b == 0 else a * b
+
+
+def _bounds(expr: str):
+    """(low,  high, whole)  of the number `expr` can give, or None when it is not plain arithmetic (text, &, ^,
+    a comparison). A cell's value or an unknown function is any number (-inf, inf, not  whole); ROW and COLUMN
+    of a written cell are that number; ROWS  / COLUMNS of a written range  its size; the COUNT functions 0 or
+    more;  INT and ROUND / ROUNDUP / ROUNDDOWN / TRUNC to 0  digits are whole. A division by a  whole number
+    skips 0 (that is #DIV/0! in INDIRECT's text and in INDEX's number alike)."""
+    from fractions import Fraction
+
+    s = mask_strings(expr)
+    pos = 0
+    anything = (-_INF, _INF, False)
+
+    def skip() -> None:
+        nonlocal pos
+        while pos < len(s) and s[pos] in " \t\r\n":
+            pos += 1
+
+    def closing(start: int) -> int:
+        depth = 0
+        for i in range(start, len(s)):
+            if s[i] == "(":
+                depth += 1
+            elif s[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        return -1
+
+    def call(name: str, raw_args: list[str]):
+        if name in ("ROW", "COLUMN"):
+            big = _MAX_ROW if name == "ROW" else _MAX_COL
+            r = parse_ref(raw_args[0]) if len(raw_args) == 1 and raw_args[0].strip() else None
+            if r and not r.get("whole_column") and not r.get("whole_row"):
+                v = Fraction(r["r1"] if name == "ROW" else r["c1"])
+                return (v, v, True)
+            return (Fraction(1), Fraction(big), True)
+        if name in ("ROWS", "COLUMNS"):
+            r = parse_ref(raw_args[0]) if len(raw_args) == 1 else None
+            if r and not r.get("whole_column") and not r.get("whole_row"):
+                v = Fraction(r["r2"] - r["r1"] + 1 if name == "ROWS" else r["c2"] - r["c1"] + 1)
+                return (v, v, True)
+            return (Fraction(1), Fraction(_BIG), True)
+        if name in _COUNTS:
+            return (Fraction(0), Fraction(_BIG), True)
+        if name == "INT" and len(raw_args) == 1:
+            inner = _bounds(raw_args[0])
+            return None if inner is None else (_to_whole("INT", inner[0]), _to_whole("INT", inner[1]), True)
+        if name in _ROUNDINGS and (len(raw_args) == 2 and raw_args[1].strip() == "0" or name == "TRUNC" and len(raw_args) == 1):
+            inner = _bounds(raw_args[0])
+            return None if inner is None else (_to_whole(name, inner[0]), _to_whole(name, inner[1]), True)
+        return anything
+
+    def factor():
+        nonlocal pos
+        skip()
+        if pos >= len(s):
+            return None
+        if s[pos] in "+-":
+            negative = s[pos] == "-"
+            pos += 1
+            v = factor()
+            if v is None or not negative:
+                return v
+            return (-v[1], -v[0], v[2])
+        m = re.match(r"\d+(?![\d.eE])", s[pos:])
+        if m:
+            pos += m.end()
+            v = Fraction(int(m.group()))
+            return (v, v, True)
+        m = re.match(r"\d*\.\d+(?![\d.eE])", s[pos:])
+        if m:
+            pos += m.end()
+            v = Fraction(m.group())
+            return (v, v, v.denominator == 1)
+        if s[pos] == "(":
+            pos += 1
+            v = total()
+            skip()
+            if v is None or pos >= len(s) or s[pos] != ")":
+                return None
+            pos += 1
+            return v
+        m = re.match(r"(?:_xlfn\.)?([A-Za-z][A-Za-z0-9.]*)\s*\(", s[pos:])
+        if m:
+            open_at = pos + m.end() - 1
+            close_at = closing(open_at)
+            if close_at < 0:
+                return None
+            masked_args = _top_level_args(s[open_at + 1 : close_at])
+            raw_args, at = [], open_at + 1
+            for a in masked_args:  # masking keeps every position: the same slices of the written text
+                raw_args.append(expr[at : at + len(a)])
+                at += len(a) + 1
+            pos = close_at + 1
+            return call(m.group(1).upper(), raw_args)
+        m = re.match(r"(?:'[^']*'!|[\w.]+!)?[$\w.:]+", s[pos:])
+        if m and not m.group().isdigit():
+            pos += m.end()
+            return anything  # a cell, a range or a name: any value
+        return None
+
+    def term():
+        nonlocal pos
+        a = factor()
+        while a is not None:
+            skip()
+            if pos >= len(s) or s[pos] not in "*/":
+                return a
+            op = s[pos]
+            pos += 1
+            b = factor()
+            if b is None:
+                return None
+            if op == "*":
+                c = [_times(x, y) for x in (a[0], a[1]) for y in (b[0], b[1])]
+                a = (min(c), max(c), a[2] and b[2])
+                continue
+            lo, hi = b[0], b[1]
+            if b[2] and lo >= 0:
+                lo = max(lo, 1)
+            elif b[2] and hi <= 0:
+                hi = min(hi, -1)
+            if lo <= 0 <= hi or _INF in (abs(a[0]), abs(a[1]), abs(lo), abs(hi)):
+                a = anything
+                continue
+            c = [x / y for x in (a[0], a[1]) for y in (lo, hi)]
+            a = (min(c), max(c), False)
+        return None
+
+    def total():
+        nonlocal pos
+        a = term()
+        while a is not None:
+            skip()
+            if pos >= len(s) or s[pos] not in "+-":
+                return a
+            op = s[pos]
+            pos += 1
+            b = term()
+            if b is None:
+                return None
+            a = (a[0] + b[0], a[1] + b[1], a[2] and b[2]) if op == "+" else (a[0] - b[1], a[1] - b[0], a[2] and b[2])
+        return None
+
+    try:
+        v = total()
+        skip()
+    except (RecursionError, ValueError, OverflowError, ZeroDivisionError):
+        return None
+    return v if v is not None and pos == len(s) else None
+
+
+def _whole_bounds(expr: str):
+    """(low,  high) of  a number `expr` can only give as a whole number (or an error), else None."""
+    v = _bounds(expr)
+    return (v[0], v[1]) if v is not None and v[2] else None
+
+
+def _whole_number(expr: str) -> bool:
+    """True  when `expr`  can only give a whole number (or an error)."""
+    return _whole_bounds(expr) is not None
+
+
+_POSITION_CALL_RE = re.compile(r"\b(ROW|COLUMN)\(\s*([^()]+?)\s*\)", re.IGNORECASE)
+
+
+def _position_value(expr: str):
+    """The  number `expr`  gives when it is arithmetic over whole constants and ROW/COLUMN of written
+    references only (CNHI's (COLUMN(V$1)-COLUMN($B$1)-3)/17), as a Fraction: it never depends on a
+    cell's value, so it is the same number whatever  the inputs. None for anything else."""
+    import ast
+    from fractions import Fraction
+
+    def position(m: re.Match) -> str:
+        r = parse_ref(m.group(2))
+        if not r or r.get("whole_column") or r.get("whole_row"):
+            raise ValueError("not a written cell")
+        return str(r["r1"] if m.group(1).upper() == "ROW" else r["c1"])
+
+    try:
+        text = _POSITION_CALL_RE.sub(position, expr)
+    except ValueError:
+        return None
+    if not re.fullmatch(r"[\d\s+\-*/()]+", text):
+        return None
+
+    def value(node) -> Fraction:
+        if isinstance(node, ast.Expression):
+            return value(node.body)
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return Fraction(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            v = value(node.operand)
+            return -v if isinstance(node.op, ast.USub) else v
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            a, b = value(node.left), value(node.right)
+            if isinstance(node.op, ast.Add):
+                return a + b
+            if isinstance(node.op, ast.Sub):
+                return a - b
+            if isinstance(node.op, ast.Mult):
+                return a * b
+            return a / b  # ZeroDivisionError: not whole
+        raise ValueError("not arithmetic")
+
+    try:
+        return value(ast.parse(text.strip(), mode="eval"))
+    except (SyntaxError, ValueError, ZeroDivisionError, RecursionError):
+        return None
+
+
+def _named_list_index(argument: str, wb0: dict[str, Any], sheets: dict[str, Any], unscanned: set[str]) -> dict[str, Any] | None:
+    """INDIRECT's  argument "Prefix"&n,  with n a whole number and the names Prefix1..PrefixN N neighbouring
+    single cells of one column or row, in order, each defined once for the whole workbook, and no other
+    PrefixK name: {"formula":  "INDEX('Sheet'!$B$7:$B$26,n)", "range", "names", "sheet"}. Else None."""
+    from ..formula_utils import num_to_col
+
+    m = _NAMED_LIST_ARG_RE.match(argument)
+    if not m:
+        return None
+    prefix, number = m.group(1), m.group(2)
+    numbered: dict[int, list[dict]] = {}
+    pattern = re.compile(re.escape(prefix) + r"(0|[1-9]\d*)", re.IGNORECASE)
+    for d in wb0.get("defined_names", []):
+        hit = pattern.fullmatch(str(d.get("name") or ""))
+        if hit:
+            numbered.setdefault(int(hit.group(1)), []).append(d)
+    count = len(numbered)
+    if count < 2 or sorted(numbered) != list(range(1, count + 1)):
+        return None
+    fixed = _position_value(number)
+    if fixed is not None:
+        if fixed.denominator != 1 or not 1 <= fixed <= count:
+            return None  # INDIRECT finds no name for it  today, and INDEX(..., 0) or INDEX(...,  2.5) would not be the same error
+    else:
+        bounds = _whole_bounds(number)
+        if bounds is None or bounds[0] < 1:
+            return None  # a  fraction, or a number that may be 0 or less: INDEX  would not give INDIRECT's #REF! there
+    if re.fullmatch(r"[A-Za-z]{1,3}", prefix):
+        return None  # "CN"&21 is  the cell CN21, not a name: past the list INDIRECT would read it
+    cells = []
+    for k in range(1, count + 1):
+        defs = numbered[k]
+        if len(defs) != 1 or defs[0].get("local_sheet_id") is not None:
+            return None  # a name defined for one sheet as well: which one INDIRECT finds depends on the sheet
+        r = parse_ref(str(defs[0].get("value") or ""))
+        if not r or not r.get("sheet") or r["r1"] != r["r2"] or r["c1"] != r["c2"] or r.get("whole_column") or r.get("whole_row"):
+            return None
+        cells.append(r)
+    sheet = cells[0]["sheet"]
+    if any(c["sheet"] != sheet for c in cells):
+        return None
+    down = all(c["c1"] == cells[0]["c1"] and c["r1"] == cells[0]["r1"] + i for i, c in enumerate(cells))
+    across = all(c["r1"] == cells[0]["r1"] and c["c1"] == cells[0]["c1"] + i for i, c in enumerate(cells))
+    if not (down or across):
+        return None
+    if sheet not in unscanned and not (sheet in sheets and sheets[sheet].get("grids")):
+        return None  # Mind imports no sheet without a grid
+    first, last = cells[0], cells[-1]
+    rng = f"{_quote_sheet(sheet)}!${num_to_col(first['c1'])}${first['r1']}:${num_to_col(last['c1'])}${last['r1']}"
+    return {"formula": f"INDEX({rng},{number})", "range": rng, "names": f"{prefix}1..{prefix}{count}", "sheet": sheet}
+
+
 def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
     """FRM-007:  INDIRECT, with  the direct reference proposed where the text it builds can be
     worked out from the workbook's constants. Used as a value Mind stops the run; used as a range
@@ -872,6 +1183,14 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             try:
                 text = _text(_Expr(call["argument"], lookup, f["sheet"], origin["r1"], origin["c1"], names).eval())
             except (Unresolvable, ZeroDivisionError, ValueError) as exc:
+                listed = _named_list_index(call["argument"], wb0, sheets, unscanned)
+                if listed:
+                    if listed["sheet"] in unscanned and listed["sheet"] not in unscanned_targets:
+                        unscanned_targets.append(listed["sheet"])
+                    resolved.append({"argument": call["argument"][:120], "resolved": None, "target": listed["range"], "exists": True,
+                                     "as_value": call["as_value"], "by_position": listed["names"]})
+                    suggested = suggested[: call["start"]] + listed["formula"] + suggested[call["end"] :]
+                    continue
                 unresolved = f"{call['argument'][:60]}: {exc}"
                 resolved.append({"argument": call["argument"][:120], "resolved": None, "as_value": call["as_value"]})
                 continue
@@ -916,6 +1235,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
         "with_missing_targets": sum(1 for s in sites if s["suggested_formula"] and s["issue"]),
         "without_proposal": sum(1 for s in sites if s["suggested_formula"] is None),
         "reading_skipped_sheets": sum(1 for s in sites if s["unscanned_sheets"]),
+        "by_position": sum(1 for s in sites if s["suggested_formula"] and any(c.get("by_position") for c in s["calls"])),
     }
     if sites:
         first = next((s for s in sites if s["suggested_formula"] and not s["issue"]), sites[0])
@@ -926,7 +1246,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             "Mind computes the formula without it and an IFERROR around it shows its fallback (confirmed in Mind, 2026-11-08: \"-\" in place of the results). "
             f"First: {first['sheet']}!{first['cell']} = {first['formula'][:90]}"
             + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
-            + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates; {observed['with_missing_targets']} also point at a sheet or name that does not exist "
+            + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates (or, for a numbered list of names such as Cluster1..Cluster20, as INDEX over the cells the names stand for); {observed['with_missing_targets']} also point at a sheet or name that does not exist "
             "(an error in Excel already: that call becomes NA() in its place); "
             f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). The Prep action 'Replace INDIRECT by the reference its text builds' writes the proposals.",
             observed,

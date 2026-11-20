@@ -63,6 +63,20 @@ def test_a_message_loses_paths_files_cells_and_the_workbooks_names():
         assert gone not in said
 
 
+def test_a_path_with_spaces_in_its_folders_is_masked_whole():
+    # 20 Nov 2026: the mask stopped at the first space, so "- Milliman Inc\Desktop..." stayed in the message
+    for text in (
+        r"could not open C:\Users\someone\OneDrive - Milliman Inc\Desktop\Team Models\Client 500_v3.xlsm because it is locked",
+        r"could not open C:/Users/someone/OneDrive - Milliman Inc/Team Models/Client 500.xlsx because it is locked",
+        r"could not open \\server\Team share\Team Models\book.csv because it is locked",
+        r"could not open C:\Users\someone\OneDrive - Milliman Inc\Mind Ready\1.15.0 because it is locked",
+    ):
+        said = feedback.mask(text)
+        assert said == "could not open <path> because it is locked", said
+    # what is not a path stays
+    assert feedback.mask("a ratio of 3:4 and a/b, see http://example.org/x") == "a ratio of 3:4 and a/b, see http://example.org/x"
+
+
 def _crash_route(path, exc_factory):
     """A POST route that fails inside a timed stage (GET would meet the front end's catch-all)."""
     if any(getattr(r, "path", None) == path for r in server.app.routes):
@@ -224,3 +238,9 @@ def test_the_message_says_how_many_tokens_the_assistant_used_on_the_workbook():
     assert "\n  AI not used yet on this workbook\n" in feedback.compose(None, "Works well", ai_usage=fresh)["text"]
     none = feedback.compose(None, "Works well")
     assert "AI used" not in none["text"] and "AI not used" not in none["text"] and none["aiUsage"] is None
+
+
+def test_a_sentence_after_a_path_stays():
+    # 20 Nov 2026 (Haiku 5.5 refuter): the words after the path were taken for folder names
+    said = feedback.mask(r"Path C:\Temp\report.txt is ready and then more words/with slashes here")
+    assert said == "Path <path> is ready and then more words/with slashes here", said

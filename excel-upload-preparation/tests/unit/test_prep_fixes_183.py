@@ -248,7 +248,7 @@ def test_a_lone_cell_under_a_grid_joins_it_and_a_name_no_formula_reads_reads_not
 def test_a_lone_cell_with_no_room_above_moves_and_what_reads_it_follows(tmp_path):
     """2026-10-26: Base!J414 = 'N' under a row of numbers, flags and dates (no label column to join): it
     moves, by Excel's cut and paste, to a column of its own with its title; LH3's formula follows it.
-    A cell read through a range keeps its place: the range would lose it."""
+    A cell read through a range keeps its place: the range would lose it; since 20 Nov 2026 it gets a label beside it."""
     from app.excel_com import close_quietly, excel_session, open_for_write, save_in_place
 
     wb = openpyxl.Workbook()
@@ -276,8 +276,8 @@ def test_a_lone_cell_with_no_room_above_moves_and_what_reads_it_follows(tmp_path
     analysis = build_analysis(p, tmp_path / "w", "b")
     a = _plan(analysis)["title_lone_text_cells"]
     by = {(o["op"], o["cell"]): o for o in a["operations"]}
-    assert set(by) == {("move_cell", "J5"), ("set_value", "R4")} and by[("move_cell", "J5")]["to"] == "R5" and by[("set_value", "R4")]["after"] == "#Base J5"
-    assert a["skipped"] == ["Base!P1: on the first row, no cell above for a title, and a range or a name over several cells reads it (it cannot move) -- by hand"]
+    assert set(by) == {("move_cell", "J5"), ("set_value", "R4"), ("set_value", "O1")} and by[("move_cell", "J5")]["to"] == "R5" and by[("set_value", "R4")]["after"] == "#Base J5"
+    assert by[("set_value", "O1")]["after"] == "Text in P1" and a["skipped"] == []  # P1: a label left of it (20 Nov 2026)
     out = apply_operations(p, tmp_path / "prep", a["operations"])
     assert out["status"] == "APPLIED" and not out["failed"]
     done = Path(out["output_path"])
@@ -285,7 +285,8 @@ def test_a_lone_cell_with_no_room_above_moves_and_what_reads_it_follows(tmp_path
     assert book["LH3"]["A1"].value == '=IF(Base!R5="N",1,0)' and book["Base"]["R5"].value == "N" and book["Base"]["J5"].value is None
     assert compare_workbooks(p, done, Moves())["clean"] is True
     after = build_analysis(done, tmp_path / "after", "a")
-    assert [s["cell"] for s in _finding(after, "STR-008")["observed"]["sites"]] == ["P1"]
+    assert [s["cell"] for s in _finding(after, "STR-008")["observed"]["sites"]] == []
+    assert book["Base"]["O1"].value == "Text in P1" and book["LH3"]["A2"].value == '=COUNTIF(Base!P1:P2,"x")'
 
 
 def test_a_lone_text_read_only_through_n_is_not_a_blocker(tmp_path):
