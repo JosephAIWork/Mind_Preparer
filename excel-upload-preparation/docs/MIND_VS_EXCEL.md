@@ -512,6 +512,57 @@ The loop plan and the instances plan carry one line saying so (`loop_builder.UPL
 first-time user reading the test's list knows which cells to leave alone. A difference of any other
 kind -- a NaN, another number, an empty cell -- is real: see the cases above.
 
+## Which formulas need a lone text cell: the made-up probe of 2026-11-20
+
+Since 17 November 2026 the app lists a lone text cell only when a formula that reads it would get another
+result from an empty cell (`prep.readers_needing`); since 19 November an INDEX whose stepped row never lands
+on the cell counts as a reader that does not need it. Both were reasoned from Excel, not seen in Mind.
+`scripts/build_lone_text_probe.py` builds the workbook that asks Mind: invented numbers, 30 formulas on the
+sheet `Probe`, Excel's value typed beside each. It went to Mind twice on 20 November 2026: as written, and
+after Prep of the 1.15.0 exe built that night (2 titles written, the text put into 2 formulas, 5 lone cells
+inside ranges left for a person, no computed value changed). "Mind" is its difference list after the upload
+test; *same* = not in the list.
+
+| Test | What it tests | Excel | The app | Mind, as written | Mind, after Prep |
+|---|---|---|---|---|---|
+| A1-A7 | MAX, MIN, SUM, AVERAGE, COUNT, PRODUCT, SUMPRODUCT over a column with a lone text inside it | 10, 1, 55, 4.58, 12, 10886400, 137 | not listed | same | same |
+| A8 | COUNTA over such a column | 13 | listed, left for a person | **12** | **12** |
+| A9, H1 | INDEX that returns the lone text itself | Second part | listed, left for a person | **empty** | **empty** |
+| B1 | VLOOKUP, the lone text in a column neither searched nor returned | 1035 | not listed | same | same |
+| B2, H2 | VLOOKUP that returns the lone text's column | note | listed, left for a person | **empty** | **empty** |
+| B3 | HLOOKUP, the lone text in a row neither searched nor returned | 2012 | not listed | same | same |
+| C1, H4 | N() of a lone text, and that result plus 5 | 0, 5 | not listed | same | same |
+| D1, D2 | INDEX whose row is 1 + n x 6 and never lands on the headings (the CNHI shape) | 201, 202 | not listed | same | same |
+| D3, H3 | INDEX that does land on a heading | Per Capita Cost | listed, left for a person | **empty** | **empty** |
+| E1-E3 | the lone text as the criterion of SUMIFS, COUNTIFS, AVERAGEIFS | 18, 3, 6 | listed; Prep writes a title above it | **0, 0, NaN** | same |
+| E4, E5 | the same with no room for a title | 18, 3 | listed; Prep writes the text into the formula | **0, 0** | same |
+| E6 | the criterion typed into the formula | 18 | nothing to list | same | same |
+| F1 | a lone text joined to a text | x#Line 1 | listed; Prep writes a title above it | **x#** | same |
+| G1, G2, H5 | a table whose first header is a bare `#`: a number and a name out of it | 30, beta | a header, not a title | same | same |
+
+What it shows:
+
+- **The app's list is Mind's list.** Every formula the app lists differs in Mind (10 of 10), every formula it
+  treats as harmless agrees (15 of 15). After Prep the only differences left are the four rows of the five
+  cells the app itself says are left for a person (a title above them would sit inside the range that is read).
+- **A lone text inside a range is left out even when the range is read as a whole.** COUNTA counts one fewer;
+  INDEX and VLOOKUP that land on it return nothing.
+- **Mind's list does not name a cell where Excel shows a text and Mind returns nothing.** A9, B2 and D3
+  (`Probe!C10`, `C12`, `C17`) are absent from the list on both uploads. The same value in brackets one cell
+  further is listed: `[Second part]` against `[]`. So "not in the list" does not prove that a text result
+  agrees; a formula that reads it shows it. (The first case above already had this for an empty cell that
+  Excel shows as 0.)
+- **A sheet that holds nothing but lone text cells is not imported, and the conversion stops.** The first
+  build of the probe had two such sheets. Mind: `Spreadsheet not found error: Sheet "Nw" not found in workbook
+  "probe_20nov" on compiling formula: N(Nw!R3C3)`. Rule FRM-006 says the same on the exe ("Mind stops with
+  'Spreadsheet not found'"). The probe now puts a label and a number on those sheets.
+
+Not asked: MAXIFS and MINIFS criteria, a lone text read through a defined name, the labels Prep writes to close
+a gap in a table's first column (Phoenix), and anything inside a loop.
+
+The four sandbox projects were kept: `zzz_mindready_probe_20nov_raw` (the first build, conversion stopped),
+`zzz_mindready_probe_20nov_b_raw`, `zzz_mindready_probe_20nov_c_raw`, `zzz_mindready_probe_20nov_c_prepared`.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all
