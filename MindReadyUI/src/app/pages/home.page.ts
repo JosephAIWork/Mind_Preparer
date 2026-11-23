@@ -1981,28 +1981,28 @@ export class HomePage implements OnDestroy {
   }
 
   /** Building the loop changes what the rules see (which policy row the model computes, the  cells it clears): a
-   *  blocking action can show up that was not there before (Palermo, 14 Nov 2026: "an empty cell is compared with
+   *  blocking action can show up that was not there before (Model A, 14 Nov 2026: "an empty cell is compared with
    *  a number" went from PASS to ERROR once the loop was in). So after the loop step: one more Prep pass, the same
    *  rounds as the Prep step, only when something blocking is left. */
   async runLoopThenFix(): Promise<boolean> {
     this.afterLoop = null;
     if (!(await this.runLoop())) return false;
     // 17 Nov 2026: the Prep plan as it is AFTER the loop. The loop's own answer carries only the loop plan;
-    // the Prep plan comes with the workbook  read again, which `runLoop` asks  for and does not wait for.
-    // Without this  wait the line  below read  the plan from before the loop, where nothing was left to fix.
+    // the Prep plan comes with the  workbook read again, which `runLoop`  asks for and does not wait for.
+    // Without  this wait the  line below  read the plan from before the loop, where nothing was left to fix.
     if (this.afterLoop) await this.afterLoop;
     this.afterLoop = null;
-    // 17 Nov 2026: after a Cancel nothing new starts: the loop is built (its own answer came normally), its fixes  are not begun
+    // 17 Nov 2026: after a Cancel nothing new starts: the loop is built (its own answer came normally), its  fixes are not begun
     if (this.destroyed || this.chainCancelled || !this.fixesFollowLoop()) return true;
     const loopLine = this.loop().line;
     this.loop.update((s) => ({ ...s, running: true, fraction: null, line: `${loopLine}; fixing what the loop uncovered…` }));
     this.takeStepEnd();
-    // the same job as the Prep step (rounds, then  the assistant); its question replaces the  Prep step's
+    // the same job as the Prep step (rounds,  then the assistant); its question replaces  the Prep step's
     const ok = await this.runPrepare();
     const p = this.prepare();
     if (this.takeStepEnd() === "cancelled") {
-      // 17 Nov 2026: Cancel during the  fixes after the loop: they are thrown away, the loop itself  stands
-      // (it counts as finished: "Your workbook is  as it was after the Mind loop was built.")
+      // 17 Nov 2026: Cancel during  the fixes after the loop: they are thrown away, the loop  itself stands
+      // (it counts as finished: "Your workbook  is as it was after the Mind loop was built.")
       this.stepEnd = "after_loop";
       this.loop.update((s) => ({ ...s, running: false, line: `${loopLine}; the fixes after the loop were stopped` }));
       return false;
@@ -2031,8 +2031,8 @@ export class HomePage implements OnDestroy {
       const out = await this.api.recalculate(id);
       this.store.recalc.set(out);
       this.store.applyAnalysis({ report: out.report, plan: out.plan, readiness: out.readiness, version: out.version ?? undefined });
-      // 17 Nov 2026 (Palermo): the cells that show an error only for the Mind loop's first value never stop
-      // Start (the  verdict leaves them out): when they are all the new errors, the step's line is the
+      // 17 Nov 2026 (Model A): the cells that show an error only for the Mind loop's first value never  stop
+      // Start (the verdict leaves them out): when they are all the new errors, the step's line is the
       // verdict's one plain line on them; else they are named after the count (review LBr: the count is then
       // the verdict's -- only the new errors that also show without the loop, not the original's own)
       const loopOnly = out.readiness?.recalc?.loop_errors ?? 0;
@@ -2052,7 +2052,7 @@ export class HomePage implements OnDestroy {
       return ok;
     } catch (e) {
       if (wasCancelled(e)) {
-        // 17 Nov 2026: stopped with  Cancel: the last good recalculation  stays as it was
+        // 17 Nov 2026:  stopped with Cancel: the last  good recalculation stays as it was
         this.recalc.set(stoppedState());
         this.stepEnd = "cancelled";
         return false;
@@ -2062,15 +2062,15 @@ export class HomePage implements OnDestroy {
     }
   }
 
-  // ---- do everything --------------------------------------------------------------------------
-  /** The  whole chain, each  step followed  by its check, stopping at the first failed check. */
+  // ---- do  everything --------------------------------------------------------------------------
+  /** The whole  chain, each  step followed by its check, stopping at the first failed check. */
   async runAll(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || this.busy()) return;
     // Basic's bar starts from nothing, and this run's estimate is asked for below
     this.barHigh = 0;
     this.estimateSettled.set(false);
-    // 17 Nov 2026: a new run: the last run's Cancel is  over
+    // 17 Nov 2026: a new run: the last run's  Cancel is over
     this.chainCancelled = false;
     this.chainStopping.set(false);
     this.chainStoppedByCancel.set(false);
@@ -2080,18 +2080,18 @@ export class HomePage implements OnDestroy {
     this.interrupted.set(false);
     this.interruptedMark = null;
     this.say("");
-    // 17 Nov 2026: nor is the last run's question this run's
+    // 17 Nov 2026: nor is the last run's question  this run's
     this.pendingAsk = null;
     this.stepAsk = null;
     this.prepTotal = { applied: 0, fixed: 0 };
     this.prepSaw = null;
-    // the  outside step only for a model  whose macros open outside files
+    // the outside step only for  a model whose macros open outside files
     const plan = STEPS.filter((s) => s.id !== "outside" || this.store.outsideInputs() !== null);
-    // 17 Nov 2026  (live test L2b-6): a loop step that cannot run is left  out from the start, so "Step 2  of
+    // 17  Nov 2026 (live test L2b-6): a loop step that cannot run  is left out from the start, so  "Step 2 of
     // 3" is said from the first step (it said "Step 2 of 4", then "Step 3 of 3" when the loop's turn came).
     // (Repair round: only when that is sure. While the loop plan is still being read, the step is counted
-    // and asked at its turn: left out then, it keeps its number, "Step 4 of 4"; before, it was left out
-    // and  then ran, and "Step 2 of 3" became "Step 3 of 4".)
+    // and asked at its turn: left out then, it keeps its number, "Step 4 of 4"; before, it was  left out
+    // and then ran, and "Step 2 of 3" became "Step 3 of 4".)
     const loopSkip = !this.loopWanted() || this.loopPlanReads === 0 ? this.loopSkip() : "";
     this.steps.set(plan.map((s) => ({ ...s, state: s.id === "loop" && loopSkip ? "skipped" : "waiting", line: s.id === "loop" ? loopSkip : "", detail: "" })));
     // 17 Nov 2026 (live test L2b-4): this tab remembers the run until it ends here, for a reload in its middle
@@ -2118,8 +2118,8 @@ export class HomePage implements OnDestroy {
     let finished: StepId | null = null;
     try {
       for (const step of plan) {
-        if (this.destroyed) return; // the page was  left: the next step would  run unseen
-        // Cancel before the first step, or  between two steps  (nothing runs  on the server): nothing new starts
+        if (this.destroyed) return; // the  page was left: the next  step would run unseen
+        // Cancel before the first  step, or between  two steps  (nothing runs on the server): nothing new starts
         if (this.chainCancelled) return await this.endCancelled(finished, this.firstToRun(plan, plan.indexOf(step)));
         if (step.id === "outside") {
           await this.refreshOutside(id);
@@ -2133,7 +2133,7 @@ export class HomePage implements OnDestroy {
         }
         if (step.id === "loop") {
           // asked again at its turn: the outside step may have changed the loop plan. A step left out
-          // only now keeps its number (L2b-6); one left out  from the start that can run now runs.
+          // only now keeps its number (L2b-6); one  left out from the start that can run now runs.
           const skip = this.loopSkip();
           if (skip) {
             const counted = this.steps().find((s) => s.id === "loop")?.state !== "skipped" && this.stepsBegun();
@@ -2154,9 +2154,9 @@ export class HomePage implements OnDestroy {
         }
         const r = states[step.id]();
         this.stepSeconds[step.id] = (Date.now() - this.stepT0) / 1000;
-        // 17 Nov 2026: the  step was stopped with Cancel (its  own request answered "cancelled", or its job
-        // said  so) -- by the Cancel beside Start, the waiting box's, a  card's or the strip's. Only this step
-        // is  thrown away: the steps before it keep their state, and the sentence names the last of them.
+        // 17 Nov  2026: the step was stopped with  Cancel (its own request answered "cancelled", or  its job
+        // said so) -- by the Cancel beside Start, the waiting  box's, a card's or the strip's. Only  this step
+        // is thrown away: the steps before it keep their state, and the sentence names the last of them.
         // When the Mind loop was built and only its fixes afterwards were stopped, the loop is that step.
         const end = this.takeStepEnd();
         // 17 Nov 2026: the question the Prep job stopped Start with (the Prep step, or the fixes after the loop)
@@ -2166,14 +2166,14 @@ export class HomePage implements OnDestroy {
           this.setStep(step.id, { state: "stopped", line: end === "after_loop" ? r.line : "Stopped.", detail: "" });
           return await this.endCancelled(finished, end === "after_loop" ? "prepare" : step.id);
         }
-        // the files are in, but no computed value could  be compared: amber, and the chain stops -- going
+        // the files are in, but no computed  value could be compared: amber, and the chain stops -- going
         // on is the user's choice (Do everything again skips the step: the server says brought in)
         const unchecked = step.id === "outside" && !ok && this.outsideUnchecked();
         this.setStep(step.id, { state: ok ? "done" : unchecked ? "stopped" : "failed", line: r.line, detail: r.detail });
         // 17 Nov 2026: Cancel was clicked while this step ran, and the step's own answer came normally (the
         // click reached the server too late to stop it): its result stands and is shown, it counts as
         // finished, and the chain stops after it. Only a step that failed by itself, with nothing to show
-        // for it (red), keeps its own stop  sentence below.
+        // for it (red), keeps its  own stop sentence below.
         if (this.chainCancelled && r.tone !== "error") return await this.endCancelled(step.id, this.firstToRun(plan, plan.indexOf(step) + 1));
         if (unchecked) {
           this.say(
@@ -2182,12 +2182,12 @@ export class HomePage implements OnDestroy {
           return;
         }
         if (!ok) {
-          // 17 Nov 2026: the  Prep job could not fix everything and  Start stops here  (a Prep  fix is still
+          // 17 Nov  2026: the Prep job could not fix  everything and Start  stops here  (a Prep fix is still
           // left after the assistant tried, or no AI key is saved): its own two sentences are the stop
-          // line, with "Show me" to the problem's cell and "Send feedback". Every  other stop keeps the
-          // sentence that names the step and where to  fix it.
-          // 17 Nov 2026 (live test  L2b-2): the server would not start the  step because other work of this
-          // workbook still ran: its own sentence  says so ("Wait a moment: ..."), not  "Not started."
+          // line, with "Show me" to the problem's cell and "Send  feedback". Every other stop keeps the
+          // sentence that names the step and  where to fix it.
+          // 17 Nov 2026  (live test L2b-2): the server would not  start the step because other work of this
+          // workbook still ran: its  own sentence says so ("Wait a moment:  ..."), not "Not started."
           const busyWords = r.tone === "error" ? waitWords(r.detail) : "";
           // 20 Nov 2026 (Haiku 5.5 refuter): the Prep step's question, kept for the end, is not lost when a
           // later step stops Start: its first sentence follows the stop sentence
@@ -2204,7 +2204,7 @@ export class HomePage implements OnDestroy {
         if (step.id === "prepare") this.prepSaw = new Set((this.store.readiness()?.blocking ?? []).map(problemKey));
         finished = step.id;
       }
-      // 17 Nov 2026:  every step ran. A question that did not stop Start (a blocking problem with no Prep
+      // 17  Nov 2026: every step ran. A question that did not stop Start (a blocking problem with no Prep
       // fix, which the assistant could not fix either) is asked now, in place of "Everything ran and every
       // check passed" -- unless the steps after it made its problem go.
       const left = this.pendingAsk;
@@ -2219,24 +2219,24 @@ export class HomePage implements OnDestroy {
         this.endPlace.set(first ? placeOfProblem(first) : { id: "assistant-ask", open: true });
       } else {
         this.say(`Everything ran and every check passed (${minutes((Date.now() - this.chainT0) / 1000)}).`);
-        // 17 Nov 2026 (live test L2b-9): Basic  has no step list where  Custom says it: the assistant's own
-        // fixes in  a second sentence,  with "Show  me" to Versions
+        // 17 Nov 2026 (live test  L2b-9): Basic has no step  list where Custom says it: the assistant's  own
+        // fixes in a  second sentence,  with "Show me" to Versions
         if (this.basic) this.chainNote.set(assistantFixedWords(this.prepTotal.applied, this.prepTotal.fixed));
-        // (17 Nov 2026, Palermo: the cells that show an error only for the Mind loop's first value are said once,
-        // on Basic's finish banner; Custom says it on the Recalculate  step's line)
+        // (17 Nov 2026, Model A: the cells that show an error only for the Mind loop's first value are said once,
+        // on Basic's finish banner; Custom says it  on the Recalculate step's line)
       }
     } finally {
       if (this.ticker) clearInterval(this.ticker);
       this.ticker = null;
-      // 17 Nov 2026 (live test L2b-4): ended here, so a  reload says nothing about it (a  page left in the
-      // middle keeps the mark:  the next one says that the rest of Start did not  run)
+      // 17 Nov 2026 (live test L2b-4): ended  here, so a reload says nothing  about it (a page left in the
+      // middle  keeps the mark: the next one says that the rest of  Start did not run)
       if (!this.destroyed) {
         markStart(null);
-        // 17 Nov 2026 (live test L2b-3): Start's  steps have ended: the shell's list of running work drops
+        // 17 Nov 2026 (live  test L2b-3): Start's steps have ended: the shell's list of running work drops
         // them now, before the Cancel beside Start leaves the screen (else "Still working: Recalculating."
         // flashed beside "Everything ran and every check passed"). Not after the page was left (repair
         // round): its step may still run on the server, followed by nothing here, and the strip and the
-        // next page's line must still see it.
+        // next page's line must still  see it.
         this.work.ended(START_KINDS);
       }
       this.chainStopping.set(false);
@@ -2245,7 +2245,7 @@ export class HomePage implements OnDestroy {
   }
 
 
-  /** The problem  a kept question asks about is still blocking now (the loop and the recalculation ran
+  /** The problem a kept question asks about is still blocking now (the loop and the recalculation ran
    *  after it was asked): read from the readiness the last step brought. Not known: it stands. */
   private stillBlocking(ask: PrepAsk): boolean {
     const rule = ask.show_me?.rule_id;
@@ -2269,8 +2269,8 @@ export class HomePage implements OnDestroy {
   }
 
   /** 17 Nov 2026 (live test L2b-6): the steps Start counts in "Step 2 of 4": every step but those left out
-   *  before the first one began (the outside files already brought in, a loop that cannot be built, the
-   *  box  not ticked). A step skipped  later keeps its number: "Step 2 of  4" was followed  by "Step  3 of 3". */
+   *  before the first one began (the outside files already brought in, a loop that cannot  be built, the
+   *  box not ticked).  A step skipped later keeps its number:  "Step 2 of  4" was  followed by "Step 3 of 3". */
   private countedSteps(): Step[] {
     return this.steps().filter((s) => s.state !== "skipped" || s.counted);
   }
@@ -2280,8 +2280,8 @@ export class HomePage implements OnDestroy {
     return this.steps().some((s) => s.state !== "waiting" && s.state !== "skipped");
   }
 
-  /** Why the loop step is left out of this run ("" when it runs):  the box is not ticked, or the workbook
-   *  has no loop the  app can build. */
+  /** Why the loop step is left out of this run (""  when it runs): the box is not ticked, or the workbook
+   *  has  no loop the app can build. */
   private loopSkip(): string {
     if (this.canBuildLoop() && !this.loopWanted()) return "Left out: the box was not ticked";
     if (!this.canBuildLoop()) return this.loopPlan()?.found ? "The loop needs one answer first (Advanced › Mind loop)" : "No run loop in this workbook";
@@ -2296,7 +2296,7 @@ export class HomePage implements OnDestroy {
     this[which].update((s) => ({ ...s, open: !s.open }));
   }
 
-  // ---- next quarter's Mind  input files -------------------------------------------------------------
+  // ----  next quarter's Mind input files -------------------------------------------------------------
   onNextQuarterFiles(event: Event): void {
     const input = event.target as HTMLInputElement;
     const files = Array.from(input.files ?? []);
@@ -2304,8 +2304,8 @@ export class HomePage implements OnDestroy {
     if (files.length) void this.makeNextQuarter(files);
   }
 
-  /** Make next quarter's Mind input  files: the picked raw files go to the server, which runs  the model's
-   *  own import macro on a copy  with them and writes one file per Mind input grid (a file already shaped
+  /** Make next  quarter's Mind input files: the picked raw files go to the  server, which runs the model's
+   *  own import macro  on a copy with them and writes one file per Mind input grid (a file already shaped
    *  like a grid goes in as it is). Followed until it ends; the zip is then offered for download. No new
    *  version: the model in Mind stays as it is. */
   async makeNextQuarter(files: File[]): Promise<boolean> {
@@ -2331,8 +2331,8 @@ export class HomePage implements OnDestroy {
     return this.followNextQuarter(id, seq, Date.now());
   }
 
-  /** A next-quarter job may still run from before a reload or a visit to Advanced (follow it), or its
-   *  result is  there to show (the zip is offered again). */
+  /** A next-quarter job may still run from before a reload or a visit to Advanced (follow it),  or its
+   *  result is there to show (the zip is offered again). */
   private async resumeNextQuarter(): Promise<void> {
     const id = this.store.sessionId();
     if (!id || !this.store.outsideInputs() || this.nextQuarter().running) return;

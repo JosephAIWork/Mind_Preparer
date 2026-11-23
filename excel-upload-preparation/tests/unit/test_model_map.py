@@ -297,7 +297,7 @@ End Sub
 
 
 def test_ranges_reached_through_names_refers_to_range_and_range_variables():
-    # Tokyo (2026-11-07): Set rng = ThisWorkbook.Names("X").RefersToRange, then rng.Value = loop value / rng(1, 1).Value = i
+    # Model D (2026-11-07): Set rng = ThisWorkbook.Names("X").RefersToRange, then rng.Value = loop value / rng(1, 1).Value = i
     names = _names(("Scenario", "Ctrl!$C$27:$D$27"), ("StartCohortYear", "Ctrl!$C$24"), ("CalcYear", "Ctrl!$C$18:$D$18"), ("CohortRng", "Ctrl!$C$22"))
     v = parse_macros([("M1_Main", NAMES_REFERS_TO_STYLE)], names)
     loops = {l["var"]: l for l in v["loops"]}

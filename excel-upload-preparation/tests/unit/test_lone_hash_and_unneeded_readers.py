@@ -1,4 +1,4 @@
-"""2026-11-17: Phoenix TVOG Calc stopped Start on "a formula reads a lone text cell, in 6 cells; the first is E62 on sheet CFs".
+"""2026-11-17: Model C stopped Start on "a formula reads a lone text cell, in 6 cells; the first is E62 on sheet CFs".
 
 - CFs!B29 holds a bare '#', the first header of the table B29:L110 (a column of row numbers). It was read as a grid
   title, so the table fell into pieces and four lookup keys inside it (F66, F78, F86, F109) stood alone. A bare '#'
@@ -81,8 +81,8 @@ def test_a_bare_hash_among_the_headers_is_no_trapped_title():
     assert [(g["ref"], g["inner_title_cells"]) for g in grids] == [("B2:D5", [])]
 
 
-# --- the Phoenix shape -----------------------------------------------------------------------------------------
-def _phoenix(path: Path, gap_read_by_a_range: bool = False) -> Path:
+# --- the Model C shape -----------------------------------------------------------------------------------------
+def _model_c(path: Path, gap_read_by_a_range: bool = False) -> Path:
     """CFs: a table B29:L50 headed '#' (row numbers in B, keys in C and F, a note column E, the factor in G), its row
     numbers skipping B44:B46; F48 a key on a row past the gap; E40 a note. Calc: VLOOKUP(key, CFs!$C$30:$G$50, 5) as in
     the model, VLOOKUP(key, tab, 2) over the name tab = CFs!$F$30:$G$50 (keys in F), and a counter MAX($A$7:A..)+1
@@ -123,8 +123,8 @@ def _phoenix(path: Path, gap_read_by_a_range: bool = False) -> Path:
     return path
 
 
-def test_phoenix_only_the_real_key_past_the_gap_is_left_and_labels_close_the_gap(tmp_path):
-    p = _phoenix(tmp_path / "phoenix.xlsx")
+def test_model_c_only_the_real_key_past_the_gap_is_left_and_labels_close_the_gap(tmp_path):
+    p = _model_c(tmp_path / "model_c.xlsx")
     analysis = build_analysis(p, tmp_path / "w", "s")
     cfs = [g for g in all_grids(analysis) if g["sheet"] == "CFs"]
     assert any(g["ref"] == "B29:L43" and g["title_cell"] is None for g in cfs)  # the '#' heads the table, E40 inside it
@@ -144,7 +144,7 @@ def test_phoenix_only_the_real_key_past_the_gap_is_left_and_labels_close_the_gap
 
 
 def test_no_label_goes_into_a_gap_cell_a_formula_reads(tmp_path):
-    p = _phoenix(tmp_path / "phoenix.xlsx", gap_read_by_a_range=True)
+    p = _model_c(tmp_path / "model_c.xlsx", gap_read_by_a_range=True)
     a = _action(build_analysis(p, tmp_path / "w", "s"))
     assert not any(o["cell"] in ("B44", "B45", "B46") for o in a["operations"])
     assert any(s.startswith("CFs!F48:") and s.endswith("-- by hand") for s in a["skipped"])
@@ -232,10 +232,10 @@ def test_two_lone_cells_in_one_formula_are_rewritten_one_pass_at_a_time(tmp_path
 
 
 @needs_excel
-def test_phoenix_shape_and_the_text_rewrite_change_no_value_in_excel(tmp_path):
+def test_model_c_shape_and_the_text_rewrite_change_no_value_in_excel(tmp_path):
     from app.excel_com import close_quietly, excel_session, open_for_write, save_in_place
 
-    p = _phoenix(tmp_path / "phoenix.xlsx")
+    p = _model_c(tmp_path / "model_c.xlsx")
     wb = openpyxl.load_workbook(p)
     wb["Calc"]["H1"] = '=IF(Calc!A20="LH2_calc",1,2)&Calc!A20'
     wb["Calc"]["H2"] = "=A19+1"  # A19 is read: no title above A20
@@ -260,8 +260,8 @@ def test_phoenix_shape_and_the_text_rewrite_change_no_value_in_excel(tmp_path):
 
 
 # --- repair round (17 Nov 2026, refuter findings) -----------------------------------------------------------------
-def _phoenix_with(tmp_path: Path, cell: str, formula: str) -> Path:
-    p = _phoenix(tmp_path / "phoenix.xlsx")
+def _model_c_with(tmp_path: Path, cell: str, formula: str) -> Path:
+    p = _model_c(tmp_path / "model_c.xlsx")
     wb = openpyxl.load_workbook(p)
     sheet, ref = cell.split("!")
     wb[sheet][ref] = formula
@@ -276,7 +276,7 @@ def _phoenix_with(tmp_path: Path, cell: str, formula: str) -> Path:
     ("Calc!Z1", '=SUMPRODUCT(--(CFs!B:B=""))'),
 ])
 def test_no_label_closes_a_gap_that_a_formula_could_see(tmp_path, cell, formula):
-    a = _action(build_analysis(_phoenix_with(tmp_path, cell, formula), tmp_path / "w", "s"))
+    a = _action(build_analysis(_model_c_with(tmp_path, cell, formula), tmp_path / "w", "s"))
     assert not any(o["cell"] in ("B44", "B45", "B46") for o in a["operations"]), a["operations"]
 
 

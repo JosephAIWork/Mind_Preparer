@@ -1,6 +1,6 @@
 """1.12.5: the Mind loop goes to Mind with the formula repairs Prep still has for the version.
 
-Found on the Tokyo IFRS 17 tool (2026-11-09): its four loops were written on a version Prep had not
+Found on Model D (an IFRS 17 tool) (2026-11-09): its four loops were written on a version Prep had not
 repaired yet. BBA_01..BBA_05 and VFA_01 read their own sheet name from
 =RIGHT(CELL("filename",B3),...FIND("]",CELL("filename",B3))) in B3; Mind answers CELL("filename") with
 the workbook's name alone (no "]"), so B3 was NaN, the lookups keyed on it NaN, and every formula of
@@ -17,14 +17,14 @@ from app.loop_builder import FORMULA_REPAIRS, build_loop_plan
 from app.model_map import build_model_map
 from app.prep import ACTIONS, plan_actions
 
-from test_loop_choices import TWO_RUNS, _book  # the Tokyo-shaped workbook and its two macros
+from test_loop_choices import TWO_RUNS, _book  # the Model D-shaped workbook and its two macros
 
 CELL_NAME = '=RIGHT(CELL("filename",B3),LEN(CELL("filename",B3))-FIND("]",CELL("filename",B3)))'
 B45 = "=SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))"
 
 
 @pytest.fixture()
-def tokyo(tmp_path, monkeypatch):
+def model_d(tmp_path, monkeypatch):
     import openpyxl
 
     monkeypatch.setattr(model_map, "read_vba", lambda _p: [("M1_Main", TWO_RUNS)])
@@ -41,7 +41,7 @@ def tokyo(tmp_path, monkeypatch):
     ws["A45"], ws["B45"] = "LF", B45
     wb.save(p)
     wb.close()
-    analysis = build_analysis(p, tmp_path / "w", "tokyo")
+    analysis = build_analysis(p, tmp_path / "w", "model_d")
     # what the user's own Excel showed in B3 (the server passes the original upload's values)
     analysis["original_environment_values"] = {"BBA_01!B3": "BBA_01"}
     return analysis, build_model_map(analysis)
@@ -51,8 +51,8 @@ def _prep(analysis):
     return plan_actions(analysis, {"findings": []})
 
 
-def test_the_loop_is_written_with_the_formula_repairs_prep_still_has(tokyo):
-    analysis, mp = tokyo
+def test_the_loop_is_written_with_the_formula_repairs_prep_still_has(model_d):
+    analysis, mp = model_d
     plan = build_loop_plan(analysis, mp, prep_plan=_prep(analysis))
     ops = {(o["sheet"], o["cell"]): o for o in plan["operations"]}
     # the four loops, as before
@@ -69,8 +69,8 @@ def test_the_loop_is_written_with_the_formula_repairs_prep_still_has(tokyo):
     assert any(n.startswith("Written with the loop, so Mind computes what Excel does:") for n in plan["notes"])
 
 
-def test_repairs_can_be_left_out_and_are_still_named(tokyo):
-    analysis, mp = tokyo
+def test_repairs_can_be_left_out_and_are_still_named(model_d):
+    analysis, mp = model_d
     plan = build_loop_plan(analysis, mp, prep_plan=_prep(analysis), repairs=False)
     cells = {(o["sheet"], o["cell"]) for o in plan["operations"]}
     assert ("BBA_01", "B3") not in cells and ("BBA_01", "B45") not in cells
@@ -78,8 +78,8 @@ def test_repairs_can_be_left_out_and_are_still_named(tokyo):
     assert any(n.startswith("Not written with the loop:") for n in plan["notes"])
 
 
-def test_a_repair_never_overwrites_a_cell_the_loop_writes_and_other_actions_stay_out(tokyo):
-    analysis, mp = tokyo
+def test_a_repair_never_overwrites_a_cell_the_loop_writes_and_other_actions_stay_out(model_d):
+    analysis, mp = model_d
     fake = [
         {"id": "freeze_environment_formulas", "title": "Freeze", "default_on": True, "operations": [
             {"op": "set_formula", "action_id": "freeze_environment_formulas", "sheet": "Ctrl_01", "cell": "C22", "before": "x", "after": "=1"}]},
@@ -95,8 +95,8 @@ def test_a_repair_never_overwrites_a_cell_the_loop_writes_and_other_actions_stay
     assert plan["repairs"] == []
 
 
-def test_no_prep_plan_no_repairs(tokyo):
-    analysis, mp = tokyo
+def test_no_prep_plan_no_repairs(model_d):
+    analysis, mp = model_d
     plan = build_loop_plan(analysis, mp)
     assert plan["repairs"] == [] and not any(o["sheet"] == "BBA_01" for o in plan["operations"])
 
@@ -118,8 +118,8 @@ def _blocking(id_: str, rule: str, n: int, name: str | None = None, level: str =
     return a
 
 
-def test_prep_blocking_items_that_are_not_formulas_are_named_not_written(tokyo):
-    analysis, mp = tokyo
+def test_prep_blocking_items_that_are_not_formulas_are_named_not_written(model_d):
+    analysis, mp = model_d
     fake = _prep(analysis) + [
         _blocking("title_lone_text_cells", "STR-008", 2, "a formula reads a lone text cell"),
         _blocking("pivot_tables", "STR-009", 1),  # no plain name given: looked up
@@ -135,18 +135,18 @@ def test_prep_blocking_items_that_are_not_formulas_are_named_not_written(tokyo):
     assert [r["id"] for r in plan["repairs"]] == ["freeze_environment_formulas", "offset_ranges"]  # the formula repairs as before
 
 
-def test_one_blocking_item_and_none(tokyo):
-    analysis, mp = tokyo
+def test_one_blocking_item_and_none(model_d):
+    analysis, mp = model_d
     plan = build_loop_plan(analysis, mp, prep_plan=_prep(analysis) + [_blocking("title_lone_text_cells", "STR-008", 1)])
     assert any(n == "Prep still has 1 blocking item that is not a formula, e.g. a formula reads a lone text cell (STR-008). Run Fix all issues before uploading." for n in plan["notes"])
     plan = build_loop_plan(analysis, mp, prep_plan=_prep(analysis))
     assert plan["prep_blockers"] == [] and not any(n.startswith("Prep still has") for n in plan["notes"])
 
 
-def test_a_ready_loop_plan_says_which_upload_test_cells_are_harmless(tokyo):
+def test_a_ready_loop_plan_says_which_upload_test_cells_are_harmless(model_d):
     from app.loop_builder import UPLOAD_TEST_NOTE
 
-    analysis, mp = tokyo
+    analysis, mp = model_d
     plan = build_loop_plan(analysis, mp)
     assert plan["loops"][0]["status"] == "ready" and plan["notes"].count(UPLOAD_TEST_NOTE) == 1
     assert "0.00001" in UPLOAD_TEST_NOTE and "TRUE or FALSE" in UPLOAD_TEST_NOTE and "nothing to fix" in UPLOAD_TEST_NOTE

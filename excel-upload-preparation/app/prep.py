@@ -508,8 +508,8 @@ def stretched_reader(index: dict[str, Any], sheet: str, row: int, band: tuple[in
     """A  range a  formula or a name reads that an empty row inserted at `row` (in the columns of
     `band`, or the whole row) would land inside -- it starts above the row and reaches  it -- so the
     range grows by a row: what reads it  by position (INDEX(table, Scenario+1, 4), MATCH,  OFFSET, a
-    lookup) then reads another cell. Tokyo  IFRS 17 tool, 2026-11-07: a title row inside the scenario
-    table D29:H32  turned "New" into "Old". Excel's own names  (print area, filter range) do not count."""
+    lookup) then reads another cell. Model  D IFRS 17 tool, 2026-11-07: a title row inside the scenario
+    table  D29:H32 turned "New" into "Old". Excel's own  names (print area, filter range) do not count."""
     rects = index["rects"].get(sheet) or []
     if not rects:
         return None
@@ -1615,7 +1615,7 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
             issue = None if value is not None else 'the original upload shows "", an error or no value: by hand'
             if value is None and s["value"] == "":
                 # an error in the original that this version shows as "" (the fixer's IFERROR(..., "")):
-                # "" names no folder of the app's, and it is what this version computes (Tokyo, 2026-11-07)
+                # "" names no folder of the app's, and it is what this version computes (Model D, 2026-11-07)
                 value, whose, issue = "", "this version", None
         else:
             value, whose, issue = s["value"], "this version", s["issue"]
@@ -1631,7 +1631,7 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
             note = (f"{', '.join(s['calls'])} asks Excel about itself; the value {whose} shows is a location, so {neutral} is written in its place (text, same length; "
                     "as a formula, so the numbers check still follows the cell). The model owner's own path and file name are not kept in the prepared workbook")
         if s.get("array"):
-            # a single-cell  array formula: written back as a one-cell array so Excel accepts the overwrite
+            # a  single-cell array formula: written back as a one-cell array so Excel accepts the overwrite
             ops.append(_op("set_array_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
         else:
             ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
@@ -1660,9 +1660,9 @@ _USED_NAMES: dict[Any, set[str]] = {}
 
 # ---  STR-008: which  formulas need the text of a lone text cell (17 Nov 2026) ----------------------
 # Mind does not import a lone text cell: in Mind it is empty. A formula that gets the same  result from an
-# empty cell does not need it. Phoenix TVOG Calc:  Calc!A259 'LH2_calc' is read only by  MAX($A$7:A304)+1
-# (MAX skips text and empty cells alike),  CFs!E62 only by VLOOKUP(key, CFs!$C$30:$G$110, 5, FALSE)
-# (column E is neither the  column searched, C, nor the one returned,  G). Both stopped Start.
+# empty cell does not need it. Model C: Calc!A259  'LH2_calc' is read only by MAX($A$7:A304)+1
+# (MAX  skips text and empty cells alike), CFs!E62  only by VLOOKUP(key, CFs!$C$30:$G$110, 5, FALSE)
+# (column E is neither the column  searched, C, nor the one returned, G).  Both stopped Start.
 # Functions that skip text and empty cells alike when given a reference as a whole argument:
 _TEXT_BLIND = frozenset({"SUM", "MAX", "MIN", "AVERAGE", "COUNT", "PRODUCT", "SUMPRODUCT"})
 # Argument  positions (0-based)  where Excel wants a reference, or reads a reference as a table: a single
@@ -1674,11 +1674,11 @@ _REFERENCE_POSITIONS = {
     "SUMIFS": None, "AVERAGEIFS": None, "MAXIFS": None, "MINIFS": None, "COUNTIFS": None, "FILTER": None, "SORT": None, "UNIQUE": None,
     "ISFORMULA": {0}, "FORMULATEXT": {0}, "SHEET": {0}, "SHEETS": {0}, "GETPIVOTDATA": {1},
 }
-# 19  Nov 2026  (CNHI 'Cost data'!AF10, the criterion of SUMIFS in 20 formulas): in the ...IFS functions only the ranges
-# must stay references. A criterion is a value, and the cell's own text does the  same there:
+# 19  Nov 2026  (Model B 'Cost data'!AF10, the criterion of SUMIFS in 20 formulas): in the ...IFS functions only the ranges
+# must stay references. A criterion is a value, and the cell's own text does  the same there:
 # SUMIFS($H:$H,$C:$C,$AF10) = SUMIFS($H:$H,$C:$C,"Deliveries and inpatient services").
-# SUMIFS / AVERAGEIFS / MAXIFS  / MINIFS (values, range 1, criterion  1, ...): the criteria are arguments 2,  4, 6 ...
-# counted from 0; COUNTIFS (range 1, criterion 1, ...):  arguments 1, 3, 5 ...
+# SUMIFS / AVERAGEIFS /  MAXIFS / MINIFS (values, range 1,  criterion 1, ...): the criteria are arguments  2, 4, 6 ...
+# counted from 0; COUNTIFS (range 1, criterion 1,  ...): arguments 1, 3, 5 ...
 _CRITERION_FIRST = {"SUMIFS": 2, "AVERAGEIFS": 2, "MAXIFS": 2, "MINIFS": 2, "COUNTIFS": 1}
 _CALL_NAME_RE = re.compile(r"([^\W\d][\w.]*)\s*$")
 _FORMULA_AT: dict[Any, dict[str, Any]] = {}
@@ -1751,13 +1751,13 @@ def _reference_uses(formula: str, home: str, sheet: str, row: int, col: int) -> 
     return uses
 
 
-# 19 Nov 2026, CNHI: 332 column headings "Per Capita Cost" stopped Start. Eight formulas cover the  yearly tables of
+# 19 Nov 2026, Model B: 332 column headings "Per Capita Cost" stopped Start. Eight formulas cover  the yearly tables of
 # 'RAC Baseline' with INDEX($X$237:$MI$705, 1+(active_year-proj_year-1)*117, MATCH(...)): the row is always
 # 1 + a whole number x 117 (the 'Specialised Services' line of each year), never a heading row.
 # A reference INDEX returns can still be moved or stretched afterwards, and then other rows are read:
 # OFFSET(INDEX(...),8,0); INDEX(...):A9, A1:INDEX(...), and x:A9 with x a LET name that holds it (any ':' that does not
-# sit between two plain cells); INDEX(...)#; a function that is not Excel's own -- a macro's, a LAMBDA name, Mind's
-# MM_COLUMN  -- which can do anything  with the reference. Such a formula is  left alone.
+# sit between two plain cells); INDEX(...)#; a function that is not Excel's own -- a macro's, a LAMBDA name,  Mind's
+# MM_COLUMN -- which can do  anything with the reference. Such a formula  is left alone.
 _REFERENCE_MOVERS = frozenset({"OFFSET", "INDIRECT", "LET", "LAMBDA", "ANCHORARRAY"})
 _ANY_CALL_RE = re.compile(r"([^\W\d][\w.]*)\s*\(")
 _STEP_TOKEN_RE = re.compile(
@@ -1943,12 +1943,12 @@ def _use_needs_cell(use: dict[str, Any], row: int, col: int, analysis: dict[str,
             offset = (col - use["c1"]) if fn == "VLOOKUP" else (row - use["r1"])
             return offset in (0, int(n) - 1)  # only the column searched and  the column returned are read
     if analysis is not None and use["whole"] and not use["single"] and fn == "INDEX" and pos == 0 and len(args) >= 2 and use["r2"] > use["r1"] and not _index_result_may_move(use["masked"]):
-        # 19 Nov  2026 (CNHI): INDEX(range, 1+(year-first_year)*117, column) returns every  117th row only. A range
-        # of one row is left alone: its  one index runs along the row.
+        # 19 Nov  2026 (Model B): INDEX(range, 1+(year-first_year)*117, column) returns  every 117th row only. A range
+        # of one row is left alone:  its one index runs along the row.
         steps = _row_steps(analysis, args[1], use["home"])
         if steps is not None:
             first, every = steps
-            nth = row - use["r1"] + 1  # the cell's  row inside the range, counted from 1
+            nth = row - use["r1"] + 1  # the  cell's row inside the range, counted from 1
             if every == 0:
                 return first < 1 or nth == first  # one fixed row; row 0 is the whole column
             if every > 1 and first % every:
@@ -2064,13 +2064,13 @@ _GAP_ROWS_MAX = 20  # rows  between the  grid and the lone cell
 def _labels_closing_gap_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
                               planned: dict[tuple[str, int, int], Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any], int] | None:
     """A  lone cell  a few rows under a grid whose first column stops early: Mind reads a grid down its first
-    column, so a few empty cells there end the table above the cell (Phoenix  TVOG Calc, CFs!F109
-    'Sum of ANNUITYVD', a key of the lookup table  F30:L110 that 3,143 VLOOKUPs read: the  row numbers in
-    B29:B110 skip B101:B103, so Mind's  grid stops at row 100, 2026-11-17). A label in each of  those empty
-    cells ('Row 101') lets the grid  run on down its first column, and the cell is part of it.
+    column, so a few empty cells there end the table above the cell (Model  C TVOG Calc, CFs!F109
+    'Sum of ANNUITYVD', a key of the lookup  table F30:L110 that 3,143 VLOOKUPs read:  the row numbers in
+    B29:B110 skip B101:B103, so  Mind's grid stops at row 100, 2026-11-17). A label in each  of those empty
+    cells ('Row 101') lets the  grid run on down its first column, and the cell is part of it.
     Only when the grid carries no flag; at most _GAP_LABELS_MAX labels within _GAP_ROWS_MAX rows; every label
     cell is empty and inside no range a formula reads; and what the longer grid takes in -- the grid's columns,
-    from the row under it to the row where its first column ends --  holds no '#' title and no grid that
+    from the row under it to the row where its first column ends  -- holds no '#' title and no grid that
     reaches outside it or has a title or a flag (it would be cut in two, or a title trapped).
     -> (the label operations, the grid, its new last row), else None."""
     sheet = s["sheet"]
@@ -2094,11 +2094,11 @@ def _labels_closing_gap_above(analysis: dict[str, Any], grids: list[dict[str, An
         while value(bottom + 1, first) is not None and bottom - row < 1000:
             bottom += 1
         if value(bottom + 1, first) is not None:
-            continue  # a first column that runs on and on: too much to take  in
+            continue  # a first column that runs on and on: too much to  take in
         if any(_range_reader(analysis, sheet, r, first) for r in empty):
-            continue  # an empty label cell lies  inside a range a formula reads
+            continue  # an empty label cell  lies inside a range a formula reads
         if index["whole_cols"].get(sheet, {}).get(first) or any(index["whole_rows"].get(sheet, {}).get(r) for r in empty):
-            continue  # a whole  column or row  read by  any function (COUNTIF(B:B,""), SUMPRODUCT(--(B:B=""))) sees a label
+            continue  # a  whole column or  row read  by any function (COUNTIF(B:B,""), SUMPRODUCT(--(B:B=""))) sees a label
         taken_in = [o for o in grids if o is not g and o["first_col"] <= last and o["last_col"] >= first and o["last_row"] > end and o["first_row"] <= bottom]
         if any(o["first_col"] < first or o["last_col"] > last or o["last_row"] > bottom or o.get("title_cell") or o.get("inner_title_cells") or o.get("flags") for o in taken_in):
             continue
@@ -2288,13 +2288,13 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     (_move_to_free_column), else the text goes into the formulas that need it (_text_into_readers), else a
     label beside it makes the two a small grid (_label_beside, 20 Nov 2026), else it is left for a person.
 
-    One pass fixes every cell it can (2026-11-16, the Tokyo IFRS 17 tool: W25, X26, Y27 under  the grid
+    One pass fixes every cell it can (2026-11-16, Model D (an IFRS 17 tool): W25, X26, Y27  under the grid
     U21:AA24, one row and one column further each time; each cell above is read by a formula, so only
     the first could join the grid, the next one pass later, the third a pass after that -- and Do
     everything ran out of passes). The cells are taken in reading order and each sees the sheet as the
     operations planned before it will leave it: the grid one row longer for each label (`on`), the
-    labels and titles written and the moved cells gone  (`planned`). So the second step  of a staircase
-    joins the grid the first  one lengthened, and  no title  is planned where an earlier one of the same
+    labels and titles written and the moved cells  gone (`planned`). So the second  step of a staircase
+    joins the grid the  first one lengthened,  and no  title is planned where an earlier one of the same
     pass would be read as one grid with it."""
     from .validators.structure import lone_text_cells_read
 
@@ -2309,9 +2309,9 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     used = {g["name"].strip().lower() for g in all_grids(analysis) if g.get("name")}
     free: dict[str, int] = {}  # per sheet, the next free column a cell can move to
     site_sheets = {s["sheet"] for s in sites}
-    # the sheet as this pass  will leave it: its grids (a grid a label lengthens is  replaced by a longer
-    # copy -- the  analysis' own records are never changed), what  the planned operations write or empty,
-    # and which of the cells handled  here still stand alone where they were  (`waiting`)
+    # the sheet as this  pass will leave it: its grids (a grid a label lengthens  is replaced by a longer
+    # copy --  the analysis' own records are never changed),  what the planned operations write or empty,
+    # and which of the cells  handled here still stand alone where they  were (`waiting`)
     on: dict[str, list[dict[str, Any]]] = {name: [] for name in site_sheets}
     for g in all_grids(analysis):
         if g["sheet"] in on:
@@ -2361,13 +2361,13 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         above_taken = row == 1 or _planned_value(analysis, planned, sheet, row - 1, col) is not None or bool(grid_containing(on_sheet, row - 1, col))
         range_reader = beside = None
         if not above_taken:
-            # an empty cell inside a range some formula  reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
+            # an empty cell inside a range some  formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
             # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
             range_reader = _range_reader(analysis, sheet, row - 1, col)
             # a title right of another cell this pass handles (a lone text still in its place, or a header just
             # planned) is read as one grid with it, and this cell stays alone (three texts on a diagonal,
             # 2026-11-16: the titles of the second and third were trapped that way, and a second pass was needed).
-            # A lone label nothing reads  on that spot is left  as it always was: only this pass's  own cells count.
+            # A lone label nothing  reads on that spot is  left as it always was: only this  pass's own cells  count.
             left = (sheet, row - 1, col - 1)
             if not range_reader and ((left in waiting and not grid_containing(on_sheet, row - 1, col - 1)) or planned.get(left) is not None):
                 beside = ref_text(col - 1, row - 1)
@@ -3077,8 +3077,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                 rng.FormulaArray = o["after"]
             except Exception as exc:
                 if ":" not in target:
-                    # FormulaArray takes  255 characters at most (a  447-character one-cell array on the Tokyo
-                    # IFRS 17  tool, 2026-11-08): Formula2  writes the  same one-cell array as a dynamic array,
+                    # FormulaArray takes  255 characters at most (a  447-character one-cell array on the Model D
+                    # IFRS  17 tool, 2026-11-08):  Formula2 writes  the same one-cell array as a dynamic array,
                     # the same value, with no such limit
                     try:
                         rng.Formula2 = o["after"]
@@ -3103,9 +3103,9 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             wb = given if given is not None else open_for_write(excel, copy_path)
             given = None
             # Manual calculation while writing: in automatic mode Excel recalculates every
-            # dependent after each write, and 12,678 writes into a 70k-formula  model ran for
-            # hours. The mode is restored before the save, so  the file keeps its own setting
-            # and  is recalculated once.
+            # dependent after each write, and 12,678 writes into a  70k-formula model ran for
+            # hours. The mode is restored before the save,  so the file keeps its own  setting
+            # and is recalculated once.
             calc_mode = None
             try:
                 calc_mode = excel.Calculation
@@ -3126,7 +3126,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                         except Exception as exc:
                             ws = None
                             if attempt < TRANSIENT_RETRIES and _is_transient(exc):
-                                time.sleep(0.5 * (attempt + 1))  # Excel was busy for an  instant: the same call again
+                                time.sleep(0.5 * (attempt + 1))  # Excel was busy for  an instant: the same call again
                                 continue
                             raise
                     applied.append(record)
@@ -3148,7 +3148,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             close_quietly(wb)
 
     def _write_one(wb: Any, ws: Any, o: dict[str, Any], i: int, total: int) -> dict[str, Any]:
-        """One operation on its sheet; returns the  record to log as applied."""
+        """One operation on its sheet; returns  the record to log as applied."""
         record = o
         if o["op"] == "set_formula" and (o["sheet"], str(o["cell"]).replace("$", "").upper()) in relinked:
             after = str(o["after"])
@@ -3166,9 +3166,9 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
         elif o["op"] == "remove_validation":
             ws.Range(o["cell"]).Validation.Delete()
         elif o["op"] == "set_sheet_visibility":
-            ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
+            ws.Visible = -1 if o["after"] else 0  # xlSheetVisible /  xlSheetHidden
         elif o["op"] == "explicit_colors":
-            if not o.get("in_style_table"):  # already  done for every sheet at once (app/theme_colors.py)
+            if not o.get("in_style_table"):  # already done for every sheet at once (app/theme_colors.py)
                 _explicit_colors(ws, o, i, total, progress)
         elif o["op"] == "insert_row":
             band = insert_columns(o)

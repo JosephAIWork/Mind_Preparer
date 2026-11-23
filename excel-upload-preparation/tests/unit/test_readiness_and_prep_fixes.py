@@ -151,7 +151,7 @@ def test_readiness_blocked_then_unverified_then_ready():
     r = compute_readiness(_report(_f("READY-001", "NOT_SUPPORTED", "REQUIRED")), plan, dirty, "ver-002")
     assert r["state"] == "unverified" and r["recalc"]["formula_errors"] == 1
     assert "loop_note" not in r["recalc"] and "loop" not in r["next_step"]["detail"]
-    # 16 Nov 2026 (Palermo): after the Mind loop the new errors come with a plain word on where they come from
+    # 16 Nov 2026 (Model A): after the Mind loop the new errors come with a plain word on where they come from
     looped = compute_readiness(_report(_f("READY-001", "NOT_SUPPORTED", "REQUIRED")), plan, dirty, "ver-002", loop_built=True)
     assert looped["state"] == "unverified" and "loop's first value" in looped["recalc"]["loop_note"] and "Mind loop" in looped["next_step"]["detail"]
 

@@ -1,6 +1,6 @@
 """Stand-in input files made with the assistant (app/stand_in_inputs.py): the recipe, the proof, the
 loop that tries again with what happened. The Excel steps and the assistant are replaced here; the
-real ones run in the Tokyo check (scratchpad stand_ins_live.py, evidence in the deliverables)."""
+real ones run in the Model D check (scratchpad stand_ins_live.py, evidence in the deliverables)."""
 from __future__ import annotations
 
 import json

@@ -821,8 +821,8 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
             if inputs:
                 # every iteration uploads a new model into a new project, so its inputs go up again too
                 progress({"event": "mind", **_inputs_stage(), "message": f"iteration {n}: uploading {len(inputs)} input file(s) through Mind's Inputs window"})
-                mb = sum(f.stat().st_size for f in inputs) / 2**20  # Tokyo's inputs: about 1.4 M cells
-                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened again  before
+                mb = sum(f.stat().st_size for f in inputs) / 2**20  # Model D's inputs: about 1.4 M cells
+                # project_url: after a copy's own file (<key>-<grid>.csv, Mind instances) the project is opened  again before
                 # the run, else the run still uses the copies as loaded before the import (K2 showed 120 for 915)
                 up = out["inputs_upload"] = mc.upload_inputs(page, Path(cfg.inputs_dir), timeout_s=int(300 + 30 * mb), shots=shots, project_url=init)
                 if not up.get("ok"):
@@ -860,8 +860,8 @@ def _mind_iteration(cfg: LoopConfig, it_dir: Path, prepared: Path, names: dict[s
         if record["status"] == "creating" and not cancel.flagged():
             note("not created")  # as before tonight: a create that failed is not listed as left in Mind
     finally:
-        # 17 Nov 2026: not after a Cancel -- the person  asked to keep the half-made  project and to be
-        # offered "Delete it from  Mind"; nothing is  deleted without  their click
+        # 17 Nov 2026: not after a Cancel -- the  person asked to keep the  half-made project and to be
+        # offered "Delete it  from Mind"; nothing  is deleted  without their click
         if cfg.delete_projects and record.get("status") in ("created", "model added") and not record.get("ran") and not cancel.flagged():
             progress({"event": "mind", "stage": "cleanup", "message": f"iteration {n}: removing the sandbox project {name}"})
             try:

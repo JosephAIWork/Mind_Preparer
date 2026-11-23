@@ -1,10 +1,10 @@
 """Outside input files (app/outside_inputs.py): a workbook whose macro opens other files and pastes
-their data in -- the Tokyo IFRS 17 tool's calcCF reads one .xlsm per row of Ctrl_01!H35:H40 into
+their data in -- Model D (an IFRS 17 tool)'s calcCF reads one .xlsm per row of Ctrl_01!H35:H40 into
 BBA_01..05 / VFA_01.
 
-Everything but the last test runs without Excel, on text written here in the shapes of the Tokyo
+Everything but the last test runs without Excel, on text written here in the shapes of the Model D
 tool (its VBA, its path formula, its readers, the event log Excel gave on the real run). The last
-test runs the whole chain on the anonymized Tokyo copy with invented input files, when that fake
+test runs the whole chain on the anonymized Model D copy with invented input files, when that fake
 data is on this machine (it is never committed).
 
 Tests marked xfail show a defect of the module: the reason says what goes wrong."""
@@ -45,7 +45,7 @@ from app.outside_inputs import (
 
 needs_excel = pytest.mark.skipif(not com_available(), reason="needs a real Excel")
 
-# --- the Tokyo tool's VBA (shortened; the Japanese text as the tool shows it) -----------------------
+# --- the Model D tool's VBA (shortened; the Japanese text as the tool shows it) -----------------------
 M1_MAIN = '''Option Explicit
 
 '選択したシナリオで現在推計の計算を実行
@@ -158,16 +158,16 @@ Function findCol(ByVal sheetName As String, ByVal x As String, ByVal r As Long, 
 End Function
 '''
 
-TOKYO_VBA = [("M1_Main", M1_MAIN), ("M2_InputCFFile", M2_INPUT_CF_FILE), ("M3_Output", M3_OUTPUT), ("M4_Others", M4_OTHERS)]
+MODEL_D_VBA = [("M1_Main", M1_MAIN), ("M2_InputCFFile", M2_INPUT_CF_FILE), ("M3_Output", M3_OUTPUT), ("M4_Others", M4_OTHERS)]
 
 # the path formula of Ctrl_01!H35 (H36..H40 read D36..D40)
-TOKYO_H35 = (r'=VLOOKUP($G$27,$B$6:$J$12,2,FALSE)&"\"&IF(RIGHT($G$27,4)="当初認識","NB_","")'
+MODEL_D_H35 = (r'=VLOOKUP($G$27,$B$6:$J$12,2,FALSE)&"\"&IF(RIGHT($G$27,4)="当初認識","NB_","")'
              r'&IF(RIGHT($G$27,3)="前期末",$C$20&$D$20,$C$18&$D$18)&"_"&$C$22&"_"&D35&".xlsm"')
 
-TOKYO_SHEETS = ("BBA_01", "BBA_02", "BBA_03", "BBA_04", "BBA_05", "VFA_01")
-BOOK = "SBI_IFRS17_Anonymized_original.xlsm"
+MODEL_D_SHEETS = ("BBA_01", "BBA_02", "BBA_03", "BBA_04", "BBA_05", "VFA_01")
+BOOK = "ModelD_IFRS17_original.xlsm"
 # per sheet: the range calcCF clears (1,200 months) and the block InputCFFile pastes (1,201 months)
-TOKYO_RUN = [(s, "AB3:DP1202", "AB3:DP1203") for s in TOKYO_SHEETS[:5]] + [("VFA_01", "AE3:ABS1202", "AE3:ABS1203")]
+MODEL_D_RUN = [(s, "AB3:DP1202", "AB3:DP1203") for s in MODEL_D_SHEETS[:5]] + [("VFA_01", "AE3:ABS1202", "AE3:ABS1203")]
 
 
 def _area(name: str, sheet: str, ref: str, file: str | None = None) -> dict:
@@ -187,8 +187,8 @@ def _table_row(cell: str, keys=(), expected: str | None = None, sheet: str = "Ct
 
 
 # --- 1. VBA: which macro runs the import ------------------------------------------------------------
-def test_tokyo_vba_import_macro_is_calccf_and_its_chain_reaches_the_workbooks_open():
-    s = scan_vba(TOKYO_VBA)
+def test_model_d_vba_import_macro_is_calccf_and_its_chain_reaches_the_workbooks_open():
+    s = scan_vba(MODEL_D_VBA)
     assert s["import_macro"] == "calcCF"
     assert s["chain"] == ["calcCF", "InputCFFile"]
     assert {(i["procedure"], i["module"], i["call"]) for i in s["imports"]} == {
@@ -207,7 +207,7 @@ def test_tokyo_vba_import_macro_is_calccf_and_its_chain_reaches_the_workbooks_op
 
 
 def test_open_for_output_writes_a_file_and_is_not_an_import():
-    s = scan_vba(TOKYO_VBA)
+    s = scan_vba(MODEL_D_VBA)
     writers = {"EndemicCalculationRun", "OutputResult"}
     assert not writers & {i["procedure"] for i in s["imports"]}
     assert s["procedures"]["OutputResult"]["opens"] == [] and s["procedures"]["EndemicCalculationRun"]["opens"] == []
@@ -312,7 +312,7 @@ def test_an_opening_call_in_a_second_module_with_the_same_procedure_name_is_list
 
 # --- message boxes: what the VBA says, and what a garbled box said -----------------------------------
 def test_message_boxes_are_listed_and_a_shown_message_is_traced_to_its_line():
-    s = scan_vba(TOKYO_VBA)
+    s = scan_vba(MODEL_D_VBA)
     assert [m["procedure"] for m in s["messages"]] == [
         "OneScenarioRun", "AllScenarioRun", "AllScenarioRun", "EndemicCalculationRun", "EndemicCalculationRun", "InputCFFile"]
     # the box InputCFFile shows when an input file has more items than the sheet holds (fake_inputs/errors/too_many_items)
@@ -407,8 +407,8 @@ def test_dialog_watch_answers_no_on_a_hebrew_windows(fake_dialog):
 
 
 # --- 2. the import table -----------------------------------------------------------------------------
-def test_file_name_tail_of_the_tokyo_path_formula():
-    assert file_name_tail(TOKYO_H35) == (r'IF(RIGHT($G$27,4)="当初認識","NB_","")&IF(RIGHT($G$27,3)="前期末",$C$20&$D$20,$C$18&$D$18)'
+def test_file_name_tail_of_the_model_d_path_formula():
+    assert file_name_tail(MODEL_D_H35) == (r'IF(RIGHT($G$27,4)="当初認識","NB_","")&IF(RIGHT($G$27,3)="前期末",$C$20&$D$20,$C$18&$D$18)'
                                          r'&"_"&$C$22&"_"&D35&".xlsm"')
 
 
@@ -439,7 +439,7 @@ def _cells_and_values():
     ]
     values = {
         ("Ctrl_01", 35, 8): r"C:\in\2026Q1_2026_BBA_01.xlsm",  # the path Excel last computed
-        ("Ctrl_01", 36, 8): "#VALUE!",  # what the anonymized Tokyo copy holds in H35:H40
+        ("Ctrl_01", 36, 8): "#VALUE!",  # what the anonymized Model D copy holds in H35:H40
         ("Ctrl_01", 35, 4): "BBA_01",
         ("Ctrl_01", 36, 4): "ＢＢＡ＿０２",  # full-width: still the sheet BBA_02
         ("Ctrl_01", 37, 4): "保険料",  # a Japanese sheet name
@@ -577,19 +577,19 @@ def test_missing_and_extra_files_and_the_sentence():
                     ["2026Q1_2026_BBA_01.xlsm", "notes.txt", "2026Q1_2026_BBA_01.xlsm"])  # the same file picked twice counts once
     assert m["matched"] == 1 and [r["cell"] for r in m["missing"]] == ["H36", "H37"] and m["extra"] == ["notes.txt"]
     assert describe_match(m) == "1 of 3 input files matched; missing: 2026Q1_2026_BBA_02.xlsm, Ctrl_01!H37; not used: notes.txt."
-    rows = [_table_row(f"H{35 + i}", [s]) for i, s in enumerate(TOKYO_SHEETS)]
-    m = match_files(rows, [f"2026Q1_2026_{s}.xlsm" for s in reversed(TOKYO_SHEETS)])
-    assert [r["file"] for r in m["rows"]] == [f"2026Q1_2026_{s}.xlsm" for s in TOKYO_SHEETS]
+    rows = [_table_row(f"H{35 + i}", [s]) for i, s in enumerate(MODEL_D_SHEETS)]
+    m = match_files(rows, [f"2026Q1_2026_{s}.xlsm" for s in reversed(MODEL_D_SHEETS)])
+    assert [r["file"] for r in m["rows"]] == [f"2026Q1_2026_{s}.xlsm" for s in MODEL_D_SHEETS]
     assert describe_match(m) == "6 of 6 input files matched."
 
 
 # --- 4. reading the macro's run from Excel's events ----------------------------------------------------
-def _tokyo_log(picked: set[str]) -> list[tuple]:
+def _model_d_log(picked: set[str]) -> list[tuple]:
     """calcCF's run as Excel's events reported it: per row, the input area cleared (1,200 months), the
     file opened, its block pasted (1,201 months), the file closed, the status cell stamped. A file not
     picked does not exist: no open, the status cell says so."""
     log: list[tuple] = []
-    for i, (sheet, cleared, pasted) in enumerate(TOKYO_RUN):
+    for i, (sheet, cleared, pasted) in enumerate(MODEL_D_RUN):
         path = rf"C:\in\IF_当期末（非金融前提変更後）\2026Q1_2026_{sheet}.xlsm"
         log.append(("change", BOOK, sheet, cleared))
         if sheet in picked:
@@ -602,9 +602,9 @@ def _names(sheets) -> set[str]:
     return {normalize_name(f"2026Q1_2026_{s}.xlsm") for s in sheets}
 
 
-def test_each_files_area_on_a_tokyo_shaped_run():
-    seen = analyse_events(_tokyo_log(set(TOKYO_SHEETS)), BOOK, _names(TOKYO_SHEETS))
-    assert seen["orphans"] == [] and set(seen["files"]) == _names(TOKYO_SHEETS)
+def test_each_files_area_on_a_model_d_shaped_run():
+    seen = analyse_events(_model_d_log(set(MODEL_D_SHEETS)), BOOK, _names(MODEL_D_SHEETS))
+    assert seen["orphans"] == [] and set(seen["files"]) == _names(MODEL_D_SHEETS)
     bba = seen["files"][normalize_name("2026Q1_2026_BBA_04.xlsm")]
     assert bba == {"areas": [{"sheet": "BBA_04", "ref": "AB3:DP1203", "r1": 3, "c1": 28, "r2": 1203, "c2": 120, "rows": 1201, "cols": 93}],
                    "cleared": [{"sheet": "BBA_04", "ref": "AB3:DP1202"}]}
@@ -614,8 +614,8 @@ def test_each_files_area_on_a_tokyo_shaped_run():
 
 
 def test_a_file_not_picked_leaves_its_clear_as_an_orphan():
-    picked = set(TOKYO_SHEETS) - {"BBA_02"}
-    seen = analyse_events(_tokyo_log(picked), BOOK, _names(picked))
+    picked = set(MODEL_D_SHEETS) - {"BBA_02"}
+    seen = analyse_events(_model_d_log(picked), BOOK, _names(picked))
     assert seen["orphans"] == [("BBA_02", (3, 28, 1202, 120))]
     assert normalize_name("2026Q1_2026_BBA_02.xlsm") not in seen["files"]
     assert seen["files"][normalize_name("2026Q1_2026_BBA_03.xlsm")]["cleared"] == [{"sheet": "BBA_03", "ref": "AB3:DP1202"}]
@@ -655,7 +655,7 @@ def test_columns_written_out_of_order_make_one_area():
 
 
 # --- 5. pointing the readers at the Mind input grid ----------------------------------------------------
-def test_tokyo_readers_are_pointed_at_the_input_grid():
+def test_model_d_readers_are_pointed_at_the_input_grid():
     o5 = '=(-SUMIF($AB$1:$DP$1,"保険料(＋)",$AB5:$DP5)+SUMIF($AB$1:$DP$1,"保険料(－)",$AB5:$DP5))'
     assert redirect_formula(o5, "BBA_04", [BBA_04]) == (
         '=(-SUMIF($AB$1:$DP$1,"保険料(＋)",IN_BBA_04!$A5:$CO5)+SUMIF($AB$1:$DP$1,"保険料(－)",IN_BBA_04!$A5:$CO5))', 2, None)
@@ -756,7 +756,7 @@ def test_rows_partly_outside_stop_the_split_whatever_the_argument_order():
 
 
 # --- planning every reader at once ------------------------------------------------------------------------
-TOKYO_READERS = [
+MODEL_D_READERS = [
     {"sheet": "BBA_04", "cell": "N4", "formula": "=IF($B$8=0,N6*1/3,SUMIF($AD$1:$DP$1,N$2,$AD4:$DP4)-SUMIF($AD$1:$DP$1,N$2,$AD5:$DP5))"},
     {"sheet": "BBA_04", "cell": "O5", "formula": '=(-SUMIF($AB$1:$DP$1,"保険料(＋)",$AB5:$DP5)+SUMIF($AB$1:$DP$1,"保険料(－)",$AB5:$DP5))'},
     {"sheet": "VFA_01", "cell": "N4", "formula": "=SUMIF($AD$1:$ABS$1,N$2,$AD4:$ABS4)-SUMIF($AD$1:$ABS$1,N$2,$AD5:$ABS5)"},
@@ -765,8 +765,8 @@ TOKYO_READERS = [
 ]
 
 
-def test_plan_rewrites_on_tokyo_readers_and_names():
-    p = plan_rewrites(TOKYO_READERS, [BBA_04, VFA_01], [("CF_BBA_04", "=BBA_04!$AB$3:$DP$1203"), ("Header", "=BBA_04!$AB$1:$DP$1")])
+def test_plan_rewrites_on_model_d_readers_and_names():
+    p = plan_rewrites(MODEL_D_READERS, [BBA_04, VFA_01], [("CF_BBA_04", "=BBA_04!$AB$3:$DP$1203"), ("Header", "=BBA_04!$AB$1:$DP$1")])
     assert [a["name"] for a in p["areas"]] == ["IN_BBA_04", "IN_VFA_01"] and p["kept"] == []
     assert p["readers"] == {"IN_BBA_04": 2, "IN_VFA_01": 2} and p["sums_split"] == 2
     assert p["names"] == {"CF_BBA_04": "=IN_BBA_04!$A$3:$CO$1203"}
@@ -780,7 +780,7 @@ def test_plan_rewrites_on_tokyo_readers_and_names():
 
 
 def test_a_reader_that_cannot_follow_keeps_only_its_own_area():
-    readers = TOKYO_READERS + [{"sheet": "集計", "cell": "C2", "formula": "=SUM(VFA_01!AD5:AF5)+BBA_04!AC9"}]
+    readers = MODEL_D_READERS + [{"sheet": "集計", "cell": "C2", "formula": "=SUM(VFA_01!AD5:AF5)+BBA_04!AC9"}]
     p = plan_rewrites(readers, [BBA_04, VFA_01])
     assert [a["name"] for a in p["areas"]] == ["IN_BBA_04"]
     assert p["kept"] == [{"sheet": "VFA_01", "ref": "AE3:ABS1203", "name": "IN_VFA_01",
@@ -891,18 +891,18 @@ def test_plan_mind_inputs_names_are_unique_ascii_whatever_the_sheet_name():
     assert all(len(n) <= 31 and n.isascii() and n.replace("_", "").isalnum() for n in names)
 
 
-# --- the whole chain on the Tokyo fake data (Excel) ---------------------------------------------------------
-FAKE = Path(os.environ.get("MIND_READY_DATA") or (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady")) / "tokyo_inputs_2026-11-09"
-FAKE_MAIN = FAKE / "SBI_IFRS17_Anonymized_original.xlsm"
+# --- the whole chain on the Model D fake data (Excel) ---------------------------------------------------------
+FAKE = Path(os.environ.get("MIND_READY_DATA") or (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MindReady")) / "model_d_inputs_2026-11-09"
+FAKE_MAIN = FAKE / "ModelD_IFRS17_original.xlsm"
 FAKE_INPUTS = FAKE / "fake_inputs" / "2026_1Q" / "IF_当期末（非金融前提変更後）"
-needs_tokyo = pytest.mark.skipif(
-    not (FAKE_MAIN.is_file() and all((FAKE_INPUTS / f"2026Q1_2026_{s}.xlsm").is_file() for s in TOKYO_SHEETS)),
-    reason="the Tokyo fake test data is not on this machine")
+needs_model_d = pytest.mark.skipif(
+    not (FAKE_MAIN.is_file() and all((FAKE_INPUTS / f"2026Q1_2026_{s}.xlsm").is_file() for s in MODEL_D_SHEETS)),
+    reason="the Model D fake test data is not on this machine")
 
 
 @needs_excel
-@needs_tokyo
-def test_tokyo_fake_inputs_end_to_end(tmp_path):
+@needs_model_d
+def test_model_d_fake_inputs_end_to_end(tmp_path):
     """About 8 minutes: two scans, the tool's own calcCF in an Excel of its own, the Mind inputs, the numbers check."""
     from app.inventory import build_analysis
     from app.model_map import read_vba
@@ -912,7 +912,7 @@ def test_tokyo_fake_inputs_end_to_end(tmp_path):
     shutil.copy2(FAKE_MAIN, main)
     inputs = tmp_path / FAKE_INPUTS.name  # the client's Japanese folder name
     inputs.mkdir()
-    for s in TOKYO_SHEETS:
+    for s in MODEL_D_SHEETS:
         shutil.copy2(FAKE_INPUTS / f"2026Q1_2026_{s}.xlsm", inputs / f"2026Q1_2026_{s}.xlsm")
 
     an = build_analysis(main, tmp_path / "scan0", "oi_e2e_upload")
@@ -920,7 +920,7 @@ def test_tokyo_fake_inputs_end_to_end(tmp_path):
     assert vba["import_macro"] == "calcCF" and vba["chain"] == ["calcCF", "InputCFFile"]
     table = import_table_from_analysis(an)
     assert [(r["sheet"], r["cell"], r["keys"], r["target_sheet"]) for r in table] == [
-        ("Ctrl_01", f"H{35 + i}", [s], s) for i, s in enumerate(TOKYO_SHEETS)]
+        ("Ctrl_01", f"H{35 + i}", [s], s) for i, s in enumerate(MODEL_D_SHEETS)]
     match = match_files(table, sorted(p.name for p in inputs.iterdir()))
     assert describe_match(match) == "6 of 6 input files matched."
     assert all(r["how"] in ("exact", "key") and r["file"] == f"2026Q1_2026_{r['target_sheet']}.xlsm" for r in match["rows"])
@@ -934,21 +934,21 @@ def test_tokyo_fake_inputs_end_to_end(tmp_path):
     assert rep["dialogs"] == [] and rep["kept"] == [] and rep["saved"] == str(imported) and imported.is_file()
     assert all(e["exact"] and e["opened"] for e in rep["files"]), rep["files"]  # Excel's name for each row = the picked file
     assert {e["cell"]: [(a["sheet"], a["ref"]) for a in e["areas"]] for e in rep["files"]} == {
-        f"Ctrl_01!H{35 + i}": [(s, "AE3:ABS1203" if s == "VFA_01" else "AB3:DP1203")] for i, s in enumerate(TOKYO_SHEETS)}
+        f"Ctrl_01!H{35 + i}": [(s, "AE3:ABS1203" if s == "VFA_01" else "AB3:DP1203")] for i, s in enumerate(MODEL_D_SHEETS)}
     assert said and all(isinstance(m, str) for m in said)
 
     an1 = build_analysis(imported, tmp_path / "scan1", "oi_e2e_import")
     plan = plan_mind_inputs(rep, [s["name"] for s in an1["workbooks"][0]["sheets"]])
-    assert [(p["name"], p["sheet"]) for p in plan] == [(f"IN_{s}", s) for s in TOKYO_SHEETS]
+    assert [(p["name"], p["sheet"]) for p in plan] == [(f"IN_{s}", s) for s in MODEL_D_SHEETS]
     final = tmp_path / ("mind_" + main.name)
     res = oi.apply_mind_inputs(imported, plan, an1["workbooks"][0]["formulas"], final, tmp_path / "csv")
     assert res["kept"] == [], res["kept"]
     assert [(i["name"], i["rows"], i["cols"]) for i in res["inputs"]] == [
-        (f"IN_{s}", 1201, 717 if s == "VFA_01" else 93) for s in TOKYO_SHEETS]
+        (f"IN_{s}", 1201, 717 if s == "VFA_01" else 93) for s in MODEL_D_SHEETS]
     assert all(i["readers"] > 0 and Path(i["csv"]).is_file() for i in res["inputs"])
     # VFA_01's item names hold commas and quotes ('Total benefits, expenses, ...'): a TAB .txt
     assert {i["name"]: (i["separator"], Path(i["csv"]).suffix) for i in res["inputs"]} == {
-        **{f"IN_{s}": ("comma", ".csv") for s in TOKYO_SHEETS[:5]}, "IN_VFA_01": ("TAB", ".txt")}
+        **{f"IN_{s}": ("comma", ".csv") for s in MODEL_D_SHEETS[:5]}, "IN_VFA_01": ("TAB", ".txt")}
     assert res["formulas_changed"] > 0 and res["sums_split"] > 0 and res["saved"] == str(final)
     for i, sep, cols in ((res["inputs"][3], ",", 93), (res["inputs"][5], "\t", 717)):
         lines = Path(i["csv"]).read_text(encoding="utf-8").splitlines()
@@ -956,7 +956,7 @@ def test_tokyo_fake_inputs_end_to_end(tmp_path):
 
     wb = openpyxl.load_workbook(final, read_only=True)
     try:
-        for s in TOKYO_SHEETS:
+        for s in MODEL_D_SHEETS:
             assert wb[f"IN_{s}"]["A1"].value == f"#IN_{s} /Input"
     finally:
         wb.close()

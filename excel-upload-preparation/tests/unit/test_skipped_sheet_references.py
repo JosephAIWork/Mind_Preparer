@@ -1,6 +1,6 @@
 """1.14.0: a sheet the scan skipped at the user's request still exists for a reference.
 
-Joseph, 10 November 2026, the Tokyo IFRS 17 tool: with the big calculation sheets ticked as "do not
+Joseph, 10 November 2026, Model D (an IFRS 17 tool): with the big calculation sheets ticked as "do not
 check", the 480 INDIRECT formulas on Result_CF that build addresses on them were written as NA()
 (INDEX($A$1,NA()) where a range must stand) instead of the plain reference the no-skip run wrote
 (BBA_01!A:B, Mind = Excel). The decision was `exists = sheet in sheets and grids`, over the scanned
@@ -51,7 +51,7 @@ def _model(path: Path) -> Path:
         ws.append(["k1", 5])
         ws["D1"] = 2
     inp["A1"], inp["A2"] = "Sheet", "Big"
-    inp["B2"] = '=IFERROR(VLOOKUP("k2",INDIRECT($A2&"!A:B"),2,FALSE),"-")'   # the Tokyo pattern: a range on the skipped sheet
+    inp["B2"] = '=IFERROR(VLOOKUP("k2",INDIRECT($A2&"!A:B"),2,FALSE),"-")'   # the Model D pattern: a range on the skipped sheet
     inp["B3"] = '=INDIRECT("Nope!A1")+1'                                      # a sheet that truly does not exist
     inp["B4"] = "=INDIRECT(\"'\"&Big!C1&\"'!A1\")"                            # the text needs a cell of the skipped sheet
     inp["B5"] = "=SUM('Big:Tail'!D1)"                                         # a 3-D range over the skipped sheet

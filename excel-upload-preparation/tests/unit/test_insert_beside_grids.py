@@ -126,7 +126,7 @@ def test_excel_shifts_the_band_and_leaves_the_grid_beside_it_and_every_value(tmp
 
 
 def test_no_row_is_inserted_inside_a_range_read_by_position():
-    # Tokyo IFRS 17 tool (2026-11-07): =INDEX($D$29:$H$32,Scenario+1,4) -- a title row inserted at row 31
+    # Model D (an IFRS 17 tool) (2026-11-07): =INDEX($D$29:$H$32,Scenario+1,4) -- a title row inserted at row 31
     # stretched the table to D29:H33 and the INDEX read another row ("New" became "Old")
     from app.prep import insert_blocker
 

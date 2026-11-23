@@ -2915,7 +2915,7 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     else:
         out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
         out["compared_with_original"] = original is not None
-    # 17  Nov 2026 (Palermo): with a Mind loop built, Excel computes the loop's first value, which the
+    # 17  Nov 2026 (Model A): with a Mind loop built, Excel computes the loop's first value, which the
     # original never computed: which new errors also show without the loop (part of this same job)
     if out["ran"] and out["new_errors"] and s.loop_built():
         out["loop_check"] = _loop_check(s, out["formula_errors"])
@@ -3014,11 +3014,11 @@ def _errors_before_loop(s: Session, version_id: str) -> tuple[list[dict[str, Any
 
 
 def _loop_check(s: Session, errors: list[dict[str, Any]]) -> dict[str, Any]:
-    """17  Nov 2026  (Palermo: 667 #N/A in Decrements once the loop made Excel compute policy 1, whose
+    """17  Nov 2026  (Model A: 667 #N/A in Decrements once the loop made Excel compute policy 1, whose
     projection runs past the mortality table): which of the recalculation's NEW errors also show
-    without the Mind loop. The  version before the loop is recalculated too (or its recalculation
-    reused), and  the two are compared cell by  cell, its cells followed to where they  are now. A new
-    error cell that is no error there shows  only for the loop's first value: it  is marked
+    without the Mind loop.  The version before the loop is recalculated too (or its recalculation
+    reused),  and the two are compared cell  by cell, its cells followed to where  they are now. A new
+    error cell that is no error there  shows only for the loop's first value:  it is marked
     `loop_only` (in place) and never blocks (app/readiness.py) -- unless an Apply after the loop wrote
     that cell (`written_after`: counted with the errors that block). When that recalculation cannot
     run, nothing is guessed: `ran` False, and the errors block as before."""
@@ -3053,7 +3053,7 @@ def _loop_check(s: Session, errors: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-# --- did the preparation change what  the model computes? ---------------------------------
+# --- did the preparation change  what the model computes? ---------------------------------
 def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
     """The  versions that  lead to `version_id`, oldest first (a version restored
     from History branches: the list order alone is not the path)."""
@@ -4674,9 +4674,9 @@ def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:
         analysis = s.result["workbook_analysis"]
         try:
             # 17 Nov 2026: through cancel.call, so a job's Cancel is heard while a big model's map is built
-            # (38 s on Palermo): the job  leaves at once and the map, built to its end, is  dropped
+            # (38 s on Model A): the  job leaves at once and the map, built to its end,  is dropped
             built = cancel.call(lambda: build_model_map(analysis))
-            s.model_map = json.loads(json.dumps(built, default=str))  # dates and openpyxl values as text
+            s.model_map = json.loads(json.dumps(built, default=str))  # dates and openpyxl values as  text
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"model map failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
         s.model_map_version_id = s.current_version_id
@@ -4743,7 +4743,7 @@ def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={}))
 
     def work(_job: cancel.Job) -> dict[str, Any]:
         # 17 Nov 2026: the plan is built inside the job.  On a new version it builds the model map first
-        # (38 s  on Palermo): a Cancel in those  seconds must find the job, not "Nothing  was running."
+        # (38 s  on Model A): a Cancel in  those seconds must find the job, not  "Nothing was running."
         plan = _loop_plan_of(s, payload)
         cancel.check()
         ops = plan["operations"]
@@ -4756,7 +4756,7 @@ def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={}))
     return _job_route(s, "apply", work)
 
 
-# --- Mind instances (one copy of the model per key  of the model-point table) ----------------
+# --- Mind instances (one copy of the model per  key of the model-point table) ----------------
 def _instances_stem(s: Session) -> str:
     """The  uploaded workbook's  file stem with only letters, digits and underscores: the model's
     name in Mind and the start of every file this feature writes."""
@@ -4797,7 +4797,7 @@ def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, result
 
     As with the Mind loop, the formula repairs Prep still has for this version (CELL / INFO frozen,
     OFFSET ranges written out, ...) are written with a ready plan: a version that goes to Mind before
-    Prep must compute what Excel does (Tokyo: CELL("filename") made every calculation sheet NaN)."""
+    Prep must compute what Excel does (Model D: CELL("filename") made every calculation sheet NaN)."""
     keys = str(keys or "present").strip().lower()
     if keys not in ("present", "all"):
         raise HTTPException(status_code=422, detail="keys must be 'present' or 'all'")

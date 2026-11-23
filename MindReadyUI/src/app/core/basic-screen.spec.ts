@@ -57,7 +57,7 @@ const estimate = (): ChainEstimate => ({
   basis: { file_mb: 1, scan_s: 1, scan_measured: true, stored_errors: 0, blocking_ops: 0 },
 });
 
-// ---- 17 Nov 2026 (Palermo): the errors that show only for the Mind loop's first value never stop Start ----------
+// ---- 17 Nov 2026 (Model A): the errors that show only for the Mind loop's first value never stop Start ----------
 const LOOP_LINE =
   "667 cells show an error only for the Mind loop's first value, for example Decrements!M704: #N/A means the value is not available (often: a lookup found nothing). " +
   "The original never computed these cells, and Mind will show the same for that value. Check the results in Mind.";

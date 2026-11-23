@@ -1223,11 +1223,11 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
 
 
 # --- FRM-014: arithmetic on a range that OFFSET returns -----------------------------------------
-# =SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)) (the Tokyo IFRS 17 tool,  BBA_01!B45 and
-# 27 more per calculation sheet): Excel gives -16,220; Mind gave  -5,513,051 -- the last cell of  the
-# second range. -OFFSET(...) and (1-OFFSET(...))*OFFSET(...) came out  wrong too, while the same
-# arithmetic on the written-out range (1-$H$4:$H$6) and  SUMPRODUCT over OFFSET ranges alone were right
-# (probe  workbook in real Mind, 2026-11-09). An OFFSET whose arguments are all numbers always
+# =SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)) (Model D (an IFRS 17  tool), BBA_01!B45 and
+# 27 more per calculation sheet): Excel gives -16,220; Mind  gave -5,513,051 -- the last cell  of the
+# second range. -OFFSET(...) and (1-OFFSET(...))*OFFSET(...) came  out wrong too, while the same
+# arithmetic on the written-out range (1-$H$4:$H$6)  and SUMPRODUCT over OFFSET ranges alone were  right
+# (probe workbook in real Mind, 2026-11-09). An OFFSET whose arguments are all numbers always
 # designates the same cells: it is written as that range, which Excel computes the same.
 _ARITH_OPS = set("+-*/^")
 _ANCHOR_RE = re.compile(r"^(?P<prefix>(?:'[^']*(?:''[^']*)*'|[^'!]+)!)?(?P<cd>\$?)(?P<col>[A-Za-z]{1,3})(?P<rd>\$?)(?P<row>\d+)$")

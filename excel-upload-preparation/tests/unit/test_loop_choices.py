@@ -1,4 +1,4 @@
-"""1.12.5: each loop has its own choices, and the loops a model like Tokyo's runs are built from the
+"""1.12.5: each loop has its own choices, and the loops a model like Model D's runs are built from the
 workbook alone: a counter whose dropdown lists its values, an item of a named list counted to its
 end, bounds reached through plain references, the workbook's own name over a sheet's copy of it.
 

@@ -21,7 +21,7 @@ from app.handoff import (
 )
 from app.plain_codes import rule_name
 
-SHEET = "ロールフォワード"  # the Tokyo sheet of the staircase
+SHEET = "ロールフォワード"  # the Model D sheet of the staircase
 STAIRS = ["V24", "W25", "X26", "Y27", "Z28", "AA29"]
 
 
@@ -455,7 +455,7 @@ def test_memo_key_never_stops_on_a_cell_that_cannot_be_read():
 
 # ---- the question for the assistant --------------------------------------------------------------
 def test_the_question_names_every_cell():
-    cells = ["V24", "W25", "X26", "Y27", "Z28", "AA29", "AB30", "AC31", "AD32", "AE33", "AF34"]  # Tokyo: 11 cells
+    cells = ["V24", "W25", "X26", "Y27", "Z28", "AA29", "AB30", "AC31", "AD32", "AE33", "AF34"]  # Model D: 11 cells
     f = _finding("STR-008", cells)
     q = question_for(f)
     assert q.startswith(f"[About finding STR-008 at {SHEET}!V24. If you propose a replacement formula")

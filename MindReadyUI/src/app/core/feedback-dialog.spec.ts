@@ -216,10 +216,10 @@ describe("the Send feedback dialog", () => {
 
   it("the email starts with the note as the person left it", async () => {
     const changed = await draw("ABCD-1234", NOTE);
-    changed.dialog.note.set(NOTE + " It was the Tokyo model.");
+    changed.dialog.note.set(NOTE + " It was the Model D model.");
     await changed.dialog.prepare();
     await changed.detect();
-    expect(await emailBodyOf(changed.dialog, changed.detect)).toBe(`${NOTE} It was the Tokyo model.\r\n\r\n${PASTE}`);
+    expect(await emailBodyOf(changed.dialog, changed.detect)).toBe(`${NOTE} It was the Model D model.\r\n\r\n${PASTE}`);
 
     const emptied = await draw("ABCD-1234", NOTE);
     emptied.dialog.note.set("");

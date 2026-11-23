@@ -1,4 +1,4 @@
-"""2026-11-19: CNHI stopped Start on "a formula reads a lone text cell" for 337 cells; 332 were one column heading,
+"""2026-11-19: Model B stopped Start on "a formula reads a lone text cell" for 337 cells; 332 were one column heading,
 "Per Capita Cost", repeated over the yearly tables of 'RAC Baseline' (rows 245, 362, 479, 596).
 
 Eight formulas cover those tables with INDEX('RAC Baseline'!$X$237:$MI$705, 1+(active_year-proj_year-1)*117, MATCH(...)).
@@ -71,7 +71,7 @@ def _sites(analysis) -> list[str]:
     return [s["cell"] for s in run_rule(RulesEngine().get("STR-008"), analysis, load_config())["observed"]["sites"]]
 
 
-# --- the CNHI shape -------------------------------------------------------------------------------------------
+# --- the Model B shape -------------------------------------------------------------------------------------------
 def test_a_heading_the_stepped_index_cannot_return_is_not_listed(tmp_path):
     analysis = _analysis(tmp_path, STEPPED)
     finding = run_rule(RulesEngine().get("STR-008"), analysis, load_config())

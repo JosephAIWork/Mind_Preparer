@@ -54,7 +54,7 @@ def macros(monkeypatch):
 
 
 def _main_book(folder: Path, name: str = MAIN) -> Path:
-    """A Tokyo-like tool: the import table on Ctrl_01 (key in D, path formula in H), the sheet the
+    """A Model D-like tool: the import table on Ctrl_01 (key in D, path formula in H), the sheet the
     first file fills (BBA_01) and a formula that reads it."""
     wb = openpyxl.Workbook()
     ws = wb.active

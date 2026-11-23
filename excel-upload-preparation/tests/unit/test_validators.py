@@ -516,7 +516,7 @@ def test_indirect_used_as_a_value_is_flagged_with_the_direct_reference_proposed(
     inp["G710"], inp["G711"] = "Line 1", "Line 2"  # Line 2 is not a sheet
     inp["AA710"] = "=IF(INDIRECT(\"'\"&$G710&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G710&\"'!$Z$12\")/INDIRECT(\"'\"&$G710&\"'!$Z$16\"))"
     inp["AA711"] = "=IF(INDIRECT(\"'\"&$G711&\"'!$Z$16\")=0,0,66%*INDIRECT(\"'\"&$G711&\"'!$Z$12\")/INDIRECT(\"'\"&$G711&\"'!$Z$16\"))"
-    inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # as a range: Mind does not compute it either (Tokyo, 2026-11-08)
+    inp["B1"] = "=SUM(INDIRECT(\"'\"&$G710&\"'!$Z$12:$Z$16\"))"  # as a range: Mind does not compute it either (Model D, 2026-11-08)
     inp["B7"] = "=INDIRECT(\"'\"&$G710&\"'!$Z$12\")"  # alone in the cell: a reference -- rewritten too
     inp["B2"] = "=NOT(INDIRECT(\"Line\"&COLUMN()-1&\"_Boolean\"))*2"  # a defined name built from COLUMN()
     inp["B3"] = "=INDIRECT(\"'\"&$B$4&\"'!A1\")+1"  # B4 is a formula with no stored value: by hand

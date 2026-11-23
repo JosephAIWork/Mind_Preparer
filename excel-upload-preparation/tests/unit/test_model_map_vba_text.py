@@ -6,7 +6,7 @@ characters, so Japanese comments and string literals -- Find("年月"), MsgBox "
 mojibake. The fixture tests/unit/fixtures/vba_japanese_cp932.xlsm is a small row-per-record model
 (the loop builder's shape) whose module holds cp932 bytes with code page 0 recorded, as a workbook
 from a Japanese PC has (made once: written through Excel, the module stream's source replaced by the
-cp932 bytes at the same length; see the scratch script named in the CHANGELOG)."""
+cp932 bytes at the same length; see the scratch script named in docs/CHANGELOG_DETAILED.md)."""
 from __future__ import annotations
 
 import shutil
@@ -59,7 +59,7 @@ def test_the_loop_and_instance_builders_still_find_the_loop_of_the_japanese_modu
 
 
 @pytest.mark.parametrize("text,encoding,stored,system,expected", [
-    (JP, "cp932", 0, 1255, "cp932"),  # a Japanese PC's workbook opened on a Hebrew PC (the Tokyo case)
+    (JP, "cp932", 0, 1255, "cp932"),  # a Japanese PC's workbook opened on a Hebrew PC (the Model D case)
     (JP, "cp932", 0, 1252, "cp932"),
     (JP, "cp932", 932, 1255, "cp932"),  # the stored code page, when there is one, is trusted
     (HE, "cp1255", 0, 1255, "cp1255"),  # the system's own code page

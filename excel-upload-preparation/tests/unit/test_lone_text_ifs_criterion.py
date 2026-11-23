@@ -1,4 +1,4 @@
-"""2026-11-19: CNHI's last lone text cell, 'Cost data'!AF10 = "Deliveries and inpatient services".
+"""2026-11-19: Model B's last lone text cell, 'Cost data'!AF10 = "Deliveries and inpatient services".
 
 Twenty formulas read it as the criterion of SUMIFS -- SUMIFS($H:$H,$C:$C,$AF10,...) -- and no title could go above it
 (AF32 is =AF9). Prep already knows how to put the text itself into a formula in place of the reference, but every
@@ -65,7 +65,7 @@ def _rewrites(action) -> dict[str, str]:
     (f"=MAXIFS({AMOUNTS},{KEYS},D5)", f'=MAXIFS({AMOUNTS},{KEYS},"north")'),
     (f"=MINIFS({AMOUNTS},{KEYS},D5)", f'=MINIFS({AMOUNTS},{KEYS},"north")'),
     (f"=(SUMIFS({AMOUNTS},{KEYS},$D5)+IF(B2>0,SUMIFS({AMOUNTS},{KEYS},$D5),0))*2",
-     f'=(SUMIFS({AMOUNTS},{KEYS},"north")+IF(B2>0,SUMIFS({AMOUNTS},{KEYS},"north"),0))*2'),  # CNHI's own shape
+     f'=(SUMIFS({AMOUNTS},{KEYS},"north")+IF(B2>0,SUMIFS({AMOUNTS},{KEYS},"north"),0))*2'),  # Model B's own shape
 ])
 def test_the_text_goes_into_a_criterion(tmp_path, formula, after):
     analysis = build_analysis(_book(tmp_path / "s.xlsx", {"H1": formula}), tmp_path / "w", "s")
@@ -115,7 +115,7 @@ def test_a_text_too_long_for_a_formula_as_excel_counts_it_is_not_written(tmp_pat
 
 def test_every_reader_of_the_cell_gets_the_text_in_one_pass(tmp_path):
     readers = {f"{col}1": f"=SUMIFS({AMOUNTS},{KEYS},$D5)*{i + 1}" for i, col in enumerate("HIJKL")}
-    readers["H3"] = "=D5"  # CNHI's AF33: the cell read as it is
+    readers["H3"] = "=D5"  # Model B's AF33: the cell read as it is
     action = _action(build_analysis(_book(tmp_path / "s.xlsx", readers), tmp_path / "w", "s"))
     assert _rewrites(action) == {**{f"{col}1": f'=SUMIFS({AMOUNTS},{KEYS},"north")*{i + 1}' for i, col in enumerate("HIJKL")}, "H3": '="north"'}
     assert not action["skipped"]

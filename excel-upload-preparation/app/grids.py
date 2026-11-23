@@ -72,16 +72,16 @@ def looks_like_title(value: Any) -> bool:
 
 def is_bare_hash(value: Any) -> bool:
     """A  cell that  holds the single character '#' and nothing else: no grid name, no flag. As the first
-    header of a table it means "No." (Phoenix TVOG Calc, CFs!B29 '#' over a column of  row numbers,
+    header of a table it means "No." (Model C, CFs!B29 '#' over a column of row  numbers,
     beside the headers C29:L29, 2026-11-17)."""
     return isinstance(value, str) and value.strip() == TITLE_PREFIX
 
 
 def _header_hash(value: Any, occupied: dict[tuple[int, int], Any], r: int, c: int, assigned: set[tuple[int, int]] | None = None) -> bool:
     """A  bare '#'  (is_bare_hash) with a cell right of it on its own row that no grid has taken: it is a
-    column header of the table that row starts, not a grid title. Reading  it as a title cut the Phoenix
-    table B29:L100 in pieces (the  '#' titled a grid of its  column only, the headers C29:L29 became a  grid
-    of one row, and four lookup keys inside the table, CFs!F66,  F78, F86, F109, were read as lone  text
+    column header of the table that row starts, not a grid title. Reading  it as a title cut the Model C
+    table B29:L100 in pieces  (the '#' titled a grid of  its column only, the headers C29:L29 became  a grid
+    of one row, and four lookup keys inside the table,  CFs!F66, F78, F86, F109, were read as  lone text
     cells that stopped Start). A '#Name' title, a '#' with a flag, and a bare '#' with nothing right of it
     are read as before."""
     if not is_bare_hash(value):

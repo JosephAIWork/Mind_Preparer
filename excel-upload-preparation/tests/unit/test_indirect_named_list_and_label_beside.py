@@ -1,6 +1,6 @@
 """20 Nov 2026, Joseph's answers of the morning.
 
-- CNHI: 2,320 formulas =INDIRECT("Cluster"&n), n built from ROW, COLUMN, ROUNDUP and COUNTA, over the names Cluster1..
+- Model B: 2,320 formulas =INDIRECT("Cluster"&n), n built from ROW, COLUMN, ROUNDUP and COUNTA, over the names Cluster1..
   Cluster20 = 'Validation list'!B7..B26. "A: INDEX": each becomes INDEX('Validation list'!$B$7:$B$26,n) -- the same cell
   for every whole n, and Mind does not follow INDIRECT. Only a whole n is accepted; a number worked out from the cell's
   position alone must lie between 1 and the number of names.

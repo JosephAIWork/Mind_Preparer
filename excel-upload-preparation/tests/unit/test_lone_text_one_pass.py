@@ -1,6 +1,6 @@
 """2026-11-16: the lone-text-cell rule (STR-008) is fixed in ONE Prep pass.
 
-Tokyo IFRS 17 tool, sheet 'ロールフォワード': under the grid U21:AA23 the texts V24, W25, X26, Y27 stand one row
+Model D (an IFRS 17 tool), sheet 'ロールフォワード': under the grid U21:AA23 the texts V24, W25, X26, Y27 stand one row
 and one column further each time (a staircase). Every cell of those rows is read by a formula on its own row
 (MATCH(X25, ...)), so no title may go above a step, and only the step right under the grid could join it:
 one cell a pass (v5 V24, v6 W25, v7 X26, v8 Y27), and "Do everything" ran out of passes and stopped for a person.
@@ -51,7 +51,7 @@ def _recalculated(path: Path) -> Path:
 
 
 def _staircase(path: Path, steps=("V24", "W25", "X26", "Y27"), extra: dict | None = None) -> Path:
-    """The Tokyo shape: field names in U21:Z23 (the labels in U), then one name a row, a column further each
+    """The Model D shape: field names in U21:Z23 (the labels in U), then one name a row, a column further each
     time. Columns D:H hold one formula per cell of V:Z on rows 21-27 (as the real MATCH(X25, ...)): the empty
     cells above each step are read, the label column U is read on the grid's own rows only."""
     wb = openpyxl.Workbook()

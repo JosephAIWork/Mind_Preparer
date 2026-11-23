@@ -39,7 +39,7 @@ def read_deterministic_differences(page) -> list[str] | None:
     every line "<wb> > <sheet> > <cell>: Excel value: x Mind value: y".
     None = the list could not be read (no button,  no tab, a click timed out, no line drawn after 30  s; since
     20 Nov 2026 never an  empty list): whether Mind agrees is then  read from the page itself ("Upload successful"
-    with no "with warnings") (Phoenix  1.15.0, 2026-11-13: "0 differences" had been printed  for a page
+    with no "with warnings") (Model  C 1.15.0, 2026-11-13: "0 differences" had been  printed for a page
     that said "Upload successful with warnings" -- the old code returned [] for every failure)."""
     from app.mind_client import body_text, screenshot
 
@@ -67,12 +67,12 @@ def read_deterministic_differences(page) -> list[str] | None:
         if lines:
             break
     # "Hide Logs" only: the window's "Close" comes first and closes it WITHOUT adding the templates,
-    # so --run then found no Run button (Tokyo instances, 10 November 2026)
+    # so --run then found no Run button (Model D instances, 10 November 2026)
     try:
         page.get_by_role("button", name=re.compile(r"^\s*Hide Logs\s*$", re.I)).first.click(timeout=4000)
     except Exception:
         pass
-    # 20 Nov 2026 (Haiku 5.5 refuter): no line drawn after 30 s is  not proof that Mind agrees -- it is "not read"
+    # 20 Nov 2026 (Haiku 5.5 refuter): no line drawn after 30  s is not proof that Mind agrees -- it is "not read"
     return lines or None
 
 

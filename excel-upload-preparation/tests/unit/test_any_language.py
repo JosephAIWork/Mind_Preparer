@@ -1,4 +1,4 @@
-"""Sheet and name text in any language (the Tokyo IFRS 17 tool, 2026-11-07): Japanese sheet names were
+"""Sheet and name text in any language (Model D (an IFRS 17 tool), 2026-11-07): Japanese sheet names were
 read as no sheet at all (`=ロールフォワード!B10` in 仕訳!B10 looked like =B10, a cell reading itself),
 so the scan reported dozens of false circular references; CELL("filename", C6) in C6 counted as one too;
 and text typed as '=... was read as a formula."""

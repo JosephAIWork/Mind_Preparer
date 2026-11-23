@@ -67,7 +67,7 @@ describe("picking the model and its input files", () => {
   });
 
   it("takes the model with its input files in any language", () => {
-    expect(pickedFilesProblem(["SBI生命_IFRS17計算ツール.xlsm", "2026Q1_2026_BBA_01.xlsm", "תחזית.csv", "data.txt", "old.xls"])).toBe("");
+    expect(pickedFilesProblem(["ModelD_IFRS17.xlsm", "2026Q1_2026_BBA_01.xlsm", "תחזית.csv", "data.txt", "old.xls"])).toBe("");
   });
 
   it("wants a workbook among several files, and only Excel or text files", () => {
@@ -282,7 +282,7 @@ describe("ApiService and the input files", () => {
   });
 
   it("sends several files as repeated files, names in any language", async () => {
-    const names = ["SBI生命_IFRS17.xlsm", "2026Q1_2026_BBA_01.xlsm", "קלט.csv"];
+    const names = ["ModelD_IFRS17.xlsm", "2026Q1_2026_BBA_01.xlsm", "קלט.csv"];
     const done = api.upload(names.map((n) => new File(["x"], n)), "plan", true);
     const req = http.expectOne("/api/sessions");
     const form = req.request.body as FormData;

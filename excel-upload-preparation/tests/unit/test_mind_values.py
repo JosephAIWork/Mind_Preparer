@@ -427,16 +427,16 @@ def test_a_lookup_through_defined_names_that_lands_on_an_empty_cell_is_an_origin
     assert res["clean"] is True
 
 
-# --- FRM-014: arithmetic on a range OFFSET returns (Tokyo BBA_01!B45, 2026-11-09) -------------------
+# --- FRM-014: arithmetic on a range OFFSET returns (Model D BBA_01!B45, 2026-11-09) -------------------
 # In real Mind SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)) gave -5,513,051 for Excel's -16,220,
 # -OFFSET(..) and (1-OFFSET(..))*OFFSET(..) were wrong too; the same arithmetic on $H$4:$H$6 was right.
-TOKYO_B45 = ("=SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))+SUMPRODUCT(OFFSET($H$2,5,0,1200-3,1),"
+MODEL_D_B45 = ("=SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))+SUMPRODUCT(OFFSET($H$2,5,0,1200-3,1),"
              "OFFSET($O$2,5,0,1200-3,1))/OFFSET($H$2,5,0)*(1-OFFSET($H$2,5,0))")
 
 
 @pytest.mark.parametrize("formula, expected", [
     # only the OFFSET under arithmetic; a range SUMPRODUCT reads as it is, a single cell and 1200-3 stay
-    (TOKYO_B45, "=SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))+SUMPRODUCT(OFFSET($H$2,5,0,1200-3,1),"
+    (MODEL_D_B45, "=SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))+SUMPRODUCT(OFFSET($H$2,5,0,1200-3,1),"
                 "OFFSET($O$2,5,0,1200-3,1))/OFFSET($H$2,5,0)*(1-OFFSET($H$2,5,0))"),
     ("=SUMPRODUCT(-OFFSET(H2,2,0,3,1),O4:O6)", "=SUMPRODUCT(-H4:H6,O4:O6)"),
     ("=SUMPRODUCT((1-OFFSET('My Sheet'!$H2,2,0,3,1))*OFFSET($O$2,2,0,3,1))", "=SUMPRODUCT((1-'My Sheet'!$H4:$H6)*$O$4:$O$6)"),
@@ -485,7 +485,7 @@ def test_frm_014_rewrite_keeps_excel_values(tmp_path):
         ws.cell(r, 7, r - 4)
         ws.cell(r, 8, 1 - (r - 4) / 1000)
         ws.cell(r, 15, -5_500_000 + 28 * r)
-    ws["A45"], ws["B45"] = "LF", TOKYO_B45
+    ws["A45"], ws["B45"] = "LF", MODEL_D_B45
     ws["A46"], ws["B46"] = "Neg", "=SUMPRODUCT(-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))"
     ws["A47"], ws["B47"] = "Times", "=SUMPRODUCT((1-OFFSET($H$2,2,0,3,1))*OFFSET($O$2,2,0,3,1))"
     p = tmp_path / "offset_values.xlsx"

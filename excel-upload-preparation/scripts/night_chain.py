@@ -236,7 +236,7 @@ def main() -> int:
             chain["steps"]["loop"] = {"ok": not failed, "applied": applied, "failed": failed, "version": o["version"]["label"], "how": o["plan"].get("how_it_runs")}
             if not failed and applied:
                 # building the loop changes the state the rules scan (which policy row, which cells are cleared): a
-                # blocking action can appear that was not there before it (Palermo: FRM-009 PASS -> ERROR, 2026-11-14)
+                # blocking action can appear that was not there before it (Model A: FRM-009 PASS -> ERROR, 2026-11-14)
                 prepare_rounds("prepare_after_loop")
     else:
         chain["steps"]["loop"] = {"ok": None, "skipped": "no ready loop"}

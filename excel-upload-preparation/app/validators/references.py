@@ -44,7 +44,7 @@ CONDITIONAL_ARGS: dict[str, Any] = {"IF": {1, 2}, "IFERROR": {1}, "IFNA": {1}, "
 # the lookup  sits on; Excel reported no circular reference)  -- it is reported as a conditional one.
 LOOKUP_TABLE_ARGS: dict[str, Any] = {"INDEX": {0}, "VLOOKUP": {1}, "HLOOKUP": {1}, "MATCH": {1}, "LOOKUP": "rest", "XLOOKUP": {1, 2}}
 # CELL("filename",  A1) in  A1 asks where the cell is, not what it holds: no cycle for Excel either
-# (Tokyo IFRS 17 tool, 2026-11-07). Only CELL("contents", A1) reads the value; it is rare and FRM-012 freezes  CELL anyway.
+# (Model D (an IFRS 17 tool), 2026-11-07). Only CELL("contents", A1) reads the value; it is rare and  FRM-012 freezes CELL anyway.
 COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}, "CELL": {1}}
 MAX_CYCLES_REPORTED = 12
 # INDIRECT("'"&sheet&"'!"&ADDRESS(ROW(),COLUMN())):  the cell  reads its own address on a sheet chosen
@@ -823,8 +823,8 @@ def _enclosing_function(masked: str, pos: int) -> str | None:
 
 # INDIRECT("Cluster"&n) where the names Cluster1..ClusterN are N neighbouring single cells of one column
 # (or one row), in order: the same cell as INDEX(<those  N cells>, n) for every whole n from 1 to N,  and
-# #REF! in both for a whole  n above N. CNHI, 2026-11-19: 2,320 such  formulas, n built from ROW, COLUMN,
-# ROUNDUP and COUNTA, so the text  cannot be worked out from constants. Only  a whole n that is never below 1
+# #REF! in both for a whole  n above N. Model B, 2026-11-19: 2,320  such formulas, n built from ROW, COLUMN,
+# ROUNDUP and COUNTA, so the  text cannot be worked out from constants.  Only a whole n that is never below 1
 # is accepted: INDEX truncates 2.5 where INDIRECT finds no name "Cluster2.5", INDEX(..., 0) is the whole list
 # and INDEX(..., -1) #VALUE! where INDIRECT gives #REF! (Haiku 5.5 refuter, 20 Nov 2026).
 _NAMED_LIST_ARG_RE = re.compile(r'^\s*"([A-Za-z_\\][\w.]*)"\s*&\s*(.+?)\s*$', re.S)
@@ -1037,8 +1037,8 @@ _POSITION_CALL_RE = re.compile(r"\b(ROW|COLUMN)\(\s*([^()]+?)\s*\)", re.IGNORECA
 
 def _position_value(expr: str):
     """The  number `expr`  gives when it is arithmetic over whole constants and ROW/COLUMN of written
-    references only (CNHI's (COLUMN(V$1)-COLUMN($B$1)-3)/17), as a Fraction: it never depends on a
-    cell's value, so it is the same number whatever  the inputs. None for anything else."""
+    references only (Model B's (COLUMN(V$1)-COLUMN($B$1)-3)/17), as a Fraction: it never depends on a
+    cell's value, so it is the same number  whatever the inputs. None for anything else."""
     import ast
     from fractions import Fraction
 
@@ -1136,13 +1136,13 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
     """FRM-007:  INDIRECT, with  the direct reference proposed where the text it builds can be
     worked out from the workbook's constants. Used as a value Mind stops the run; used as a range
     (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE))  Mind does not resolve it either and the formula
-    falls to its  IFERROR -- confirmed in Mind on  the Tokyo IFRS 17 tool, 2026-11-08: 480  cells showed
-    "-" where Excel shows the results; the same lookup on  BBA_04!$A:$B gave Excel's values.
+    falls to its  IFERROR -- confirmed in Mind on  Model D (an IFRS 17 tool), 2026-11-08:  480 cells showed
+    "-" where Excel shows the results; the same lookup  on BBA_04!$A:$B gave Excel's values.
 
-    A sheet the scan  skipped at the user's request still exists: a target on it is written as the
+    A sheet the  scan skipped at the user's request still exists: a target on it is written as the
     plain reference, exactly as without the skip (its cells and grids were never read, so nothing
     about them is assumed, and the site lists it under `unscanned_sheets`). A text that needs a cell
-    of a skipped sheet cannot be worked out and is left for a person -- never  NA(). Only a sheet
+    of a skipped sheet cannot be worked out and is left for a person --  never NA(). Only a sheet
     that truly is not in the workbook makes NA()."""
     from ..inventory import cell_value, ignored_sheet_names, values_cell
 
@@ -1160,7 +1160,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             raise Unresolvable(f"{sheet} was left out of the scan at your request, so its cells were not read")
         v = cell_value(analysis, sheet, row, col)
         if v is None and sheet in sheets:
-            return BLANK  # an empty cell: "" (a sheet chooser left blank, the Tokyo IFRS 17 tool's ロールフォワード!T19)
+            return BLANK  # an empty cell: "" (a sheet chooser left blank, Model D (an IFRS 17 tool)'s ロールフォワード!T19)
         if isinstance(v, str) and v.startswith("="):
             v = values_cell(analysis, sheet, row, col)  # a formula cell: the value Excel last stored
         return v
@@ -1217,7 +1217,7 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             else:
                 missing = True
                 # where a reference must stand (OFFSET(INDIRECT(...), ...)) Excel refuses NA(): INDEX($A$1,NA()) is the
-                # same #N/A as a reference (Tokyo IFRS 17 tool, 2026-11-08)
+                # same #N/A as a reference (Model D (an IFRS 17 tool), 2026-11-08)
                 suggested = suggested[: call["start"]] + ("NA()" if call["as_value"] else "INDEX($A$1,NA())") + suggested[call["end"] :]
         resolved.reverse()
         if unresolved:

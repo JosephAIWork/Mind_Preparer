@@ -82,7 +82,7 @@ class FakeInputsPage:
     {grid: (status, file)} of an earlier upload -- as in real Mind on 10 November 2026)."""
 
     def __init__(self, clock: Clock, grids: list[tuple[str, str]], final: dict[str, str] | None = None, delay_s: float = 4.0,
-                 inputs_button: bool = True, dom: bool = True, popup: bool = True, model: str = "tokyo_model",
+                 inputs_button: bool = True, dom: bool = True, popup: bool = True, model: str = "model_d_model",
                  culture: str | None = "English - United Kingdom", separator: str | None = "Default",
                  before: dict[str, tuple[str, str]] | None = None, box: bool = True,
                  copies: dict[str, list[str]] | None = None, popup_style: str = "old") -> None:
@@ -286,7 +286,7 @@ def test_the_window_text_recorded_in_real_mind_reads_back_as_rows():
 def test_table_rows_name_their_columns_and_headings_are_model_then_sheet():
     rows = [
         ["Element", "DL", "Status", "File", "Req.", "Read-Only", "Del."],
-        ["tokyo_model"],  # a heading spans the row
+        ["model_d_model"],  # a heading spans the row
         ["BBA_01", "", "", "", "", "", ""],
         ["IN_BBA_01", "", "SUCCESS", "IN_BBA_01.csv", "", "", ""],
         ["Element", "DL", "Status", "File", "Req.", "Read-Only", "Del."],  # a sticky copy of the header
@@ -294,8 +294,8 @@ def test_table_rows_name_their_columns_and_headings_are_model_then_sheet():
         ["IN_入力", "", "-", "No file", "", "", ""],
     ]
     assert mc.parse_input_rows(rows) == [
-        {"model": "tokyo_model", "sheet": "BBA_01", "grid": "IN_BBA_01", "status": "SUCCESS", "file": "IN_BBA_01.csv"},
-        {"model": "tokyo_model", "sheet": "入力", "grid": "IN_入力", "status": "-", "file": None},
+        {"model": "model_d_model", "sheet": "BBA_01", "grid": "IN_BBA_01", "status": "SUCCESS", "file": "IN_BBA_01.csv"},
+        {"model": "model_d_model", "sheet": "入力", "grid": "IN_入力", "status": "-", "file": None},
     ]
     assert mc.parse_input_rows([["no", "header"], ["x", "SUCCESS", "x.csv"]]) == []  # no header: nothing guessed
 
@@ -342,7 +342,7 @@ def test_every_file_goes_to_the_grid_of_its_name_and_only_the_input_files_go_up(
         ("click", "Inputs"), ("set_input_files", "input[type=file][webkitdirectory]"), ("close", "window")]
     assert ("screenshot", "inputs_before.png") in page.calls and ("screenshot", "inputs_after.png") in page.calls
     assert res["culture"] == "English - United Kingdom" and res["separator"] == "Default"  # left as Mind has them
-    assert [r["sheet"] for r in res["rows"]] == ["BBA_01", "BBA_02", "VFA_01", "入力"] and res["rows"][0]["model"] == "tokyo_model"
+    assert [r["sheet"] for r in res["rows"]] == ["BBA_01", "BBA_02", "VFA_01", "入力"] and res["rows"][0]["model"] == "model_d_model"
     assert "入力 | IN_入力 | SUCCESS | IN_入力.csv" in res["text"] and "Afrikaans" not in res["text"]
     assert res["seconds"] < 60
 
@@ -757,7 +757,7 @@ def test_run_model_closes_mind_s_unmatched_inputs_window_first(clock):
 
 
 def test_a_run_of_minutes_is_written_as_a_clock_time_and_still_seen_as_finished(clock):
-    """Recorded on the anonymized IFRS 17 tool (tokyo_instances_2026-11-10, mind_r1/4_run.txt, 233 s wall): the page
+    """Recorded on the anonymized IFRS 17 tool (model_d_instances_2026-11-10, mind_r1/4_run.txt, 233 s wall): the page
     showed "Last run in 00:03:01." and "Run completed in 00:03:01" -- a clock time, no "seconds" -- so the patterns
     that only knew "N seconds" never saw the run end and the Run in Mind loop timed out on every iteration."""
     page = FakeRunPage(clock, run_s=5.0, last="0.223", new="00:03:01")

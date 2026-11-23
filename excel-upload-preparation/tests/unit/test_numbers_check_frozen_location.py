@@ -1,4 +1,4 @@
-"""18 Nov 2026: Palermo's numbers check after Prep counted 4 text cells in 'Saved down'
+"""18 Nov 2026: Model A's numbers check after Prep counted 4 text cells in 'Saved down'
 as changed. They show a file path built on two cells Prep froze on purpose (each asked
 Excel for its own file name, FRM-012). Such a text is expected to differ; a number never
 is let off this way, and a text that does not read a frozen cell is still a change."""

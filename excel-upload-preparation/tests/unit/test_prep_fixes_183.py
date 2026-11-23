@@ -290,7 +290,7 @@ def test_a_lone_cell_with_no_room_above_moves_and_what_reads_it_follows(tmp_path
 
 
 def test_a_lone_text_read_only_through_n_is_not_a_blocker(tmp_path):
-    """2026-11-14 (Palermo 'Non-economic assumptions'!C61 =N(VLOOKUP(...B6:S47...))): N() of a text is 0, the same as
+    """2026-11-14 (Model A 'Non-economic assumptions'!C61 =N(VLOOKUP(...B6:S47...))): N() of a text is 0, the same as
     Mind's empty cell, so a lone text inside the lookup range changes no result; a plain VLOOKUP still blocks."""
     wb = openpyxl.Workbook()
     ws = wb.active

@@ -5,29 +5,29 @@ must reach  Mind another way. This module, for any workbook and any language:
 
 1.  reads the VBA for the calls  that open outside files (`Workbooks.Open`, `OpenText`,
    `Open ...  For Input`, `QueryTables.Add`, `GetObject`) and picks the macro that does the
-   import  (the procedure without parameters closest to the  opening call: in the Tokyo IFRS 17
+   import  (the procedure without parameters closest to the  opening call: in the Model D IFRS 17
    tool `calcCF`, which `OneScenarioRun` calls);
 2. finds the cells that hold the files' paths (a formula that builds a name ending in .xlsm,
    .xlsx, .csv ... or a typed path) -- the import table -- with, for each row, the cells its
-   path formula reads on the same row (the row's key, e.g. "BBA_01") and the sheet it  fills;
+   path formula reads on the same row (the row's key, e.g. "BBA_01") and the sheet  it fills;
 3. matches the files the user picked to those rows (exact name first, else the row's key as a
    whole word of the file name; Unicode NFKC + case-folding, so full-width （） and Japanese
    names compare as Excel shows them);
 4. runs the workbook's OWN import macro on a throw-away copy, in an Excel of its own
    (DispatchEx: never the user's Excel), each path cell pointing at the picked file, and
-   watches it through Excel's events: which file it opens and which cells it writes while  that
-   file is open -- the  file's import area. Message boxes are answered  and reported. Values
-   therefore  arrive exactly  as the client's own tool puts them (no re-implementation of
+   watches it through Excel's events: which file it opens and which cells it writes  while that
+   file is open --  the file's import area. Message boxes are  answered and reported.  Values
+   therefore arrive  exactly as the client's own tool puts them (no re-implementation of
    the macro, no openpyxl round trip: openpyxl and Excel parse some decimals 1 ulp apart);
-5. makes each import area a Mind input:  a sheet IN_<name> with a `#IN_<name> /Input` grid
-   holding the data, the  formulas that read the area pointed  at that grid (same shape, so
-   every value  stays the same), the old area cleared, and one CSV per  grid that Mind's Input
-   Manager matches by name  (proven in real Mind 2026-11-08: grid `#CF_Test /Input`, CSV
+5. makes each import area a Mind  input: a sheet IN_<name> with a `#IN_<name> /Input` grid
+   holding the data,  the formulas that read the area  pointed at that grid (same shape, so
+   every  value stays the same), the old area cleared, and one CSV  per grid that Mind's Input
+   Manager matches by  name (proven in real Mind 2026-11-08: grid `#CF_Test /Input`, CSV
    `CF_Test.csv` with Japanese headers, matched, used by the next run). Each quarter the Mind
    team imports new CSVs instead of uploading the model again.
 
 An area whose readers cannot all be pointed at the new grid (a range that only partly
-covers it, OFFSET from inside it, a whole-column reference across it, a name or an  array
+covers it, OFFSET from inside it, a whole-column reference across it, a name or  an array
 formula over part of it) stays where it is, inside the model, and is reported.
 """
 from __future__ import annotations

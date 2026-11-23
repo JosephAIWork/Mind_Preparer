@@ -1,4 +1,4 @@
-"""17 Nov 2026 (Palermo): the errors a Mind loop makes, told apart from the real ones.
+"""17 Nov 2026 (Model A): the errors a Mind loop makes, told apart from the real ones.
 
 Once the loop is built, Excel computes the loop's FIRST value (policy 1), which the original never
 computed in those cells (the macro pasted results): 667 #N/A in Decrements stopped Start at the
@@ -74,13 +74,13 @@ def _recalc_current(s: server.Session, errors: list[dict]) -> dict:
     return server._recalc_out(s, {"status": "ERROR" if errors else "PASS", "message": "recalculated", "ran": True, "formula_errors": errors, "addin_gap_errors": []}, s.current_path)
 
 
-# Palermo's line: the upload, Prep, the Mind loop, Prep again (a title row inserted on Decrements above the table)
-PALERMO = [("upload", []), ("prep", []), ("loop", [{"op": "set_formula", "sheet": "Run", "cell": "C3", "after": '=MM_LOOP("Policy",1,6000)'}]),
+# Model A's line: the upload, Prep, the Mind loop, Prep again (a title row inserted on Decrements above the table)
+MODEL_A = [("upload", []), ("prep", []), ("loop", [{"op": "set_formula", "sheet": "Run", "cell": "C3", "after": '=MM_LOOP("Policy",1,6000)'}]),
            ("prep", [{"op": "insert_row", "sheet": "Decrements", "row": 2}])]
 
 
 def test_errors_only_for_the_loops_first_value_never_stop_start(tmp_path, monkeypatch):
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     # the original and the version before the loop computed the stored policy: no error in Decrements
     fake = FakeExcel(s, {"v1": [], "v2": []})
     _wire(monkeypatch, s, fake)
@@ -107,7 +107,7 @@ def test_errors_only_for_the_loops_first_value_never_stop_start(tmp_path, monkey
 
 
 def test_only_errors_that_also_show_without_the_loop_stop_start(tmp_path, monkeypatch):
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     # the version before the loop already errs at Results!B5 (not in the original): a real new error
     fake = FakeExcel(s, {"v1": [], "v2": [_err("Results", "B5", "#DIV/0!")]})
     _wire(monkeypatch, s, fake)
@@ -125,7 +125,7 @@ def test_only_errors_that_also_show_without_the_loop_stop_start(tmp_path, monkey
 def test_the_rows_prep_inserted_after_the_loop_are_followed(tmp_path, monkeypatch):
     """Before the loop the error sat at Decrements!M704; Prep after the loop inserted a row above it, so
     the same cell is M705 now: it also shows without the loop. M704 now is another cell: from the loop."""
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     fake = FakeExcel(s, {"v1": [], "v2": [_err("Decrements", "M704")]})
     _wire(monkeypatch, s, fake)
     out = _recalc_current(s, [_err("Decrements", "M704"), _err("Decrements", "M705")])
@@ -144,7 +144,7 @@ def test_a_cell_an_apply_after_the_loop_wrote_is_never_the_loops(tmp_path, monke
         {"op": "set_formula", "rule_id": "FRM-009", "sheet": "Results", "cell": "B5", "before": "=A5/A6", "after": "=N(A5/A6)"},
         {"op": "set_formula", "rule_id": "FRM-009", "sheet": "Decrements", "cell": "M703", "before": "=L703", "after": "=N(L703)"},
     ]
-    s = _session(tmp_path, PALERMO[:3] + [("prep", after_loop)])
+    s = _session(tmp_path, MODEL_A[:3] + [("prep", after_loop)])
     fake = FakeExcel(s, {"v1": [], "v2": []})
     _wire(monkeypatch, s, fake)
     out = _recalc_current(s, [_err("Decrements", "M704"), _err("Decrements", "M705"), _err("Results", "B5", "#DIV/0!")])
@@ -155,14 +155,14 @@ def test_a_cell_an_apply_after_the_loop_wrote_is_never_the_loops(tmp_path, monke
     assert r["state"] == "unverified" and r["recalc"]["new_errors"] == 2 and r["recalc"]["loop_errors"] == 1
     assert s.result["validation_report"]["findings"][0]["status"] == "ERROR"
     # the loop's own writes stay the loop's: a second loop after the Prep writes M705 again
-    s2 = _session(tmp_path / "b", PALERMO[:3] + [("prep", after_loop), ("loop", [{"op": "set_formula", "sheet": "Decrements", "cell": "M705", "after": "=MM_LOOP(1)"}])])
+    s2 = _session(tmp_path / "b", MODEL_A[:3] + [("prep", after_loop), ("loop", [{"op": "set_formula", "sheet": "Decrements", "cell": "M705", "after": "=MM_LOOP(1)"}])])
     _wire(monkeypatch, s2, FakeExcel(s2, {"v1": [], "v2": []}))
     out = _recalc_current(s2, [_err("Decrements", "M705")])
     assert out["loop_check"]["from_loop"] == 1 and out["readiness"]["state"] == "ready"
 
 
 def test_when_the_version_before_the_loop_cannot_be_recalculated_nothing_is_guessed(tmp_path, monkeypatch):
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     fake = FakeExcel(s, {"v1": []}, refuse=("v2",))
     _wire(monkeypatch, s, fake)
     out = _recalc_current(s, [_err("Decrements", "M704")])
@@ -186,7 +186,7 @@ def test_without_a_loop_nothing_changes_and_no_extra_recalculation_runs(tmp_path
 
 
 def test_a_clean_recalculation_after_the_loop_needs_no_extra_one(tmp_path, monkeypatch):
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     fake = FakeExcel(s, {"v1": [_err("Decrements", "M704")]})
     _wire(monkeypatch, s, fake)
     # an error the original already had (M704 moved to M705 by the title row) is no new error: nothing to check
@@ -196,7 +196,7 @@ def test_a_clean_recalculation_after_the_loop_needs_no_extra_one(tmp_path, monke
 
 
 def test_a_recalculation_the_session_holds_of_the_version_before_the_loop_is_reused(tmp_path, monkeypatch):
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     fake = FakeExcel(s, {"v1": []})
     _wire(monkeypatch, s, fake)
     # the last recalculation is of v2 itself (Start's own, before the loop was built)
@@ -213,20 +213,20 @@ def test_a_recalculation_saved_before_the_check_keeps_the_guess():
 
 
 def test_night_chain_goes_on_as_start_does(tmp_path, monkeypatch):
-    """scripts/night_chain.py passes the Recalculate step on the verdict, as Start does: Palermo's 667
+    """scripts/night_chain.py passes the Recalculate step on the verdict, as Start does: Model A's 667
     errors for the loop's first value no longer fail the chain; a real new error still does."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("night_chain_lb", Path(server.PACKAGE_ROOT) / "scripts" / "night_chain.py")
     chain = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(chain)
-    s = _session(tmp_path, PALERMO)
+    s = _session(tmp_path, MODEL_A)
     _wire(monkeypatch, s, FakeExcel(s, {"v1": [], "v2": []}))
     out = _recalc_current(s, [_err("Decrements", f"M{r}") for r in range(704, 714)])
     assert out["new_errors"] == 10 and chain.recalc_ok(out) is True
     # (review LBr: it said `recalc_ok({**out, "loop_check": None}) is recalc_ok(out)`, true whatever the
     # code does) a real error after the loop -- the version before the loop errs there too -- fails it
-    s3 = _session(tmp_path / "c", PALERMO)
+    s3 = _session(tmp_path / "c", MODEL_A)
     _wire(monkeypatch, s3, FakeExcel(s3, {"v1": [], "v2": [_err("Results", "B5", "#DIV/0!")]}))
     out = _recalc_current(s3, [_err("Decrements", f"M{r}") for r in range(704, 714)] + [_err("Results", "B5", "#DIV/0!")])
     assert out["loop_check"]["from_loop"] == 10 and out["loop_check"]["also_without"] == 1 and chain.recalc_ok(out) is False

@@ -172,7 +172,7 @@ Success / Consistent in 6.5 s, a loop of size 6, 50 of 50 cells the same as the 
 ## The loop goes to Mind with Prep's formula repairs (1.12.5)
 
 A loop written on a version Prep has not repaired yet would go to Mind with formulas Mind computes
-otherwise. On the Tokyo tool (2026-11-09) that made every formula of six calculation sheets NaN: their
+otherwise. On the Model D tool (2026-11-09) that made every formula of six calculation sheets NaN: their
 B3 reads the sheet name through `CELL("filename")`, which Mind answers with the workbook's name alone
 (see MIND_VS_EXCEL.md). The loop plan therefore takes Prep's plan for the same version and writes the
 formula repairs it still has with the loop (`loop_builder.FORMULA_REPAIRS`: the Custom screen's "Fix the
@@ -193,18 +193,18 @@ TRUE / FALSE): see MIND_VS_EXCEL.md, "Mind's upload test after a loop or instanc
 
 Proven in real Mind (2026-11-09), Mind's test after the upload:
 - the loop written on the unrepaired version through the app (6 CELL freezes and 84 OFFSET ranges
-  written with it; zzz_mindready_tokyo_loops_probe_7): 14,737 differences before, 75 after, none a value:
+  written with it; zzz_mindready_model_d_loops_probe_7): 14,737 differences before, 75 after, none a value:
   67 check cells that are 0 in Excel and a rounding residue below 0.00002 in Mind (B47-B46 of two equal
   totals near a billion), and 8 cells holding the text "TRUE" that the test reads as 1 on Excel's side;
 - the Do-everything version plus the four loops through the app (84 OFFSET ranges written with it;
-  zzz_mindready_tokyo_loops_2): 63 differences, the same two kinds (55 residues below 0.000004, 8 "TRUE").
+  zzz_mindready_model_d_loops_2): 63 differences, the same two kinds (55 residues below 0.000004, 8 "TRUE").
 
 ## The macro's text in its own code page (10 November 2026)
 
 The VBE stores module text in the ANSI code page of the PC that saved the workbook (cp932 on a
 Japanese PC, cp1255 on a Hebrew one), and Excel 365 records 0 ("the system's") as the project's code
 page. olevba answers 0 with UTF-8 and replacement characters, so the Japanese comments and string
-literals of the Tokyo tool -- `Find("年月")`, `MsgBox "完了しました"` -- arrived as mojibake, and the
+literals of the Model D tool -- `Find("年月")`, `MsgBox "完了しました"` -- arrived as mojibake, and the
 stand-in assistant and the message-box matching could not read them. `model_map.read_vba` now decodes
 the module bytes itself (`decode_vba_source`): the stored code page when there is one (trusted as it
 is: `MsgBox "ｴﾗｰ"` is Japanese when the project says 932); else UTF-8; cp932 when at least half of

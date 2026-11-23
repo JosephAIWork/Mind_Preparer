@@ -66,7 +66,7 @@ grid and 1,280 cells of the all-copies grid, 0 differences, Total row equal.
 ## Checked again in Mind on 10 November 2026 (small probes)
 
 Three small invented projects (`zzz_mindready_inst_probe_1` to `_3`, notes in
-`%LOCALAPPDATA%/MindReady/tokyo_instances_2026-11-10/probe/PROBE_NOTES.md`). Every number Mind gave
+`%LOCALAPPDATA%/MindReady/model_d_instances_2026-11-10/probe/PROBE_NOTES.md`). Every number Mind gave
 matched the one worked out by hand. Nothing in them contradicts the builder:
 
 - `MM_LOOPINSTANCE(<loop size cell>, <count cell>)` with the count `=COUNTA(<split grid key column>)`
@@ -217,7 +217,7 @@ combination of their values instead of one copy per key of a table.
 - **The same macro's other loops** are written as `MM_LOOP`s exactly as the Mind loop plan has them;
   they run inside every copy. A loop already written is left alone. **Another macro's loops are left
   out** (review, 10 November 2026): Excel runs that macro on its own, with these drivers fixed. In the
-  Tokyo tool the group and the roll-forward year belong to `EndemicCalculationRun`, not to
+  Model D tool the group and the roll-forward year belong to `EndemicCalculationRun`, not to
   `AllScenarioRun`: inside every copy Mind would run them and add their passes up.
 - **The areas the macro clears** before a run are emptied as the Mind loop plan empties them (asked
   for, or read by a block), so what an earlier run left there does not stay in every copy.
@@ -240,7 +240,7 @@ combination of their values instead of one copy per key of a table.
 **Checked in Mind on 10 November 2026** with the anonymized IFRS 17 tool (`AllScenarioRun`: cohort
 2021-2026 x scenario 0-3; `EndemicCalculationRun`: group x roll-forward year), built through the app's
 API from the prepped model (94 changes: 7 for the instances, 3 for the two loops kept, 84 FRM-014
-repairs). Project `zzz_mindready_tokyo_instances_1`: converted in 129 s; Mind's upload test showed the
+repairs). Project `zzz_mindready_model_d_instances_1`: converted in 129 s; Mind's upload test showed the
 same 63 cells, with the same values, as the model without instances (rounding residues below 4e-6 and
 8 cells holding the text "TRUE"); the run took 3 min 06 s, consistent with the audit trail. The main
 workbook's grid exported after the run (24 copies x 6 products x 87 columns) against Excel with each
@@ -251,7 +251,7 @@ except in the last cohort: in Mind those 5 copies compute too.
 
 **Built again after the review, 10 November 2026** (one macro at a time): the same API call now writes
 91 changes (7 for the instances, 84 FRM-014 repairs) and leaves `EndemicCalculationRun`'s group and
-roll-forward loops out. Project `zzz_mindready_tokyo_instances_2`: converted in 152 s; Mind's upload
+roll-forward loops out. Project `zzz_mindready_model_d_instances_2`: converted in 152 s; Mind's upload
 test lists 57 cells, all of them among the 63 of the first build (49 rounding residues below 4e-6 and
 the 8 "TRUE" text cells; the 6 residues on the roll-forward and summary sheets are gone with the
 loops); the run completed, consistent with the audit trail. Mind's export against Excel, each copy's

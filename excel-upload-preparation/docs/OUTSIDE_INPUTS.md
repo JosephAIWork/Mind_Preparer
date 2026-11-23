@@ -1,7 +1,7 @@
 # Outside input files
 
 Some models get part of their data from other files: a macro opens each file and pastes its
-numbers into the model (the Tokyo IFRS 17 tool's `calcCF` opens one `.xlsm` per product
+numbers into the model (Model D (an IFRS 17 tool)'s `calcCF` opens one `.xlsm` per product
 group). Mind runs no VBA and opens no outside file, so the app brings those files in for it
 and makes each one a **Mind input** that the Mind team can replace every quarter without
 uploading the model again.
@@ -60,7 +60,7 @@ What it says on the way:
   shape); the macro's own message boxes are shown when it refuses a file (too many items).
 - Each file says how many values differ from the files made at the bring-in.
 - The macro gets the raw files exactly as picked and opens each its own way (OpenText settings,
-  `Local:=True`, line-by-line reads such as the Tokyo tool's `CountCSVRow`, checks of the name), as
+  `Local:=True`, line-by-line reads such as the Model D tool's `CountCSVRow`, checks of the name), as
   at the bring-in and in the client's tool. Excel keeps 15 significant digits when it opens a CSV
   (144686640.71679688 becomes 144686640.716796): the result says how many numbers of a CSV have
   more, and "values changed" does not count a number that differs only past its 15th digit
@@ -73,7 +73,7 @@ What it says on the way:
 - When Run in Mind (or `scripts/mind_upload.py`) hands Mind a raw file and Mind refuses it for its
   columns, the result says what to do instead (`mind_client.upload_inputs` -> `advice`).
 
-**Proven in real Mind (10 November 2026, project `zzz_mindready_tokyo_inputs_1`, the anonymized IFRS 17
+**Proven in real Mind (10 November 2026, project `zzz_mindready_model_d_inputs_1`, the anonymized IFRS 17
 tool, through the app's own routes on a dev server):**
 
 - Joseph's raw file, named like the grid (`IN_BBA_01.csv`, 1,340 columns): Mind refused it ("doesn't
@@ -193,5 +193,5 @@ The card's own button ("Bring in the 4 matched files") still brings in the match
 - The Inputs window takes a folder (`.csv`, `.txt`, `.zip`, `.parquet`), matches each file to
   the grid of the same name (Japanese headers fine), shows SUCCESS, needs no save, and the next
   run (even in a new browser session) uses the imported numbers.
-- Tokyo (anonymized, fake inputs): 6 of 6 files matched, import 11 s, 6 Mind inputs,
+- Model D (anonymized, fake inputs): 6 of 6 files matched, import 11 s, 6 Mind inputs,
   46,800 formulas moved (10,800 through the SUMIF split), no computed value changed.

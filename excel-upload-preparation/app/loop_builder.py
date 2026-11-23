@@ -36,9 +36,9 @@ MAX_CLEARS = 5_000
 
 # The  Prep actions  that rewrite formulas so Mind computes what Excel does (the main screen's "Fix the
 # formulas"). A loop model built on a version where they are not applied yet goes to Mind with  them:
-# on the Tokyo IFRS 17 tool the loop was written before  Prep, and CELL("filename") on BBA_01..VFA_01!B3
-# (the sheet's  own name, the key of every lookup  on the sheet) was NaN in Mind, so every formula of
-# those  six calculation sheets was NaN too (14,737  differences in Mind's test, 2026-11-09).
+# on Model D (an IFRS 17 tool) the loop was written  before Prep, and CELL("filename") on BBA_01..VFA_01!B3
+# (the  sheet's own name, the key of every  lookup on the sheet) was NaN in Mind, so every formula  of
+# those six calculation sheets was NaN too  (14,737 differences in Mind's test, 2026-11-09).
 FORMULA_REPAIRS = (
     "fix_broken_refs", "fix_broken_refs_whole", "expand_3d_references", "freeze_external_links", "direct_references", "freeze_spill_refs",
     "guard_blank_arithmetic", "freeze_environment_formulas", "offset_ranges", "line_breaks_as_char", "keep_error_cells", "empty_cells_as_zero",

@@ -76,8 +76,8 @@ def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, An
     # keep the verdict from turning  green.
     preexisting = int(recalc.get("preexisting_errors") or 0) if "preexisting_errors" in recalc else 0
     new_errors = int(recalc["new_errors"]) if "new_errors" in recalc else len(errors)
-    # 17 Nov 2026 (Palermo): after a Mind  loop, the new errors the version before the loop does not
-    # have  come from the loop's first value only  (server._loop_check): they never block. Only the
+    # 17 Nov 2026 (Model A): after a  Mind loop, the new errors the version before the loop does  not
+    # have come from the loop's first value  only (server._loop_check): they never block. Only the
     # new errors that also show without the loop are counted as new here.
     check = recalc.get("loop_check") if ran else None
     from_loop = int(check.get("from_loop") or 0) if check and check.get("ran") else 0
@@ -144,11 +144,11 @@ LOOP_ERRORS_NOTE = (
 
 
 def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc: dict[str, Any] | None, version_id: str, loop_built: bool = False) -> dict[str, Any]:
-    """loop_built:  a Mind  loop was written into this version or one before it (16 Nov 2026, Palermo: the
-    loop step put =MM_LOOP(...) where a stored policy row 6000 was, Excel then computed policy 1, whose
-    projection  runs past the mortality table: 667 #N/A cells counted as new  against the original).
-    17 Nov 2026: the  recalculation itself now says which new errors  show only for the loop's first value
-    (its `loop_check`): those never block,  and the verdict carries one plain line  on them (`loop_note`)."""
+    """loop_built:  a Mind  loop was written into this version or one before it (16 Nov 2026, Model A: the
+    loop step put =MM_LOOP(...) where a stored policy row 6000 was, Excel then computed policy 1,  whose
+    projection runs past the mortality table: 667 #N/A cells counted as  new against the original).
+    17 Nov 2026:  the recalculation itself now says which new  errors show only for the loop's first value
+    (its `loop_check`): those never  block, and the verdict carries one plain  line on them (`loop_note`)."""
     findings = report.get("findings", [])
     blocking, optional = [], []
     for f in findings:
@@ -181,7 +181,7 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
         if loop_built and "loop_errors" not in rc:
             rc["loop_note"] = LOOP_ERRORS_NOTE
     elif rc.get("loop_errors"):
-        # 17 Nov 2026 (Palermo): the only new errors are the Mind loop's first value's -- the workbook can go to Mind
+        # 17 Nov 2026 (Model A): the only new errors are the Mind loop's first value's -- the workbook can go to Mind
         state = "ready"
         headline = f"Acceptable by Mind: no blocking problem; the recalculation's only new errors ({rc['loop_errors']}) are for the Mind loop's first value"
     else:

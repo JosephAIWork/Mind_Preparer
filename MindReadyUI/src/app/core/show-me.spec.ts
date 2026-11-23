@@ -996,7 +996,7 @@ describe("Show me on the main screen's texts", () => {
     } as LoopPlan);
     expect(page.loopSummary()).toBe("2 loops need one answer each (Advanced › Mind loop)");
     expect(showMeFor(page.loopSummary())).toEqual({ id: "loop-choices" });
-    // review of 10 November 2026: another macro's loops and the ones left as is need no answer (the Tokyo
+    // review of 10 November 2026: another macro's loops and the ones left as is need no answer (the Model D
     // shape: two ready, two of the other macro) -- the tile must not send the user to look for answers
     page.loopPlan.set({
       found: true,

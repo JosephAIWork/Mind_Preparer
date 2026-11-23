@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from app import cancel, chat_context, excel_com, excel_worker, mind_client, outside_inputs, prep, session_store, stand_in_inputs
 from app.settings import SETTINGS
 from app.web import server
-from test_outside_inputs_api import INPUTS, _fake_apply_mind_inputs, _fake_run_import, _main_book, _upload_picked  # the Tokyo-like tool and its fake Excel steps
+from test_outside_inputs_api import INPUTS, _fake_apply_mind_inputs, _fake_run_import, _main_book, _upload_picked  # the Model D-like tool and its fake Excel steps
 from test_outside_inputs_api import macros  # noqa: F401  (a fixture: the main workbook's VBA, olevba replaced)
 from test_grid_namer import _wb as _book  # a small workbook from a dict of cells
 
@@ -1345,7 +1345,7 @@ BUSY_APPLY = "Wait a moment: changes are still being written."
 
 
 def _slow_model_map(monkeypatch) -> Gate:
-    """The model map of a new version is built slowly (38 s on Palermo): it waits at the gate."""
+    """The model map of a new version is built slowly (38 s on Model A): it waits at the gate."""
     gate = Gate()
 
     def build_model_map(analysis):
@@ -1497,7 +1497,7 @@ def test_the_cancel_beside_start_sends_its_kinds_and_leaves_a_run_in_mind_and_an
 
 
 def test_a_cancel_during_the_recalculation_of_the_version_before_the_loop_puts_everything_back(client, plain_grid_xlsx, monkeypatch, excels):
-    """17 Nov 2026 (Palermo): after a Mind loop, new errors make the Recalculate step recalculate the version
+    """17 Nov 2026 (Model A): after a Mind loop, new errors make the Recalculate step recalculate the version
     before the loop too. That second Excel is part of the same job: Cancel ends it (only it), and the
     last recalculation stays as it was."""
     sid = _upload(client, plain_grid_xlsx)["sessionId"]

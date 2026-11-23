@@ -27,16 +27,16 @@ export interface FinishState {
 export function finishState(r: Readiness | null | undefined): FinishState | null {
   if (!r) return null;
   if (r.state === "ready") {
-    // 17  Nov 2026  (Palermo): errors that show only for the Mind loop's first value do not stop it -- said in one line
+    // 17  Nov 2026  (Model A): errors that show only for the Mind loop's first value do not stop it -- said in one line
     const note = r.recalc?.loop_note;
     return { acceptable: true, text: "The check is finished. The workbook can be uploaded to Mind.", reason: "", ...(note ? { note } : {}) };
   }
   if (r.state === "unverified") {
     if (r.recalc?.ran) {
       const n = r.recalc.new_errors ?? r.recalc.formula_errors ?? 0;
-      // 16 Nov 2026: after the Mind loop the errors usually come from  the loop's first value -- said in plain words
-      // (17 Nov 2026:  counted. `n` is only the errors  that also show without the loop; the  line names the others,
-      // or says that it could not be checked)
+      // 16 Nov 2026: after the Mind loop the errors usually come  from the loop's first value -- said in plain words
+      // (17 Nov  2026: counted. `n` is only the  errors that also show without the loop;  the line names the others,
+      // or says that it could not be  checked)
       return { acceptable: false, text: `The recalculation found ${n} new formula error${n === 1 ? "" : "s"}.`, reason: r.recalc.loop_note || "The list is under Advanced › Recalculate." };
     }
     return { acceptable: false, text: "One step left: the recalculation has not run yet.", reason: "Press Recalculate: it finishes the check." };

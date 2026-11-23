@@ -31,7 +31,7 @@ MAX_ATTEMPTS = 4
 MAX_CELLS_PER_FILE = 3_000_000
 PREVIEW_ROWS = 6
 MAX_AREAS_LISTED = 25
-ASSISTANT_EFFORT = "low"  # measured  2026-11-09 on  the Tokyo tool: "low" answers in ~1 min; "medium" thought past 8 min and the gateway returned nothing (each try is proven, and the next one is told what went wrong)
+ASSISTANT_EFFORT = "low"  # measured  2026-11-09 on  the Model D tool: "low" answers in ~1 min; "medium" thought past 8 min and the gateway returned nothing (each try is proven, and the next one is told what went  wrong)
 ASSISTANT_TIMEOUT_S = 600
 
 # Excel's  SaveAs formats  by extension (the macro opens the file as the real one would be)

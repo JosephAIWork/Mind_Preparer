@@ -81,7 +81,7 @@ the two honest cases below.
   still needs one answer shows only that one box. The instances have their own tab, **Instances**,
   which asks one thing at a time: make one copy per... (the macro's loops, or a column of a
   table), then **Build it**, then download both files and run in Mind. The finder sits behind
-  **Not sure? Let the app look**. `CHANGELOG.md` 1.13.0 has the whole list, with the Run in Mind
+  **Not sure? Let the app look**. `docs/CHANGELOG_DETAILED.md` 1.13.0 has the whole list, with the Run in Mind
   fixes (a second run, the Inputs window of a copied workbook) and the macro's text read in its
   own code page.
 

@@ -1121,7 +1121,7 @@ def test_instance_finder_route_caches_per_version_and_takes_the_assistant_flag(c
 
 
 def test_mind_instances_are_written_with_the_formula_repairs_prep_still_has(client, tmp_path, monkeypatch):
-    """As with the Mind loop (Tokyo, 9 November 2026): a version built before Prep goes to Mind with the
+    """As with the Mind loop (Model D, 9 November 2026): a version built before Prep goes to Mind with the
     formula repairs Prep still has, so Mind computes what Excel does. Here SUMPRODUCT on arithmetic over
     an OFFSET range (FRM-014: another number in Mind) is written out as its range in the same Apply. A
     cell the builder writes keeps the builder's formula, and a plan that is not ready gets no repairs."""

@@ -33,7 +33,7 @@ SRC = OUT / "lone_text_probe_formulas_only.xlsx"
 BOOK = OUT / "lone_text_probe.xlsx"
 
 TESTS = [
-    # ---  A: a  lone text inside a range that a text-blind function reads (Phoenix: Calc!A259 under MAX($A$7:A304)+1)
+    # ---  A: a  lone text inside a range that a text-blind function reads (Model C: Calc!A259 under MAX($A$7:A304)+1)
     ("A1", "MAX over a column with a lone text inside it (Col!A15)", "=MAX(Col!$A$7:$A$23)+1", "same"),
     ("A2", "MIN over the same column", "=MIN(Col!$A$7:$A$23)", "same"),
     ("A3", "SUM over the same column", "=SUM(Col!$A$7:$A$23)", "same"),
@@ -43,26 +43,26 @@ TESTS = [
     ("A7", "SUMPRODUCT of that column and the one beside it", "=SUMPRODUCT(Col!$A$7:$A$23,Col!$B$7:$B$23)", "same"),
     ("A8", "the other way: COUNTA does count the lone text (ColN!A15)", "=COUNTA(ColN!$A$7:$A$23)", "differs"),
     ("A9", "the other way: INDEX returns the lone text itself (ColN!A15)", "=INDEX(ColN!$A$7:$A$23,9)", "differs"),
-    # --- B: a lookup table with a lone text in a column that is neither searched nor returned  (Phoenix: CFs!E62)
+    # --- B: a lookup table with a lone text in a column that is neither searched nor  returned (Model C: CFs!E62)
     ("B1", "VLOOKUP: a lone text in a column neither searched nor returned (Look!E35)", "=VLOOKUP(105,Look!$C$30:$G$40,5,FALSE)", "same"),
     ("B2", "the other way: VLOOKUP returns the lone text's column (Look2!E35)", "=VLOOKUP(105,Look2!$C$30:$G$40,3,FALSE)", "differs"),
     ("B3", "HLOOKUP: a lone text in a row neither searched nor returned (Hl!G5)", "=HLOOKUP(104,Hl!$C$3:$M$7,5,FALSE)", "same"),
     # --- C: N() of a lone text
     ("C1", "N() of a lone text (Nw!C3): 0 for a text and for an empty cell", "=N(Nw!$C$3)", "same"),
-    # --- D: the stepped  INDEX (CNHI: 332 headings 'Per Capita  Cost' inside INDEX(range, 1+(year-first year-1)*117, ...))
+    # --- D:  the stepped INDEX (Model B: 332  headings 'Per Capita Cost' inside INDEX(range, 1+(year-first  year-1)*117, ...))
     ("D1", "INDEX whose row is 1 + n x 6: it never lands on the headings (Base!D7, D13, D19)", "=INDEX(Base!$C$5:$E$22,1+(yr-first_yr-1)*6,2)", "same"),
     ("D2", "the same with the column from MATCH, as in the model", "=INDEX(Base!$C$5:$E$22,1+(yr-first_yr-1)*6,MATCH(102,Base!$C$5:$E$5,0))", "same"),
     ("D3", "the other way: an INDEX that does land on a heading (Base2!D13)", "=INDEX(Base2!$C$5:$E$22,3+(yr-first_yr-1)*6,2)", "differs"),
-    # --- E:  a lone text as the criterion of SUMIFS (CNHI: 'Cost data'!AF10)
+    # --- E: a lone text as the criterion of SUMIFS  (Model B: 'Cost data'!AF10)
     ("E1", "a lone text as the criterion of SUMIFS (Crit!D5)", "=SUMIFS(Crit!$B$2:$B$9,Crit!$A$2:$A$9,Crit!$D$5)", "differs"),
     ("E2", "the same in COUNTIFS (Crit!D5)", "=COUNTIFS(Crit!$A$2:$A$9,Crit!$D$5)", "differs"),
     ("E3", "the same in AVERAGEIFS (Crit!D5)", "=AVERAGEIFS(Crit!$B$2:$B$9,Crit!$A$2:$A$9,Crit!$D$5)", "differs"),
     ("E4", "SUMIFS criterion with no room for a title above (Crit2!D5): Prep writes the text into the formula", "=SUMIFS(Crit2!$B$2:$B$9,Crit2!$A$2:$A$9,Crit2!$D$5)", "differs"),
     ("E5", "COUNTIFS criterion with no room for a title above (Crit2!D5)", "=COUNTIFS(Crit2!$A$2:$A$9,Crit2!$D$5)", "differs"),
     ("E6", "the criterion typed into the formula, the way Prep writes it", '=SUMIFS(Crit!$B$2:$B$9,Crit!$A$2:$A$9,"north")', "same"),
-    # ---  F: the plain case, seen in Mind  on 8 Oct 2026
+    # --- F: the plain  case, seen in Mind on 8 Oct 2026
     ("F1", "a lone text joined to a text (Lone!C3)", '="x#"&Lone!$C$3', "differs"),
-    # --- G: a bare # as the first header of a table (Phoenix: CFs!B29)
+    # --- G: a bare # as the first header of a table (Model C: CFs!B29)
     ("G1", "a table whose first header is a bare #: VLOOKUP by the row number", "=VLOOKUP(3,Hash!$B$4:$D$8,3,FALSE)", "same"),
     ("G2", "the same table: a name out of it", "=INDEX(Hash!$C$4:$C$8,2)", "same"),
     # --- H: one step further, to SEE what came back: a text that comes back empty is not named in Mind's list

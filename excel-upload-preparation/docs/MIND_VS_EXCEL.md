@@ -458,16 +458,16 @@ which is exactly what the model should give.
 
 The demo files are kept outside the app.
 
-## The Tokyo loop model: CELL("filename") and OFFSET in arithmetic (2026-11-09)
+## The Model D loop model: CELL("filename") and OFFSET in arithmetic (2026-11-09)
 
-**The case.** The four loops of the anonymized Tokyo IFRS 17 tool (MM_LOOP in Ctrl_01!C22, C27 and
+**The case.** The four loops of the anonymized Model D (an IFRS 17 tool) (MM_LOOP in Ctrl_01!C22, C27 and
 ロールフォワード!B4, B6) were written on a version Prep had not repaired yet. Mind's test listed 14,737
 differences: "Mind value: NaN" on every formula of BBA_01..BBA_05 and VFA_01.
 
 **What caused the NaN -- not the loops.** B3 of each of these sheets is
 `=RIGHT(CELL("filename",B3),LEN(CELL("filename",B3))-FIND("]",CELL("filename",B3)))`, the sheet's own
 name, and B4 = `VLOOKUP($B$3,...)` is the key of every lookup on the sheet. Probe workbooks with and
-without an MM_LOOP (zzz_mindready_tokyo_loops_probe_1 and _2) gave the same answer: Mind's
+without an MM_LOOP (zzz_mindready_model_d_loops_probe_1 and _2) gave the same answer: Mind's
 `CELL("filename",B3)` is the workbook's name alone (`tiny_loop`, no path, no `[...]`), so FIND("]")
 fails, B3 is NaN, and everything keyed on it is NaN. FRM-012 freezes such a formula to what Excel shows
 (="BBA_01"); the Do-everything version had it, the loop test file had not.
@@ -476,7 +476,7 @@ fails, B3 is NaN, and everything keyed on it is NaN. FRM-012 freezes such a form
 model with the four loops (both through the app) still had 396 / 402 differences, all from one formula
 shape, 14 per calculation sheet (B45, B48, ... B96) and the Result_CF cells that copy them:
 `SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))+...`. A probe workbook
-(zzz_mindready_tokyo_loops_probe_4 and _6) showed:
+(zzz_mindready_model_d_loops_probe_4 and _6) showed:
 
 | Formula | Excel | Mind |
 | --- | --- | --- |
@@ -532,7 +532,7 @@ test; *same* = not in the list.
 | B2, H2 | VLOOKUP that returns the lone text's column | note | listed, left for a person | **empty** | **empty** |
 | B3 | HLOOKUP, the lone text in a row neither searched nor returned | 2012 | not listed | same | same |
 | C1, H4 | N() of a lone text, and that result plus 5 | 0, 5 | not listed | same | same |
-| D1, D2 | INDEX whose row is 1 + n x 6 and never lands on the headings (the CNHI shape) | 201, 202 | not listed | same | same |
+| D1, D2 | INDEX whose row is 1 + n x 6 and never lands on the headings (the Model B shape) | 201, 202 | not listed | same | same |
 | D3, H3 | INDEX that does land on a heading | Per Capita Cost | listed, left for a person | **empty** | **empty** |
 | E1-E3 | the lone text as the criterion of SUMIFS, COUNTIFS, AVERAGEIFS | 18, 3, 6 | listed; Prep writes a title above it | **0, 0, NaN** | same |
 | E4, E5 | the same with no room for a title | 18, 3 | listed; Prep writes the text into the formula | **0, 0** | same |
@@ -558,7 +558,7 @@ What it shows:
   'Spreadsheet not found'"). The probe now puts a label and a number on those sheets.
 
 Not asked: MAXIFS and MINIFS criteria, a lone text read through a defined name, the labels Prep writes to close
-a gap in a table's first column (Phoenix), and anything inside a loop.
+a gap in a table's first column (Model C), and anything inside a loop.
 
 The four sandbox projects were kept: `zzz_mindready_probe_20nov_raw` (the first build, conversion stopped),
 `zzz_mindready_probe_20nov_b_raw`, `zzz_mindready_probe_20nov_c_raw`, `zzz_mindready_probe_20nov_c_prepared`.
