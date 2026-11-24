@@ -1,10 +1,10 @@
-"""The key for the Milliman AI gateway, saved for the person who pasted it.
+"""The  key for  the Milliman AI gateway, saved for the person who pasted it.
 
 The web app asks for the key when none is saved (`POST /api/assistant-key`). It is stored as
-`ai_key.bin` in the data folder (settings.yaml; `%LOCALAPPDATA%\\MindReady` by default), encrypted
-with Windows' DPAPI for the current Windows user: only that user, on this machine, can decrypt it, so
-a copy of the file is useless anywhere else. The key itself is never sent back to the page, only its
-last 4 characters.
+`ai_key.bin` in the data folder  (settings.yaml; `%LOCALAPPDATA%\\MindReady` by default), encrypted
+with Windows' DPAPI for the current Windows  user: only that user, on this  machine, can decrypt it, so
+a copy of  the file is useless anywhere else. The key itself is never  sent back to the page, only its
+last  4 characters.
 """
 from __future__ import annotations
 
@@ -14,15 +14,15 @@ import re
 from .settings import SETTINGS
 
 KEY_FILE = SETTINGS.data_folder / "ai_key.bin"
-_ENTROPY = b"MindReady.ai-key"  # an app-specific extra secret: another program of the same user needs it too
+_ENTROPY = b"MindReady.ai-key"  # an  app-specific extra  secret: another program of the same user needs it too
 _DESCRIPTION = "Mind Ready AI gateway key"
 _CRYPTPROTECT_UI_FORBIDDEN = 0x1
-# Printable ASCII without spaces; a gateway subscription key is 32 hex characters.
+# Printable  ASCII without  spaces; a gateway subscription key is 32 hex characters.
 _KEY_RE = re.compile(r"^[\x21-\x7e]{8,512}$")
 
 
 def check_format(key: str) -> str | None:
-    """None when `key` looks like a key, else what is wrong with it (shown to the user)."""
+    """None  when `key`  looks like a key, else what is wrong with it (shown to the user)."""
     if not key:
         return "Paste the key first."
     if not _KEY_RE.match(key):
@@ -31,7 +31,7 @@ def check_format(key: str) -> str | None:
 
 
 def save(key: str) -> None:
-    """Encrypt `key` for the current Windows user and write it (replacing any saved key)."""
+    """Encrypt  `key` for  the current Windows user and write it (replacing any saved key)."""
     try:
         import win32crypt  # pywin32
     except ImportError as exc:
@@ -44,7 +44,7 @@ def save(key: str) -> None:
 
 
 def load() -> str | None:
-    """The saved key, or None (no file, not Windows, or saved by another user or machine)."""
+    """The  saved key,  or None (no file, not Windows, or saved by another user or machine)."""
     try:
         blob = KEY_FILE.read_bytes()
         import win32crypt  # pywin32

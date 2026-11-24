@@ -1,7 +1,0 @@
-version: 1.0.0
-operations:
-  - replace_formula_with_cached_value_to_hide_incompatibility
-  - remove_vba_without_explicit_authorization
-  - execute_macros_during_inspection
-  - silently_delete_unknown_package_parts
-  - claim_readiness_without_recalculation

@@ -1,18 +1,23 @@
 <div class="panel">
   <p class="hint">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call a file ready.</p>
   <div class="row">
-    <button cdsButton="primary" size="md" (click)="run()" [disabled]="running()">{{ result() ? "Recalculate again" : "Recalculate in Excel" }}</button>
+    <button cdsButton="primary" size="md" data-show-me="recalc-run" (click)="run()" [disabled]="running()">{{ result() ? "Recalculate again" : "Recalculate in Excel" }}</button>
     @if (running()) {
       <cds-inline-loading [state]="'active'" loadingText="Recalculating… tens of seconds to a few minutes"></cds-inline-loading>
+      <!-- 17 Nov 2026: Cancel beside the loading line; it stops the recalculation on the server -->
+      <mr-cancel kind="recalc" size="md"></mr-cancel>
     }
   </div>
+  @if (stoppedLine() && !running()) {
+    <div class="result" data-test="stopped"><strong>{{ stoppedLine() }}</strong></div>
+  }
   @if (error()) {
     <div class="result result--error"><strong>Could not recalculate</strong><span>{{ error() }}</span></div>
   }
 
   @if (result(); as r) {
     <div class="result" [class.result--ok]="r.status === 'PASS'" [class.result--error]="r.status === 'ERROR'" [class.result--warn]="r.status !== 'PASS' && r.status !== 'ERROR'">
-      <strong><span [class]="chip()">{{ r.status }}</span> &nbsp;{{ r.message }}</strong>
+      <strong><span [class]="chip()">{{ r.status === "PASS" ? "Clean" : r.status === "ERROR" ? "Errors found" : "Not run" }}</span> &nbsp;{{ r.message }}</strong>
       <span>
         @if (r.new_errors !== undefined) { {{ r.new_errors }} new since the original · }
         @if (r.preexisting_errors !== undefined) { {{ r.preexisting_errors }} already in the original · }
@@ -21,8 +26,15 @@
       </span>
     </div>
 
+    @if (legend().length) {
+      <!-- what each error value shown here means: once, not on every row -->
+      <ul class="meanings">
+        @for (m of legend(); track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+      </ul>
+    }
+
     @if (r.formula_errors.length) {
-      <h3 class="panel__h">Formula errors ({{ r.formula_errors.length }})</h3>
+      <h3 class="panel__h" data-show-me="recalc-errors">Formula errors ({{ r.formula_errors.length }})</h3>
       <table class="list">
         <thead>
           <tr>
@@ -36,7 +48,7 @@
           @for (e of errors(); track $index) {
             <tr>
               <td class="mono">{{ e.sheet }}!{{ e.cell }}</td>
-              <td class="mono">{{ e.error }}</td>
+              <td class="mono" [title]="meaning(e.error)">{{ e.error }}</td>
               <td class="mono">{{ e.formula }}</td>
               <td class="ask"><button cdsButton="ghost" size="sm" (click)="ask(e)">Ask the assistant</button></td>
             </tr>

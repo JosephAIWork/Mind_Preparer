@@ -1,10 +1,10 @@
-"""Stage 2: find repeated structure in a workbook and say, with evidence, whether a Mind loop,
+"""Stage  2: find  repeated structure in a workbook and say, with evidence, whether a Mind loop,
 Mind instances, or nothing would fit it. It checks; it does not choose.
 
-Repetition is read on R1C1 formula text: cells filled down/across or copied share one text.
-  A. sheet copies   - sheets with the same formulas at the same addresses
-  B. block bands    - a block of columns (or rows) repeated side by side inside one sheet
-  C. fill axes      - one column (row) repeated many times: a time axis or a list of items
+Repetition is read on R1C1 formula text:  cells filled down/across or copied share one text.
+  A. sheet copies   - sheets  with the same formulas at the  same addresses
+  B. block bands    - a block of  columns (or rows) repeated side by side inside one sheet
+  C. fill  axes      - one column (row) repeated many times:  a time axis or a list of items
 For every repetition: are the copies PARALLEL (no copy reads another) or a CHAIN (each reads the
 previous)? Only parallel copies are a dimension; a chain is a sequence and fits neither method.
 """
@@ -34,17 +34,17 @@ def _outside_strings(text, fn):
 
 
 def loose_keys(text):
-    """(refs masked but sheets kept, refs and sheets masked, + typed-in numbers masked)."""
+    """(refs  masked but  sheets kept, refs and sheets masked, + typed-in numbers masked)."""
     k1 = _outside_strings(text, lambda s: _REF_RE.sub(lambda m: (m.group("sheet") or "") + "@", s))
     k2 = _outside_strings(text, lambda s: _REF_RE.sub("@", s))
     k3 = _outside_strings(k2, lambda s: _NUM_RE.sub("#", s))
     return k1, k2, k3
 
-SIM_SHEETS = 0.75      # share of formula cells that must match for two sheets to be copies
-SIM_COLS = 0.90        # share of a column's formula cells that must match its copy
-MIN_FORMULAS = 10      # sheets / blocks smaller than this are not worth a finding
-PMAX = 40              # widest block looked for
-SAMPLE = 3000          # cells sampled per reference test
+SIM_SHEETS = 0.75      # share  of formula  cells that must match for two sheets to be copies
+SIM_COLS = 0.90        # share  of a  column's formula cells that must match its copy
+MIN_FORMULAS = 10      # sheets  / blocks  smaller than this are not worth a finding
+PMAX = 40              # widest  block looked  for
+SAMPLE = 3000          # cells  sampled per  reference test
 RANDOM_FUNCS = {"RAND", "RANDBETWEEN", "NORMINV", "NORM.INV", "NORMSINV", "NORM.S.INV", "LOGINV", "LOGNORM.INV", "BETAINV", "GAMMAINV"}
 
 
@@ -67,7 +67,7 @@ class Book:
                 self.L[lvl][i] = ids[lvl].setdefault(key, len(ids[lvl]) + 10)
 
     def loose(self, F, lvl=1):
-        """A formula-id grid mapped to loose ids (0 stays 0). lvl 0: refs masked, 1: + sheets, 2: + numbers."""
+        """A  formula-id grid  mapped to loose ids (0 stays 0). lvl 0: refs masked, 1: + sheets, 2: + numbers."""
         return np.where(F > 0, self.L[lvl][F], 0)
 
     def parsed(self, sid: int):
@@ -102,7 +102,7 @@ def sheets_read(book: Book, sid: int, own: str) -> set[str]:
 
 
 def same_sheet_cols(book: Book, sid: int, row: int, col: int, axis: int):
-    """For a formula at (row, col): the spans (lo, hi) along `axis` (1 = columns, 0 = rows) of
+    """For  a formula  at (row, col): the spans (lo, hi) along `axis` (1 = columns, 0 = rows) of
     every reference to its own sheet."""
     spans = []
     for ref in book.parsed(sid).refs:
@@ -167,7 +167,7 @@ def describe_sheet_group(book: Book, members, grids, sims):
     identical = kinds["identical"]
     overrides = kinds["different logic"]
     per_copy = [int(has_f[i].sum()) for i in range(len(members))]
-    # constants present in every copy at the same address
+    # constants  present in  every copy at the same address
     num_all = (kind == 1).all(0)
     txt_all = (kind == 2).all(0)
     num_diff = int((num_all & ~(cst == cst[0]).all(0)).sum())
@@ -180,7 +180,7 @@ def describe_sheet_group(book: Book, members, grids, sims):
     if len(diff_pos):
         (r1, c1), (r2, c2) = diff_pos.min(0), diff_pos.max(0)
         diff_area = (int(r1) + 1, int(c1) + 1, int(r2) + 1, int(c2) + 1)
-    # chain or parallel: do copies read each other?
+    # chain or parallel: do copies read each  other?
     reads = {m: Counter() for m in members}
     for m in members:
         ids, counts = np.unique(stack[members.index(m)][stack[members.index(m)] > 0], return_counts=True)
@@ -211,7 +211,7 @@ def describe_sheet_group(book: Book, members, grids, sims):
 
 # --- B/C. repetition inside a sheet ----------------------------------------------------------
 def match_profile(F, p):
-    """For each column c: share of formula cells of columns c and c+p that are equal."""
+    """For  each column  c: share of formula cells of columns c and c+p that are equal."""
     a, b = F[:, :-p], F[:, p:]
     any_ = (a > 0) | (b > 0)
     eq = (a == b) & (a > 0)
@@ -233,7 +233,7 @@ def runs(mask):
 
 
 def reads_earlier(book, F, s, cells, lo_of, axis):
-    """Share of sampled formula cells that read an earlier position of the same repetition
+    """Share  of sampled  formula cells that read an earlier position of the same repetition
     (lo_of(pos) gives the first position that still belongs to 'earlier copies')."""
     hits = tot = 0
     for (r, c) in cells:
@@ -262,7 +262,7 @@ def sample_cells(F, rows, cols, n=SAMPLE):
 
 
 def header_hint(s, axis, lo, hi):
-    """What the first constant row (column) above (left of) the repetition holds: numbers rising
+    """What  the first  constant row (column) above (left of) the repetition holds: numbers rising
     (a time axis), or text (names of items)."""
     shape = s["shape"]
     G = shape if axis == 1 else shape.T
@@ -276,7 +276,7 @@ def header_hint(s, axis, lo, hi):
 
 
 def diff_kinds(book: Book, stack):
-    """Cells of copies stacked on axis 0, sorted by how the copies differ there."""
+    """Cells  of copies  stacked on axis 0, sorted by how the copies differ there."""
     has = stack > 0
     anyf = has.any(0)
     exact = (stack == stack[0]).all(0) & has.all(0)
@@ -299,7 +299,7 @@ def inside_sheet(book: Book, s, axis: int):
         return []
     found, taken = [], np.zeros(F.shape[1], bool)
     m1 = match_profile(F, 1)
-    # bands of width p >= 2 (columns empty in both count as matching)
+    # bands  of width  p >= 2 (columns empty in both count as matching)
     for p in range(2, min(PMAX, F.shape[1] // 2) + 1):
         mp = match_profile(F, p)
         ok = np.where(np.isnan(mp), True, mp >= SIM_COLS)
@@ -358,7 +358,7 @@ def inside_sheet(book: Book, s, axis: int):
 
 
 def reads_earlier_t(book, Ft, s, cells, lo_of):
-    """reads_earlier for the transposed grid: cells are (col, row) of the original sheet."""
+    """reads_earlier  for the  transposed grid: cells are (col, row) of the original sheet."""
     hits = tot = 0
     for (c, r) in cells:
         sid = int(Ft[c, r])
@@ -375,7 +375,7 @@ def reads_earlier_t(book, Ft, s, cells, lo_of):
 
 
 def adders(book, s, F, axis, starts, p):
-    """Formula cells outside the band that read two or more of its copies."""
+    """Formula  cells outside  the band that read two or more of its copies."""
     k = len(starts)
     lo, hi = starts[0], starts[-1] + p - 1
     off = s["c0"] if axis == 1 else s["r0"]
@@ -407,7 +407,7 @@ _CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
 
 
 def key_args(text):
-    """The argument texts in 'key' positions (what a lookup looks for, which choice, which row)."""
+    """The  argument texts  in 'key' positions (what a lookup looks for, which choice, which row)."""
     masked = _STRING_RE.sub(lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', text)
     out = []
     for m in _CALL_RE.finditer(masked):
@@ -431,7 +431,7 @@ def key_args(text):
 
 
 def defined_cells(path):
-    """Defined names that point at one cell: NAME -> (sheet, row, col). Read from the file's
+    """Defined  names that  point at one cell: NAME -> (sheet, row, col). Read from the file's
     workbook.xml (xlsx/xlsm only); an .xlsb gives none."""
     import zipfile
     import xml.etree.ElementTree as ET
@@ -453,7 +453,7 @@ def defined_cells(path):
 
 
 def switch_cells(book: Book, top=8, min_cells=10):
-    """Typed-in cells (no formula) that many lookup/choice formulas read through an absolute
+    """Typed-in  cells (no  formula) that many lookup/choice formulas read through an absolute
     single-cell reference: the model computes one choice of that cell at a time."""
     tally = Counter()
     funcs_seen = defaultdict(Counter)
@@ -495,7 +495,7 @@ def switch_cells(book: Book, top=8, min_cells=10):
                     tally[key] += m
                     for f in steer:
                         funcs_seen[key][f] += m
-    # a run of neighbouring cells each read about as often is a column (row) of labels, not a switch
+    # a  run of neighbouring cells each read about as often is a  column (row) of labels, not a  switch
     strong = {k: v for k, v in tally.items() if v >= min_cells}
     labels = set()
     for (sh, r, c), v in strong.items():
@@ -517,7 +517,7 @@ def switch_cells(book: Book, top=8, min_cells=10):
             continue
         k = int(s["shape"][rr, cc])
         if k not in (1, 2):
-            continue                      # a formula or an empty cell steers nothing the user chooses
+            continue                      # a formula or an empty cell steers  nothing the user chooses
         label = None
         for dc in range(1, 4):            # a text label to the left, if any
             if cc - dc >= 0 and s["shape"][rr, cc - dc] == 2:

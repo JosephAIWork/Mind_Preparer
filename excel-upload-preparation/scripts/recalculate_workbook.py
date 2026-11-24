@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Recalculation adapter (CLAUDE_CODE_PROMPT.md phase 9): drives the
+"""Recalculation  adapter (CLAUDE_CODE_PROMPT.md  phase 9): drives the
 locally-installed Excel via win32com (app/recalc.py) to recalculate a fresh
 copy of the workbook -- never the original -- and reports any formula
-errors found. NOT_SUPPORTED if Excel/pywin32 isn't available here; never
+errors found. NOT_SUPPORTED if Excel/pywin32 isn't available here;  never
 fakes a PASS.
 """
 from __future__ import annotations

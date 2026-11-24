@@ -1,11 +1,11 @@
-"""Mind's value-comparison log -> the tables of ResultCalc.xlsx, any size.
+"""Mind's  value-comparison log  -> the tables of ResultCalc.xlsx, any size.
 
 Mind's log is one line per cell:
     <workbook> > <sheet> > <cell>: Excel value: <x> Mind value: <y>
-ResultCalc.xlsx takes those lines in Sheet1!A and builds, with table formulas, a
-summary per workbook / sheet / column / kind, and a merge per workbook / sheet /
-kind. The formulas stop at the table's last row; this script does the same with
-no limit, from a text file (one line per row) or from ResultCalc's Sheet1 column A.
+ResultCalc.xlsx takes those lines in Sheet1!A and builds, with  table formulas, a
+summary per workbook / sheet / column / kind,  and a merge per workbook /  sheet /
+kind. The formulas stop at the  table's last row; this script does the same with
+no limit, from  a text file (one line per row)  or from ResultCalc's Sheet1 column A.
 
     python scripts/mind_log_table.py <log.txt | ResultCalc.xlsx> [--out table.csv] [--sheet-filter Diag]
 
@@ -20,7 +20,7 @@ import re
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
-LINE_RE = re.compile(r"^(?P<wb>.+?) > (?P<sheet>.+?) > (?P<cell>\$?[A-Z]{1,3}\$?\d+): Excel value: ?(?P<excel>.*?) ?Mind value: (?P<mind>.*)$", re.S)  # the Excel value may be blank
+LINE_RE = re.compile(r"^(?P<wb>.+?) > (?P<sheet>.+?) > (?P<cell>\$?[A-Z]{1,3}\$?\d+): Excel value: ?(?P<excel>.*?) ?Mind value: (?P<mind>.*)$", re.S)  # the  Excel value  may be blank
 COL_RE = re.compile(r"([A-Z]{1,3})(\d+)")
 
 
@@ -35,7 +35,7 @@ def _num(text: str) -> float | None:
 
 
 def kind_of(excel: str, mind: str) -> str:
-    """The same words ResultCalc uses."""
+    """The  same words  ResultCalc uses."""
     e, m = excel.strip(), mind.strip()
     if (e, m.lower()) in (("1", "true"), ("0", "false")):
         return "Same (a boolean: Excel's side shows 1/0, Mind's True/False)"
@@ -69,7 +69,7 @@ def read_lines(source: Path) -> list[str]:
 
 
 def ranges(cells: list[tuple[str, int]]) -> str:
-    """J80, K80, O80:O84 ... from (column, row) pairs: consecutive rows of one column joined."""
+    """J80,  K80, O80:O84  ... from (column, row) pairs: consecutive rows of one column joined."""
     by_col: dict[str, list[int]] = defaultdict(list)
     for col, row in cells:
         by_col[col].append(row)

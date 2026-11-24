@@ -182,3 +182,151 @@ def test_run_loop_offline_converges_on_local_gates(tmp_path, section_heading_gri
     assert (tmp_path / "loop" / "loop_report.json").is_file()
     assert any(e["event"] == "done" for e in events)
     assert Path(report["final_workbook"]).is_file()
+
+
+# --- 17 Nov 2026: the Cancel button (app/cancel.py) and the project a run leaves in Mind -------------
+class _Mind:
+    """app.mind_client for `_mind_iteration` (no browser): every step answers what the test gives it."""
+
+    def __init__(self, monkeypatch, **steps):
+        import contextlib
+
+        self.calls: list[str] = []
+        self.closed = 0
+        answers = {"open_manager": True, "ensure_folder": True, "create_blank_project": "https://mind.example/init/1", "open_project": "empty",
+                   "upload_and_convert": {"success": False, "steps": {}, "errors": ["Convert failed"], "text": ""}, "add_template": True,
+                   "delete_project": "deleted", "screenshot": None, **steps}
+        for name, answer in answers.items():
+            monkeypatch.setattr(ml.mc, name, self._step(name, answer))
+
+        @contextlib.contextmanager
+        def session(headed=False):
+            try:
+                yield None, type("Page", (), {"set_viewport_size": lambda self, size: None})()
+            finally:
+                self.closed += 1
+
+        monkeypatch.setattr(ml.mc, "mind_session", session)
+
+    def _step(self, name, answer):
+        def step(*args, **kwargs):
+            self.calls.append(name)
+            return answer(*args, **kwargs) if callable(answer) else answer
+
+        return step
+
+
+def _iteration(tmp_path, events, report):
+    cfg = ml.LoopConfig(source=tmp_path / "m.xlsx", work_dir=tmp_path / "loop")
+    return ml._mind_iteration(cfg, tmp_path / "it", tmp_path / "prepared.xlsx", {"unnamed": 0, "unnamed_anchors": []}, ["S"], 1, "20261117_010000", report, events.append)
+
+
+def _statuses(events):
+    return [e["status"] for e in events if e["event"] == "project"]
+
+
+def test_the_loop_tells_every_change_of_its_project_and_still_removes_one_it_did_not_run(tmp_path, monkeypatch):
+    mind = _Mind(monkeypatch)  # the convert fails: the project was made, never run
+    events, report = [], {"projects": []}
+    out = _iteration(tmp_path, events, report)
+    assert out["convert"]["success"] is False and mind.closed == 2  # the run's Edge, then the clean-up's
+    assert _statuses(events) == ["creating", "created", "deleted"] and report["projects"][0]["status"] == "deleted"
+    project = next(e for e in events if e["event"] == "project")
+    assert project["project"] == report["projects"][0]["name"] and project["project"].startswith(ml.mc.PROJECT_PREFIX) and project["ran"] is False
+    assert mind.calls[-1] == "delete_project"
+    # every event of the loop carries a message: the log on screen and the readers of the events show it
+    assert all(e.get("message") for e in events) and project["message"] == f"iteration 1: sandbox project {project['project']}: creating"
+
+
+def test_a_project_mind_did_not_make_is_not_created_again(tmp_path, monkeypatch):
+    _Mind(monkeypatch, create_blank_project=None)  # the click was made, no tile came
+    events, report = [], {"projects": []}
+    assert _iteration(tmp_path, events, report)["error"] == "project was not created"
+    assert _statuses(events) == ["creating", "not created"] and report["projects"][0]["status"] == "not created"
+
+    def broken(page, name):
+        raise RuntimeError("the page closed")
+
+    mind = _Mind(monkeypatch, create_blank_project=broken)  # as before tonight: a create that failed is not listed as left in Mind
+    events, report = [], {"projects": []}
+    assert "Mind automation failed" in _iteration(tmp_path, events, report)["error"]
+    assert _statuses(events) == ["creating", "not created"] and "delete_project" not in mind.calls
+
+
+def test_a_cancelled_run_leaves_through_edge_s_own_exit_and_deletes_nothing(tmp_path, monkeypatch):
+    from app import cancel
+
+    job = cancel.begin("mind-loop-test", "mind")
+
+    def open_project(page, init):  # Cancel is pressed while the project opens
+        job.flag.set()
+        return "empty"
+
+    mind = _Mind(monkeypatch, open_project=open_project)
+    events, report = [], {"projects": []}
+    try:
+        with cancel.bind(job), pytest.raises(cancel.Cancelled):
+            _iteration(tmp_path, events, report)
+    finally:
+        cancel.end(job, "cancelled")
+    assert _statuses(events) == ["creating", "created"] and report["projects"][0]["status"] == "created"  # kept: the person is offered "Delete it from Mind"
+    assert "upload_and_convert" not in mind.calls and "delete_project" not in mind.calls and mind.closed == 1
+
+    # ... and while Mind makes the project: it may be there, so it is not called "not created"
+    job = cancel.begin("mind-loop-test", "mind")
+
+    def create(page, name):
+        job.flag.set()
+        return None
+
+    _Mind(monkeypatch, create_blank_project=create)
+    events, report = [], {"projects": []}
+    try:
+        with cancel.bind(job):
+            out = _iteration(tmp_path, events, report)
+    finally:
+        cancel.end(job, "cancelled")
+    assert out["error"] == "project was not created" and _statuses(events) == ["creating"] and report["projects"][0]["status"] == "creating"
+
+
+def test_run_loop_cancelled_writes_its_report_and_gives_its_scans_and_apply_a_progress_that_reads_the_flag(tmp_path, section_heading_grids_xlsx, monkeypatch):
+    from app import cancel
+
+    seen: list = []
+    real_scan = ml.plan_mode.run
+
+    def scan(*args, **kw):
+        seen.append(("scan", kw.get("progress")))
+        return real_scan(*args, **kw)
+
+    def apply_operations(source, work_dir, ops, prefer_excel=True, progress=None):
+        seen.append(("apply", progress))
+        job.flag.set()  # Cancel is pressed while the changes are written
+        progress("apply_write", "Change 1", None)
+        raise AssertionError("the progress call did not leave")
+
+    monkeypatch.setattr(ml.plan_mode, "run", scan)
+    monkeypatch.setattr(ml.prep, "apply_operations", apply_operations)
+    cfg = ml.LoopConfig(source=section_heading_grids_xlsx, work_dir=tmp_path / "loop", max_iterations=2, use_assistant=False, skip_mind=True)
+    events: list[dict] = []
+    job = cancel.begin("mind-loop-test", "mind")
+    try:
+        with cancel.bind(job), pytest.raises(cancel.Cancelled):
+            ml.run_loop(cfg, events.append)
+    finally:
+        cancel.end(job, "cancelled")
+    assert seen == [("scan", ml._stop_check), ("apply", ml._stop_check)]
+    assert events[-1] == {"event": "done", "verdict": "cancelled", "message": "cancelled: stopped on request"}
+    report = __import__("json").loads((tmp_path / "loop" / "loop_report.json").read_text(encoding="utf-8"))
+    assert report["verdict"] == "cancelled" and report["reason"] == "stopped on request" and report["iterations"] == [] and report["leftover_projects"] == []
+    # with no job (the command line, the tests of before tonight) the calls are as they were: no progress is handed over
+    seen.clear()
+
+    def old_apply(source, work_dir, ops, prefer_excel=True):
+        seen.append(("apply", None))
+        work_dir.mkdir(parents=True, exist_ok=True)
+        return {"status": "PARTIAL", "output_path": work_dir / "x.xlsx", "applied": [], "failed": [ops[0]], "message": "refused", "verified_opens_in_excel": True}
+
+    monkeypatch.setattr(ml.prep, "apply_operations", old_apply)
+    assert ml.run_loop(ml.LoopConfig(source=section_heading_grids_xlsx, work_dir=tmp_path / "loop2", use_assistant=False, skip_mind=True))["verdict"] == "stuck"
+    assert seen == [("scan", None), ("apply", None)]

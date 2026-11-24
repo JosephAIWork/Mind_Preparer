@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every active rule against one xlsx/xlsm file and print a schema-valid
+"""Run  every active  rule against one xlsx/xlsm file and print a schema-valid
 ValidationReport. Deterministic only: a rule without a real check reports
 NOT_SUPPORTED, never a silently-skipped PASS.
 """

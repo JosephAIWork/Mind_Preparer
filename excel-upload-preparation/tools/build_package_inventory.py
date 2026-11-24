@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate PACKAGE_INVENTORY.json (path / bytes / sha256 for every
+"""Regenerate  PACKAGE_INVENTORY.json (path  / bytes / sha256 for every
 package file). Run after any change to the package so the inventory stays
 truthful; caches, logs and test scratch output are excluded."""
 from __future__ import annotations

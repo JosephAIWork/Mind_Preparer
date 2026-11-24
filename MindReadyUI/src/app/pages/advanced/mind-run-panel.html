@@ -1,29 +1,174 @@
 <div class="panel">
-  <p class="hint">The app runs itself against real Mind: prepare a copy, check the numbers and the structure, upload, convert, run, then decide what to change and try again. Needs a Mind sign-in (<span class="mono">python -m app.mind_client check</span>). One run at a time; a run takes minutes per iteration.</p>
+  <p class="hint">The app runs itself against real Mind: make the changes you tick below on a copy, check the numbers and the structure, upload, convert, run, then decide what to change and try again. Needs a Mind sign-in. One run at a time.</p>
 
-  <div class="row">
-    <label class="field">Max iterations <input type="text" [value]="maxIterations()" (input)="maxIterations.set(num($event))" style="width: 4rem" /></label>
-    <label class="check"><input type="checkbox" [checked]="runModel()" (change)="runModel.set(!runModel())" /> Run the model after converting</label>
-    <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set(!useAssistant())" /> Let the assistant name grids</label>
-    <button cdsButton="primary" size="md" (click)="start()" [disabled]="state() === 'running'">{{ state() === "running" ? "Running in Mind…" : report() ? "Run again" : "Run in Mind" }}</button>
+  <!-- the Mind sign-in: the app's own Edge profile, signed in once (about a week) -->
+  <div class="result" [class.result--ok]="signedIn()" [class.result--warn]="signIn()?.state === 'failed' || signIn()?.checked?.signed_in === false">
+    <strong>Mind sign-in</strong>
+    <span data-test="mind-sign-in-line">{{ signInLine() }}</span>
+    @if (keptIn()) { <span class="hint" data-test="mind-sign-in-kept">{{ keptIn() }}</span> }
+    <div class="row">
+      @if (signIn()?.state === "waiting") {
+        <button cdsButton="secondary" size="sm" (click)="stopSignIn()">Close the sign-in window</button>
+      } @else {
+        <button cdsButton="secondary" size="sm" (click)="openSignIn()" [disabled]="running() || starting() || checking() || signIn()?.state === 'checking'">Sign in to Mind</button>
+        <button cdsButton="ghost" size="sm" (click)="loadSignIn(true)" [disabled]="running() || starting() || checking() || signIn()?.state === 'checking'">Check the sign-in</button>
+        <!-- 17 Nov 2026: Cancel beside the check (10 to 40 s). The server has no job for it: the click is
+             kept on screen, and nothing more starts when the check answers. While a Run in Mind waits for
+             the check, its own Cancel (below) serves. -->
+        @if (checking() && !starting()) {
+          <mr-cancel kind="mind" size="sm" [busy]="cancelled()" (stopping)="onStopping()" (failed)="cancelFailed($event)"></mr-cancel>
+        }
+      }
+    </div>
+    @if (signInError()) { <span class="card__caution">{{ signInError() }}</span> }
+    <!-- 19 Nov 2026: a start that failed says what to do in a plain sentence; the program's own error goes with Send feedback -->
+    @if (signIn()?.state === "failed" && signIn()?.feedback_ref) {
+      <div class="row"><button cdsButton="ghost" size="sm" data-test="mind-sign-in-feedback" (click)="signInFeedback()">Send feedback</button></div>
+    }
   </div>
 
+  @if (!running()) {
+    <!-- before the click: what goes up, what changes first, how long -->
+    @if (options(); as o) {
+      <div class="result">
+        <strong>Uploads the latest version</strong>
+        <span><span class="mono">{{ o.version.label || o.version.id }}</span> · <span class="mono">{{ o.version.file_name }}</span></span>
+        @if (o.newest_version_id && o.newest_version_id !== o.version.id) {
+          <span class="card__caution">This is not the newest version: an older one was chosen in the version list. Pick the newest there to upload it.</span>
+        }
+        @if (o.busy) { <span class="card__caution">Wait a moment: {{ o.busy }}. Run in Mind starts once that has finished, so it uploads the latest version.</span> }
+      </div>
+
+      <h3 class="panel__h">Changes to make before uploading</h3>
+      @if (o.choices.length) {
+        <p class="hint">
+          Ticked changes are made on a copy before it goes to Mind. Untick what you do not want; untick all to upload the version as it is.
+          <button class="chip chip--button" (click)="tickAll(true)">Tick all</button>
+          <button class="chip chip--button" (click)="tickAll(false)">Untick all</button>
+        </p>
+        <div class="choices">
+          @for (c of o.choices; track c.id) {
+            <label class="check check--block">
+              <input type="checkbox" [checked]="ticked().has(c.id)" (change)="toggle(c.id)" />
+              <span>{{ c.title }} <span class="mono">({{ c.count }})</span>@if (!c.default_on) { <span class="chip">optional</span> }</span>
+            </label>
+          }
+        </div>
+        @if (!tickedCount()) { <p class="hint"><strong>Nothing ticked:</strong> the version is uploaded as it is.</p> }
+      } @else {
+        <p class="hint">Nothing left to change: the version is uploaded as it is.</p>
+      }
+
+      <div class="result">
+        <strong>Estimated time: {{ estimateText() }}</strong>
+        <span>{{ o.estimate.caveat }}</span>
+      </div>
+    }
+
+    <div class="row">
+      <label class="field">Max rounds <input type="text" [value]="maxIterations()" (input)="maxIterations.set(num($event))" style="width: 4rem" /></label>
+      <label class="check"><input type="checkbox" [checked]="runModel()" (change)="runModel.set(!runModel()); loadOptions()" /> Run the model after converting</label>
+      <label class="check"><input type="checkbox" [checked]="useAssistant()" (change)="useAssistant.set(!useAssistant()); loadOptions()" /> Let the assistant name grids</label>
+      <button cdsButton="primary" size="md" data-show-me="mind-run" (click)="start()" [disabled]="!!options()?.busy || starting() || !!deleting()">{{ report() ? "Run again" : "Run in Mind" }}</button>
+    </div>
+  }
+
+  @if (starting()) {
+    <!-- 17 Nov 2026: between the click and the server's job (the tab's own sign-in check or its options
+         are still on their way): Cancel is on screen already; nothing has reached the server yet -->
+    <div class="result" data-test="mind-starting">
+      <strong>{{ cancelled() ? "Stopping…" : "Starting…" }}</strong>
+      <span><mr-cancel kind="mind" size="md" [busy]="cancelled()" (stopping)="onStopping()" (failed)="cancelFailed($event)"></mr-cancel></span>
+    </div>
+  }
+
+  @if (running() || (timing() && state() !== "cancelled")) {
+    <!-- while it runs: the stages, what is going on now, time spent, time left -->
+    @if (timing(); as t) {
+      <div class="result" data-test="mind-progress" [class.result--ok]="state() === 'done' && report()?.verdict === 'converged'">
+        @if (running()) {
+          @if (stoppingNow()) {
+            <!-- 17 Nov 2026: from the click on Cancel until the run has really stopped -->
+            <strong>Stopping…</strong>
+          } @else {
+            <strong>{{ t.stage_title }}… <span class="mono">({{ clockText(t.stage_elapsed_s + drift()) }})</span></strong>
+            <span>{{ latestLine() }}</span>
+            <span>
+              Time spent <strong class="mono">{{ clockText(elapsed()) }}</strong>
+              @if (t.over_estimate) {
+                · taking longer than estimated, still working
+              } @else {
+                · about <strong>{{ minutes(remaining()) }}</strong> left (done by about {{ doneBy() }})
+              }
+              @if (t.iteration > 1) { · round {{ t.iteration }} of at most {{ t.max_iterations }} }
+            </span>
+            @if (t.last_news_s + drift() > 120) { <span class="hint">No news for {{ minutes(t.last_news_s + drift()) }}: Mind can be slow; the app is still waiting for it.</span> }
+          }
+          <!-- 17 Nov 2026: Cancel beside the progress. The run stops on the server; the project it was making stays in Mind -->
+          <span><mr-cancel kind="mind" size="md" [busy]="stoppingNow()" (stopping)="onStopping()" (stopped)="onStopped()" (failed)="cancelFailed($event)"></mr-cancel></span>
+        } @else {
+          <strong>Finished in {{ clockText(t.elapsed_s) }}</strong>
+        }
+        @if (runVersion(); as v) { <span class="hint">Uploaded version: <span class="mono">{{ v.label || v.id }}</span></span> }
+      </div>
+      <ol class="stages">
+        @for (st of t.stages; track st.id) {
+          <li [class]="'stages__item stages__item--' + st.state">
+            <span class="stages__mark">{{ st.state === "done" ? "✓" : st.state === "now" ? "▶" : "·" }}</span> {{ st.title }}
+          </li>
+        }
+      </ol>
+    } @else {
+      <div class="result" data-test="mind-progress">
+        <strong>{{ stoppingNow() ? "Stopping…" : "Starting…" }}</strong>
+        <span><mr-cancel kind="mind" size="md" [busy]="stoppingNow()" (stopping)="onStopping()" (stopped)="onStopped()" (failed)="cancelFailed($event)"></mr-cancel></span>
+      </div>
+    }
+  }
+
+  @if (!running() && !starting()) {
+    <!-- 17 Nov 2026, after a Cancel: what was stopped, and the projects a stopped run left in Mind. Each
+         one has its own "Delete it from Mind": nothing is deleted without a click. Shown again, under a
+         line that says what they are, whenever the tab opens on a workbook that still has such a project. -->
+    @if (stopLine()) {
+      <div class="result" data-test="mind-stopped"><strong>{{ stopLine() }}</strong></div>
+    }
+    @if (keptRows().length || earlierLine()) {
+      <div class="result" data-test="mind-kept">
+        @if (keptLead()) { <strong data-test="mind-kept-lead">{{ keptLead() }}</strong> }
+        @for (row of keptRows(); track row.name) {
+          <div class="row" data-test="mind-kept-project">
+            <span class="mono">{{ row.name }}</span>
+            @if (row.button) {
+              <button cdsButton="tertiary" size="sm" data-test="mind-delete" (click)="deleteProject(row.name)" [disabled]="!!deleting()">Delete it from Mind</button>
+            }
+            @if (row.note) { <span data-test="mind-delete-note">{{ row.note }}</span> }
+            @if (row.openMind; as url) { <a class="link" data-test="mind-open" [href]="url" target="_blank" rel="noopener">Open Mind</a> }
+          </div>
+        }
+        @if (earlierLine()) { <span data-test="mind-earlier">{{ earlierLine() }}</span> }
+      </div>
+    }
+  }
+
   @if (error()) {
-    <div class="result result--error"><strong>Mind run</strong><span>{{ error() }}</span></div>
+    <div class="result result--error"><strong>Mind run</strong><span>{{ error() }}<mr-show-me [text]="error()"></mr-show-me></span></div>
   }
 
   @if (report(); as r) {
-    <div class="result" [class.result--ok]="r.verdict === 'converged'" [class.result--warn]="r.verdict === 'stuck' || r.verdict === 'exhausted'">
-      <strong><span [class]="verdictClass()">{{ r.verdict || state() }}</span> &nbsp;{{ r.reason || summary() }}</strong>
-      @if (r.final_workbook) { <span class="mono">{{ r.final_workbook }}</span> }
-      @if (r.leftover_projects?.length) { <span>Projects to delete by hand in Mind: {{ r.leftover_projects!.join(", ") }}</span> }
-    </div>
+    @if (r.verdict && state() !== "cancelled") {
+      <div class="result" [class.result--ok]="r.verdict === 'converged'" [class.result--warn]="r.verdict === 'stuck' || r.verdict === 'exhausted'">
+        <strong><span [class]="verdictClass()">{{ r.verdict }}</span> &nbsp;{{ r.reason || summary() }}</strong>
+        @if (r.final_workbook) { <span class="mono">{{ r.final_workbook }}</span> }
+        @if (r.leftover_projects?.length) { <span>Projects to delete by hand in Mind: {{ r.leftover_projects!.join(", ") }}</span> }
+      </div>
+    }
   }
 
   @for (it of iterations(); track it.n) {
     <div class="card">
       <div class="card__head">
-        <span class="card__title">Iteration {{ it.n }}</span>
+        <span class="card__title">Round {{ it.n }}</span>
         @if (it.decision) { <span class="card__count">{{ it.decision.verdict }}: {{ it.decision.reason }}</span> }
       </div>
       <div class="row">
@@ -31,7 +176,7 @@
           <span [class]="gate(it, $any(g)).cls">{{ gate(it, $any(g)).label }}</span>
         }
       </div>
-      @if (it.actions.length) { <p class="hint">{{ it.actions.length }} actions: @for (a of it.actions; track a.id) { <span class="mono">{{ a.id }} ({{ a.count }})</span> } </p> }
+      @if (it.actions.length) { <p class="hint">{{ it.actions.length }} changes: @for (a of it.actions; track a.id) { <span class="mono">{{ a.id }} ({{ a.count }})</span> } </p> }
       @if (it.mind?.convert?.errors?.length) {
         <ul class="plain">@for (e of it.mind!.convert!.errors.slice(0, 8); track $index) { <li>{{ e }}</li> }</ul>
       }
@@ -41,9 +186,11 @@
   }
 
   @if (events().length) {
-    <h3 class="panel__h">Live log</h3>
-    <div class="log mono">
-      @for (e of events(); track $index) { <div>{{ when(e.t) }} {{ e.event }}{{ e.n ? " #" + e.n : "" }} {{ e.message || "" }}{{ e.verdict ? " → " + e.verdict : "" }}</div> }
-    </div>
+    <button class="chip chip--button" (click)="showLog.set(!showLog())">{{ showLog() ? "Hide" : "Show" }} the detailed log</button>
+    @if (showLog()) {
+      <div class="log mono">
+        @for (e of events(); track $index) { <div>{{ when(e.t) }} {{ e.event }}{{ e.n ? " #" + e.n : "" }} {{ e.message || "" }}{{ e.verdict ? " → " + e.verdict : "" }}</div> }
+      </div>
+    }
   }
 </div>

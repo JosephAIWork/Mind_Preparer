@@ -1,14 +1,18 @@
 import { HttpClient, HttpParams } from "@angular/common/http";
 import { Injectable, inject } from "@angular/core";
 import { firstValueFrom } from "rxjs";
+import { ExpiryService } from "./expiry";
+import { FeedbackService } from "./feedback.service";
 import {
-  ApplyOutcome, AppHealth, AssistantKey, AutoFixStatus, CellWindow, ChainEstimate, PivotMode, PrepAction, ChatMessage, ChatReply, ChatStreamEvent, FixTarget, GridNamerOutcome, GridNamesResult, LoopPlan, MindFlag, NamedArea, SheetCells, MindLoopOptions, MindLoopStatus, Mode, ModelMap, NumbersCheck, Operation, PendingUpload, PrepProgress, Readiness, RecalcResult, ReportBuild, ScanStatus, SessionStart, Version,
+  AiUsage, AppHealth, ApplyOutcome, AssistantKey, AutoFixStatus, CancelResult, CellWindow, ChainEstimate, ChatMessage, ChatReply, ChatStreamEvent, FeedbackMessage, FinderResult, FixTarget, GridNamerOutcome, GridNamesResult, InputFile, InstanceChoices, InstancePlan, InstancesOutcome, LoopChoices, LoopPlan, MindDelete, MindFlag, MindLoopOptions, MindLoopStatus, MindRunOptionsInfo, MindSignIn, Mode, ModelMap, NamedArea, NextQuarterStatus, NumbersCheck, Operation, OutsideInputs, OutsideRunStatus, PendingUpload, PivotMode, PlainCodesGlossary, PrepAction, PrepProgress, PrepRunStatus, Readiness, RecalcResult, ReportBuild, SavedWorkbook, ScanStatus, SessionStart, SheetCells, Version, WorkJob,
 } from "./models";
 
-/** Calls to the Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
+/** Calls  to the  Mind Ready backend (FastAPI, app/web/server.py). Same contracts as FigmaOutput/src/services/api.ts. */
 @Injectable({ providedIn: "root" })
 export class ApiService {
   private http = inject(HttpClient);
+  private feedbackBox = inject(FeedbackService);
+  private expiry = inject(ExpiryService);
   private base = "/api";
 
   private s(id: string): string {
@@ -19,22 +23,89 @@ export class ApiService {
     return firstValueFrom(this.http.get<AppHealth>(`${this.base}/health`));
   }
 
-  /** Whether an AI gateway key is saved, and its last 4 characters (the key itself never comes back). */
+  /** The  plain words  for the codes the screens show: each rule's name, what each Excel error value means. */
+  plainCodes(): Promise<PlainCodesGlossary> {
+    return firstValueFrom(this.http.get<PlainCodesGlossary>(`${this.base}/plain-codes`));
+  }
+
+  /** Whether an AI gateway key is saved, and its last 4 characters (the key itself never comes  back). */
   assistantKey(): Promise<AssistantKey> {
     return firstValueFrom(this.http.get<AssistantKey>(`${this.base}/assistant-key`));
   }
 
-  /** Checked with the gateway, then saved encrypted for this Windows user; a refused key is not saved. */
+  /** Checked with the gateway, then saved encrypted for this Windows user;  a refused key is not saved. */
   saveAssistantKey(key: string): Promise<AssistantKey> {
     return firstValueFrom(this.http.post<AssistantKey>(`${this.base}/assistant-key`, { key }));
   }
 
-  upload(file: File, mode: Mode = "plan", defer = true): Promise<SessionStart | PendingUpload> {
+  /** 1.14.1:  the tokens and calls the assistant spent  on this workbook since it was uploaded. */
+  aiUsage(id: string): Promise<{ aiUsage: AiUsage; line: string }> {
+    return firstValueFrom(this.http.get<{ aiUsage: AiUsage; line: string }>(`${this.s(id)}/ai-usage`));
+  }
+
+  /** The Send feedback message: the  incident `ref` (null from the header), the  user's note. */
+  feedback(body: { ref: string | null; note: string; useAssistant: boolean; sessionId: string | null }): Promise<FeedbackMessage> {
+    return firstValueFrom(this.http.post<FeedbackMessage>(`${this.base}/feedback`, body));
+  }
+
+  /** One workbook goes as the field "file" (as always); several files -- the model and its input
+   *  files -- go as repeated "files", and the server finds which one is the model. */
+  upload(files: File | File[], mode: Mode = "plan", defer = true): Promise<SessionStart | PendingUpload> {
+    const list = Array.isArray(files) ? files : [files];
     const form = new FormData();
-    form.append("file", file, file.name);
+    if (list.length === 1) form.append("file", list[0], list[0].name);
+    else for (const f of list) form.append("files", f, f.name);
     form.append("mode", mode);
     if (defer) form.append("defer", "1");
     return firstValueFrom(this.http.post<SessionStart | PendingUpload>(`${this.base}/sessions`, form));
+  }
+
+  /** Adds (or replaces, by name) the model's input files; the server matches them again, no new scan
+   *  (the readiness, when sent, says the new counts). */
+  addInputs(id: string, files: File[]): Promise<{ inputs: InputFile[]; outsideInputs: OutsideInputs | null; readiness?: Readiness | null }> {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return firstValueFrom(this.http.post<{ inputs: InputFile[]; outsideInputs: OutsideInputs | null; readiness?: Readiness | null }>(`${this.s(id)}/inputs`, form));
+  }
+
+  /** Starts bringing the outside files in (a  background job: the model's own import macro, then the
+   *  Mind inputs); refused (409) while another long job runs on the session. */
+  startOutsideInputs(id: string, standIns = false, waitForInputs = false): Promise<{ running: boolean; state?: string }> {
+    // standIns: the assistant first makes the missing files from the numbers the model holds;
+    // waitForInputs (Do everything): with files missing the job waits for them instead (state "waiting_for_inputs")
+    const body: Record<string, boolean> = {};
+    if (standIns) body["standIns"] = true;
+    if (waitForInputs) body["waitForInputs"] = true;
+    return firstValueFrom(this.http.post<{ running: boolean; state?: string }>(`${this.s(id)}/outside-inputs/run`, body));
+  }
+
+  /** 1.14.0: go on after the wait for the input files: with every file picked, or with the assistant's
+   *  stand-ins for the missing ones (`makeStandIns`). 409 says what is still missing. */
+  continueOutsideInputs(id: string, makeStandIns = false): Promise<{ running: boolean; state?: string }> {
+    return firstValueFrom(this.http.post<{ running: boolean; state?: string }>(`${this.s(id)}/outside-inputs/continue`, makeStandIns ? { makeStandIns: true } : {}));
+  }
+
+  /** 1.14.0: end the wait for the input files  (nothing was changed). */
+  stopOutsideInputs(id: string): Promise<{ running: boolean; state: string }> {
+    return firstValueFrom(this.http.post<{ running: boolean; state: string }>(`${this.s(id)}/outside-inputs/stop`, {}));
+  }
+
+  /** Where that job  is (stage), and its result or error  once it has  ended. */
+  outsideInputs(id: string): Promise<OutsideRunStatus> {
+    return firstValueFrom(this.http.get<OutsideRunStatus>(`${this.s(id)}/outside-inputs`));
+  }
+
+  /** Starts making  next quarter's Mind input files from the new quarter's raw input files (a background
+   *  job: the model's own import macro on a copy, then one file per Mind input grid, in a  zip). */
+  startNextQuarter(id: string, files: File[]): Promise<{ running: boolean; raw: string[]; grid_files: { file: string; grid: string }[]; notes: string[] }> {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return firstValueFrom(this.http.post<{ running: boolean; raw: string[]; grid_files: { file: string; grid: string }[]; notes: string[] }>(`${this.s(id)}/next-quarter-inputs`, form));
+  }
+
+  /** The grids next quarter's files fill, and where that job is  (its result or error once it  has ended). */
+  nextQuarter(id: string): Promise<NextQuarterStatus> {
+    return firstValueFrom(this.http.get<NextQuarterStatus>(`${this.s(id)}/next-quarter-inputs`));
   }
 
   analyze(id: string, ignoreSheets: string[] = []): Promise<SessionStart> {
@@ -45,11 +116,33 @@ export class ApiService {
     return firstValueFrom(this.http.get<SessionStart>(this.s(id)));
   }
 
+  /** 1.14.0: the workbooks kept in the  data folder (the main screen's "Recent workbooks"), last opened first. */
+  async savedWorkbooks(): Promise<SavedWorkbook[]> {
+    const out = await firstValueFrom(this.http.get<{ workbooks: SavedWorkbook[] }>(`${this.base}/saved-workbooks`));
+    return out.workbooks ?? [];
+  }
+
+  /** Loads a  saved workbook again (every version, the check  result, the plans and results) and answers as
+   *  `resume` does; a workbook uploaded but never checked comes back as a pending upload. */
+  openSavedWorkbook(id: string): Promise<SessionStart | PendingUpload> {
+    return firstValueFrom(this.http.post<SessionStart | PendingUpload>(`${this.base}/saved-workbooks/${encodeURIComponent(id)}/open`, {}));
+  }
+
+  /** Removes a saved workbook from this computer (its folder with every version). */
+  removeSavedWorkbook(id: string): Promise<{ removed: boolean; id: string }> {
+    return firstValueFrom(this.http.delete<{ removed: boolean; id: string }>(`${this.base}/saved-workbooks/${encodeURIComponent(id)}`));
+  }
+
+  /** 1.15.0: removes every saved workbook except those another running copy of the app holds (or a step is running on). */
+  removeAllSavedWorkbooks(): Promise<{ removed: number; kept: number; kept_workbooks?: { id: string; name: string; why: string }[] }> {
+    return firstValueFrom(this.http.delete<{ removed: number; kept: number; kept_workbooks?: { id: string; name: string; why: string }[] }>(`${this.base}/saved-workbooks`));
+  }
+
   scanStatus(id: string): Promise<ScanStatus> {
     return firstValueFrom(this.http.get<ScanStatus>(`${this.s(id)}/status`));
   }
 
-  /** 1.11.7: what Prep does with the pivot tables; the plan comes back made again with it. */
+  /** 1.11.7: what Prep does with the pivot tables; the plan comes  back made again with it. */
   setPivotMode(id: string, mode: PivotMode): Promise<{ pivot_mode: PivotMode; plan: PrepAction[]; readiness: Readiness | null }> {
     return firstValueFrom(this.http.post<{ pivot_mode: PivotMode; plan: PrepAction[]; readiness: Readiness | null }>(`${this.s(id)}/pivot-mode`, { mode }));
   }
@@ -65,6 +158,21 @@ export class ApiService {
 
   apply(id: string, operations: Operation[], versionStep: "major" | "minor" = "major"): Promise<ApplyOutcome> {
     return firstValueFrom(this.http.post<ApplyOutcome>(`${this.s(id)}/apply`, { operations, reanalyze: true, versionStep }));
+  }
+
+  /** 17 Nov 2026: starts the Prep step as one job on the server (202 `{state: "running"}`): Prep rounds
+   *  while a round still changes something, then the assistant on what is left (`assistant` false: it is
+   *  not asked), each of its fixes kept only when no number changed. Refused (409) while other work runs
+   *  on the workbook. `button`: the name of the button that started it, for  the sentences the job writes
+   *  ("...  then press Start again."): "Start" on Basic,  "Do everything" on  Custom. */
+  startPrepRun(id: string, o: { assistant?: boolean; button?: "Start" | "Do everything" } = {}): Promise<{ state: string }> {
+    return firstValueFrom(this.http.post<{ state: string }>(`${this.s(id)}/prep-run`, { assistant: o.assistant ?? true, button: o.button ?? "Start" }));
+  }
+
+  /** Where that  job is: its stage and one plain sentence while it runs; at its end "done", the question
+   *  ("ask"), "no_key", "cancelled" or "error". `full` adds `analysis`, the workbook as `resume` gives it. */
+  prepRun(id: string, full = false): Promise<PrepRunStatus> {
+    return firstValueFrom(this.http.get<PrepRunStatus>(`${this.s(id)}/prep-run`, full ? { params: new HttpParams().set("full", "1") } : {}));
   }
 
   recalculate(id: string): Promise<RecalcResult> {
@@ -84,14 +192,51 @@ export class ApiService {
     return firstValueFrom(this.http.post<AutoFixStatus>(`${this.s(id)}/auto-fix/stop`, {}));
   }
 
-  mindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean; fixed_ranges?: boolean } = {}): Promise<{ version_id: string; plan: LoopPlan }> {
+  mindLoopPlan(id: string, o: LoopChoices = {}): Promise<{ version_id: string; plan: LoopPlan }> {
     let params = new HttpParams();
-    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "" && v !== false) params = params.set(k, String(v));
+    for (const [k, v] of Object.entries(o)) {
+      if (v === undefined || v === "" || v === false) continue;
+      if (k === "loops") {
+        if (Object.keys(v as object).length) params = params.set(k, JSON.stringify(v)); // each loop's  choices, as JSON
+        continue;
+      }
+      params = params.set(k, String(v));
+    }
     return firstValueFrom(this.http.get<{ version_id: string; plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan`, { params }));
   }
 
-  applyMindLoopPlan(id: string, o: { name?: string; first?: string; last?: string; count_cell?: string; clear_old?: boolean; fixed_ranges?: boolean } = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
+  applyMindLoopPlan(id: string, o: LoopChoices = {}): Promise<ApplyOutcome & { plan: LoopPlan }> {
     return firstValueFrom(this.http.post<ApplyOutcome & { plan: LoopPlan }>(`${this.s(id)}/mind-loop-plan/apply`, { ...o, reanalyze: true }));
+  }
+
+  /** The Mind instances plan: one copy of the model  per value of the key column;  `key` a header or a column letter,  `keys` present|all. */
+  mindInstancesPlan(id: string, o: InstanceChoices = {}): Promise<{ version_id: string; plan: InstancePlan }> {
+    let params = new HttpParams();
+    for (const [k, v] of Object.entries(o)) {
+      if (v === undefined || v === "") continue;
+      if (k === "loop_choices") {
+        if (Object.keys(v as object).length) params = params.set(k, JSON.stringify(v)); // each loop's choices, as JSON
+        continue;
+      }
+      params = params.set(k, String(v));
+    }
+    return firstValueFrom(this.http.get<{ version_id: string; plan: InstancePlan }>(`${this.s(id)}/mind-instances-plan`, { params }));
+  }
+
+  /** Writes the instances into a new  version, then the main workbook beside it  and the zip of both. */
+  applyMindInstancesPlan(id: string, o: InstanceChoices = {}): Promise<InstancesOutcome> {
+    return firstValueFrom(this.http.post<InstancesOutcome>(`${this.s(id)}/mind-instances-plan/apply`, { ...o, reanalyze: true }));
+  }
+
+  /** The zip with both files (the model copy and the main workbook); 404 until something was written. */
+  mindInstancesDownloadUrl(id: string): string {
+    return `${this.s(id)}/mind-instances/download`;
+  }
+
+  /** Where instances or a loop would help, ranked (nothing written); `assistant` adds the assistant's explanation on top. Slow: up to two minutes on a big model. */
+  instanceFinder(id: string, assistant = false, refresh = false): Promise<{ version_id: string; finder: FinderResult }> {
+    const params = new HttpParams().set("assistant", assistant ? "1" : "0").set("refresh", refresh ? "1" : "0");
+    return firstValueFrom(this.http.get<{ version_id: string; finder: FinderResult }>(`${this.s(id)}/instance-finder`, { params }));
   }
 
   versions(id: string): Promise<Version[]> {
@@ -124,13 +269,56 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ state: string; work_dir?: string }>(`${this.s(id)}/mind-loop`, opts));
   }
 
+  /** The Mind sign-in; `check` also loads Mind (headless) to see whether it still works. */
+  mindSignIn(check = false): Promise<MindSignIn> {
+    const params = new HttpParams().set("check", String(check));
+    return firstValueFrom(this.http.get<MindSignIn>(`${this.base}/mind/sign-in`, { params }));
+  }
+
+  /** Open the Edge  window to sign in to Mind (or `stop` closes it). */
+  startMindSignIn(stop = false): Promise<MindSignIn> {
+    return firstValueFrom(this.http.post<MindSignIn>(`${this.base}/mind/sign-in`, stop ? { stop: true } : {}));
+  }
+
+  /** What Run in Mind will upload, the changes it can make first, what must finish first, the time estimate. */
+  mindLoopOptions(id: string, o: { useAssistant: boolean; runModel: boolean }): Promise<MindRunOptionsInfo> {
+    const params = new HttpParams().set("use_assistant", String(o.useAssistant)).set("run_model", String(o.runModel));
+    return firstValueFrom(this.http.get<MindRunOptionsInfo>(`${this.s(id)}/mind-loop/options`, { params }));
+  }
+
   mindLoopStatus(id: string, after = 0): Promise<MindLoopStatus> {
     const params = new HttpParams().set("after", String(after));
     return firstValueFrom(this.http.get<MindLoopStatus>(`${this.s(id)}/mind-loop`, { params }));
   }
 
-  /** The assistant's streamed answer (NDJSON over a POST body): `onEvent` gets phases and text deltas, the promise the whole reply. */
-  async chatStream(id: string, history: ChatMessage[], question: string, focus: FixTarget | undefined, onEvent: (ev: ChatStreamEvent) => void): Promise<ChatReply> {
+  /** 17 Nov 2026: "Delete it from Mind", for a project a cancelled run left there. Blocking, about a
+   *  minute; the answer says in one sentence what Mind did (five results, see `MindDelete`). */
+  deleteMindProject(id: string, name: string): Promise<MindDelete> {
+    return firstValueFrom(this.http.post<MindDelete>(`${this.s(id)}/mind-loop/delete-project`, { name }));
+  }
+
+  /** 17 Nov 2026: Cancel. Stops what runs on the server for this workbook: one `kind` of work ("apply",
+   *  "recalc", ... see `WorkKind`), or everything when  `kind` is null. The answer  comes once the work has
+   *  really ended (after  about 20 s  at most  it names what is still `stopping`). The stopped work's own
+   *  request answers 409 by itself (`wasCancelled`), so nothing has to be abandoned on the screen.
+   *  17 Nov 2026 (review R1-5): `kind` may also  be a list of kinds, sent as {"kinds": [...]}: only work  of
+   *  those kinds is stopped (the Cancel  beside Start stops Start's own steps, never  a Run in Mind or an
+   *  assistant's answer started on another screen). */
+  cancel(id: string, kind: string | readonly string[] | null = null): Promise<CancelResult> {
+    const body = Array.isArray(kind) ? { kinds: [...kind] } : kind ? { kind } : {};
+    return firstValueFrom(this.http.post<CancelResult>(`${this.s(id)}/cancel`, body));
+  }
+
+  /** 17  Nov 2026: what runs on the server  for this workbook right now, in plain words (empty: nothing). */
+  async jobs(id: string): Promise<WorkJob[]> {
+    const out = await firstValueFrom(this.http.get<{ jobs: WorkJob[] }>(`${this.s(id)}/jobs`));
+    return out?.jobs ?? [];
+  }
+
+  /** The assistant's streamed answer (NDJSON over a POST body): `onEvent` gets phases and text deltas, the promise the whole reply.
+   *  17 Nov 2026: null when the answer was stopped with Cancel: the server ended the stream with its
+   *  "cancelled" line, or the `signal` given here aborted the request. */
+  async chatStream(id: string, history: ChatMessage[], question: string, focus: FixTarget | undefined, onEvent: (ev: ChatStreamEvent) => void, signal?: AbortSignal): Promise<ChatReply | null> {
     const body = {
       history: history.map((m) => ({ role: m.role, content: m.content, note: m.note ?? false })),
       question,
@@ -138,33 +326,52 @@ export class ApiService {
         ? { kind: focus.kind ?? "finding", rule_id: focus.rule_id, sheet: focus.sheet, cell: focus.cell, error: focus.error, formula: focus.formula, addin_gap: focus.addin_gap ?? false, cells: focus.cells, cause: focus.cause }
         : undefined,
     };
-    const res = await fetch(`${this.s(id)}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    // an aborted request (the click on Cancel)  is not a failure: it answers null, as the "cancelled" line does
+    const aborted = (e: unknown) => !!signal?.aborted || (e as { name?: string } | null)?.name === "AbortError";
+    let res: Response;
+    try {
+      res = await fetch(`${this.s(id)}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+    } catch (e) {
+      if (aborted(e)) return null;
+      throw e;
+    }
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => null);
+      if (err?.cancelled === true) return null; // stopped before the stream began (409, no incident)
+      this.feedbackBox.report(err?.incident, err?.problem);
+      this.expiry.noteAnswer(res.status, err); // fetch, not HttpClient: the interceptor does not see this one
       throw new Error(typeof err?.detail === "string" ? err.detail : `${res.status} ${res.statusText}`);
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let reply: ChatReply | null = null;
+    let cancelled = false;
     const handle = (line: string) => {
       if (!line.trim()) return;
       const ev = JSON.parse(line);
       if (ev.type === "done") reply = { text: ev.text, proposal: ev.proposal ?? null, provenance: ev.provenance };
+      else if (ev.type === "cancelled") cancelled = true; // the server stopped the answer: its last line
       else if (ev.type === "error") throw new Error(ev.detail || "the assistant failed");
       else if (ev.type === "phase" || ev.type === "delta") onEvent(ev as ChatStreamEvent);
     };
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        handle(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          handle(buffer.slice(0, nl));
+          buffer = buffer.slice(nl + 1);
+        }
       }
+      if (buffer.trim()) handle(buffer);
+    } catch (e) {
+      if (aborted(e)) return null;
+      throw e;
     }
-    if (buffer.trim()) handle(buffer);
+    if (cancelled || signal?.aborted) return null;
     if (!reply) throw new Error("the assistant sent no answer");
     return reply;
   }
@@ -192,7 +399,14 @@ export class ApiService {
   }
 }
 
-/** The text of a failed call, as the backend's `detail` when it sent one. */
+/** 17  Nov 2026:  the call failed because the work was stopped with Cancel (HTTP 409 with `cancelled:
+ *  true`; its `detail` is "Stopped. Nothing was changed."). Every blocking call asks this first in its
+ *  `catch`: a cancelled  call is no error, shows no red line and never reaches  the store. */
+export function wasCancelled(e: unknown): boolean {
+  return (e as { error?: { cancelled?: unknown } | null } | null)?.error?.cancelled === true;
+}
+
+/** The  text of  a failed call, as the backend's `detail` when it sent one. */
 export function errorText(e: unknown): string {
   const err = e as { error?: { detail?: unknown }; message?: string; status?: number };
   const detail = err?.error?.detail;

@@ -120,6 +120,21 @@
   white-space: nowrap;
 }
 
+// The rule column: the code (small, grey) and its plain name, which wraps
+.rule {
+  min-width: 13rem;
+  max-width: 18rem;
+}
+
+// What the error values a message quotes mean: once, under the message
+.meanings {
+  list-style: none;
+  margin: $spacing-02 0 0;
+  padding: 0;
+  @include type.type-style("helper-text-01");
+  color: theme.$text-secondary;
+}
+
 .row {
   display: flex;
   gap: $spacing-05;

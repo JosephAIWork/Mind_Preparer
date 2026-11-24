@@ -18,6 +18,35 @@
   @include theme.theme(themes.$g100);
 }
 
+// 18 Nov 2026: Carbon hides the header's Basic / Custom / Advanced links below 66rem (a window snapped
+// to half a screen, a laptop at 125 %), and the app has no side menu. They stay, smaller, on the same
+// line; the name drops "Milliman", then the Beta tag and the version, to make room.
+@media (max-width: 65.99rem) {
+  .cds--header__nav {
+    display: block;
+    padding-inline-start: 0.5rem;
+  }
+
+  .cds--header__nav .cds--header__menu-item {
+    padding: 0 0.75rem;
+  }
+
+  .cds--header__name--prefix {
+    display: none;
+  }
+}
+
+@media (max-width: 47.99rem) {
+  .shell__beta,
+  .shell__version {
+    display: none !important;
+  }
+
+  .cds--header__nav .cds--header__menu-item {
+    padding: 0 0.5rem;
+  }
+}
+
 html,
 body {
   margin: 0;
@@ -39,4 +68,9 @@ p {
 
 a {
   color: theme.$link-primary;
+}
+
+// "Show me" scrolls a place into the window: its top stays clear of the fixed header (3rem).
+[data-show-me] {
+  scroll-margin-top: 4.5rem;
 }

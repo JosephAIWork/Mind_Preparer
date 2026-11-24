@@ -10,6 +10,7 @@ from app.config import load_config
 from app.excel_com import com_available
 from app.inventory import build_analysis
 from app.modes import plan_mode
+from app.plain_codes import rule_name, rule_names
 from app.prep import apply_operations, formula_replacement_op, plan_actions
 from app.rules_engine import RulesEngine
 from app.validators import run_rule
@@ -39,9 +40,10 @@ def test_plan_on_broken_model_lists_concrete_operations_and_skips(tmp_path, flag
     # 'Kind' -> 'Type' (PAR-002), 'Setting' -> 'Name' (PRJ-002) header corrections
     headers = {(o["before"], o["after"]) for o in plan["special_headers"]["operations"]}
     assert ("Kind", "Type") in headers and ("Setting", "Name") in headers
-    # the trapped '#Second' title shares rows with other grids -> skipped with a reason, never a blind row insert
-    assert plan["separate_merged_grids"]["count"] == 0
-    assert any("split" in s for s in plan["separate_merged_grids"]["skipped"])
+    # the trapped '#Second' title shares rows with other grids: never a whole-row insert that would split
+    # them -- 1.12.1: only its own grid's column (AI4:AI8) shifts down, the grids beside it stay
+    sep = plan["separate_merged_grids"]["operations"]
+    assert len(sep) == 1 and sep[0]["row"] == 6 and sep[0]["columns"] == "AI:AI"
     # plans never touch the file
     assert flagged_model_broken_xlsx.stat().st_size > 0
 
@@ -129,11 +131,32 @@ def test_context_pack_and_retrieval_are_grounded(tmp_path, flagged_model_broken_
     ctx = chat_context.build_context_pack(result["workbook_analysis"], result["validation_report"], plan)
     assert "## Model" in ctx and "## Settings" in ctx and "/Reorder /Inpt" in ctx
     assert "[ERROR] RES-002" in ctx and "Prep actions" in ctx
-    assert len(ctx) <= chat_context.MAX_CONTEXT_CHARS
+    # the budget, and the rules' plain names on top of it (each rule named once at most)
+    assert len(ctx) <= chat_context.MAX_CONTEXT_CHARS + sum(len(f" ({n})") for n in rule_names().values())
     detail = chat_context.retrieve("why does RES-002 fail, and what is in Model!J6? show the Params grid", result["workbook_analysis"], result["validation_report"])
     assert "## Finding RES-002" in detail
     assert "J6 = =MM_RESULT(J5,\"scenario\",1)" in detail
     assert "## Grid Params" in detail and "PossibleValues" in detail
+
+
+def test_the_rules_names_never_push_out_the_end_of_the_context(tmp_path, flagged_model_broken_xlsx, monkeypatch):
+    """Each rule is named once, the first time the pack cites it, and the names come on top of the
+    pack's budget: a pack that only just fitted before the names were added still ends with its last
+    findings and every Prep action."""
+    result, _ = _run(tmp_path, flagged_model_broken_xlsx)
+    analysis, report = result["workbook_analysis"], result["validation_report"]
+    plan = plan_actions(analysis, report)
+    named = chat_context.build_context_pack(analysis, report, plan)
+    with monkeypatch.context() as m:
+        m.setattr(chat_context, "cite", lambda rule_id: str(rule_id))  # the pack as it was before the names
+        bare = chat_context.build_context_pack(analysis, report, plan, max_chars=10**9)
+    tight = chat_context.build_context_pack(analysis, report, plan, max_chars=len(bare))
+    assert len(named) > len(bare) and tight == named  # nothing cut
+    assert tight.splitlines()[-1].startswith(f"- {plan[-1]['title']} ({plan[-1]['id']}, rules ")
+    assert all(f"({a['id']}, rules " in tight for a in plan)
+    for rid in {x["rule_id"] for x in report["findings"] if x["status"] != "PASS"}:
+        if rule_name(rid):
+            assert tight.count(f"{rid} ({rule_name(rid)})") == 1, rid
 
 
 def test_answer_question_keeps_history_and_uses_the_gateway(tmp_path, plain_grid_xlsx, monkeypatch):
@@ -325,10 +348,10 @@ def test_create_grid_titles_uses_surrounding_context(tmp_path, untitled_grids_xl
     assert any(o["op"] == "clear_cell" and o["cell"] == "J4" for o in a["operations"])
     # header row only -> name from the headers
     assert titles[("Data", "O3")] == "#Year Amount"
-    # grid on row 1 -> insert a row, then title written at the post-insert coordinate
-    assert any(o["op"] == "insert_row" and o["sheet"] == "Top" and o["row"] == 1 for o in a["operations"])
-    top_title = [o for o in a["operations"] if o["sheet"] == "Top" and o["op"] == "set_value"][0]
-    assert top_title["cell"] == "A1" and top_title["after"] == "#X Y" and top_title.get("after_inserts")
+    # grid on row 1 -> 1.14.0: nothing is inserted to make room; the grid is reported with what to do by hand
+    assert not any(o["op"] == "insert_row" for o in a["operations"])
+    assert not any(o["sheet"] == "Top" for o in a["operations"])
+    assert any(s.startswith("Top!A1:B2: starts on row 1") and "Insert an empty row above it by hand" in s for s in a["skipped"]), a["skipped"]
     # every title target is distinct and every name unique
     targets = [(o["sheet"], o["cell"]) for o in a["operations"] if o["op"] == "set_value"]
     assert len(targets) == len(set(targets))
@@ -348,11 +371,13 @@ def test_create_grid_titles_applied_by_excel_makes_every_grid_titled(tmp_path, u
     assert out["status"] == "APPLIED" and out["verified_opens_in_excel"] is True
     after = build_analysis(Path(out["output_path"]), tmp_path / "after", "t")
     grids = all_grids(after)
-    assert all(g["name"] for g in grids), [g["display_name"] for g in grids if not g["name"]]
+    assert [f"{g['sheet']}!{g['ref']}" for g in grids if not g["name"]] == ["Top!A1:B2"]  # row 1: nothing moved, left for a person
     assert sorted(g["name"] for g in grids if g["sheet"] == "Data") == ["Factors", "Premium table", "Rates", "Year Amount"]
     rates = next(g for g in grids if g["name"] == "Rates")
     assert rates["ref"] == "F5:G7"  # one grid, not a one-column block plus a leftover
-    assert run_rule(engine.get("STR-004"), after, load_config())["status"] == "PASS"
+    assert run_rule(engine.get("STR-004"), after, load_config())["status"] != "PASS"  # Top!A1:B2 is still untitled
+    before_top = build_analysis(untitled_grids_xlsx, tmp_path / "before", "t")
+    assert [g["ref"] for g in all_grids(after) if g["sheet"] == "Top"] == [g["ref"] for g in all_grids(before_top) if g["sheet"] == "Top"]
 # --- assistant-proposed changes (1.5.0) -----------------------------------------------
 
 
@@ -605,50 +630,53 @@ def test_assistant_retries_a_rejected_proposal(tmp_path, array_formula_xlsx, mon
 # --- section headings, insert placement, assistant naming (1.6.7) ---------------------
 
 
-def test_section_heading_above_names_the_block_and_makes_room_for_the_title(tmp_path, section_heading_grids_xlsx):
-    """The cell above the block is another grid (a section number + title), so
-    the title action inserts a row and names the block from that heading."""
+def test_section_heading_above_a_block_is_reported_and_nothing_moves(tmp_path, section_heading_grids_xlsx):
+    """The cell above the block is another grid (a section number + title). Up to 1.13.0 the title
+    action inserted a row to make room; since 1.14.0 (Joseph, 10 November 2026) a title never moves
+    a cell: the block is reported under "could not name" with the heading's text and what to do."""
     result, _ = _run(tmp_path, section_heading_grids_xlsx)
     plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))
     ops = plan["create_grid_titles"]["operations"]
-    inserts = sorted(o["row"] for o in ops if o["op"] == "insert_row" and o["sheet"] == "CF")
-    assert inserts == [3, 9]
-    titles = {o["after"]: o for o in ops if o["op"] == "set_value"}
-    assert "#Demographic Assumptions" in titles and "#Economic Assumptions" in titles
-    for name in ("#Demographic Assumptions", "#Economic Assumptions"):
-        assert titles[name].get("after_inserts") and titles[name].get("insert_at")
-    # planned on original coordinates ...
-    assert titles["#Demographic Assumptions"]["cell"] == "C3"
-    assert titles["#Economic Assumptions"]["cell"] == "C9"
+    assert not any(o["op"] == "insert_row" for o in ops)
+    assert not any(o["sheet"] == "CF" and o.get("cell") in ("C2", "C3", "C8", "C9") for o in ops), ops
+    skipped = plan["create_grid_titles"]["skipped"]
+    assert any(s.startswith("CF!C3:D5: the cell above (C2) holds 'Demographic Assumptions' (part of the grid untitled B2, B2:C2)") and "Leave an empty row above the grid by hand" in s for s in skipped), skipped
+    assert any(s.startswith("CF!C9:D10: the cell above (C8) holds 'Economic Assumptions'") for s in skipped), skipped
 
 
-def test_post_insert_coordinates_shift_for_every_earlier_insert(tmp_path, section_heading_grids_xlsx):
-    """... and are resolved against *all* inserts in the applied set, so the
-    second title lands one row lower than it was planned."""
+def test_post_insert_coordinates_shift_for_every_earlier_insert():
+    """An older plan (before 1.14.0) holds row inserts with titles written after them: the apply
+    path still resolves those titles against *all* inserts in the applied set, so the second title
+    lands one row lower than it was planned."""
     from app.prep import _ordered
 
-    result, _ = _run(tmp_path, section_heading_grids_xlsx)
-    plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))
-    ordered = _ordered(plan["create_grid_titles"]["operations"])
+    old = [
+        {"op": "insert_row", "action_id": "create_grid_titles", "rule_id": "STR-004", "sheet": "CF", "row": 3},
+        {"op": "set_value", "action_id": "create_grid_titles", "rule_id": "STR-004", "sheet": "CF", "cell": "C3", "after": "#Demographic Assumptions", "after_inserts": True, "insert_at": 3},
+        {"op": "insert_row", "action_id": "create_grid_titles", "rule_id": "STR-004", "sheet": "CF", "row": 9},
+        {"op": "set_value", "action_id": "create_grid_titles", "rule_id": "STR-004", "sheet": "CF", "cell": "C9", "after": "#Economic Assumptions", "after_inserts": True, "insert_at": 9},
+    ]
+    ordered = _ordered(old)
+    assert [o["op"] for o in ordered] == ["insert_row", "insert_row", "set_value", "set_value"]
+    assert [o["row"] for o in ordered[:2]] == [9, 3]  # bottom-up
     resolved = {o["after"]: o["cell"] for o in ordered if o["op"] == "set_value"}
     assert resolved["#Demographic Assumptions"] == "C3"  # no insert above it
     assert resolved["#Economic Assumptions"] == "C10"    # the insert at row 3 pushed it down
     # ordering is stable: resolving twice gives the same answer
-    assert {o["after"]: o["cell"] for o in _ordered(plan["create_grid_titles"]["operations"]) if o["op"] == "set_value"} == resolved
+    assert {o["after"]: o["cell"] for o in _ordered(old) if o["op"] == "set_value"} == resolved
 
 
-@needs_excel
-def test_section_heading_blocks_are_all_named_after_excel_applies(tmp_path, section_heading_grids_xlsx):
+def test_section_heading_blocks_keep_their_cells(tmp_path, section_heading_grids_xlsx):
+    """The plan for the section-heading layout changes nothing on CF: both blocks are left for a
+    person, and the heading rows stay where they are."""
     from app.grids import all_grids
 
     result, _ = _run(tmp_path, section_heading_grids_xlsx)
     plan = _by_id(plan_actions(result["workbook_analysis"], result["validation_report"]))
-    out = apply_operations(section_heading_grids_xlsx, tmp_path / "prep", plan["create_grid_titles"]["operations"])
-    assert out["status"] == "APPLIED" and out["verified_opens_in_excel"] is True
-    after = build_analysis(Path(out["output_path"]), tmp_path / "after", "t")
-    named = {g["name"] for g in all_grids(after) if g["name"]}
-    assert {"Demographic Assumptions", "Economic Assumptions"} <= named
-    assert all(g["name"] for g in all_grids(after)), [g["display_name"] for g in all_grids(after) if not g["name"]]
+    # only the two heading rows themselves get a title (in the empty cells above them)
+    assert sorted(o["cell"] for o in plan["create_grid_titles"]["operations"] if o["sheet"] == "CF") == ["B1", "B7"]
+    assert [g["ref"] for g in all_grids(result["workbook_analysis"])] == ["B2:C2", "C3:D5", "B8:C8", "C9:D10"]
+    assert sum(1 for s in plan["create_grid_titles"]["skipped"] if s.startswith("CF!C3:D5") or s.startswith("CF!C9:D10")) == 2
 
 
 def test_is_weak_name_spots_the_fallbacks_worth_replacing():
@@ -671,15 +699,15 @@ def test_assistant_names_are_used_only_where_the_heuristic_is_weak(tmp_path, sec
 
     result, _ = _run(tmp_path, section_heading_grids_xlsx)
     analysis, report = result["workbook_analysis"], result["validation_report"]
-    # C3:D5 already gets a real name from its heading; B8:C8 only gets the
-    # '<Sheet> <Anchor>' fallback, so only that one takes the proposal.
+    # B8:C8 only gets the '<Sheet> <Anchor>' fallback, so it takes the proposal; C3:D5 (under the
+    # heading row, no free cell above it) is left for a person since 1.14.0, proposal or not.
     baseline = {o["after"] for o in plan_create_grid_titles(analysis, report)[0] if o["op"] == "set_value"}
-    assert "#CF B8" in baseline and "#Demographic Assumptions" in baseline
+    assert "#CF B8" in baseline and "#Demographic Assumptions" not in baseline
 
     proposed = {"CF!C3:D5": "Policy Demographics", "CF!B8:C8": "Section Two Heading"}
-    names = {o["after"] for o in plan_create_grid_titles(analysis, report, proposed)[0] if o["op"] == "set_value"}
-    assert "#Demographic Assumptions" in names  # heading wins over the proposal
-    assert "#Policy Demographics" not in names
+    ops, skipped = plan_create_grid_titles(analysis, report, proposed)
+    names = {o["after"] for o in ops if o["op"] == "set_value"}
+    assert "#Policy Demographics" not in names and any(s.startswith("CF!C3:D5:") for s in skipped)
     assert "#Section Two Heading" in names      # weak fallback replaced by the proposal
     assert "#CF B8" not in names
 

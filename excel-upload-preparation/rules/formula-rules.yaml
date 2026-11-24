@@ -136,11 +136,11 @@ rules:
   version: 1.0.0
   status: active
   category: formula
-  description: 'INDIRECT used as a value -- Mind returns a reference for INDIRECT and cannot turn it into a value ("Unable to cast AM.Models.AMReference to System.IConvertible").'
+  description: 'INDIRECT -- Mind does not follow it: used as a value it stops the run ("Unable to cast AM.Models.AMReference to System.IConvertible"); used as a range (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE)) it is not computed and an IFERROR around it shows its fallback (Model D (an IFRS 17 tool), 2026-11-08). The fix writes the plain reference the text builds; a target on a sheet that is not in the workbook becomes NA() (an error in Excel already). A sheet left out of the scan at the user''s request still exists: a target on it becomes the plain reference exactly as without the skip (its cells and grids are not checked and not guessed), and a text that needs one of its cells is left for a person (2026-11-10: the 480 Result_CF lookups of Model D (an IFRS 17 tool) had become NA() with the calculation sheets skipped).'
   confidence: HIGH
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-01, a client model)
+    document: real Mind conversion testing (2026-10-01, a client model; 2026-11-08, Model D (an IFRS 17 tool))
     article: FRM-007
   validation:
     deterministic: true
@@ -278,4 +278,25 @@ rules:
   - No error cell comes from arithmetic on a cell that holds "" without IFERROR.
   fail_if:
   - A cell shows #VALUE! because its formula does arithmetic on a cell that holds "", with no IFERROR.
+  severity_source: BLOCKER
+- id: FRM-014
+  version: 1.0.0
+  status: active
+  category: formula
+  description: 'Arithmetic on a range that OFFSET returns -- SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)): Mind computes another number (the last cell of a range); on the written-out range ($H$4:$H$6) it computes what Excel does.'
+  confidence: HIGH
+  priority: REQUIRED
+  source:
+    document: real Mind conversion testing (2026-11-09, Model D (an IFRS 17 tool) and a probe workbook)
+    article: FRM-014
+  validation:
+    deterministic: true
+    implementation: validators.formula.offset_range_arithmetic
+  correction:
+    automatic: true
+  on_unevaluable: NOT_SUPPORTED
+  pass_if:
+  - No formula does arithmetic (+ - * / ^) on a range that OFFSET returns.
+  fail_if:
+  - A formula does arithmetic on a range of several cells that OFFSET returns.
   severity_source: BLOCKER

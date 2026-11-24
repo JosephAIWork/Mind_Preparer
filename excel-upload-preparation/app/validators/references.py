@@ -1,19 +1,19 @@
-"""Reference checks Mind's converter or runner enforces, each learnt from a
+"""Reference  checks Mind's  converter or runner enforces, each learnt from a
 real refusal:
 
   * FRM-005 circular references -- Mind's runner stops with "Run error:
     Circular reference found" (observed 2026-09-30). Excel tolerates a
-    cycle when iterative calculation is on; Mind never does. The dependency
-    graph of every formula cell (references, ranges, defined names) is
-    searched for cycles and each cycle is reported as its chain of cells.
+    cycle when iterative calculation is on; Mind  never does. The dependency
+    graph of every formula cell (references, ranges, defined  names) is
+    searched for cycles and each  cycle is reported as its chain of  cells.
   * FRM-006 3-D references -- 'First:Last'!A1 spans every sheet between two
-    tabs. Mind reads 'First:Last' as one sheet name and fails with "Sheet
+    tabs. Mind  reads 'First:Last' as one sheet name and  fails with "Sheet
     '...' not found in workbook ... on compiling formula" (observed
     2026-09-30). The sheets the reference spans are listed in tab order and
     the equivalent explicit formula is proposed -- without the sheets that
     hold no grid: Mind creates no spreadsheet for those (divider tabs such
     as '>>>' that hold only a heading: "Spreadsheet not found error",
-    2026-10-01), and an empty sheet adds nothing to SUM/AVERAGE/COUNT/MIN/
+    2026-10-01), and an empty sheet adds nothing to  SUM/AVERAGE/COUNT/MIN/
     MAX. The same rule flags any other formula that reads a grid-less sheet.
 
 Neither has an automatic repair: a cycle is broken by a modelling decision
@@ -31,40 +31,42 @@ from ..formula_utils import REF_RE, called_functions, cell_refs_in_formula, mask
 from ._common import finding
 
 DYNAMIC_REFERENCE_FUNCTIONS = {"INDIRECT", "OFFSET"}
-# ROW($A10), COLUMN(B:B), ROWS(...), COLUMNS(...) and OFFSET's first argument use a reference as a
+# ROW($A10),  COLUMN(B:B), ROWS(...),  COLUMNS(...) and OFFSET's first argument use a reference as a
 # coordinate and never read its value: Excel does not count it as a dependency (=ROW(A1) in A1 and
-# =OFFSET(A1,0,1) in A1 are not circular), so neither do we. "all" = every argument, else the positions.
-# Arguments a function evaluates only on some path: IF's two branches, IFERROR/IFNA's fallback,
-# CHOOSE's and SWITCH's values, IFS' pairs after the first condition. A cycle that only closes
-# through such an argument is one Excel computes (the branches never evaluate together).
+# =OFFSET(A1,0,1) in A1 are not  circular), so neither do we. "all" = every argument, else the  positions.
+# Arguments a function evaluates only on  some path: IF's two branches, IFERROR/IFNA's fallback,
+# CHOOSE's  and SWITCH's values, IFS' pairs after the first condition. A cycle  that only closes
+# through such an argument is  one Excel computes (the branches never evaluate together).
 CONDITIONAL_ARGS: dict[str, Any] = {"IF": {1, 2}, "IFERROR": {1}, "IFNA": {1}, "CHOOSE": "rest", "SWITCH": "rest", "IFS": "rest"}
-# A lookup reads ONE cell of its table. A cycle that closes only through the table of an
-# INDEX / VLOOKUP / HLOOKUP / MATCH / LOOKUP / XLOOKUP is not a cycle for Excel (once INDIRECT
-# became direct references, =INDEX(<a large input table>, ...) reached a cell that reads the sheet
-# the lookup sits on; Excel reported no circular reference) -- it is reported as a conditional one.
+# A  lookup reads  ONE cell of its table. A cycle that closes only through the table of an
+# INDEX / VLOOKUP / HLOOKUP / MATCH / LOOKUP / XLOOKUP is not a cycle for Excel  (once INDIRECT
+# became direct references, =INDEX(<a large input table>, ...) reached a  cell that reads the sheet
+# the lookup  sits on; Excel reported no circular reference)  -- it is reported as a conditional one.
 LOOKUP_TABLE_ARGS: dict[str, Any] = {"INDEX": {0}, "VLOOKUP": {1}, "HLOOKUP": {1}, "MATCH": {1}, "LOOKUP": "rest", "XLOOKUP": {1, 2}}
-COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}}
+# CELL("filename",  A1) in  A1 asks where the cell is, not what it holds: no cycle for Excel either
+# (Model D (an IFRS 17 tool), 2026-11-07). Only CELL("contents", A1) reads the value; it is rare and  FRM-012 freezes CELL anyway.
+COORDINATE_ARGS: dict[str, Any] = {"ROW": "all", "COLUMN": "all", "ROWS": "all", "COLUMNS": "all", "OFFSET": {0}, "CELL": {1}}
 MAX_CYCLES_REPORTED = 12
-# INDIRECT("'"&sheet&"'!"&ADDRESS(ROW(),COLUMN())): the cell reads its own address on a sheet chosen
+# INDIRECT("'"&sheet&"'!"&ADDRESS(ROW(),COLUMN())):  the cell  reads its own address on a sheet chosen
 # at run time. Mind resolved that to the cell itself and stopped ("Run error: Circular reference found",
-# 70k such cells on one sheet of a real model, 2026-09-30).
+# 70k such cells on one sheet of a  real model, 2026-09-30).
 SELF_ADDRESS_RE = re.compile(r"ADDRESS\(\s*ROW\(\s*\)\s*,\s*COLUMN\(\s*\)", re.IGNORECASE)
 MAX_CHAIN = 12
 
 QUOTED_3D_RE = re.compile(r"'((?:[^']|'')*:(?:[^']|'')*)'!")
-BARE_3D_RE = re.compile(r"(?<![A-Za-z0-9_.!'\[])([A-Za-z0-9_.]+):([A-Za-z0-9_.]+)!")
-SHEET_NEEDS_QUOTES_RE = re.compile(r"[^A-Za-z0-9_.]")
+BARE_3D_RE = re.compile(r"(?<![\w.!'\[])([\w.]+):([\w.]+)!")
+SHEET_NEEDS_QUOTES_RE = re.compile(r"[^\w.]")
 
 
-# --- FRM-005 -----------------------------------------------------------------------------
+# ---  FRM-005 -----------------------------------------------------------------------------
 def blank_arguments(formula: str, spec: dict[str, Any]) -> str:
-    """The formula with the chosen arguments of the chosen functions blanked
+    """The  formula with  the chosen arguments of the chosen functions blanked
     (same length, so positions hold). `spec`: function -> set of argument
     positions, "rest" (every argument but the first) or "all"."""
     masked = mask_strings(formula)
     out = list(formula)
     for name, positions in spec.items():
-        pattern = re.compile(rf"(?<![A-Za-z0-9_.])(?:_xl[a-z]+\.)?{name}\s*\(", re.IGNORECASE)
+        pattern = re.compile(rf"(?<![\w.])(?:_xl[a-z]+\.)?{name}\s*\(", re.IGNORECASE)
         for m in pattern.finditer(masked):
             i = m.end()
             depth = 1
@@ -92,20 +94,20 @@ def blank_arguments(formula: str, spec: dict[str, Any]) -> str:
 
 
 def unconditional_text(formula: str) -> str:
-    """What a formula reads on every calculation: its conditionally evaluated arguments blanked."""
+    """What  a formula  reads on every calculation: its conditionally evaluated arguments blanked."""
     return blank_arguments(blank_arguments(formula, CONDITIONAL_ARGS), LOOKUP_TABLE_ARGS)
 
 
 class _Graph:
-    """Formula cells as nodes; the edges of a node -- every formula cell it
+    """Formula  cells as  nodes; the edges of a node -- every formula cell it
     reads directly, through a range or through a defined name -- are produced
-    on demand and never stored: a model can hold 100k formulas each summing a
-    column of formulas, and materialising that is what runs out of memory."""
+    on demand and never stored: a model can hold  100k formulas each summing a
+    column of formulas, and materialising that is  what runs out of memory."""
 
     def __init__(self, wb0: dict[str, Any]) -> None:
         self.formulas = wb0.get("formulas", [])
         self.sheets = {s["name"] for s in wb0.get("sheets", [])}
-        # sheet -> row -> sorted (col, node), for the rectangle lookups; a multi-cell
+        # sheet ->  row -> sorted (col, node), for the  rectangle lookups; a multi-cell
         # array formula owns every cell of its range
         self.rows: dict[str, dict[int, list[tuple[int, int]]]] = {}
         self.row_keys: dict[str, list[int]] = {}
@@ -134,7 +136,7 @@ class _Graph:
             refs = [r for r in cell_refs_in_formula("=" + value) if r.get("sheet") in self.sheets]
             if refs:
                 self.names.setdefault(str(d["name"]).upper(), []).extend(refs)
-        self.visited = 0  # member cells looked at, against the budget
+        self.visited = 0  # member  cells looked at, against the budget
         self.range_ids: dict[tuple[str, int, int, int, int], int] = {}
         self.ranges: list[dict[str, Any]] = []
 
@@ -155,7 +157,7 @@ class _Graph:
         return refs, dynamic
 
     def members(self, ref: dict[str, Any]) -> Iterator[int]:
-        """The formula cells inside a rectangle."""
+        """The  formula cells inside a rectangle."""
         rows = self.rows.get(ref["sheet"])
         if not rows:
             return
@@ -194,7 +196,7 @@ class _Graph:
                 yield self.range_node(ref)
 
     def formula_neighbours(self, i: int, unconditional: bool = False) -> set[int]:
-        """The formula cells formula i reads, ranges expanded (small use only)."""
+        """The formula cells formula i reads,  ranges expanded (small use only)."""
         refs, _ = self.refs_of(i, unconditional)
         out: set[int] = set()
         for ref in refs:
@@ -202,15 +204,15 @@ class _Graph:
         return out
 
 
-WORK_BUDGET = 200_000_000  # member cells looked at before the search gives up (memory and time)
+WORK_BUDGET = 200_000_000  # member  cells looked  at before the search gives up (memory and time)
 
 
 def _cycles(graph: _Graph) -> tuple[list[list[int]], bool]:
-    """Tarjan's strongly connected components, iteratively and with the edges
+    """Tarjan's  strongly connected  components, iteratively and with the edges
     produced on demand. Range nodes are created as they are met, so the
     bookkeeping lists grow with them. A component is a cycle when it holds
-    more than one node (a formula and the range that contains it is one), or
-    when a formula reads its own cell. Returns (components of formula nodes,
+    more than  one node (a formula and the range that contains it is  one), or
+    when a formula reads its  own cell. Returns (components of formula nodes,
     gave_up)."""
     n = len(graph.formulas)
     index = [-1] * n
@@ -225,7 +227,7 @@ def _cycles(graph: _Graph) -> tuple[list[list[int]], bool]:
 
     stack: list[int] = []
     comps: list[list[int]] = []
-    self_loops: set[int] = set()  # a formula reading its own cell directly
+    self_loops: set[int] = set()  # a  formula reading its own cell directly
     counter = 0
     for root in range(n):
         if index[root] != -1:
@@ -273,7 +275,7 @@ def _cycles(graph: _Graph) -> tuple[list[list[int]], bool]:
 
 
 def _has_cycle(nodes: list[int], adj: dict[int, set[int]]) -> bool:
-    """A cycle inside a small subgraph (a node reading itself counts)."""
+    """A  cycle inside  a small subgraph (a node reading itself counts)."""
     inside = set(nodes)
     colour: dict[int, int] = {}
     for start in nodes:
@@ -298,7 +300,7 @@ def _has_cycle(nodes: list[int], adj: dict[int, set[int]]) -> bool:
 
 
 def _chain(graph: _Graph, comp: list[int], adj: dict[int, set[int]]) -> list[str]:
-    """One closed walk inside the component, from its first cell back to itself."""
+    """One  closed walk  inside the component, from its first cell back to itself."""
     start = comp[0]
     inside = set(comp)
     path = [start]
@@ -322,7 +324,7 @@ def _chain(graph: _Graph, comp: list[int], adj: dict[int, set[int]]) -> list[str
 
 
 def circular_references(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FRM-005: cycles among the workbook's formulas."""
+    """FRM-005:  cycles among  the workbook's formulas."""
     wb0 = analysis["workbooks"][0]
     graph = _Graph(wb0)
     comps, gave_up = _cycles(graph)
@@ -431,7 +433,7 @@ def _quote_sheet(name: str) -> str:
 
 
 def _split_3d(text: str) -> tuple[str, str] | None:
-    """'First:Last' (quotes removed) -> (First, Last); sheet names never contain ':'."""
+    """'First:Last'  (quotes removed)  -> (First, Last); sheet names never contain ':'."""
     if ":" not in text:
         return None
     first, last = text.split(":", 1)
@@ -439,13 +441,19 @@ def _split_3d(text: str) -> tuple[str, str] | None:
 
 
 def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
-    """FRM-006: 'First:Last'!ref references spanning several sheets, and
+    """FRM-006:  'First:Last'!ref references  spanning several sheets, and
     references to sheets Mind does not import. `limit` caps the sites kept
     in the finding (None: every site, for a caller that applies the proposals)."""
+    from ..inventory import ignored_sheet_names, sheet_order
+
     wb0 = analysis["workbooks"][0]
-    order = [s["name"] for s in wb0.get("sheets", [])] + [s["name"] for s in wb0.get("ignored_sheets", [])]
+    # tab order, the sheets the  scan skipped at their own index: a span 'First:Last' runs over
+    # them  like any other sheet (a skipped  sheet exists; its cells were just never  read)
+    order = sheet_order(wb0)
     known = set(order)
-    # sheets Mind creates no spreadsheet for: nothing on them makes a grid
+    unscanned = set(ignored_sheet_names(analysis))
+    # sheets Mind creates no spreadsheet for: nothing on them makes a  grid. A skipped sheet's grids
+    # are unknown and  not guessed: it is kept in the proposal, as without the skip
     gridless = {s["name"] for s in wb0.get("sheets", []) if not s.get("grids")}
     sites = []
     gridless_sites = []
@@ -476,7 +484,7 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
             else:
                 sheets = []
             kept = [x for x in sheets if x not in gridless]
-            spans.append({"reference": formula[start:end], "first": first, "last": last, "sheets": sheets, "omitted_empty": [x for x in sheets if x in gridless]})
+            spans.append({"reference": formula[start:end], "first": first, "last": last, "sheets": sheets, "omitted_empty": [x for x in sheets if x in gridless], "unscanned": [x for x in sheets if x in unscanned]})
             if sheets and kept:
                 # the reference token is followed by the cell/range it applies to: repeat it per sheet
                 m = re.match(r"(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7})", suggested[end:])
@@ -535,17 +543,17 @@ def three_d_references(rule, analysis: dict[str, Any], config: dict[str, Any], l
 
 # --- FRM-007 -----------------------------------------------------------------------------
 # INDIRECT's result used as a value -- compared, multiplied, divided, negated, concatenated:
-# Mind returns a reference object for INDIRECT and cannot turn it into a number ("Run error:
+# Mind  returns a reference object for INDIRECT and cannot turn it into a number ("Run error:
 # Unable to cast object of type 'AM.Models.AMReference' to type 'System.IConvertible'",
 # observed 2026-10-01). Where the text INDIRECT builds can be worked out from constants (string
 # literals, cells holding text, ROW()/COLUMN(), simple arithmetic and text functions), the
 # equivalent direct reference is proposed; a target that does not exist in the workbook is an
 # error in Excel already (#REF!) and that call becomes NA() in its place -- never the whole
-# formula: the call may sit in an IF branch that is never taken.
+# formula: the call may  sit in an IF branch  that is never taken.
 VALUE_OPERATORS = set("=<>+-*/^&")
-# functions whose argument is a value, never a range: NOT(INDIRECT(...)) converts the result too
+# functions  whose argument  is a value, never a range: NOT(INDIRECT(...)) converts the result too
 VALUE_ONLY_FUNCTIONS = {"NOT", "AND", "OR", "ABS", "ROUND", "ROUNDUP", "ROUNDDOWN", "INT", "SQRT", "EXP", "LN", "LOG", "LOG10", "POWER", "MOD", "LEN", "LEFT", "RIGHT", "MID", "UPPER", "LOWER", "TRIM", "TEXT", "VALUE", "YEAR", "MONTH", "DAY", "ISNUMBER", "ISTEXT", "ISLOGICAL"}
-INDIRECT_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?INDIRECT\s*\(", re.IGNORECASE)
+INDIRECT_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?INDIRECT\s*\(", re.IGNORECASE)
 
 
 class Unresolvable(Exception):
@@ -553,11 +561,11 @@ class Unresolvable(Exception):
 
 
 class _Expr:
-    """A small evaluator for the text argument of INDIRECT, from the workbook's
+    """A  small evaluator  for the text argument of INDIRECT, from the workbook's
     own constants: enough for "'"&$G710&"'!$Z$16", "LoB"&COLUMN()-6&"_Boolean",
     RIGHT(E2,IF(LEN(E2)=5,1,2)). Anything else raises Unresolvable."""
 
-    TOKEN = re.compile(r"\s*(?:(\"(?:[^\"]|\"\")*\")|(\d+(?:\.\d+)?)|('[^']+'![$A-Za-z0-9:]+|[A-Za-z_][A-Za-z0-9_.]*![$A-Za-z0-9:]+|\$?[A-Z]{1,3}\$?\d{1,7})|([A-Za-z_][A-Za-z0-9_.]*)|(<>|<=|>=|[=<>&+\-*/()^,;]))")
+    TOKEN = re.compile(r"\s*(?:(\"(?:[^\"]|\"\")*\")|(\d+(?:\.\d+)?)|('[^']+'![$A-Za-z0-9:]+|[^\W\d][\w.]*![$A-Za-z0-9:]+|\$?[A-Z]{1,3}\$?\d{1,7})|([^\W\d][\w.]*)|(<>|<=|>=|[=<>&+\-*/()^,;]))")
     FUNCS = {"ROW", "COLUMN", "LEN", "LEFT", "RIGHT", "MID", "IF", "UPPER", "LOWER", "TRIM", "VALUE", "INT", "TRUE", "FALSE", "N", "T"}
 
     def __init__(self, text: str, lookup, sheet: str, row: int, col: int, names: dict[str, str]):
@@ -716,6 +724,13 @@ class _Expr:
         return v
 
 
+class _Blank(str):
+    """An  empty cell  read by a formula: "" as text, 0 as a number (Excel's own reading)."""
+
+
+BLANK = _Blank("")
+
+
 def _text(v) -> str:
     if isinstance(v, bool):
         return "TRUE" if v else "FALSE"
@@ -725,6 +740,8 @@ def _text(v) -> str:
 
 
 def _num(v) -> float:
+    if isinstance(v, _Blank):
+        return 0.0
     if isinstance(v, bool):
         return 1.0 if v else 0.0
     if isinstance(v, (int, float)):
@@ -753,7 +770,7 @@ def _truth(v) -> bool:
 
 
 def _indirect_calls(formula: str) -> list[dict[str, Any]]:
-    """Every INDIRECT call: its span, its argument text (first argument only)
+    """Every  INDIRECT call:  its span, its argument text (first argument only)
     and whether its result is used as a value (an operator right before the
     call or right after it)."""
     masked = mask_strings(formula)
@@ -774,7 +791,7 @@ def _indirect_calls(formula: str) -> list[dict[str, Any]]:
         if depth:
             continue
         end = i
-        before = masked[1 : m.start()].rstrip()[-1:]  # the formula's leading '=' is not an operator: =INDIRECT(...) alone is a reference
+        before = masked[1 : m.start()].rstrip()[-1:]  # the formula's leading '=' is not an  operator: =INDIRECT(...) alone is a reference
         after = masked[end:].lstrip()[:1]
         as_value = before in VALUE_OPERATORS or after in VALUE_OPERATORS
         if not as_value and before in "(,;":
@@ -788,7 +805,7 @@ def _indirect_calls(formula: str) -> list[dict[str, Any]]:
 
 
 def _enclosing_function(masked: str, pos: int) -> str | None:
-    """The function whose argument list the text at `pos` sits in, if any."""
+    """The  function whose  argument list the text at `pos` sits in, if any."""
     depth = 0
     i = pos - 1
     while i >= 0:
@@ -797,20 +814,341 @@ def _enclosing_function(masked: str, pos: int) -> str | None:
             depth += 1
         elif ch == "(":
             if depth == 0:
-                m = re.search(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$", masked[:i])
+                m = re.search(r"([^\W\d][\w.]*)\s*$", masked[:i])
                 return m.group(1).upper() if m else None
             depth -= 1
         i -= 1
     return None
 
 
+# INDIRECT("Cluster"&n) where the names Cluster1..ClusterN are N neighbouring single cells of one column
+# (or one row), in order: the same cell as INDEX(<those  N cells>, n) for every whole n from 1 to N,  and
+# #REF! in both for a whole  n above N. Model B, 2026-11-19: 2,320  such formulas, n built from ROW, COLUMN,
+# ROUNDUP and COUNTA, so the  text cannot be worked out from constants.  Only a whole n that is never below 1
+# is accepted: INDEX truncates 2.5 where INDIRECT finds no name "Cluster2.5", INDEX(..., 0) is the whole list
+# and INDEX(..., -1) #VALUE! where INDIRECT gives #REF! (Haiku 5.5 refuter, 20 Nov 2026).
+_NAMED_LIST_ARG_RE = re.compile(r'^\s*"([A-Za-z_\\][\w.]*)"\s*&\s*(.+?)\s*$', re.S)
+_COUNTS = frozenset({"COUNT", "COUNTA", "COUNTBLANK", "COUNTIF", "COUNTIFS"})
+_ROUNDINGS = frozenset({"ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC"})
+_INF = float("inf")
+_BIG = 10**11  # more  than the  cells of a sheet (1,048,576 x 16,384): no count, row or column number reaches it
+_MAX_ROW, _MAX_COL = 1_048_576, 16_384
+
+
+def _top_level_args(text: str) -> list[str]:
+    """The  arguments of  a call's inside, split at the commas of its own level (strings already masked)."""
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch in ",;" and depth == 0:
+            out.append(text[start:i])
+            start = i + 1
+    out.append(text[start:])
+    return out
+
+
+def _to_whole(name: str, x):
+    """ROUND  / ROUNDUP  / ROUNDDOWN / TRUNC to 0 digits (away from or towards zero, as Excel), INT (down)."""
+    import math
+    from fractions import Fraction
+
+    if x in (_INF, -_INF):
+        return x
+    x = Fraction(x)
+    if name == "INT":
+        return Fraction(math.floor(x))
+    sign, a = (-1 if x < 0 else 1), abs(x)
+    whole = math.ceil(a) if name == "ROUNDUP" else math.floor(a + Fraction(1, 2)) if name == "ROUND" else math.floor(a)
+    return Fraction(sign * whole)
+
+
+def _times(a, b):
+    return 0 if a == 0 or b == 0 else a * b
+
+
+def _bounds(expr: str):
+    """(low,  high, whole)  of the number `expr` can give, or None when it is not plain arithmetic (text, &, ^,
+    a comparison). A cell's value or an unknown function is any number (-inf, inf, not  whole); ROW and COLUMN
+    of a written cell are that number; ROWS  / COLUMNS of a written range  its size; the COUNT functions 0 or
+    more;  INT and ROUND / ROUNDUP / ROUNDDOWN / TRUNC to 0  digits are whole. A division by a  whole number
+    skips 0 (that is #DIV/0! in INDIRECT's text and in INDEX's number alike)."""
+    from fractions import Fraction
+
+    s = mask_strings(expr)
+    pos = 0
+    anything = (-_INF, _INF, False)
+
+    def skip() -> None:
+        nonlocal pos
+        while pos < len(s) and s[pos] in " \t\r\n":
+            pos += 1
+
+    def closing(start: int) -> int:
+        depth = 0
+        for i in range(start, len(s)):
+            if s[i] == "(":
+                depth += 1
+            elif s[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        return -1
+
+    def call(name: str, raw_args: list[str]):
+        if name in ("ROW", "COLUMN"):
+            big = _MAX_ROW if name == "ROW" else _MAX_COL
+            r = parse_ref(raw_args[0]) if len(raw_args) == 1 and raw_args[0].strip() else None
+            if r and not r.get("whole_column") and not r.get("whole_row"):
+                v = Fraction(r["r1"] if name == "ROW" else r["c1"])
+                return (v, v, True)
+            return (Fraction(1), Fraction(big), True)
+        if name in ("ROWS", "COLUMNS"):
+            r = parse_ref(raw_args[0]) if len(raw_args) == 1 else None
+            if r and not r.get("whole_column") and not r.get("whole_row"):
+                v = Fraction(r["r2"] - r["r1"] + 1 if name == "ROWS" else r["c2"] - r["c1"] + 1)
+                return (v, v, True)
+            return (Fraction(1), Fraction(_BIG), True)
+        if name in _COUNTS:
+            return (Fraction(0), Fraction(_BIG), True)
+        if name == "INT" and len(raw_args) == 1:
+            inner = _bounds(raw_args[0])
+            return None if inner is None else (_to_whole("INT", inner[0]), _to_whole("INT", inner[1]), True)
+        if name in _ROUNDINGS and (len(raw_args) == 2 and raw_args[1].strip() == "0" or name == "TRUNC" and len(raw_args) == 1):
+            inner = _bounds(raw_args[0])
+            return None if inner is None else (_to_whole(name, inner[0]), _to_whole(name, inner[1]), True)
+        return anything
+
+    def factor():
+        nonlocal pos
+        skip()
+        if pos >= len(s):
+            return None
+        if s[pos] in "+-":
+            negative = s[pos] == "-"
+            pos += 1
+            v = factor()
+            if v is None or not negative:
+                return v
+            return (-v[1], -v[0], v[2])
+        m = re.match(r"\d+(?![\d.eE])", s[pos:])
+        if m:
+            pos += m.end()
+            v = Fraction(int(m.group()))
+            return (v, v, True)
+        m = re.match(r"\d*\.\d+(?![\d.eE])", s[pos:])
+        if m:
+            pos += m.end()
+            v = Fraction(m.group())
+            return (v, v, v.denominator == 1)
+        if s[pos] == "(":
+            pos += 1
+            v = total()
+            skip()
+            if v is None or pos >= len(s) or s[pos] != ")":
+                return None
+            pos += 1
+            return v
+        m = re.match(r"(?:_xlfn\.)?([A-Za-z][A-Za-z0-9.]*)\s*\(", s[pos:])
+        if m:
+            open_at = pos + m.end() - 1
+            close_at = closing(open_at)
+            if close_at < 0:
+                return None
+            masked_args = _top_level_args(s[open_at + 1 : close_at])
+            raw_args, at = [], open_at + 1
+            for a in masked_args:  # masking keeps every position: the same slices of the written text
+                raw_args.append(expr[at : at + len(a)])
+                at += len(a) + 1
+            pos = close_at + 1
+            return call(m.group(1).upper(), raw_args)
+        m = re.match(r"(?:'[^']*'!|[\w.]+!)?[$\w.:]+", s[pos:])
+        if m and not m.group().isdigit():
+            pos += m.end()
+            return anything  # a cell, a range or a name: any value
+        return None
+
+    def term():
+        nonlocal pos
+        a = factor()
+        while a is not None:
+            skip()
+            if pos >= len(s) or s[pos] not in "*/":
+                return a
+            op = s[pos]
+            pos += 1
+            b = factor()
+            if b is None:
+                return None
+            if op == "*":
+                c = [_times(x, y) for x in (a[0], a[1]) for y in (b[0], b[1])]
+                a = (min(c), max(c), a[2] and b[2])
+                continue
+            lo, hi = b[0], b[1]
+            if b[2] and lo >= 0:
+                lo = max(lo, 1)
+            elif b[2] and hi <= 0:
+                hi = min(hi, -1)
+            if lo <= 0 <= hi or _INF in (abs(a[0]), abs(a[1]), abs(lo), abs(hi)):
+                a = anything
+                continue
+            c = [x / y for x in (a[0], a[1]) for y in (lo, hi)]
+            a = (min(c), max(c), False)
+        return None
+
+    def total():
+        nonlocal pos
+        a = term()
+        while a is not None:
+            skip()
+            if pos >= len(s) or s[pos] not in "+-":
+                return a
+            op = s[pos]
+            pos += 1
+            b = term()
+            if b is None:
+                return None
+            a = (a[0] + b[0], a[1] + b[1], a[2] and b[2]) if op == "+" else (a[0] - b[1], a[1] - b[0], a[2] and b[2])
+        return None
+
+    try:
+        v = total()
+        skip()
+    except (RecursionError, ValueError, OverflowError, ZeroDivisionError):
+        return None
+    return v if v is not None and pos == len(s) else None
+
+
+def _whole_bounds(expr: str):
+    """(low,  high) of  a number `expr` can only give as a whole number (or an error), else None."""
+    v = _bounds(expr)
+    return (v[0], v[1]) if v is not None and v[2] else None
+
+
+def _whole_number(expr: str) -> bool:
+    """True  when `expr`  can only give a whole number (or an error)."""
+    return _whole_bounds(expr) is not None
+
+
+_POSITION_CALL_RE = re.compile(r"\b(ROW|COLUMN)\(\s*([^()]+?)\s*\)", re.IGNORECASE)
+
+
+def _position_value(expr: str):
+    """The  number `expr`  gives when it is arithmetic over whole constants and ROW/COLUMN of written
+    references only (Model B's (COLUMN(V$1)-COLUMN($B$1)-3)/17), as a Fraction: it never depends on a
+    cell's value, so it is the same number  whatever the inputs. None for anything else."""
+    import ast
+    from fractions import Fraction
+
+    def position(m: re.Match) -> str:
+        r = parse_ref(m.group(2))
+        if not r or r.get("whole_column") or r.get("whole_row"):
+            raise ValueError("not a written cell")
+        return str(r["r1"] if m.group(1).upper() == "ROW" else r["c1"])
+
+    try:
+        text = _POSITION_CALL_RE.sub(position, expr)
+    except ValueError:
+        return None
+    if not re.fullmatch(r"[\d\s+\-*/()]+", text):
+        return None
+
+    def value(node) -> Fraction:
+        if isinstance(node, ast.Expression):
+            return value(node.body)
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return Fraction(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            v = value(node.operand)
+            return -v if isinstance(node.op, ast.USub) else v
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            a, b = value(node.left), value(node.right)
+            if isinstance(node.op, ast.Add):
+                return a + b
+            if isinstance(node.op, ast.Sub):
+                return a - b
+            if isinstance(node.op, ast.Mult):
+                return a * b
+            return a / b  # ZeroDivisionError: not whole
+        raise ValueError("not arithmetic")
+
+    try:
+        return value(ast.parse(text.strip(), mode="eval"))
+    except (SyntaxError, ValueError, ZeroDivisionError, RecursionError):
+        return None
+
+
+def _named_list_index(argument: str, wb0: dict[str, Any], sheets: dict[str, Any], unscanned: set[str]) -> dict[str, Any] | None:
+    """INDIRECT's  argument "Prefix"&n,  with n a whole number and the names Prefix1..PrefixN N neighbouring
+    single cells of one column or row, in order, each defined once for the whole workbook, and no other
+    PrefixK name: {"formula":  "INDEX('Sheet'!$B$7:$B$26,n)", "range", "names", "sheet"}. Else None."""
+    from ..formula_utils import num_to_col
+
+    m = _NAMED_LIST_ARG_RE.match(argument)
+    if not m:
+        return None
+    prefix, number = m.group(1), m.group(2)
+    numbered: dict[int, list[dict]] = {}
+    pattern = re.compile(re.escape(prefix) + r"(0|[1-9]\d*)", re.IGNORECASE)
+    for d in wb0.get("defined_names", []):
+        hit = pattern.fullmatch(str(d.get("name") or ""))
+        if hit:
+            numbered.setdefault(int(hit.group(1)), []).append(d)
+    count = len(numbered)
+    if count < 2 or sorted(numbered) != list(range(1, count + 1)):
+        return None
+    fixed = _position_value(number)
+    if fixed is not None:
+        if fixed.denominator != 1 or not 1 <= fixed <= count:
+            return None  # INDIRECT finds no name for it  today, and INDEX(..., 0) or INDEX(...,  2.5) would not be the same error
+    else:
+        bounds = _whole_bounds(number)
+        if bounds is None or bounds[0] < 1:
+            return None  # a  fraction, or a number that may be 0 or less: INDEX  would not give INDIRECT's #REF! there
+    if re.fullmatch(r"[A-Za-z]{1,3}", prefix):
+        return None  # "CN"&21 is  the cell CN21, not a name: past the list INDIRECT would read it
+    cells = []
+    for k in range(1, count + 1):
+        defs = numbered[k]
+        if len(defs) != 1 or defs[0].get("local_sheet_id") is not None:
+            return None  # a name defined for one sheet as well: which one INDIRECT finds depends on the sheet
+        r = parse_ref(str(defs[0].get("value") or ""))
+        if not r or not r.get("sheet") or r["r1"] != r["r2"] or r["c1"] != r["c2"] or r.get("whole_column") or r.get("whole_row"):
+            return None
+        cells.append(r)
+    sheet = cells[0]["sheet"]
+    if any(c["sheet"] != sheet for c in cells):
+        return None
+    down = all(c["c1"] == cells[0]["c1"] and c["r1"] == cells[0]["r1"] + i for i, c in enumerate(cells))
+    across = all(c["r1"] == cells[0]["r1"] and c["c1"] == cells[0]["c1"] + i for i, c in enumerate(cells))
+    if not (down or across):
+        return None
+    if sheet not in unscanned and not (sheet in sheets and sheets[sheet].get("grids")):
+        return None  # Mind imports no sheet without a grid
+    first, last = cells[0], cells[-1]
+    rng = f"{_quote_sheet(sheet)}!${num_to_col(first['c1'])}${first['r1']}:${num_to_col(last['c1'])}${last['r1']}"
+    return {"formula": f"INDEX({rng},{number})", "range": rng, "names": f"{prefix}1..{prefix}{count}", "sheet": sheet}
+
+
 def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
-    """FRM-007: INDIRECT used as a value, with the direct reference proposed
-    where the text it builds can be worked out from the workbook's constants."""
-    from ..inventory import cell_value, values_cell
+    """FRM-007:  INDIRECT, with  the direct reference proposed where the text it builds can be
+    worked out from the workbook's constants. Used as a value Mind stops the run; used as a range
+    (VLOOKUP(x, INDIRECT($A5&"!A:B"), 2, FALSE))  Mind does not resolve it either and the formula
+    falls to its  IFERROR -- confirmed in Mind on  Model D (an IFRS 17 tool), 2026-11-08:  480 cells showed
+    "-" where Excel shows the results; the same lookup  on BBA_04!$A:$B gave Excel's values.
+
+    A sheet the  scan skipped at the user's request still exists: a target on it is written as the
+    plain reference, exactly as without the skip (its cells and grids were never read, so nothing
+    about them is assumed, and the site lists it under `unscanned_sheets`). A text that needs a cell
+    of a skipped sheet cannot be worked out and is left for a person --  never NA(). Only a sheet
+    that truly is not in the workbook makes NA()."""
+    from ..inventory import cell_value, ignored_sheet_names, values_cell
 
     wb0 = analysis["workbooks"][0]
     sheets = {s["name"]: s for s in wb0.get("sheets", [])}
+    unscanned = set(ignored_sheet_names(analysis))
     names = {}
     for d in wb0.get("defined_names", []):
         if d.get("name") and d.get("value") and "#REF!" not in str(d["value"]):
@@ -818,7 +1156,11 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
     canonical = {str(d["name"]).upper(): str(d["name"]) for d in wb0.get("defined_names", []) if d.get("name")}
 
     def lookup(sheet: str, row: int, col: int):
+        if sheet in unscanned:
+            raise Unresolvable(f"{sheet} was left out of the scan at your request, so its cells were not read")
         v = cell_value(analysis, sheet, row, col)
+        if v is None and sheet in sheets:
+            return BLANK  # an empty cell: "" (a sheet chooser left blank, Model D (an IFRS 17 tool)'s ロールフォワード!T19)
         if isinstance(v, str) and v.startswith("="):
             v = values_cell(analysis, sheet, row, col)  # a formula cell: the value Excel last stored
         return v
@@ -829,17 +1171,26 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
         if "INDIRECT" not in formula.upper():
             continue
         calls = _indirect_calls(formula)
-        if not any(c["as_value"] for c in calls):
+        if not calls:
             continue
         origin = parse_ref(f["cell"])
         resolved = []
         suggested = formula
         missing = False
         unresolved = None
+        unscanned_targets: list[str] = []
         for call in reversed(calls):
             try:
                 text = _text(_Expr(call["argument"], lookup, f["sheet"], origin["r1"], origin["c1"], names).eval())
             except (Unresolvable, ZeroDivisionError, ValueError) as exc:
+                listed = _named_list_index(call["argument"], wb0, sheets, unscanned)
+                if listed:
+                    if listed["sheet"] in unscanned and listed["sheet"] not in unscanned_targets:
+                        unscanned_targets.append(listed["sheet"])
+                    resolved.append({"argument": call["argument"][:120], "resolved": None, "target": listed["range"], "exists": True,
+                                     "as_value": call["as_value"], "by_position": listed["names"]})
+                    suggested = suggested[: call["start"]] + listed["formula"] + suggested[call["end"] :]
+                    continue
                 unresolved = f"{call['argument'][:60]}: {exc}"
                 resolved.append({"argument": call["argument"][:120], "resolved": None, "as_value": call["as_value"]})
                 continue
@@ -849,7 +1200,13 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             if len(refs) == 1 and REF_RE.fullmatch(text.strip()):
                 r = refs[0]
                 sheet = r.get("sheet") or f["sheet"]
-                exists = sheet in sheets and bool(sheets[sheet].get("grids"))
+                if sheet in unscanned:
+                    # the sheet exists; whether it has a grid was not looked at and is not guessed
+                    exists = True
+                    if sheet not in unscanned_targets:
+                        unscanned_targets.append(sheet)
+                else:
+                    exists = sheet in sheets and bool(sheets[sheet].get("grids"))
                 target = (f"{_quote_sheet(sheet)}!" if r.get("sheet") else "") + text.strip().rsplit("!", 1)[-1]
             elif text.upper() in canonical:
                 target = canonical[text.upper()]
@@ -859,7 +1216,9 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
                 suggested = suggested[: call["start"]] + target + suggested[call["end"] :]
             else:
                 missing = True
-                suggested = suggested[: call["start"]] + "NA()" + suggested[call["end"] :]
+                # where a reference must stand (OFFSET(INDIRECT(...), ...)) Excel refuses NA(): INDEX($A$1,NA()) is the
+                # same #N/A as a reference (Model D (an IFRS 17 tool), 2026-11-08)
+                suggested = suggested[: call["start"]] + ("NA()" if call["as_value"] else "INDEX($A$1,NA())") + suggested[call["end"] :]
         resolved.reverse()
         if unresolved:
             proposal, issue = None, f"the text INDIRECT builds cannot be worked out from the workbook's constants ({unresolved})"
@@ -868,35 +1227,38 @@ def indirect_as_value(rule, analysis: dict[str, Any], config: dict[str, Any], li
             proposal, issue = suggested, f"target(s) not in the workbook (or without a grid, so Mind does not import them): {', '.join(gone[:4])} -- that call is an error in Excel already and becomes NA() in its place"
         else:
             proposal, issue = suggested, None
-        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": resolved, "suggested_formula": proposal, "issue": issue})
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "calls": resolved, "suggested_formula": proposal, "issue": issue, "unscanned_sheets": sorted(unscanned_targets)})
     cap = slice(None) if limit is None else slice(0, limit)
     observed = {
         "sites": sites[cap], "sites_count": len(sites),
         "with_proposal": sum(1 for s in sites if s["suggested_formula"] and not s["issue"]),
         "with_missing_targets": sum(1 for s in sites if s["suggested_formula"] and s["issue"]),
         "without_proposal": sum(1 for s in sites if s["suggested_formula"] is None),
+        "reading_skipped_sheets": sum(1 for s in sites if s["unscanned_sheets"]),
+        "by_position": sum(1 for s in sites if s["suggested_formula"] and any(c.get("by_position") for c in s["calls"])),
     }
     if sites:
         first = next((s for s in sites if s["suggested_formula"] and not s["issue"]), sites[0])
         return finding(
             "ERROR",
-            f"{len(sites)} formula(s) use the result of INDIRECT as a value (compared, multiplied, divided, negated or concatenated): Mind returns a reference for INDIRECT and "
-            "cannot turn it into a value ('Run error: Unable to cast object of type AM.Models.AMReference to type System.IConvertible'). "
+            f"{len(sites)} formula(s) use INDIRECT. Mind does not follow it: used as a value (compared, multiplied, concatenated) Mind stops the run "
+            "('Run error: Unable to cast object of type AM.Models.AMReference to type System.IConvertible'); used as a range (VLOOKUP(x, INDIRECT($A5&\"!A:B\"), 2, FALSE)) "
+            "Mind computes the formula without it and an IFERROR around it shows its fallback (confirmed in Mind, 2026-11-08: \"-\" in place of the results). "
             f"First: {first['sheet']}!{first['cell']} = {first['formula'][:90]}"
             + (f" -> proposed {first['suggested_formula'][:120]}" if first["suggested_formula"] else "")
-            + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates; {observed['with_missing_targets']} also point at a sheet or name that does not exist "
+            + f". {observed['with_proposal']} can be rewritten as the direct reference the text designates (or, for a numbered list of names such as Cluster1..Cluster20, as INDEX over the cells the names stand for); {observed['with_missing_targets']} also point at a sheet or name that does not exist "
             "(an error in Excel already: that call becomes NA() in its place); "
-            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). The Prep action 'Replace INDIRECT used as a value by the reference its text builds' writes the proposals.",
+            f"{observed['without_proposal']} build their text from values the tool cannot work out (by hand). The Prep action 'Replace INDIRECT by the reference its text builds' writes the proposals.",
             observed,
             location={"sheet": first["sheet"], "cell": first["cell"]},
         )
-    return finding("PASS", "No formula uses the result of INDIRECT as a value.", observed)
+    return finding("PASS", "No formula uses INDIRECT.", observed)
 
 
 
 # --- REF-002 -----------------------------------------------------------------------------
 def external_links_in_formulas(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = 80) -> dict:
-    """REF-002: formulas that read another workbook. Mind cannot follow an external link; Excel
+    """REF-002:  formulas that  read another workbook. Mind cannot follow an external link; Excel
     shows the copy it kept of each external cell (the link's cache), or #REF! where it kept none."""
     from ..external_links import external_references, freeze_formula, read_external_links
 

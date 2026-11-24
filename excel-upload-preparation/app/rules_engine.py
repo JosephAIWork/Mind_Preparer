@@ -1,4 +1,4 @@
-"""Loads rules/*.yaml, validates every rule against rules/rule-schema.json,
+"""Loads  rules/*.yaml, validates  every rule against rules/rule-schema.json,
 and resolves each rule's `validation.implementation` dotted path to an
 actual Python validator function (falling back to NOT_SUPPORTED when the
 implementation doesn't exist yet -- see validators/__init__.py).
@@ -66,8 +66,8 @@ class RulesEngine:
 
     @staticmethod
     def resolve_validator(implementation: str) -> Callable[..., Any] | None:
-        """'validators.loop.mm_loop_inventory' -> app.validators.loop.mm_loop_inventory,
-        or None if the module/function isn't implemented yet."""
+        """'validators.loop.mm_loop_inventory'  -> app.validators.loop.mm_loop_inventory,
+        or  None if the module/function isn't implemented yet."""
         parts = implementation.split(".")
         if len(parts) != 3 or parts[0] != "validators":
             return None

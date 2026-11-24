@@ -1,9 +1,9 @@
-"""Stage 1: read every sheet's FormulaR1C1 grid through Excel (read-only, macros off,
+"""Stage  1: read  every sheet's FormulaR1C1 grid through Excel (read-only, macros off,
 calculation manual) and store it compactly for the structure analysis.
 
-Per sheet: an int32 grid of "shape ids" (0 empty, 1 number, 2 text/bool, >=10 a formula's
-R1C1 text id) and an int64 grid of constant hashes (0 where empty or formula).
-Output: <out>/<tag>.pkl  {"file", "sheets": [{name, r0, c0, shape, const}], "texts": [r1c1...]}
+Per sheet: an int32 grid of "shape ids" (0 empty, 1 number, 2 text/bool,  >=10 a formula's
+R1C1 text id) and an int64 grid of constant  hashes (0 where empty or formula).
+Output:  <out>/<tag>.pkl {"file", "sheets": [{name, r0, c0, shape,  const}], "texts": [r1c1...]}
 """
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ def extract(path: str, out: Path, tag: str) -> None:
     xl.Visible = False
     xl.DisplayAlerts = False
     xl.AskToUpdateLinks = False
-    xl.AutomationSecurity = 3          # macros off
+    xl.AutomationSecurity = 3          # macros  off
     xl.EnableEvents = False
     texts: dict[str, int] = {}
     sheets = []
     try:
         blank = xl.Workbooks.Add()
-        xl.Calculation = -4135          # manual, before the real file opens
+        xl.Calculation = -4135          # manual, before  the real file opens
         wb = xl.Workbooks.Open(path, UpdateLinks=0, ReadOnly=True)
         blank.Close(False)
         print(f"{tag}: opened in {time.time() - t0:.0f} s", flush=True)

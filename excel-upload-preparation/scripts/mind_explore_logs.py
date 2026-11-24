@@ -1,6 +1,6 @@
-"""Upload a workbook to a sandbox project and look at what Mind shows after the conversion:
+"""Upload  a workbook  to a sandbox project and look at what Mind shows after the conversion:
 the buttons, the "View logs" dialog and its tabs ("Deterministic differences"), with screenshots
-and the page text saved -- to teach scripts/mind_upload.py where the differences are.
+and the page text saved -- to  teach scripts/mind_upload.py where the differences are.
 
     python scripts/mind_explore_logs.py <workbook> [--keep]
 """

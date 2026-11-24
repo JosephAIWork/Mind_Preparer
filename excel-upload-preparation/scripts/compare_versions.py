@@ -1,14 +1,14 @@
-"""Did the preparation change what the model computes?  (app/numbers_check.py from the command line)
+"""Did  the preparation  change what the model computes? (app/numbers_check.py from the command line)
 
 Recalculates the ORIGINAL workbook and a PREPARED version of it in Excel and
-compares every formula cell, through the rows / columns Prep inserted and the
-sheets it renamed (read from the change logs written next to every output):
+compares every formula cell, through the rows / columns Prep  inserted and the
+sheets it renamed (read from the change logs written  next to every output):
 
-    python scripts/compare_versions.py --original model.xlsm --prepared model_v4.xlsm \
-        --changelog apply/model.xlsm.changelog.json apply/v2/model.xlsm.changelog.json --out report.json
+    python scripts/compare_versions.py --original  model.xlsm --prepared model_v4.xlsm \
+        --changelog apply/model.xlsm.changelog.json apply/v2/model.xlsm.changelog.json --out  report.json
 
 In the app the same check is POST /api/sessions/{id}/numbers-check, and the
-automatic fixer runs it before it starts on a prepared version.
+automatic  fixer runs it before it starts on  a prepared version.
 """
 from __future__ import annotations
 

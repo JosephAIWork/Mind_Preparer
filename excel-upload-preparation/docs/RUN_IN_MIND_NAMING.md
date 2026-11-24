@@ -195,18 +195,60 @@ new names. Run **one** pass, then handle what is left by hand.
 
 ## What the app cannot name, and why
 
-The reasons printed under `blocked` are worth understanding — they are design
-limits, not bugs:
+**A caption that is a formula is replaced by the title (1.14.1, Joseph's
+decision of 11 November 2026).** A key column with a caption on top and the
+block beside it are one table; its title goes into the caption cell ('#' + the
+caption's own text). When that caption is a formula (`="Running scenario
+["&E1&"]"`, say), the cell loses its formula and gets '#' + the text the
+formula last showed (the value Excel stored for it) plus the flags, for the
+automatic namer, the Grid Namer's name and the assistant's name alike. The
+action's note says so: *"this cell held a formula (…); it is replaced by the
+title. Open issue: if the caption must stay a formula, leave an empty row above
+the table instead."* The table is not listed under "could not name".
+**Open issue**: the title is a frozen copy of what the formula showed; if the
+caption must keep following its formula, leave an empty row above the table by
+hand and name it again. The table *is* reported, formula or not, when something
+reads the caption cell ("the caption above it (A1) is read by …"), when an
+INDIRECT builds addresses on the sheet or a 3-D reference spans it (the reader
+cannot be pinned to one cell), and when the formula's last value is empty, an
+error or not text -- a workbook never calculated, a year, a date: "recalculate
+the workbook and name it again, or leave an empty row above the table by hand".
+Nothing is ever inserted. Only a text caption counts as a caption: a year, a
+date or TRUE above a key column is a value something may read, so the two stay
+apart and nothing is written over it.
 
-- **“the cell above (D4) is not free and inserting a row would cut *X*”** — a
-  title must sit directly above its grid. Here the row above holds the grid's
-  own header row, and a whole-row insert would slice a neighbouring wide table.
-  On one client model this is most of its assumption lookup tables
-  (mortality, lapses, discount curves, tariffs …): their **header row and their
-  data are read as two separate grids**, because the label column beside the
-  data is empty so the block is not rectangular. Merging header and data into
-  one block is a modelling decision for a human — the app will not restructure
-  a table to win a name.
+The reasons printed under `blocked` are worth understanding — they are design
+limits, not bugs. Since **1.14.0 a title never moves a cell**: up to 1.13.0 the
+app inserted a row (or cells over the grid's own columns) when the cell above
+was taken, and on the IFRS 17 tool's `Result_CF` that pushed the key column
+(read as a grid of its own) one row down while the block beside it stayed —
+every key then sat beside the wrong row. Now the title goes into the one cell
+Mind reads a title from, directly above the grid's top-left cell, or nowhere:
+
+- **“the cell above (C2) holds 'Demographic Assumptions' (part of the grid
+  …) — a title needs that cell and nothing is moved to make room”** — a
+  title must sit directly above its grid, and that cell belongs to another
+  grid (a section heading row, the table right above). Leave an empty row
+  above the grid by hand, then name it again. On one client model this is most
+  of its assumption lookup tables (mortality, lapses, discount curves,
+  tariffs …): their **header row and their data are read as two separate
+  grids**, because the label column beside the data is empty so the block is
+  not rectangular. Merging header and data into one block is a modelling
+  decision for a human — the app will not restructure a table to win a name.
+- **“starts on row 1, so there is no cell above it for a title”** — insert an
+  empty row above it by hand, then name it again.
+- **“a title in B3 would touch B2 ('…') right above it, and Mind would read
+  the two as one grid”** — a lone text or a grid ends right above the title
+  cell, and Mind reads on from it through the title into the grid. Leave an
+  empty row between them by hand. The same beside the title cell, on its
+  left (“… would touch B2 ('…') beside it, which is read by … / is part of
+  the grid …”): Mind reads left to right and would run from that cell into
+  the title. A lone label there that nothing reads is moved into the title
+  when the title's name is its own text (the automatic pass naming the grid
+  from it); the Grid Namer's name, or the assistant's, leaves the label where
+  it is and reports the grid ("... which is a label of its own"). The old namer wrote such titles: on the
+  anonymized IFRS 17 tool its own re-scan then found 85 grids with a
+  `#Title` trapped inside; the 1.14.0 namer's output has none of its own.
 - **“contains a trapped '#Title' (STR-001) — separate the grids first”** — a
   `#Title` sits inside the grid. Deal with that deliberately; do not chain the
   separation action blindly (see above).
@@ -220,7 +262,7 @@ limits, not bugs:
 | Audit CLI | `scripts/audit_grid_names.py` |
 | Grid detection, title vs error value | `app/grids.py` — `looks_like_title()`, `ERROR_LITERALS` |
 | Deterministic naming | `app/prep.py` — `_section_header_name()`, `_context_name()`, `is_weak_name()` |
-| Title placement | `app/prep.py` — `plan_create_grid_titles()`, `_resolve_insert_at()` |
+| Title placement (nothing moved) | `app/prep.py` — `_title_site()`, `plan_create_grid_titles()`; `app/grids.py` — `_merge_key_columns()` |
 | Assistant naming | `app/grid_naming.py` — `build_grid_context()`, `suggest_names()` |
 | API | `POST /api/sessions/{id}/grid-names` (`{"apply": true}`) |
 | UI | Prep screen → “Name grids from their context” |

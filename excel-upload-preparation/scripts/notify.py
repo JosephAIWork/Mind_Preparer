@@ -1,10 +1,10 @@
-"""Play a notification sound (and show a Windows toast with a short message).
+"""Play  a notification  sound (and show a Windows toast with a short message).
 
     python scripts/notify.py ["message"] [--sound alarm|ok|chime] [--no-toast]
 
 The sound comes first from the Windows system sounds (asterisk / exclamation / a
-C: scale chime), so nothing has to be installed. The toast uses the Windows
-notification centre through PowerShell; if that is unavailable the sound still plays.
+C: scale chime), so  nothing has to be installed. The toast uses the Windows
+notification centre  through PowerShell; if that is unavailable  the sound still plays.
 """
 from __future__ import annotations
 

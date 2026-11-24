@@ -40,8 +40,174 @@
     color: theme.$text-secondary;
   }
 
+  &__hint {
+    @include type.type-style("helper-text-01");
+    color: theme.$text-helper;
+    margin-top: -$spacing-03;
+  }
+
   &__button {
     cursor: pointer;
+  }
+}
+
+// Outside files: the model's macros open other files; each becomes a Mind input
+.outside {
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$border-interactive;
+  padding: $spacing-05;
+  margin-top: $spacing-05;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+
+  &--over {
+    background: theme.$layer-hover-01;
+    outline: 1px dashed theme.$interactive;
+  }
+
+  &__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: $spacing-05;
+    flex-wrap: wrap;
+  }
+
+  &__title {
+    @include type.type-style("heading-03");
+  }
+
+  &__lead {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+    margin-top: $spacing-02;
+  }
+
+  &__buttons {
+    display: flex;
+    gap: $spacing-03;
+    flex-shrink: 0;
+  }
+
+  // next quarter's Mind input files: below the bring-in, inside the card
+  &__quarter {
+    border-top: 1px solid theme.$border-subtle-01;
+    padding-top: $spacing-04;
+    margin-top: $spacing-03;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-03;
+  }
+
+  &__subtitle {
+    @include type.type-style("heading-02");
+  }
+
+  &__rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-02;
+    @include type.type-style("body-compact-01");
+  }
+
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: $spacing-02 $spacing-03;
+    overflow-wrap: anywhere;
+  }
+
+  &__file {
+    font-weight: 600;
+  }
+
+  &__row--missing &__file {
+    color: theme.$text-error;
+  }
+
+  &__arrow {
+    color: theme.$text-helper;
+  }
+
+  &__note {
+    @include type.type-style("label-01");
+    color: theme.$text-helper;
+    overflow-wrap: anywhere;
+  }
+
+  &__error {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-error;
+  }
+
+  // stand-in files from the assistant are in use: said plainly, with what gives the best results
+  &__standin {
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+    border-left: 3px solid theme.$support-warning;
+    padding-left: $spacing-03;
+  }
+
+  &__tag {
+    @include type.type-style("label-01");
+    color: theme.$text-secondary;
+    border: 1px solid theme.$support-warning;
+    border-radius: 2px;
+    padding: 0 $spacing-02;
+  }
+
+  &__result {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: $spacing-03;
+    @include type.type-style("body-compact-01");
+  }
+
+  &__download {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: $spacing-03;
+    @include type.type-style("body-compact-01");
+  }
+
+  &__next {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: $spacing-03;
+    @include type.type-style("body-compact-01");
+    color: theme.$text-secondary;
+  }
+
+  &__aside {
+    @include type.type-style("helper-text-01");
+    color: theme.$text-helper;
+    margin-top: $spacing-05;
+  }
+}
+
+.autorun {
+  display: flex;
+  align-items: flex-start;
+  gap: $spacing-03;
+  @include type.type-style("body-compact-01");
+  cursor: pointer;
+
+  input {
+    margin-top: $spacing-01;
+  }
+
+  &__hint {
+    display: block;
+    @include type.type-style("helper-text-01");
+    color: theme.$text-helper;
   }
 }
 
@@ -49,6 +215,21 @@
   @include type.type-style("helper-text-01");
   color: theme.$text-helper;
   margin-top: $spacing-05;
+}
+
+// 17 Nov 2026: Cancel under the first check's list of stages, and the one calm sentence after it
+// ("Stopped. The workbook was not checked. It is in Recent workbooks.")
+.scan__cancel {
+  display: block;
+  margin-top: $spacing-05;
+}
+
+.scan__stopped {
+  @include type.type-style("body-compact-01");
+  background: theme.$layer-01;
+  border-left: 3px solid theme.$border-strong-01;
+  padding: $spacing-04 $spacing-05;
+  margin-bottom: $spacing-05;
 }
 
 .file {
@@ -103,6 +284,12 @@
   }
 
   &__progress {
+    margin-top: $spacing-03;
+  }
+
+  // 17 Nov 2026: Cancel under a step's progress bar
+  &__cancel {
+    display: block;
     margin-top: $spacing-03;
   }
 
@@ -280,6 +467,14 @@
     flex-wrap: wrap;
   }
 
+  // 17 Nov 2026: Do everything's button with Cancel beside it while it runs
+  &__buttons {
+    display: flex;
+    align-items: center;
+    gap: $spacing-03;
+    flex-wrap: wrap;
+  }
+
   &__title {
     @include type.type-style("heading-03");
   }
@@ -318,6 +513,10 @@
       border-left-color: theme.$support-error;
     }
 
+    &--stopped {
+      border-left-color: theme.$support-warning;
+    }
+
     &--skipped {
       border-left-color: theme.$border-subtle-01;
       color: theme.$text-helper;
@@ -349,4 +548,91 @@
     @include type.type-style("label-01");
     color: theme.$text-helper;
   }
+}
+
+// Basic screen: one tick box, one Go button, one short line
+.basic {
+  display: flex;
+  align-items: center;
+  gap: $spacing-07;
+  flex-wrap: wrap;
+  margin: $spacing-05 0;
+
+  &__tick {
+    margin: 0;
+  }
+
+  // 17 Nov 2026: Start (or "Working") with Cancel close beside it
+  &__run {
+    display: flex;
+    align-items: center;
+    gap: $spacing-03;
+    flex-wrap: wrap;
+  }
+
+  // 16 Nov 2026 (night): while Start runs the button holds the moving dots and "Working". It stays greyed
+  // (it cannot be clicked), but its word is dark enough to read: Carbon's greyed text is too pale for that.
+  & &__go--working {
+    align-items: center;
+    justify-content: flex-start;
+    gap: $spacing-03;
+
+    &:disabled {
+      color: theme.$text-primary;
+    }
+  }
+
+  // 17 Nov 2026: the line and what goes with it ("Show me" under a stop message, the question's buttons)
+  &__said {
+    margin-bottom: $spacing-05;
+  }
+
+  &__line {
+    @include type.type-style("body-02");
+    color: theme.$text-secondary;
+  }
+
+  // one short sentence a line: the step, the time left, the disclaimer
+  &__sentence {
+    display: block;
+  }
+
+  // 17 Nov 2026: "Show me" under a stop message, starting its own row (drawn only when the message names
+  // a place). The link keeps a gap before it for when it follows a sentence: taken back here.
+  &__next {
+    margin: $spacing-03 0 0 (-$spacing-03);
+  }
+
+  // the bar under the line while Start runs
+  &__bar {
+    max-width: 32rem;
+    margin-bottom: $spacing-05;
+  }
+
+  // 17 Nov 2026: why Start is greyed while other work of this workbook runs, beside it (a row of its own)
+  &__wait {
+    flex-basis: 100%;
+    margin: 0;
+    @include type.type-style("body-01");
+    color: theme.$text-secondary;
+  }
+}
+
+// 17 Nov 2026: what goes with the question the Prep step ended with, on Basic and on Custom: Show me, Send
+// feedback, and on Custom "View details" (why the assistant could not fix it)
+.chain__next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: $spacing-05;
+  margin: $spacing-03 0 0;
+
+  mr-show-me {
+    margin-left: -$spacing-03;
+  }
+}
+
+// inside Do everything's block the rows are already spaced: the buttons sit close under their sentence
+.chain > .chain__next {
+  margin-top: -$spacing-03;
 }

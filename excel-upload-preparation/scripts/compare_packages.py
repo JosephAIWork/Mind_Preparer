@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure OOXML package-part diff between two xlsx/xlsm files (e.g. a source
+"""Pure  OOXML package-part  diff between two xlsx/xlsm files (e.g. a source
 and a candidate output). Read-only, no mutation -- see app/preservation.py.
 """
 from __future__ import annotations

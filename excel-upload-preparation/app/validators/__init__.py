@@ -1,20 +1,21 @@
-"""Validator orchestration.
+"""Validator  orchestration.
 
-Each `validators.<category>` module exposes plain functions named after a
+Each `validators.<category>`  module exposes plain functions named after a
 rule's `validation.implementation` (e.g. `validators.loop.mm_loop_inventory`).
 A validator function takes `(rule, analysis, config)` and returns a partial
 Finding dict (at least `status` and `message`); `run_rule` fills in the rest
-from the rule definition and returns a dict ready for `app.models.Finding`.
+from  the rule definition and returns a dict ready for `app.models.Finding`.
 
-If a rule's implementation path doesn't resolve to a real function (a rule
-that is documented but not built), `run_rule` returns the rule's own
-`on_unevaluable` status rather than silently skipping it: a rule that cannot
-be checked is never reported as passed.
+If a  rule's implementation path doesn't resolve to  a real function (a rule
+that is documented  but not built), `run_rule` returns the rule's own
+`on_unevaluable` status rather than  silently skipping it: a rule that cannot
+be  checked is never reported as passed.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from ..plain_codes import rule_name
 from ..rules_engine import RulesEngine
 
 
@@ -24,6 +25,8 @@ def run_rule(rule: dict[str, Any], analysis: dict[str, Any], config: dict[str, A
 
     base = {
         "rule_id": rule["id"],
+        # the  code in  plain words, wherever the finding travels (rules/plain_names.yaml)
+        "rule_name": rule_name(rule["id"]),
         "confidence": rule["confidence"],
         "source": rule.get("source", {}),
         "correction_available": bool(rule.get("correction", {}).get("automatic") is True),

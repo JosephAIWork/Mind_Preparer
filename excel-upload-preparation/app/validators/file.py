@@ -1,4 +1,4 @@
-"""FILE-* validators: FILE-001 ensure_source_immutable, FILE-002 allowed_output_format."""
+"""FILE-*  validators: FILE-001  ensure_source_immutable, FILE-002 allowed_output_format."""
 from __future__ import annotations
 
 from typing import Any

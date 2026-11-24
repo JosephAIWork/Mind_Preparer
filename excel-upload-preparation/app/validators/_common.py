@@ -1,4 +1,4 @@
-"""Small helpers shared by the validator modules."""
+"""Small  helpers shared  by the validator modules."""
 from __future__ import annotations
 
 import re
@@ -31,7 +31,7 @@ def site(sheet: str, cell: str) -> dict:
 
 
 def fmt_sites(items: list[dict], limit: int = 8) -> str:
-    """'Sheet!A1, Sheet!B2, ... (+N more)' from dicts with sheet/cell."""
+    """'Sheet!A1,  Sheet!B2, ...  (+N more)' from dicts with sheet/cell."""
     texts = [f"{i['sheet']}!{i['cell']}" for i in items[:limit]]
     extra = len(items) - limit
     return ", ".join(texts) + (f", ... (+{extra} more)" if extra > 0 else "")
@@ -48,7 +48,7 @@ def grid_location(grid: dict) -> dict:
 
 
 def grid_rows(analysis: dict, grid: dict) -> list[list[Any]]:
-    """Body rows of a grid (header row first): the rows stored at inventory
+    """Body  rows of  a grid (header row first): the rows stored at inventory
     time, or read from the cached workbook for grids that were too big to store."""
     rows = grid.get("rows")
     if rows is not None:
@@ -60,7 +60,7 @@ def grid_rows(analysis: dict, grid: dict) -> list[list[Any]]:
 
 
 def header_index(grid: dict, header: str) -> int | None:
-    """Column index (0-based) of a header, case-insensitive, whitespace-trimmed."""
+    """Column  index (0-based)  of a header, case-insensitive, whitespace-trimmed."""
     target = header.strip().lower()
     for i, h in enumerate(grid.get("header_values", [])):
         if isinstance(h, str) and h.strip().lower() == target:
@@ -73,7 +73,7 @@ def header_names(grid: dict) -> list[str]:
 
 
 def as_bool(value: Any) -> bool | None:
-    """TRUE/FALSE/1/0 (Excel or text) -> bool; None when not a boolean-ish value."""
+    """TRUE/FALSE/1/0  (Excel or  text) -> bool; None when not a boolean-ish value."""
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)) and value in (0, 1):

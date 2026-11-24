@@ -1,23 +1,23 @@
-"""Upload a Mind-loop version to a sandbox project in real Mind, run it, and look for the loop.
+"""Upload  a Mind-loop  version to a sandbox project in real Mind, run it, and look for the loop.
 
     python scripts/mind_loop_probe.py <loop version .xlsm> [--project <prefix>_...] [--expected check.json]
         [--parts OUTPUT,Untitled] [--no-run] [--init-url <existing project link>] [--timeout 900]
 
-What it records, under <workbook>_mind_probe/:
-  - the conversion wizard (steps, errors), the full logs dialog text, the Deterministic Differences
-    lines (Mind's value vs the workbook's cached value, cell by cell: with the MM for Excel add-in
-    the cached values are the FIRST loop pass, so every other pass shows up here with Mind's value);
+What  it records, under <workbook>_mind_probe/:
+  - the conversion wizard (steps, errors), the full  logs dialog text, the Deterministic Differences
+    lines  (Mind's value vs the workbook's cached value,  cell by cell: with the MM for Excel add-in
+    the cached values  are the FIRST loop pass, so every  other pass shows up here with Mind's value);
   - the run (completed, consistent with the audit trail);
   - the template selector's entries, and for every entry matching --parts: a screenshot of the
     opened part, every button on the page (text, aria-label, title, class), and a click on each
     control that looks like "expand" / "dimension" / "loop" / "instance", with the text that appears;
-  - the Audit trail, Project Edition and Grid validation manager screens, as text + screenshot;
+  - the  Audit trail, Project Edition and Grid validation manager screens, as text + screenshot;
   - when --expected is given (scripts/check_loop_plan.py's check.json): Mind's values from the log
     compared with the macro's values, pass by pass.
 With a Mind MCP token (app/mind_mcp.py) the run and the loop reading go through MCP after the upload:
 the loop's size and every instance of --source as data, compared with --expected; the run's errors mapped
-to Excel cells. Without one (or with --browser) the browser runs the model and reads the parts as before.
-Nothing is deleted; the project stays in Mind (sandbox names only: the project prefix in settings.yaml).
+to Excel cells. Without one (or with --browser) the browser runs the model and reads the parts as  before.
+Nothing is deleted; the project  stays in Mind (sandbox names only: the  project prefix in  settings.yaml).
 """
 from __future__ import annotations
 
@@ -67,9 +67,9 @@ def _wait(page, ms: int) -> None:
 
 
 def read_logs(page, out: Path) -> dict:
-    """Display Logs -> the inline log panel (Stochastic / Deterministic / Assumptions counts, and the
+    """Display  Logs ->  the inline log panel (Stochastic / Deterministic / Assumptions counts, and the
     Deterministic Differences when the panel lists them). Closes it with "Hide Logs" only: the wizard's
-    "Close" button next to it would drop the converted template before it is added."""
+    "Close" button next to it would  drop the converted template before it is added."""
     res: dict = {"opened": False, "summary": {}, "differences": [], "text": ""}
     btn = page.get_by_role("button", name=re.compile(r"^\s*Display Logs\s*$|^\s*View logs\s*$|Display Error Logs", re.I))
     if not btn.count():
@@ -92,7 +92,7 @@ def read_logs(page, out: Path) -> dict:
             res["differences"].append({"sheet": m.group("sheet").strip(), "cell": m.group("cell").upper(), "excel": m.group("excel").strip(), "mind": m.group("mind").strip(), "raw": ln})
         elif "Mind value" in ln:
             res["differences"].append({"raw": ln})
-    # sections that can be clicked open (the Deterministic block, the differences list)
+    # sections that can be  clicked open (the Deterministic block, the  differences list)
     for label in ("Deterministic", "difference"):
         try:
             loc = page.get_by_text(re.compile(rf"^\s*\d*\s*{label}", re.I))
@@ -121,7 +121,7 @@ def read_logs(page, out: Path) -> dict:
 
 
 def _open_selector(page, stem: str) -> bool:
-    """Click the template selector in the project bar: its text is the workbook name, often cut with
+    """Click  the template  selector in the project bar: its text is the workbook name, often cut with
     an ellipsis, so match the start of the name (then shorter and shorter prefixes)."""
     kill_tour(page)
     for n in (len(stem), 24, 18, 12, 8):
@@ -140,7 +140,7 @@ def _open_selector(page, stem: str) -> bool:
 
 
 def selector_entries(page, stem: str, out: Path) -> list[str]:
-    """Every entry of the open template selector menu (templates and grids), as text."""
+    """Every  entry of  the open template selector menu (templates and grids), as text."""
     if not _open_selector(page, stem):
         return []
     _wait(page, 1200)
@@ -165,7 +165,7 @@ def selector_entries(page, stem: str, out: Path) -> list[str]:
 
 
 def open_part(page, stem: str, entry: str, out: Path, tag: str) -> dict:
-    """Open the template selector and click `entry`; record what the page shows and every control."""
+    """Open  the template  selector and click `entry`; record what the page shows and every control."""
     rec: dict = {"entry": entry, "opened": False}
     if not _open_selector(page, stem):
         rec["why"] = "selector did not open"
@@ -220,7 +220,7 @@ def open_part(page, stem: str, entry: str, out: Path, tag: str) -> dict:
 
 
 def open_screen(page, name_re: str, out: Path, tag: str) -> dict:
-    """A top-bar screen (Audit trail, Project Edition, ...): click, record text + screenshot, Escape."""
+    """A  top-bar screen  (Audit trail, Project Edition, ...): click, record text + screenshot, Escape."""
     rec: dict = {"screen": tag, "opened": False}
     kill_tour(page)
     loc = page.get_by_role("button", name=re.compile(name_re, re.I))
@@ -265,7 +265,7 @@ def open_screen(page, name_re: str, out: Path, tag: str) -> dict:
 
 
 def compare(expected_path: Path, differences: list[dict]) -> dict:
-    """Mind's OUTPUT values from the log vs the macro's values (check.json: expected[target] rows per pass)."""
+    """Mind's  OUTPUT values  from the log vs the macro's values (check.json: expected[target] rows per pass)."""
     chk = json.loads(expected_path.read_text(encoding="utf-8"))
     exp = chk.get("expected", {})
     mind = {(d.get("sheet", "").strip().upper(), d.get("cell", "")): d.get("mind") for d in differences if d.get("cell")}

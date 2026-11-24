@@ -3,8 +3,13 @@
   <p class="hint">A standalone report workbook (Summary + Findings) and a copy of the current version with the report sheets added, both written by Excel.</p>
   <div class="row">
     <button cdsButton="primary" size="md" (click)="build()" [disabled]="building()">{{ reports() ? "Generate again" : "Generate reports" }}</button>
-    @if (building()) { <cds-inline-loading [state]="'active'" loadingText="Writing the reports in Excel…"></cds-inline-loading> }
+    @if (building()) {
+      <cds-inline-loading [state]="'active'" loadingText="Writing the reports in Excel…"></cds-inline-loading>
+      <!-- 17 Nov 2026: Cancel beside the loading line; the two report files are not kept -->
+      <mr-cancel kind="reports" size="md"></mr-cancel>
+    }
   </div>
+  @if (buildStopped() && !building()) { <p class="hint" data-test="deliver-build-stopped">{{ buildStopped() }}</p> }
   @if (reports(); as r) {
     <div class="row">
       @if (url(r.standalone_name); as u) { <a cdsButton="tertiary" size="md" [href]="u">Download the report</a> }
@@ -17,9 +22,14 @@
   <h3 class="panel__h">Did the numbers change?</h3>
   <p class="hint">Recalculates the original and the current version in Excel and compares every cell through the row-insert map. Content writes are skipped; formula rewrites must keep the value.</p>
   <div class="row">
-    <button cdsButton="secondary" size="md" (click)="check()" [disabled]="checking()">{{ numbers() ? "Check again" : "Check the numbers" }}</button>
-    @if (checking()) { <cds-inline-loading [state]="'active'" loadingText="Comparing… a few minutes for a large model"></cds-inline-loading> }
+    <button cdsButton="secondary" size="md" data-show-me="deliver-numbers" (click)="check()" [disabled]="checking()">{{ numbers() ? "Check again" : "Check the numbers" }}</button>
+    @if (checking()) {
+      <cds-inline-loading [state]="'active'" loadingText="Comparing… a few minutes for a large model"></cds-inline-loading>
+      <!-- 17 Nov 2026: Cancel beside the loading line; the comparison is stopped on the server -->
+      <mr-cancel kind="numbers" size="md"></mr-cancel>
+    }
   </div>
+  @if (checkStopped() && !checking()) { <p class="hint" data-test="deliver-check-stopped">{{ checkStopped() }}</p> }
   @if (error()) { <div class="result result--error"><strong>Failed</strong><span>{{ error() }}</span></div> }
   @if (numbers(); as n) {
     <div class="result" [class.result--ok]="n.clean === true" [class.result--error]="n.clean === false" [class.result--warn]="n.clean === null">
@@ -37,6 +47,12 @@
           @for (s of sampleRows(); track $index) { <tr><td>{{ s.kind }}</td><td class="mono">{{ s.original }}</td><td class="mono">{{ s.now }}</td><td class="mono">{{ s.was }}</td><td class="mono">{{ s.is }}</td></tr> }
         </tbody>
       </table>
+      @if (legend().length) {
+        <!-- what each error value in the samples means: once, not on every row -->
+        <ul class="meanings">
+          @for (m of legend(); track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+        </ul>
+      }
     }
   }
 </div>

@@ -1,44 +1,47 @@
 <section class="page">
   @if (!store.loaded()) {
     <h1 class="page-title">Advanced</h1>
-    <p class="page-lead">No workbook is loaded. <a routerLink="/">Load one on the main screen.</a></p>
+    <p class="page-lead">No workbook is loaded. <a routerLink="/">Load one on the Basic screen.</a></p>
   } @else {
     <header class="head">
       <div>
         <h1 class="page-title">Advanced</h1>
         <p class="page-lead">{{ store.summary()?.file_name }} · {{ store.currentVersion()?.label }}</p>
       </div>
-      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }">Back to the main screen</a>
+      <a cdsButton="ghost" size="md" routerLink="/" [queryParams]="{ session: store.sessionId() }" data-show-me="link-basic">Back to Basic</a>
+      <a cdsButton="ghost" size="md" routerLink="/custom" [queryParams]="{ session: store.sessionId() }" data-show-me="link-custom">Custom</a>
     </header>
 
     @if (store.readiness(); as r) {
-      <cds-inline-notification [notificationObj]="{ type: readinessKind(), title: r.headline, message: readinessDetail(), lowContrast: true, showClose: false }"></cds-inline-notification>
+      <mr-readiness-banner [kind]="readinessKind()" [headline]="r.headline" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
+      <mr-recalc-now kind="primary" size="md"></mr-recalc-now>
     }
 
     <mr-stack-bar></mr-stack-bar>
 
     <div class="switch">
-      <button class="switch__item" [class.switch__item--on]="tab() === 'findings'" (click)="tab.set('findings')">Findings ({{ findings().length }})</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'prep'" (click)="tab.set('prep')">Prep actions ({{ manualActions().length }})</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'recalc'" (click)="tab.set('recalc')">Recalculate</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'loop'" (click)="tab.set('loop')">Mind loop</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'map'" (click)="tab.set('map')">Model map</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'namer'" (click)="tab.set('namer')">Grid Namer</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'assistant'" (click)="tab.set('assistant')">Assistant</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'mind'" (click)="tab.set('mind')">Run in Mind</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'deliver'" (click)="tab.set('deliver')">Deliver</button>
-      <button class="switch__item" [class.switch__item--on]="tab() === 'versions'" (click)="tab.set('versions')">Versions ({{ store.versions().length }})</button>
+      <button class="switch__item" data-show-me="tab-findings" [class.switch__item--on]="tab() === 'findings'" (click)="tab.set('findings')">Findings ({{ findings().length }})</button>
+      <button class="switch__item" data-show-me="tab-prep" [class.switch__item--on]="tab() === 'prep'" (click)="tab.set('prep')">Prep actions ({{ manualActions().length }})</button>
+      <button class="switch__item" data-show-me="tab-recalc" [class.switch__item--on]="tab() === 'recalc'" (click)="tab.set('recalc')">Recalculate</button>
+      <button class="switch__item" data-show-me="tab-loop" [class.switch__item--on]="tab() === 'loop'" (click)="tab.set('loop')">Mind loop</button>
+      <button class="switch__item" data-show-me="tab-instances" [class.switch__item--on]="tab() === 'instances'" (click)="tab.set('instances')">Instances</button>
+      <button class="switch__item" data-show-me="tab-map" [class.switch__item--on]="tab() === 'map'" (click)="tab.set('map')">Model map</button>
+      <button class="switch__item" data-show-me="tab-namer" [class.switch__item--on]="tab() === 'namer'" (click)="tab.set('namer')">Grid Namer</button>
+      <button class="switch__item" data-show-me="tab-assistant" [class.switch__item--on]="tab() === 'assistant'" (click)="tab.set('assistant')">Assistant</button>
+      <button class="switch__item" data-show-me="tab-mind" [class.switch__item--on]="tab() === 'mind'" (click)="tab.set('mind')">Run in Mind</button>
+      <button class="switch__item" data-show-me="tab-deliver" [class.switch__item--on]="tab() === 'deliver'" (click)="tab.set('deliver')">Deliver</button>
+      <button class="switch__item" data-show-me="tab-versions" [class.switch__item--on]="tab() === 'versions'" (click)="tab.set('versions')">Versions ({{ store.versions().length }})</button>
     </div>
 
     @switch (tab()) {
       @case ("findings") {
-<div class="tab-body">
+<div class="tab-body" data-show-me="findings-list">
           @if (delta(); as d) {
             <div class="delta">
               <strong>Since the previous analysis ({{ d.previous_version_id }} → {{ d.version_id }}):</strong>
-              @if (d.fixed.length) { <span class="delta__ok">{{ d.fixed.length }} fixed: {{ ruleList(d.fixed) }}</span> }
-              @if (d.improved.length) { <span class="delta__ok">{{ d.improved.length }} improved: {{ ruleList(d.improved) }}</span> }
-              @if (d.regressed.length) { <span class="delta__bad">{{ d.regressed.length }} regressed: {{ ruleList(d.regressed) }}</span> }
+              @if (d.fixed.length) { <span class="delta__ok">{{ d.fixed.length }} fixed: <ng-container *ngTemplateOutlet="ruleList; context: { $implicit: d.fixed }"></ng-container></span> }
+              @if (d.improved.length) { <span class="delta__ok">{{ d.improved.length }} improved: <ng-container *ngTemplateOutlet="ruleList; context: { $implicit: d.improved }"></ng-container></span> }
+              @if (d.regressed.length) { <span class="delta__bad">{{ d.regressed.length }} regressed: <ng-container *ngTemplateOutlet="ruleList; context: { $implicit: d.regressed }"></ng-container></span> }
               @if (d.fixed.length) { <label class="check"><input type="checkbox" [checked]="showFixed()" (change)="showFixed.set(!showFixed())" /> show the fixed rows</label> }
             </div>
           }
@@ -62,7 +65,7 @@
                       <div class="gcard__head"><span class="gcard__title">{{ g.grid.name ? "#" + g.grid.name : "untitled" }}</span><span class="mono dim">{{ g.grid.ref }}</span></div>
                       @if (g.findings.length) {
                         <div class="gcard__chips">
-                          @for (f of g.findings; track $index) { <button class="chip chip--button" [title]="f.message" (click)="askAbout(f)">{{ f.rule_id }}</button> }
+                          @for (f of g.findings; track $index) { <button class="chip chip--button" [attr.data-show-me]="'ask-' + f.rule_id" [title]="chipTip(f)" (click)="askAbout(f)">{{ f.rule_id }}</button> }
                         </div>
                       }
                     </div>
@@ -82,13 +85,23 @@
               </tr>
             </thead>
             <tbody>
-              @for (f of findings(); track $index) {
+              @for (row of rows(); track $index) {
                 <tr>
-                  <td class="mono">{{ f.rule_id }}</td>
-                  <td><cds-tag [type]="tag(f.status).type" size="sm">{{ tag(f.status).label }}</cds-tag></td>
-                  <td class="mono">{{ where(f) }}</td>
-                  <td>{{ f.message }}</td>
-                  <td class="ask">@if (f.status !== "PASS") { <button cdsButton="ghost" size="sm" (click)="askAbout(f)">Ask the assistant</button> }</td>
+                  <td class="rule"><mr-code [code]="row.f.rule_id" [name]="row.f.rule_name"></mr-code></td>
+                  <td><cds-tag [type]="tag(row.f.status).type" size="sm">{{ tag(row.f.status).label }}</cds-tag></td>
+                  <!-- 17 Nov 2026: "Show me" from a stop message ends here: the cell the problem is in (`where-<RULE>`) -->
+                  <td class="mono" [attr.data-show-me]="'where-' + row.f.rule_id">{{ where(row.f) }}</td>
+                  <!-- the message's own instruction ("Use Bring in the outside files", "The Prep action '…'"); the row's
+                       "Ask the assistant" is already next to it -->
+                  <td>
+                    {{ row.f.message }}@if (row.f.status !== "PASS") {<mr-show-me [text]="row.f.message" [rule]="row.f.rule_id" except="assistant-ask"></mr-show-me>}
+                    @if (row.meanings.length) {
+                      <ul class="meanings">
+                        @for (m of row.meanings; track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+                      </ul>
+                    }
+                  </td>
+                  <td class="ask">@if (row.f.status !== "PASS") { <button cdsButton="ghost" size="sm" [attr.data-show-me]="'ask ask-' + row.f.rule_id" (click)="askAbout(row.f)">Ask the assistant</button> }</td>
                 </tr>
               }
             </tbody>
@@ -104,6 +117,10 @@
       }
       @case ("loop") {
         <mr-loop-panel></mr-loop-panel>
+      }
+      @case ("instances") {
+        <!-- the alternative to the loop: one copy of the model per value -->
+        <mr-instances-panel></mr-instances-panel>
       }
       @case ("map") {
         <mr-map-panel></mr-map-panel>
@@ -123,9 +140,11 @@
       @case ("versions") {
 <div class="tab-body">
           @if (restoreLine()) {
-            <p class="hint">{{ restoreLine() }}</p>
+            <!-- 17 Nov 2026: Cancel beside "Restoring…"; the version list stays as it was -->
+            <p class="hint" data-test="restore-line">{{ restoreLine() }} @if (restoring()) { <mr-cancel kind="scan" size="sm"></mr-cancel> }</p>
           }
-          <table class="list">
+          <!-- 17 Nov 2026: "The assistant fixed 2 more: see Advanced › Versions." leads here (`versions-list`) -->
+          <table class="list" data-show-me="versions-list">
             <thead>
               <tr>
                 <th>Version</th>
@@ -145,7 +164,7 @@
                       <a cdsButton="ghost" size="sm" [href]="url">Download</a>
                     }
                     @if (v.id !== store.currentVersion()?.id) {
-                      <button cdsButton="ghost" size="sm" (click)="restore(v.id)">Make current</button>
+                      <button cdsButton="ghost" size="sm" (click)="restore(v.id)" [disabled]="!!restoring()">Make current</button>
                     }
                     @if (v.change_log?.length) {
                       <button cdsButton="ghost" size="sm" (click)="toggleChanges(v.id)">{{ changesOpen(v.id) ? "Hide" : "Show" }} {{ v.change_log!.length }} changes</button>
@@ -170,3 +189,9 @@
     }
   }
 </section>
+
+<!-- rules in a line of text: each code with its plain name, the first 8 -->
+<ng-template #ruleList let-list>
+  @for (e of list.slice(0, 8); track e.rule_id; let last = $last) {<mr-code [code]="e.rule_id" [name]="e.rule_name"></mr-code>@if (!last) {, }}
+  @if (list.length > 8) { and {{ list.length - 8 }} more}
+</ng-template>

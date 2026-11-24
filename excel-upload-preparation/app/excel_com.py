@@ -1,12 +1,12 @@
-"""Shared Excel COM session helper (Windows + pywin32 + an installed Excel).
+"""Shared  Excel COM  session helper (Windows + pywin32 + an installed Excel).
 
 Why every *output* workbook goes through Excel rather than openpyxl:
 openpyxl round-trips only the parts it understands. Real
-Mind workbooks carry parts it doesn't -- a Power Pivot data model
-(`xl/model/item.data`, 13 MB in the test workbook), `customXml/` items,
-slicers, form controls... -- and it drops them silently. The resulting file
-then fails to open in Excel at all ("Open method of Workbooks class
-failed"), confirmed on this machine against a real workbook. Excel itself
+Mind workbooks carry parts it doesn't --  a Power Pivot data model
+(`xl/model/item.data`, 13 MB in the test workbook),  `customXml/` items,
+slicers, form controls... -- and  it drops them silently. The resulting file
+then  fails to open in Excel at all ("Open method of Workbooks  class
+failed"), confirmed on this machine against a  real workbook. Excel itself
 is the only writer that preserves everything, so it is used whenever it is
 available; the openpyxl path is kept only as an explicitly-labelled
 reduced-fidelity fallback.
@@ -14,37 +14,47 @@ reduced-fidelity fallback.
 Every session: hidden, alerts off, macros force-disabled
 (`AutomationSecurity = 3`), links never updated, events off, and the
 MM for Excel add-in loaded when the machine has it (`mm_for_excel_xll`).
+
+Every Excel the app starts is written down (`excel_started.json` in  the data folder) until it is
+quit. An app stopped abruptly -- its window closed, a crash, Task Manager -- would otherwise leave
+its hidden Excels running with nothing to quit them: the next start ends those
+(`clean_leftover_excels`), and closing the window ends the app's own first (`kill_own_excels`). Only
+an Excel written down here is ever ended, and only while its process is still that same Excel.
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import gc
+import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Iterator
 
+from . import cancel
 from .settings import SETTINGS
 
-FILE_FORMAT_CODES = {"xlsx": 51, "xlsm": 52, "xlsb": 50}  # xlOpenXMLWorkbook / MacroEnabled / Binary
+FILE_FORMAT_CODES = {"xlsx": 51, "xlsm": 52, "xlsb": 50}  # xlOpenXMLWorkbook  / MacroEnabled  / Binary
 XL_CELL_TYPE_FORMULAS = -4123
 
-# The MM for Excel add-in (Milliman Mind's Excel add-in, an XLL). Excel started by
+# The  MM for  Excel add-in (Milliman Mind's Excel add-in, an XLL). Excel started by
 # automation never loads the add-ins of the user's startup list (the `OPEN` values under
-# HKCU\...\Excel\Options), so a background Excel shows #NAME? on every MM_ call unless the
-# XLL is registered into that instance explicitly (`Application.RegisterXLL`). With it loaded,
-# MM_LOOP / MM_RESULT evaluate as in the user's own Excel: one pass (the first loop value);
+# HKCU\...\Excel\Options), so a background Excel shows #NAME? on  every MM_ call unless the
+# XLL is registered into that instance explicitly  (`Application.RegisterXLL`). With it loaded,
+# MM_LOOP / MM_RESULT  evaluate as in the user's own Excel:  one pass (the first loop value);
 # the loop itself runs in Mind.
 MM_XLL_DEFAULT = r"C:\Program Files (x86)\Milliman\MM for Excel\XLLDistributions-AddIn64-packed.xll"
-MM_XLL_ENV = "MINDREADY_MM_XLL"  # a path, or 0 / off to leave the add-in out
+MM_XLL_ENV = "MINDREADY_MM_XLL"  # a  path, or  0 / off to leave the add-in out
 MM_ADDIN_MARKERS = ("xlldistributions", "mm for excel", "mmforexcel")
 
 
 def mm_for_excel_xll() -> Path | None:
-    """The MM for Excel XLL on this machine (the one Excel's own startup list names, else the
+    """The  MM for  Excel XLL on this machine (the one Excel's own startup list names, else the
     default install path), or None. `mm_for_excel_addin` in settings.yaml names a path instead;
-    `MINDREADY_MM_XLL` overrides both: a path, or `0` / `off`."""
+    `MINDREADY_MM_XLL` overrides both: a path, or `0`  / `off`."""
     env = os.environ.get(MM_XLL_ENV)
     if env is not None:
         if env.strip().lower() in ("", "0", "off", "no", "none", "false"):
@@ -85,7 +95,7 @@ def mm_for_excel_xll() -> Path | None:
 
 
 def load_mm_addin(excel: Any) -> Path | None:
-    """Registers the MM for Excel XLL into `excel` (an automation instance). Returns the path
+    """Registers  the MM  for Excel XLL into `excel` (an automation instance). Returns the path
     loaded, or None when the machine has no add-in or Excel refused it."""
     xll = mm_for_excel_xll()
     if xll is None:
@@ -97,7 +107,7 @@ def load_mm_addin(excel: Any) -> Path | None:
 
 
 def mm_addin_loaded(excel: Any) -> bool:
-    """True when an MM for Excel add-in is open in `excel` (XLLs show up in `AddIns2`)."""
+    """True  when an  MM for Excel add-in is open in `excel` (XLLs show up in `AddIns2`)."""
     try:
         for i in range(1, excel.AddIns2.Count + 1):
             addin = excel.AddIns2.Item(i)
@@ -122,15 +132,27 @@ def com_available() -> bool:
 
 
 def start_excel(mm_addin: bool = True) -> Any:
-    """A hidden Excel of its own, set up as every session needs it (on a thread that called
+    """A  hidden Excel  of its own, set up as every session needs it (on a thread that called
     CoInitialize). `mm_addin`: load the MM for Excel add-in into it when the machine has
-    one, so MM_ functions evaluate instead of showing #NAME?."""
+    one, so MM_ functions  evaluate instead of showing #NAME?."""
     import win32com.client
 
     from .perf import stage
 
     with stage("excel_start", mm_addin=mm_addin):
+        cancel.check()  # 17 Nov 2026: a cancelled job starts  no Excel
         excel = win32com.client.DispatchEx("Excel.Application")
+        pid = excel_pid(excel)
+        _remember(pid)  # first: an error in the  set-up below must not leave it unlisted
+        # 17  Nov 2026: the job this thread works for can now end  it; a Cancel that came while Excel
+        # was  starting ends it here (nobody else knew its pid) and leaves with Cancelled -- and it is
+        # quit through its own object too, in case that end found nothing to end
+        try:
+            cancel.note_excel(pid)
+        except cancel.Cancelled:
+            quit_excel(excel)
+            excel = None
+            raise
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable -- never run macros
@@ -145,13 +167,14 @@ def start_excel(mm_addin: bool = True) -> Any:
 
 
 def quit_excel(excel: Any) -> None:
-    """Quit `excel`, every COM proxy collected first and after.
+    """Quit  `excel`, every  COM proxy collected first and after.
 
     A proxy collected after Quit()/CoUninitialize() raises RPC_E_DISCONNECTED (0x80010108)
     inside the garbage collector, which faulthandler reports as a "Windows fatal exception"
-    (harmless but alarming). Callers keep proxies inside an inner function scope and we
+    (harmless but alarming). Callers keep proxies inside an  inner function scope and we
     collect here."""
     gc.collect()
+    pid = excel_pid(excel) if excel is not None else None
     try:
         if excel is not None:
             excel.Quit()
@@ -159,11 +182,13 @@ def quit_excel(excel: Any) -> None:
         pass
     excel = None
     gc.collect()
+    _forget(pid)
+    cancel.forget_excel(pid)  # 17 Nov 2026: quit: no job  ends it any more
 
 
 @contextlib.contextmanager
 def excel_session(mm_addin: bool = True) -> Iterator[Any]:
-    """A hidden Excel of its own for the duration of the block (start_excel / quit_excel)."""
+    """A  hidden Excel  of its own for the duration of the block (start_excel / quit_excel)."""
     import pythoncom
 
     pythoncom.CoInitialize()
@@ -179,9 +204,9 @@ def excel_session(mm_addin: bool = True) -> Iterator[Any]:
 
 
 # What the per-session Excel worker (app/excel_worker.py) needs to tell a dead or hung
-# Excel from a refused operation, and to stop one that hangs.
+# Excel from a refused operation, and to stop  one that hangs.
 EXCEL_GONE_HRESULTS = {
-    -2147417848,  # RPC_E_DISCONNECTED: the object invoked has disconnected from its clients
+    -2147417848,  # RPC_E_DISCONNECTED:  the object  invoked has disconnected from its clients
     -2147023174,  # RPC_S_SERVER_UNAVAILABLE
     -2147023170,  # RPC_S_CALL_FAILED
     -2147417851,  # RPC_E_SERVERFAULT
@@ -190,7 +215,7 @@ EXCEL_GONE_HRESULTS = {
 
 
 def excel_pid(excel: Any) -> int | None:
-    """The process id of an automation Excel (to stop it when it hangs or dies half-way)."""
+    """The  process id  of an automation Excel (to stop it when it hangs or dies half-way)."""
     try:
         import win32process
 
@@ -199,9 +224,50 @@ def excel_pid(excel: Any) -> int | None:
         return None
 
 
-def kill_excel(pid: int | None) -> None:
+def kill_excel(pid: int | None) -> bool:
+    """End  the Excel  `pid`, but only an Excel THIS process started and has not quit: the list
+    (`excel_started.json`) names it for this process, and the process with that id is still that
+    same Excel (same creation  time, excel.exe). Then it is forgotten. -> True when it was  ended.
+
+    17 Nov 2026: the check lives  here, so that every caller is safe  -- the Cancel, the worker's
+    timeout and `_abandon`, the import macro's time  limit and its close. Any other id  (the person's
+    own Excel is never in the list; an id Windows gave to another program; an Excel of another Mind
+    Ready window; one killed a moment ago) is left alone: nothing happens, False."""
     if not pid:
-        return
+        return False
+    pid = int(pid)
+    ended = False
+    with _REGISTRY_LOCK:
+        data = _load_started()
+        entry = data.get(str(pid))
+        if not isinstance(entry, dict) or not _started_here(entry):
+            # 17 Nov 2026: not in the file for this process, but in this process's own memory of the
+            # Excels it started (a line the file lost): the same check of the  process below
+            entry = {"excel_created": _MINE[pid]} if pid in _MINE else None
+        if entry is None:
+            return False  # not listed, or listed for another process: never ours to end
+        if _still_that_excel(pid, entry):
+            _terminate(pid)
+            ended = True
+        _MINE.pop(pid, None)
+        if data.pop(str(pid), None) is not None:  # ended, or already gone (a stale line): forgotten either way
+            _save_started(data)
+    cancel.forget_excel(pid)
+    return ended
+
+
+def _started_here(entry: dict[str, Any]) -> bool:
+    """True  when the  list's line was written by this very process: its id, and (when both are
+    known) its creation time, so a line left by an earlier app that had the same id does  not count."""
+    if entry.get("app") != os.getpid():
+        return False
+    me = _process(os.getpid())
+    return not entry.get("app_created") or me is None or entry.get("app_created") == me[1]
+
+
+def _terminate(pid: int) -> None:
+    """Never  called directly:  only by kill_excel, clean_leftover_excels and kill_own_excels, each
+    after its own check that the process is an Excel written down in the list."""
     try:
         import ctypes
 
@@ -213,8 +279,157 @@ def kill_excel(pid: int | None) -> None:
         pass
 
 
+# --- the Excels this app started (see the module's docstring) ----------------------------------
+_REGISTRY_LOCK = threading.Lock()
+# 17  Nov 2026:  the Excels THIS process started and has not quit, kept in memory too (pid -> Excel's
+# creation time): the file can lose a line (a write that failed, another app window on  the same data
+# folder writing over it), and then a Cancel could  not end that job's Excel. Never  an Excel of
+# another process: only `_remember` fills  it, right after this process started that Excel.
+_MINE: dict[int, int] = {}
+
+
+def _started_path() -> Path:
+    return SETTINGS.data_folder / "excel_started.json"
+
+
+def _process(pid: int) -> tuple[str, int] | None:
+    """(program  path, creation  time) of a process still running, else None. The creation time tells
+    the same process from a later one that got the same id."""
+    try:
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            code = ctypes.c_ulong()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:  # STILL_ACTIVE
+                return None
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.c_ulong(1024)
+            name = buf.value if k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) else ""
+            times = [ctypes.c_ulonglong() for _ in range(4)]  # creation, exit, kernel, user (FILETIMEs)
+            if not k32.GetProcessTimes(handle, *(ctypes.byref(x) for x in times)):
+                return None
+            return name, int(times[0].value)
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _load_started() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(_started_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_started(data: dict[str, dict[str, Any]]) -> None:
+    path = _started_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass  # the  list is  a safety net: a step never fails on it
+
+
+def _remember(pid: int | None) -> None:
+    excel, me = (_process(pid), _process(os.getpid())) if pid else (None, None)
+    if excel is None:
+        return
+    with _REGISTRY_LOCK:
+        _MINE[int(pid)] = excel[1]  # whether  or not  the file below is written
+        data = _load_started()
+        data[str(pid)] = {"excel_created": excel[1], "app": os.getpid(), "app_created": me[1] if me else 0}
+        _save_started(data)
+
+
+def _forget(pid: int | None) -> None:
+    if not pid:
+        return
+    with _REGISTRY_LOCK:
+        _MINE.pop(int(pid), None)
+        data = _load_started()
+        if data.pop(str(pid), None) is not None:
+            _save_started(data)
+
+
+def _still_that_excel(pid: int, entry: dict[str, Any]) -> bool:
+    found = _process(pid)
+    return found is not None and found[1] == entry.get("excel_created") and found[0].lower().endswith("excel.exe")
+
+
+def clean_leftover_excels() -> int:
+    """End  the Excels  a Mind Ready that no longer runs left behind; returns how many. An Excel whose
+    app still runs (another Mind Ready window) is left alone."""
+    ended = 0
+    with _REGISTRY_LOCK:
+        data = _load_started()
+        keep: dict[str, dict[str, Any]] = {}
+        for pid, entry in data.items():
+            owner = _process(int(entry.get("app") or 0))
+            if owner is not None and owner[1] == entry.get("app_created"):
+                keep[pid] = entry
+                continue
+            if _still_that_excel(int(pid), entry):
+                _terminate(int(pid))
+                ended += 1
+        if keep != data:
+            _save_started(keep)
+    return ended
+
+
+def kill_own_excels() -> int:
+    """End  every Excel  this process started and has not quit (the app is being closed)."""
+    if not _REGISTRY_LOCK.acquire(timeout=2):
+        return 0
+    try:
+        data = _load_started()
+        mine = {pid: e for pid, e in data.items() if isinstance(e, dict) and _started_here(e)}  # 17 Nov 2026: as kill_excel asks
+        for pid, entry in mine.items():
+            if _still_that_excel(int(pid), entry):
+                _terminate(int(pid))
+        # 17 Nov 2026: and those whose line the file lost (this process's own memory of  them, checked the same way)
+        lost = [pid for pid, created in _MINE.items() if str(pid) not in mine and _still_that_excel(pid, {"excel_created": created})]
+        for pid in lost:
+            _terminate(pid)
+        _MINE.clear()
+        if mine:
+            _save_started({pid: e for pid, e in data.items() if pid not in mine})
+        return len(mine) + len(lost)
+    finally:
+        _REGISTRY_LOCK.release()
+
+
+def on_window_close() -> None:
+    """Closing  the app's  window (or logging off) ends the process at once: its Excels go first."""
+    if sys.platform != "win32":
+        return
+    try:
+        import win32api
+        import win32con
+
+        def handler(event: int) -> bool:
+            if event in (win32con.CTRL_CLOSE_EVENT, win32con.CTRL_LOGOFF_EVENT, win32con.CTRL_SHUTDOWN_EVENT):
+                kill_own_excels()
+            return False  # then the usual: the process ends
+
+        win32api.SetConsoleCtrlHandler(handler, True)
+    except Exception:
+        pass
+
+
+# A normal end of the process (after the Excel workers quit theirs): whatever is  still running goes
+atexit.register(kill_own_excels)
+
+
 def excel_gone(exc: BaseException) -> bool:
-    """True when `exc` says the Excel process is gone or unreachable (not that it refused a call)."""
+    """True  when `exc`  says the Excel process is gone or unreachable (not that it refused a call)."""
     code = getattr(exc, "hresult", None)
     if code is None and getattr(exc, "args", None):
         code = exc.args[0]
@@ -230,9 +445,9 @@ def excel_alive(excel: Any) -> bool:
 
 
 def open_check(excel: Any, path: Path) -> tuple[dict[str, Any], Any]:
-    """Open `path` to change it, as an apply would, and answer as verify_opens_in_excel does.
+    """Open  `path` to  change it, as an apply would, and answer as verify_opens_in_excel does.
     -> (the answer, the open workbook or None). A file Excel opens read-only (a password to
-    modify) still opens: True, with no workbook to keep."""
+    modify) still opens: True, with no  workbook to keep."""
     try:
         wb = open_for_write(excel, path)
     except NotSavedError:
@@ -247,7 +462,7 @@ def open_check(excel: Any, path: Path) -> tuple[dict[str, Any], Any]:
 
 
 def open_workbook(excel: Any, path: Path, read_only: bool = True) -> Any:
-    # IgnoreReadOnlyRecommended: a workbook saved with "read-only recommended"
+    # IgnoreReadOnlyRecommended:  a workbook  saved with "read-only recommended"
     # is otherwise opened read-only whenever alerts are off (the prompt's
     # default answer), whatever ReadOnly says.
     from .perf import stage
@@ -257,14 +472,14 @@ def open_workbook(excel: Any, path: Path, read_only: bool = True) -> Any:
 
 
 class NotSavedError(RuntimeError):
-    """Excel did not write the workbook to the file it was opened from."""
+    """Excel  did not  write the workbook to the file it was opened from."""
 
 
 def open_for_write(excel: Any, path: Path) -> Any:
-    """Open `path` to change it and save it in place. Refuses a workbook Excel
+    """Open  `path` to  change it and save it in place. Refuses a workbook Excel
     opened read-only all the same (the file is locked by another program, or
-    carries a password to modify): with alerts off, Save() on a read-only
-    workbook writes a copy into the user's default folder and reports success,
+    carries a password to modify): with alerts off, Save()  on a read-only
+    workbook writes a copy into the user's default folder  and reports success,
     leaving `path` untouched."""
     wb = open_workbook(excel, path, read_only=False)
     try:
@@ -284,7 +499,7 @@ def _file_stamp(path: Path) -> tuple[int, int]:
 
 
 def save_in_place(wb: Any, path: Path) -> None:
-    """wb.Save(), then the proof that `path` itself was written: a save that
+    """wb.Save(),  then the  proof that `path` itself was written: a save that
     went elsewhere (or nowhere) leaves the file's time and size as they were,
     and must never be reported as done."""
     from .perf import stage
@@ -305,7 +520,7 @@ def close_quietly(wb: Any) -> None:
 
 
 def verify_opens_in_excel(path: Path) -> dict[str, Any]:
-    """Open `path` read-only in a fresh Excel instance and report whether it
+    """Open  `path` read-only  in a fresh Excel instance and report whether it
     loads. This is the app's definition of "a real working Excel file"."""
     if not com_available():
         return {"available": False, "opens": None, "sheet_count": None, "error": "pywin32 not available"}
@@ -329,14 +544,20 @@ def verify_opens_in_excel(path: Path) -> dict[str, Any]:
     return info
 
 
+# text Excel would turn into  a number, a date or a time when assigned: a digit  first, or a sign,
+# a point, a  bracket or a currency sign and then  a digit ("001", "1E3", "-5", "10:30", "2024-01", "$5")
+_NUMERIC_TEXT_RE = re.compile(r"^\s*[+\-.(]?\s*[$€£]?\s*\d")
+
+
 def excel_text(value: Any) -> Any:
-    """Make a Python value safe to assign through Range.Value2: strings that
-    Excel would parse as a formula get the text-prefix apostrophe, None
-    becomes ''."""
+    """Make  a Python  value safe to assign through Range.Value2: a string stays a string. Text that
+    Excel would parse as a formula, a number, a date or a boolean ("=A1", "-x", "001", "1E3",
+    "2024-01", "TRUE") gets  the text-prefix apostrophe (Excel keeps the text as it is; the
+    apostrophe  is not part of the cell's  value); None becomes ''."""
     if value is None:
         return ""
     if isinstance(value, str):
-        if value[:1] in ("=", "+", "@") or value[:1] == "-" and len(value) > 1 and not value[1:2].isdigit():
+        if value[:1] in ("=", "+", "@", "-") or _NUMERIC_TEXT_RE.match(value) or value.strip().upper() in ("TRUE", "FALSE"):
             value = "'" + value
         if len(value) > 32000:
             value = value[:32000] + "..."
@@ -345,6 +566,6 @@ def excel_text(value: Any) -> Any:
 
 
 def bgr(hex_rgb: str) -> int:
-    """'305496' (RRGGBB) -> the BGR integer Excel's Interior.Color expects."""
+    """'305496'  (RRGGBB) ->  the BGR integer Excel's Interior.Color expects."""
     r, g, b = int(hex_rgb[0:2], 16), int(hex_rgb[2:4], 16), int(hex_rgb[4:6], 16)
     return b * 65536 + g * 256 + r

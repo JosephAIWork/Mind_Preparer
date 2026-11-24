@@ -1,12 +1,13 @@
-"""Run the main screen's "Do everything" chain through the app's API, headless, and keep the result.
+"""Run  the main  screen's "Do everything" chain through the app's API, headless, and keep the result.
 
     python scripts/night_chain.py <workbook> <out dir> [--port 8600] [--first 2] [--skip-autofix] [--ignore "Sheet A,Sheet B"]
 
-`--ignore`: the sheets the scan skips (what the big-file sheet chooser does: a deferred upload, then
-the scan with those sheets left out).
+`--ignore`: the sheets the scan skips  (what the big-file sheet chooser does: a deferred upload, then
+the scan  with those sheets left out).
 
-upload -> Fix all issues (auto-fix, polled) -> Fix the formulas and the structure (every blocking Prep action on by
-default, in rounds) -> Build the
+upload ->  Fix all issues (auto-fix, polled) -> Fix  the formulas and the structure (the server's prep-run job, polled:
+every blocking  Prep action on by default, in rounds  while a round still changes something, then what is left goes
+to the assistant; `--no-assistant`: the rounds only) -> Build the
 Mind loop (first value as given, else the plan's) -> Recalculate -> download the final version and write
 chain.json (every step's result) into <out dir>. Mirrors MindReadyUI/src/app/pages/home.page.ts runAll().
 """
@@ -30,6 +31,54 @@ def say(*a) -> None:
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
+# sheet  names in  any language: never let the console code page stop the chain
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
+def prep_run(base: str, sid: str, assistant: bool = True, every: float = 5.0, http=requests, tell=say) -> dict:
+    """17  Nov 2026:  "Fix the formulas and the structure" is one job on the server (POST .../prep-run), the
+    same one the screens start: Prep rounds while a round still changes something, then, with `assistant`,
+    what is  left goes to the assistant (a fix is kept only when  no number changed). Started here, then
+    looked  at every `every` seconds until it has  ended.
+
+    -> the step's record for chain.json: {ok: state == "done", state,  passes, applied, refused, problems, ask}
+    (and what the  assistant fixed, what is left, the version it ended on, the error when it failed).
+    `base` = http://127.0.0.1:<port>/api; `http` = the requests module (a test passes its own)."""
+    r = http.post(f"{base}/sessions/{sid}/prep-run", json={"assistant": bool(assistant), "button": "Do everything"}, timeout=300)
+    if r.status_code not in (200, 202):
+        tell("prep-run refused:", r.text[:300])
+        return {"ok": False, "state": "refused", "passes": 0, "applied": 0, "refused": 0, "problems": [], "ask": None, "detail": r.text[:300]}
+    last = ""
+    while True:
+        time.sleep(every)
+        st = http.get(f"{base}/sessions/{sid}/prep-run", timeout=300).json()
+        line = f"{st.get('stage')} · {st.get('message')}"
+        if line != last:
+            tell("  ", line[:200])
+            last = line
+        if st.get("state") != "running":
+            break
+    return {
+        "ok": st.get("state") == "done", "state": st.get("state"), "passes": st.get("pass_no"), "applied": st.get("applied"), "refused": st.get("refused"),
+        "problems": st.get("problems"), "ask": st.get("ask"), "assistant_fixed": st.get("assistant_fixed"), "left": st.get("left"),
+        "version": (st.get("version") or {}).get("label"), "error": st.get("error"),
+    }
+
+
+def recalc_ok(rc: dict) -> bool:
+    """17  Nov 2026:  the Recalculate step passes as Start's does -- on the verdict's recalculation, where the
+    errors that show only for the Mind loop's first value do not count (rc["loop_check"]); the bare counts
+    only when  no verdict came with the answer."""
+    verdict = (rc.get("readiness") or {}).get("recalc") or {}
+    if "clean" in verdict:
+        return bool(verdict["clean"])
+    return rc["status"] == "PASS" or rc.get("new_errors") == 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workbook")
@@ -38,8 +87,10 @@ def main() -> int:
     ap.add_argument("--first", default=None)
     ap.add_argument("--skip-autofix", action="store_true")
     ap.add_argument("--ignore", default="")
-    ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant's advice (deterministic, for before/after comparisons)")
+    ap.add_argument("--no-loop", action="store_true", help="do not build a Mind loop (the macro the model owner runs has no calculation loop)")
+    ap.add_argument("--no-assistant", action="store_true", help="fix without the assistant: no advice in Fix all issues, and the Prep step runs its rounds only (deterministic, for before/after comparisons)")
     ap.add_argument("--pivot-mode", default=None, help="blocking / formulas / values: what Prep does with the pivot tables (Advanced > Prep)")
+    ap.add_argument("--inputs", default=None, help="a folder with the model's input files (the files its macro opens): uploaded with the model, then 'Bring in the outside files' runs first")
     a = ap.parse_args()
     B = f"http://127.0.0.1:{a.port}/api"
     wb = Path(a.workbook)
@@ -50,9 +101,17 @@ def main() -> int:
 
     say("upload", wb.name)
     ignore = [x.strip() for x in a.ignore.split(",") if x.strip()]
-    with open(wb, "rb") as fh:
-        data = {"mode": "plan", **({"defer": "1"} if ignore else {})}
-        r = requests.post(f"{B}/sessions", files={"file": (wb.name, fh)}, data=data, timeout=3600)
+    data = {"mode": "plan", **({"defer": "1"} if ignore else {})}
+    input_paths = sorted(p for p in Path(a.inputs).iterdir() if p.is_file()) if a.inputs else []
+    handles = [open(wb, "rb")] + [open(p, "rb") for p in input_paths]
+    try:
+        files = [("file", (wb.name, handles[0]))] + [("files", (p.name, h)) for p, h in zip(input_paths, handles[1:])]
+        r = requests.post(f"{B}/sessions", files=files, data=data, timeout=3600)
+    finally:
+        for h in handles:
+            h.close()
+    if input_paths:
+        say("input files sent:", len(input_paths))
     r.raise_for_status()
     sid = r.json()["sessionId"]
     if ignore:
@@ -70,7 +129,7 @@ def main() -> int:
         r.raise_for_status()
         chain["pivot_mode"] = a.pivot_mode
         say("pivot setting:", a.pivot_mode)
-    # what the main screen shows before Do everything is clicked, to compare with the real time
+    # what  the main  screen shows before Do everything is clicked, to compare with the real time
     try:
         est = requests.get(f"{B}/sessions/{sid}/estimate", timeout=300)
         chain["estimate"] = est.json() if est.status_code == 200 else {"error": est.text[:300]}
@@ -78,6 +137,40 @@ def main() -> int:
     except requests.RequestException as exc:
         chain["estimate"] = {"error": str(exc)[:300]}
     t_chain = time.time()
+
+    # outside input files first (the screen's first step), when the macro reads any
+    outside = (state() or {}).get("outsideInputs")
+    if outside:
+        chain["outsideInputs"] = {k: outside.get(k) for k in ("macro", "matched", "missing", "extra", "summary", "brought_in")}
+        say("outside files:", outside.get("summary"))
+        # the screen's skip rule (outsideSkipReason): nothing names  the files, or no macro brings them in -> their data  stays inside the model
+        skip = ("No cell names the files the macro opens" if not outside.get("rows") else "Which macro brings the outside files in is not clear" if not outside.get("macro") else "")
+        if skip and not outside.get("brought_in"):
+            say("skipping the outside files:", skip + ": their data stays inside the model")
+        if not outside.get("brought_in") and not skip:
+            # as Do everything:  missing files are made by the assistant  (stand-ins from the model's own numbers)
+            stand_ins = bool(outside.get("missing")) and bool(outside.get("assistant"))
+            r = requests.post(f"{B}/sessions/{sid}/outside-inputs/run", json={"standIns": True} if stand_ins else {}, timeout=300)
+            say("bring in the outside files:", r.status_code, r.text[:200])
+            last = ""
+            while r.status_code in (200, 202):
+                time.sleep(5)
+                st = requests.get(f"{B}/sessions/{sid}/outside-inputs", timeout=300).json()
+                if st.get("stage") and st.get("stage") != last:
+                    say("  ", str(st.get("stage"))[:160])
+                    last = st.get("stage")
+                if not st.get("running"):
+                    break
+            st = requests.get(f"{B}/sessions/{sid}/outside-inputs", timeout=300).json()
+            res = st.get("result") or {}
+            chain["steps"]["outside"] = {"ok": not st.get("error") and bool(res), "error": st.get("error"),
+                                         "summary": res.get("summary"), "download": res.get("download"),
+                                         "kept": (res.get("mindInputs") or {}).get("kept"), "stand_ins": res.get("standIns") or st.get("standIns")}
+            say("outside:", json.dumps(chain["steps"]["outside"], ensure_ascii=False)[:400])
+            if st.get("error") or not res:
+                say("stopping: the outside files could not be brought in")
+                (out / "chain.json").write_text(json.dumps(chain, indent=1, ensure_ascii=False), encoding="utf-8")
+                return 1
 
     if not a.skip_autofix:
         say("fix all issues: start")
@@ -99,45 +192,26 @@ def main() -> int:
             full = requests.get(f"{B}/sessions/{sid}/auto-fix", params={"full": "1"}, timeout=300).json()
             res = full.get("result") or {}
             left = res.get("left") or []
-            # "unchanged" with no error left is fine: the workbook already recalculated clean (a client model had no error)
+            # "unchanged" with no error left is  fine: the workbook already recalculated clean (a  client model had no error)
             ok = res.get("status") == "clean" or (res.get("status") in ("partial", "unchanged") and not left and (res.get("errors_after") or 0) == 0)
             # 1.11.6, as the main screen: errors the workbook already had (no regression, no Stop) let the chain go on
             ok = ok or (res.get("status") in ("partial", "stuck", "unchanged") and not res.get("stopped") and not res.get("regression_cells"))
             chain["steps"]["fixAll"] = {"ok": ok, "status": res.get("status"), "errors_before": res.get("errors_before"), "errors_after": res.get("errors_after"), "cells_fixed": res.get("cells_fixed"), "left": len(left), "version": (full.get("version") or {}).get("label"), "error": full.get("error")}
             say("fix all issues:", json.dumps(chain["steps"]["fixAll"])[:300])
 
-    # Fix the formulas and the structure: every blocking Prep action that is on by default, in rounds
-    # (an applied action can surface another one), until none is left or 3 rounds ran.
-    step: dict = {"ok": True, "rounds": [], "applied": 0, "failed": 0}
-    for round_no in range(1, 4):
-        st = state()
-        acts = [a for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
-        ops = [o for a in acts for o in a["operations"]]
-        say(f"prepare round {round_no}: {[(a['id'], a['count']) for a in acts]} -> {len(ops)} operations")
-        if not ops:
-            break
-        errors_before = sum(1 for f in st["report"]["findings"] if f["status"] == "ERROR")
-        r = requests.post(f"{B}/sessions/{sid}/apply", json={"operations": ops, "reanalyze": True, "versionStep": "major"}, timeout=7200)
-        r.raise_for_status()
-        o = r.json()
-        res = o["result"]
-        applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied") or 0
-        failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed") or 0
-        errors_after = sum(1 for f in (o.get("report") or {}).get("findings", []) if f["status"] == "ERROR")
-        step["rounds"].append({"actions": [a["id"] for a in acts], "applied": applied, "failed": failed, "errors_before": errors_before, "errors_after": errors_after, "version": o["version"]["label"]})
-        step["applied"] += applied
-        step["failed"] += failed
-        step["version"] = o["version"]["label"]
-        if failed:
-            step["ok"] = False
-            break
-    st = state()
-    left = [a["id"] for a in st["plan"] if a["level"] == "blocking" and a["default_on"] and a["count"] > 0]
-    step["left"] = left
-    if left:
-        step["ok"] = False
-    chain["steps"]["prepare"] = step
-    say("prepare:", json.dumps(step)[:400])
+    def prepare_rounds(key: str) -> None:
+        # 17 Nov 2026: Fix the formulas and the structure is the server's prep-run job, as on the screens (the
+        # rounds were made here before, 3 at most, and stopped at the first refused change). The step is ok
+        # only when the  job ends "done"; as before, the chain goes on to the loop and the recalculation
+        # after a step that was not ok.
+        step = prep_run(B, sid, assistant=not a.no_assistant)
+        # which blocking Prep actions still hold changes, by id (the record kept this before tonight too)
+        step["left_actions"] = [x["id"] for x in state()["plan"] if x["level"] == "blocking" and x["default_on"] and x["count"] > 0]
+        chain["steps"][key] = step
+        say(f"{key}:", json.dumps(step, ensure_ascii=False, default=str)[:400])
+
+
+    prepare_rounds("prepare")
 
     plan = requests.get(f"{B}/sessions/{sid}/mind-loop-plan", timeout=1800).json()["plan"]
     (out / "loop_plan.json").write_text(json.dumps(plan, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -145,7 +219,9 @@ def main() -> int:
     header = any(l.get("first") == 1 and any("header" in (n or "").lower() for n in l.get("notes", [])) for l in plan.get("loops", []))
     first = a.first or ("2" if header else None)
     say("loop plan: found", plan.get("found"), "| ready", [l["name"] for l in ready], "| ops", plan.get("operation_count"), "| first", first)
-    if plan.get("found") and ready and plan.get("operation_count"):
+    if a.no_loop:
+        chain["steps"]["loop"] = {"ok": None, "skipped": "--no-loop"}
+    elif plan.get("found") and ready and plan.get("operation_count"):
         body = {"reanalyze": True}
         if first:
             body["first"] = first
@@ -158,6 +234,10 @@ def main() -> int:
             applied = len(res["applied"]) if isinstance(res.get("applied"), list) else res.get("applied")
             failed = len(res["failed"]) if isinstance(res.get("failed"), list) else res.get("failed")
             chain["steps"]["loop"] = {"ok": not failed, "applied": applied, "failed": failed, "version": o["version"]["label"], "how": o["plan"].get("how_it_runs")}
+            if not failed and applied:
+                # building the loop changes the state the rules scan (which policy row, which cells are cleared): a
+                # blocking action can appear that was not there before it (Model A: FRM-009 PASS -> ERROR, 2026-11-14)
+                prepare_rounds("prepare_after_loop")
     else:
         chain["steps"]["loop"] = {"ok": None, "skipped": "no ready loop"}
     say("loop:", json.dumps(chain["steps"]["loop"])[:300])
@@ -166,7 +246,9 @@ def main() -> int:
     r = requests.post(f"{B}/sessions/{sid}/recalculate", timeout=7200)
     r.raise_for_status()
     rc = r.json()
-    chain["steps"]["recalc"] = {"ok": rc["status"] == "PASS" or (rc.get("new_errors") == 0), "status": rc["status"], "message": rc["message"][:200], "formula_errors": len(rc.get("formula_errors", [])), "new_errors": rc.get("new_errors"), "preexisting_errors": rc.get("preexisting_errors"), "addin_gap": len(rc.get("addin_gap_errors", []))}
+    verdict = (rc.get("readiness") or {}).get("recalc") or {}
+    chain["steps"]["recalc"] = {"ok": recalc_ok(rc), "status": rc["status"], "message": rc["message"][:200], "formula_errors": len(rc.get("formula_errors", [])), "new_errors": rc.get("new_errors"), "preexisting_errors": rc.get("preexisting_errors"), "addin_gap": len(rc.get("addin_gap_errors", [])),
+                                "loop_check": rc.get("loop_check"), "loop_note": verdict.get("loop_note")}
     say("recalc:", json.dumps(chain["steps"]["recalc"])[:300])
 
     st = state()

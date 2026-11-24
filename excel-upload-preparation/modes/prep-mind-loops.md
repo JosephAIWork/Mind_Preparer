@@ -1,3 +1,0 @@
-# Prep Mind Loops
-
-Focus on `MM_LOOP`, `MM_LOOPINSTANCE`, `MM_LOOPLABELS`, `MM_RESULT`, `MM_DIMINDEX`, `MM_DIMSIZE`, related ranges, dependencies, and resizing. Auto-correct only unambiguous, semantics-preserving issues. Ask before creating loop names or ranges, changing dimensions or aggregation, replacing `MM_LOOP` with `MM_LOOPINSTANCE`, or changing instance mappings. Revalidate and recalculate.

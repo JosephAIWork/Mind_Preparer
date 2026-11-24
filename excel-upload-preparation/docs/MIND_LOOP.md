@@ -2,8 +2,10 @@
 
 The macro's run loop written as Mind formulas, from the Model map. `app/loop_builder.py`,
 `GET /api/sessions/{id}/mind-loop-plan` (the plan, nothing written),
-`POST /api/sessions/{id}/mind-loop-plan/apply` (written as a new version), the **Mind loop**
-section of the Model map screen, `python -m app.loop_builder <workbook> [--json]`.
+`POST /api/sessions/{id}/mind-loop-plan/apply` (written as a new version), the **Mind loop** tab
+under Advanced (since 1.13.0 one sentence and **Build it**; each loop's boxes under **Change the
+choices**, the output cards and the formulas under **What gets written**; a loop that still needs one
+answer shows only that box), `python -m app.loop_builder <workbook> [--json]`.
 
 ## What is written
 
@@ -19,6 +21,27 @@ section of the Model map screen, `python -m app.loop_builder <workbook> [--json]
 The loop name is the driver's defined name (e.g. `RUN_ROW`, `ACTIVE_SCENARIO`), else the
 source sheet's name (e.g. `Policies`); the bounds are the bound cells' numbers (a formula's
 stored value counts). All three can be changed before writing.
+
+## One macro at a time (review, 10 November 2026)
+
+A workbook can have two run macros, each with its own loops (the IFRS 17 tool: `AllScenarioRun` over
+cohort x scenario, `EndemicCalculationRun` over group x roll-forward year). Excel runs each macro on
+its own, with the other macro's drivers fixed at their saved values. Written into one model, Mind
+would run all four loops inside each other (6 x 4 x 6 x 6 passes) and `MM_RESULT` with one loop would
+add up the passes of the others: the values would differ from Excel.
+
+- The plan builds the loops of one macro (`macro=`, default: the first macro with a loop; the Mind
+  loop tab shows a **Macro** dropdown under Change the choices when there are two or more). The plan lists the macros and
+  their loops (`macros`). The other macros' loops are listed as `not built`, with why.
+- A driver of another macro that already holds an `MM_LOOP` (written earlier) is named in the notes:
+  build on a version without it.
+- A macro's outputs and cleared areas are its own: another macro's block is not written.
+- Inside one macro, the loops are told apart by procedure and loop variable, so two procedures that
+  both use `i` keep their own loop.
+- A count cell that already holds the count this plan writes (an earlier write with the same choices)
+  is accepted. The label `<loop> count` goes to the left of the count only when that cell is free:
+  empty, not another loop's count or label, not a cell the plan writes, and read by no formula.
+- A first value typed as a cell (`Sheet!A1`) counts as chosen, like a number: the header pass is kept.
 
 ## What is not written, and said
 
@@ -79,7 +102,7 @@ recalculated clean), in a sandbox project:
   captions (`_complete_header`).
 - The loop written on the untouched original is refused by Mind: 15 formula compilation errors, all
   `SUMIFS('<policy table>'!#REF!, ...)` on a check sheet, the broken references the app's REF-001 fix
-  repairs. The loop needs the fixed workbook, which is what the main screen's buttons produce.
+  repairs. The loop needs the fixed workbook, which is what the Custom screen's buttons produce.
 
 Scripts: `scripts/mind_loop_probe.py` (upload, logs, run, parts), `scripts/mind_loop_compare.py`
 (Mind's rows vs the macro's values), `scripts/mind_ask.py` (Mind's AI Assistant),
@@ -117,7 +140,7 @@ A column of the table that holds nothing in the loop rows gets no loop, and a lo
 earlier build is cleared (it would be a definition with another length once the table grows). Every
 definition of a loop must keep the same length, so a new row should fill every part of the table (Mind cuts
 a table into grids at empty columns). `--fixed-ranges` on the command line, `fixed_ranges` on the API and
-the box on the Advanced loop panel give the old `X2:X6` form. LOOP-003 treats table-following definitions
+the option under Change the choices on the Mind loop tab give the old `X2:X6` form. LOOP-003 treats table-following definitions
 as equal by construction and flags a mix with fixed ones.
 
 ## Defaults and notes (1.11.1, after the design review)
@@ -145,6 +168,61 @@ the upload with the browser and then this check through MCP when a token is ther
 browser (`--browser` forces it) when there is none or it expired. Upload, convert, add template and delete
 have no MCP tool: they stay in the browser. Verified 2026-10-15 on UC-1 with a seventh policy row: run
 Success / Consistent in 6.5 s, a loop of size 6, 50 of 50 cells the same as the macro.
+
+## The loop goes to Mind with Prep's formula repairs (1.12.5)
+
+A loop written on a version Prep has not repaired yet would go to Mind with formulas Mind computes
+otherwise. On the Model D tool (2026-11-09) that made every formula of six calculation sheets NaN: their
+B3 reads the sheet name through `CELL("filename")`, which Mind answers with the workbook's name alone
+(see MIND_VS_EXCEL.md). The loop plan therefore takes Prep's plan for the same version and writes the
+formula repairs it still has with the loop (`loop_builder.FORMULA_REPAIRS`: the Custom screen's "Fix the
+formulas" set, among them FRM-012's CELL / INFO freeze and FRM-014's OFFSET ranges). A cell the loop
+writes keeps the loop. The plan lists them (`repairs`, a note, a line under What gets written on the loop tab);
+`repairs: false` on the API leaves them out and the note says Mind will compute other values. In Do
+everything the Prep step runs first, so nothing is left for the loop to add.
+
+**What the loop does not write, and says (10 November 2026).** Prep's blocking items that are not
+formulas -- a lone text cell to title (STR-008), a pivot table (STR-009), a grid title trapped inside a
+grid (STR-001), an array formula past its grid (RSK-002) -- are structural: the loop and the instances
+leave them to Prep. A plan written while Prep still has such items carries one line, "Prep still has N
+blocking items that are not formulas, e.g. a formula reads a lone text cell (STR-008). Run Fix all
+issues before uploading." (`prep_blockers` on the plan: id, title, count, rule ids;
+`loop_builder.prep_blockers`). Every ready plan also carries one line on the two kinds of cell Mind's
+upload test lists after a build and that are not errors (rounding residues on check cells, the text
+TRUE / FALSE): see MIND_VS_EXCEL.md, "Mind's upload test after a loop or instances build".
+
+Proven in real Mind (2026-11-09), Mind's test after the upload:
+- the loop written on the unrepaired version through the app (6 CELL freezes and 84 OFFSET ranges
+  written with it; zzz_mindready_model_d_loops_probe_7): 14,737 differences before, 75 after, none a value:
+  67 check cells that are 0 in Excel and a rounding residue below 0.00002 in Mind (B47-B46 of two equal
+  totals near a billion), and 8 cells holding the text "TRUE" that the test reads as 1 on Excel's side;
+- the Do-everything version plus the four loops through the app (84 OFFSET ranges written with it;
+  zzz_mindready_model_d_loops_2): 63 differences, the same two kinds (55 residues below 0.000004, 8 "TRUE").
+
+## The macro's text in its own code page (10 November 2026)
+
+The VBE stores module text in the ANSI code page of the PC that saved the workbook (cp932 on a
+Japanese PC, cp1255 on a Hebrew one), and Excel 365 records 0 ("the system's") as the project's code
+page. olevba answers 0 with UTF-8 and replacement characters, so the Japanese comments and string
+literals of the Model D tool -- `Find("年月")`, `MsgBox "完了しました"` -- arrived as mojibake, and the
+stand-in assistant and the message-box matching could not read them. `model_map.read_vba` now decodes
+the module bytes itself (`decode_vba_source`): the stored code page when there is one (trusted as it
+is: `MsgBox "ｴﾗｰ"` is Japanese when the project says 932); else UTF-8; cp932 when at least half of
+what it gives comes from the kana, the full-width symbols and the common (JIS level 1) kanji -- so
+kanji-only text, `Find("年月")` or `Worksheets("計算")`, is Japanese too, while Hebrew, Western,
+Korean or Chinese bytes read as cp932 give half-width katakana, rare kanji and private-use
+characters; cp949 when it gives the common Hangul syllables (Japanese bytes read as cp949 give the
+rare ones); the PC's own code page (tried with its check first among the East Asian ones, so a
+Korean file on a Japanese PC reads as Korean, and trusted after them); cp936 / cp950 when they give
+ideographs; cp1252 -- each only when it decodes every byte, cp1252 with replacement characters as
+the last resort. The loops are found as before (the fixture
+`tests/unit/fixtures/vba_japanese_cp932.xlsm`: a row-per-record model whose module is cp932 with code
+page 0, as a workbook from a Japanese PC has). The limits: a Western file on a Hebrew PC with no code
+page recorded reads its accented letters as Hebrew ones (no single-byte code page can be told from
+another); half-width katakana alone, with no code page recorded, on a Hebrew or Western PC read in
+that PC's code page; Chinese on a Hebrew or Western PC with no code page recorded is not told apart
+from that PC's own code page (it is read right from the stored one, on a Chinese PC, and on a Japanese
+PC).
 
 ## A driver cell must not have a dropdown (1.11.3)
 

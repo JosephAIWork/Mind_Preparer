@@ -1,4 +1,4 @@
-"""FIX_INCOMPATIBLE_FORMULAS: focuses on formula rules (modes/fix-incompatible-formulas.md).
+"""FIX_INCOMPATIBLE_FORMULAS:  focuses on  formula rules (modes/fix-incompatible-formulas.md).
 ANALYZE+VALIDATE+ASK only -- rewriting formulas needs the LLM abstraction
 (phase 7) and change-set application (phase 8), neither built yet."""
 from __future__ import annotations

@@ -22,24 +22,126 @@ Provider-neutral, Python-oriented instruction and rule package for preparing Exc
 
 `PASS`, `WARNING`, `ERROR`, `REQUIRES_USER_INPUT`, `NOT_SUPPORTED`.
 
-## Current status (1.11.0)
+## Current status (1.15.0)
 
 All 12 phases have a real implementation, and **every active rule has a
 real validator** -- nothing falls through to `NOT_SUPPORTED` any more except
 the two honest cases below.
+
+- **Cancel on every piece of work** (1.15.0, `app/cancel.py`): a **Cancel** button wherever the app
+  works. It stops the work on the server, ends only the Excel the app itself started for it, and puts
+  the workbook back as it was before the step ("Stopped. Nothing was changed."). In the middle of Start
+  the finished steps are kept. During Upload to Mind / Run in Mind the half-made Mind project is kept,
+  named, and offered with **Delete it from Mind** (`mind_projects.json` in the data folder holds the
+  names; nothing is deleted without a click). Routes: `POST .../cancel`, `GET .../jobs`,
+  `POST .../mind-loop/delete-project`.
+- **Start does not stop for a person when the app can fix it** (1.15.0, `app/handoff.py`,
+  `POST` / `GET .../prep-run`): the Prep rounds go on while a round still changes something; what is
+  left goes to the assistant, whose fix is kept only when the numbers check finds no value changed
+  and the problem got smaller (else it is undone); only then is the person asked, with **Show me**
+  and **Send feedback**. The cost: at most 5 problems a run, 2 tries each, a try being up to 5 model
+  calls plus an Apply and a recalculation of two versions (at most 50 model calls a run; minutes per
+  try on a big model). With no AI key the app stops and says so.
+- **Basic shows progress** (1.15.0): a bar with a percentage under the step line and pulsing dots on
+  the button while Start runs. Lone text cells are fixed in one Prep round.
+- **Three screens** (1.15.0): **Basic** (upload, one tick box, **Go**, the end-of-check message with
+  **Upload to Mind** and **Download**), **Custom** (the former main screen) and **Advanced**; **Remove all**
+  empties the Recent workbooks list (keeping what another copy or a running step holds).
+- **Safer Prep** (1.15.0): no title is written into an empty cell a formula reads; the numbers check
+  expects a caption replaced on purpose; CELL("filename") is frozen to a neutral path.
+
+- **The assistant's token count** (1.14.1): "AI used: 12,340 tokens in 7 calls", per workbook; every
+  completed call counts (the chat, a suggestion, the grid namer, the instance finder, Fix all issues'
+  advisor, the stand-in files, Run in Mind), the count is saved with the workbook, and it shows under
+  Advanced > Assistant (with what a token and a call are) and in the Send feedback message.
+- **A formula caption is replaced by the title** (1.14.1, an open issue by Joseph's decision): the
+  cell gets '#' + the text the formula last showed; when that text is unknown (never calculated, an
+  error, a number) or an INDIRECT / 3-D reference may read the cell, the table is reported instead.
+- **Workbooks are kept between sessions** (1.14.0, `docs/SAVED_WORKBOOKS.md`): every session's
+  files live in the data folder with a small state file (and the check result in a file of its
+  own); the Custom screen's **Recent workbooks** list reopens one where it was, or removes it. Nothing
+  reopens by itself; two copies of the app on one data folder leave each other's open workbooks alone.
+- **Do everything stops and asks for the input files** (1.14.0, `docs/OUTSIDE_INPUTS.md`): when
+  files the macro opens were not picked, one box under Do everything waits -- Pick the files, Go on,
+  Make them with AI (only with an AI key and a file missing), Stop -- and the chain goes on from the
+  bring-in itself; the countdown pauses while it waits.
+- **A sheet left out of the scan still exists for references** (1.14.0): INDIRECT and 3-D targets on
+  a skipped sheet resolve exactly as without the skip (no more `NA()` for a sheet that is there); the
+  Mind-value rules leave the formulas that read a skipped sheet as they are and say so, with one or
+  many sheets skipped.
+- **Grid titles never move cells** (1.14.0): one title per table, into the cell Mind reads a title
+  from (a text caption on top of a key column, or the empty cell above); what cannot be titled
+  without moving or overwriting a cell is reported with what to do by hand.
+- **Send feedback** (1.14.0): the button, the box and the guide name no team; the reply still comes
+  back to the address in `settings.yaml`. The message (1.14.1) says what the assistant used on the open
+  workbook, in its log part: "AI used: 12,340 tokens in 7 calls".
+- **Plainer screens for the loop and the instances** (1.13.0): Advanced > Mind loop opens with
+  one sentence ("The macro runs Scenario 0 to 3 and Cohort 2021 to 2026. Mind can do the same.")
+  and one button, **Build it**; the choices and what gets written are folded away, and a loop that
+  still needs one answer shows only that one box. The instances have their own tab, **Instances**,
+  which asks one thing at a time: make one copy per... (the macro's loops, or a column of a
+  table), then **Build it**, then download both files and run in Mind. The finder sits behind
+  **Not sure? Let the app look**. `docs/CHANGELOG_DETAILED.md` 1.13.0 has the whole list, with the Run in Mind
+  fixes (a second run, the Inputs window of a copied workbook) and the macro's text read in its
+  own code page.
 
 - **Carbon front end** (1.11.0): the web app rewritten in Angular with
   Carbon, Mind's design system. Main screen = one workbook, three buttons
   that do the work on their own, one download; lists and manual work under
   Advanced. See `MindReadyUI/`.
 
-- **Mind loop** (1.10.0): on the Model map screen, the macro's run loop as
+- **Outside input files** (1.12.4, `docs/OUTSIDE_INPUTS.md`): a model whose macro opens other
+  files gets them through Mind input grids (`IN_<sheet> /Input`). Each quarter, **Make next
+  quarter's Mind input files** turns the new raw files into one file per grid (the model's own
+  import macro on a copy; raw files cannot go into Mind's Inputs window as they are). Checked in
+  Mind on 10 November 2026: Mind = Excel, and a changed raw file changes Mind's result.
+
+- **Mind loop** (1.10.0; Advanced > Mind loop since 1.13.0): the macro's run loop as
   Mind formulas -- `MM_LOOP` in every driver cell over its column of the
   table (or the list, or the count), `MM_RESULT` row by row in the block the
   macro writes per pass -- previewed with its bounds and name, then written
   through Excel as a new version. What the two functions cannot say is
   listed as not built, with why. `scripts/check_loop_plan.py` proves the
   wiring in Excel against the macro (a client model: 60 of 60 cells the same).
+
+- **Mind instances** (1.13.0): under Advanced > Instances, the macro's run
+  loop as Mind instances instead of one loop -- for a macro that runs one
+  policy at a time and adds each policy's results to its group's block. One
+  copy of the model per value of a key column of the model-point table (a
+  tariff, a product, a group; chosen from a dropdown, the macro's own lookup
+  column by default) and a loop inside each copy over that copy's own rows.
+  In the model: the table becomes a `#<Name> /InstanceSplit` grid keyed by
+  that column, the count cell counts the copy's rows, the driver gets
+  `MM_LOOPINSTANCE`, the block the macro copies out per pass becomes
+  `MM_RESULT` sums, and the paste area is emptied; the formula repairs Prep
+  still has are written with it. A second small workbook, `<stem>_Main.xlsx`,
+  holds the keys (`/InstanceKeys`, the model's file name as header) and the
+  results: one row per key through `MM_INSTANCE`, and the whole output block
+  as plain links (in Mind a plain link to a copied workbook is the sum over
+  the copies). Both files come as one zip: in Mind, drop them together on an
+  empty project (keep the file names). Checked in a real Mind project (29
+  October 2026: 0 differences from Excel's sums by key; 10 November 2026:
+  small probes). `docs/MIND_INSTANCES.md`.
+  **Copies from loops**: tick one or more of the macro's loops (a scenario
+  and a cohort, say) instead of a key column: one copy per combination of
+  their values, each copy reading its own values from a small
+  `#Instance values /InstanceSplit` grid, the same macro's other loops staying
+  `MM_LOOP`s inside every copy, and the main workbook showing each copy's
+  results block (`MM_INSTANCE`, one row per copy and block row). Checked in
+  Mind on the anonymized IFRS 17 tool (10 November 2026): 24 copies, every
+  one equal to Excel with its cohort and scenario set (12,528 cells, 0
+  differences).
+
+- **Where instances could help** (1.13.0): on the Instances tab, the fold
+  **Not sure? Let the app look** reads every formula of the
+  model and its macro and points to what repeats: a column of the looped
+  table that splits its rows into groups, the same formulas side by side in
+  one sheet, sheets with the same layout, and near copies with the edits
+  that would unify them. Blind and deterministic (pure Python over the scan,
+  no Excel, no model call), ranked, each with whether instances, a loop or
+  leaving it fit, and why. **Use as the key** fills the builder. It writes
+  nothing. With an AI key, a tick adds the assistant's explanation and order
+  on top; the findings never change. `docs/INSTANCE_FINDER.md`.
 
 - **Model map** (1.9.0): a screen (and `GET .../model-map`, `python -m
   app.model_map`) that says where a model's inputs are, which cell the run
@@ -174,21 +276,35 @@ the two honest cases below.
   error values (`#N/A`, `#REF!`, ...) -- they begin with '#' but are results,
   not titles (1.6.7).
 - **Grid naming**: `app/prep.py` names an untitled grid from the cells around
-  it -- including the *section heading directly above it*, the layout real
-  models use -- and inserts a row when the cell above is occupied, so a block
-  with a heading still gets a title. When the surroundings say nothing the
-  heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can then
-  ask the APIM assistant for a context-aware name instead (one batched call,
-  `POST /api/sessions/{id}/grid-names`). Assistant names are advisory: they
-  only change *which* name a reviewable prep operation writes (1.6.7).
+  it -- the caption on top of its key column, the *section heading directly
+  above it*, a label nearby, its header row. The title goes into the one cell
+  Mind reads a title from, directly above the grid's top-left cell: into that
+  cell when it is empty, into the caption cell ('#' + its own text) when the
+  grid is a key column with a caption plus the block beside it (one table,
+  `grids._merge_key_columns`; the caption must be text -- a year or a date
+  above a key column is never overwritten). **No cell is ever moved for a title** (1.14.0;
+  up to 1.13.0 a row was inserted when the cell above was taken, which pushed
+  a key column out of line with its rows): a grid on row 1, a cell above that
+  belongs to another grid or a cell something reads is reported under
+  "could not name" with what to do by hand; a caption cell that holds a
+  formula is replaced by the title (1.14.1: '#' + the text the formula last
+  showed, the note says the formula went -- an open issue; when that text is
+  unknown, or an INDIRECT / 3-D reference may read the cell, the table is
+  reported instead); a lone label beside the title cell
+  is moved into the title only when the title was made from its own text. When the surroundings say nothing
+  the heuristic falls back to `"<Sheet> <Anchor>"`; `app/grid_naming.py` can
+  then ask the APIM assistant for a context-aware name instead (one batched
+  call, `POST /api/sessions/{id}/grid-names`). Assistant names are advisory:
+  they only change *which* name a reviewable prep operation writes (1.6.7).
 - **Grid Namer** (1.7.0): a screen where the *user* names grids by hand --
   the whole current version is shown sheet by sheet with the detected grids
   outlined; drag over an area, type a name, tick documented flags, Submit.
   `plan_named_areas` (app/prep.py) resolves each selection to the grid Mind's
-  detection sees there (or the caption-above-a-table pair), writes the
-  `#Name /Flags` title under the same reference-safety rules, and the
-  automatic titler names everything else in the same apply without colliding
-  (user names reserved, user grids excluded, row inserts shared).
+  detection sees there (a key column with its caption and the block beside it
+  count as one), writes the `#Name /Flags` title into the same cell and under
+  the same rules as the automatic titler (nothing moved, the reference-safety
+  checks), and the automatic titler names everything else in the same apply
+  without colliding (user names reserved, user grids excluded).
 - **Runs itself in Milliman Mind** (1.6.8): `app/mind_loop.py` /
   `scripts/run_in_mind.py` / the **Mind** screen take a raw model and, with
   nobody in the loop, prepare → verify the numbers (full Excel recalculation
@@ -246,13 +362,24 @@ the two honest cases below.
   a fresh copy, the file is verified and re-analyzed, and the conversation
   continues on the changed workbook. Needs the gateway key, pasted once
   in the web app (saved encrypted for the Windows user, `app/ai_key.py`).
+  The app counts what the assistant uses per workbook (1.14.1): every
+  completed call -- the chat, a suggestion, the grid namer, the finder, Fix
+  all issues, the stand-ins, Run in Mind -- adds its tokens and one call to
+  the open session (`app/llm.py` `usage_scope`, a context variable the
+  server sets around every step that may ask the assistant; the jobs' threads
+  run under it too). The count is saved with the workbook and shown under
+  Advanced > Assistant and in the feedback message: "AI used: 12,340 tokens
+  in 7 calls" (input + output together; the parts -- input, output, cache
+  read, cache write -- are in `GET /api/sessions/{id}/ai-usage`), or "AI not
+  used yet on this workbook".
 - **Web app** (1.6.0): the Figma-built React front-end in
   `../MindReadyUI` served by `app/web/server.py` (FastAPI) -- an Angular 22 +
-  Carbon app with Mind's own look (1.11.0; the React app in `FigmaOutput` is
-  retired, `MIND_READY_DIST` can still point at its `dist`). The main screen
+  Carbon app with Mind's own look (1.11.0; the earlier React app is
+  retired and no longer part of this repository). The Custom screen
   is three one-click buttons (Fix all issues, Fix the formulas, Build the
   Mind loop) and a download; everything else -- findings, Prep actions,
-  Recalculate, Mind loop choices, Model map, Grid Namer, Assistant, Run in
+  Recalculate, Mind loop choices, the Mind instances and where instances could
+  help, Model map, Grid Namer, Assistant, Run in
   Mind, Deliver, Versions -- is under **Advanced**. The built `dist` is
   committed; rebuild with `npm install && npx ng build --configuration
   production` in `MindReadyUI`.
@@ -267,6 +394,14 @@ Setup: `pip install -r requirements.txt` to run the app; `pip install -r require
 for the tests, then `python -m pytest tests` (the Excel-backed ones skip without Excel).
 Run the app: `run_mind_ready_web.bat`. Settings (port, data folder, AI gateway, Mind addresses, sandbox
 folder and project prefix, MM for Excel add-in): `settings.yaml`; the AI key is pasted in the app.
+
+Saved workbooks (1.14.0): every workbook the app is given is kept in the data folder
+(`<data folder>\sessions\<id>\`, with every version, result and plan in a state file written after each
+step), so a restart of the app or a new browser window loses nothing. The **Recent
+workbooks** list (under the upload box, only when something is saved) opens one again where it was --
+Reopen -- or deletes it -- Remove, asked once in place. Nothing reopens by itself; a job that was
+running when the app was closed shows as stopped. `docs/SAVED_WORKBOOKS.md`, `app/session_store.py`,
+`GET /api/saved-workbooks`, `POST /api/saved-workbooks/{id}/open`, `DELETE /api/saved-workbooks/{id}`.
 
 ## Implementation note
 

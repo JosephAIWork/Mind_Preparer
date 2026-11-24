@@ -31,12 +31,18 @@
                   <tr>
                     <th>{{ r.row }}</th>
                     @for (c of r.cells; track c.ref) {
-                      <td [class.peek__focus]="c.focus" [class.peek__error]="c.error" [title]="c.formula ?? ''">{{ text(c.value) }}</td>
+                      <td [class.peek__focus]="c.focus" [class.peek__error]="c.error" [title]="tip(c)">{{ text(c.value) }}</td>
                     }
                   </tr>
                 }
               </tbody>
             </table>
+            @if (peekLegend().length) {
+              <!-- what each error value in the window means: once, not on every cell -->
+              <ul class="meanings">
+                @for (m of peekLegend(); track m.value) { <li><mr-code [code]="m.value" [name]="m.meaning"></mr-code></li> }
+              </ul>
+            }
             @if (pk.window.values_from) { <span class="hint">values from {{ pk.window.values_from }}</span> }
           }
         </div>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a schema-valid WorkbookAnalysis for one xlsx/xlsm file.
+"""Build  a schema-valid  WorkbookAnalysis for one xlsx/xlsm file.
 
 Always operates on a fresh copy of the source (never modifies it). Prints
 the analysis JSON to stdout, or writes it to --output.

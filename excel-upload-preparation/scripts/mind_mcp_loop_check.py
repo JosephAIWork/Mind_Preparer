@@ -1,11 +1,11 @@
-"""Check a Mind loop as DATA through Mind's MCP server (optional; needs a token, see app/mind_mcp.py).
+"""Check  a Mind  loop as DATA through Mind's MCP server (optional; needs a token, see app/mind_mcp.py).
 
     python scripts/mind_mcp_loop_check.py <project link or GUID> --source "Calc!AY35:BH35" [--loop Policies]
         [--check check.json] [--expect-size N] [--no-run] [--save] [--out result.json]
 
-By default it starts a classic run first (a project's saved results are often none: the browser runs have
-"Save after run" off), reports it (success, consistency, calculations, and on a failure the log's error
-lines with every Mind cell mapped to its Excel address), then reads the loop's size and every instance of
+By default it  starts a classic run first (a project's saved results are often  none: the browser runs have
+"Save after  run" off), reports it (success, consistency, calculations,  and on a failure the log's error
+lines with every Mind cell  mapped to its Excel address), then reads  the loop's size and every instance of
 every cell of --source (the cells MM_RESULT reads). --check is scripts/check_loop_plan.py's check.json:
 instance k is compared with the macro's pass k; instances beyond the macro's passes (rows added to the
 table after the macro ran) are listed, not judged.

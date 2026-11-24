@@ -1,13 +1,13 @@
-"""Workbook chatbot: grounds a multi-turn conversation
+"""Workbook  chatbot: grounds  a multi-turn conversation
 in the analysis and the findings, and lets the user ask for changes.
 
 The model gets, on every turn:
   * a bounded *context pack* -- workbook facts, every sheet with its grids
-    and flags, formula/MM_ statistics, every non-PASS finding in full and
-    the PASS rules by id, plus the prep actions the app can apply;
-  * *retrieved detail* for whatever the question names -- cell references
-    (the formula / value there), sheet or grid names (the grid's rows and
-    header), rule ids (the finding's observed data), MM_ function names
+    and  flags, formula/MM_ statistics, every non-PASS finding in full and
+    the PASS rules  by id, plus the prep actions  the app can apply;
+  * *retrieved detail* for whatever  the question names -- cell references
+    (the formula / value there), sheet  or grid names (the grid's rows and
+    header),  rule ids (the finding's observed data), MM_ function names
     (their call sites);
   * the conversation so far.
 
@@ -15,7 +15,7 @@ Changing the workbook: the assistant may (a) request cell contents
 it hasn't seen with a ```lookup block -- the app answers within the same
 turn, up to MAX_LOOKUPS times -- and (b) end its answer with a ```changes
 block listing operations. The app validates the block against the real
-workbook (app/prep.py::validate_proposal), shows it as a before/after table,
+workbook (app/prep.py::validate_proposal), shows  it as a before/after table,
 and applies it through Excel only when the user clicks Apply. The model's
 text is never written into the workbook by itself.
 """
@@ -29,20 +29,21 @@ from .formula_utils import STORAGE_PREFIX_RE, parse_ref, ref_text
 from .grids import all_grids
 from .inventory import cell_value
 from .llm import chat_completion
+from .plain_codes import cite_code as cite  # the  assistant reads  the codes; its answers are asked in plain words
 from .prep import validate_proposal
 
-MAX_CONTEXT_CHARS = 14000
+MAX_CONTEXT_CHARS = 14000  # the  pack's facts,  findings and Prep actions; the rules' plain names come on top (each named once)
 MAX_RETRIEVAL_CHARS = 6000
 MAX_GRIDS_PER_SHEET = 40
 MAX_LOOKUPS = 2
-MAX_PROPOSAL_RETRIES = 2  # a rejected ```changes block is sent back (twice at most) with the validation errors
-PROPOSAL_MAX_TOKENS = 4000  # room for ~120 operations in one ```changes block
-CELL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:(?P<sheet>'[^']+'|[A-Za-z0-9_]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![A-Za-z0-9_(])")
+MAX_PROPOSAL_RETRIES = 2  # a  rejected ```changes  block is sent back (twice at most) with the validation errors
+PROPOSAL_MAX_TOKENS = 4000  # room  for ~120  operations in one ```changes block
+CELL_REF_RE = re.compile(r"(?<!\w)(?:(?P<sheet>'[^']+'|[\w.]+)!)?(?P<ref>\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)(?![\w(])")
 RULE_ID_RE = re.compile(r"\b([A-Z]{2,7})-(\d{3})\b")
 MM_FN_RE = re.compile(r"\bMM_[A-Za-z0-9_]+\b", re.IGNORECASE)
-# Replacements the tool vouches for (every function on the right is on the Mind list); when the user
+# Replacements  the tool  vouches for (every function on the right is on the Mind list); when the user
 # asks to replace a function, the assistant proposes these rather than inventing one, and keeps the
-# original's behaviour on blanks/errors.
+# original's behaviour  on blanks/errors.
 KNOWN_EQUIVALENTS: dict[str, str] = {
     "NUMBERVALUE": 'IF(x="",0,VALUE(x)) -- NUMBERVALUE("") is 0 while VALUE("") is #VALUE!',
     "IFNA": "IF(ISNA(x),alt,x) -- IFERROR would also swallow #REF!/#DIV/0!, which changes behaviour",
@@ -52,7 +53,7 @@ KNOWN_EQUIVALENTS: dict[str, str] = {
     "SWITCH": "nested IF(...)",
     "ANCHORARRAY": "the fixed range the spill covers today (Prep action 'freeze_spill_refs' does it for every A1# reference); MM_RANGE if the range must grow",
 }
-FN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_])(?:_xl(?:fn|ws|udf|pm|l)\.)?([A-Za-z][A-Za-z0-9_.]{1,30})", re.IGNORECASE)
+FN_WORD_RE = re.compile(r"(?<!\w)(?:_xl(?:fn|ws|udf|pm|l)\.)?([A-Za-z][\w.]{1,30})", re.IGNORECASE)
 BLOCK_RE = {kind: re.compile(rf"```{kind}\s*\n(.*?)```", re.DOTALL | re.IGNORECASE) for kind in ("changes", "lookup")}
 
 SYSTEM_PROMPT = """You are the assistant inside "Excel Upload Preparation", a tool that checks Excel workbooks before upload to Milliman Mind (an actuarial modelling platform that imports Excel models; grids are blocks of cells titled with a '#Name /Flag' cell; MM_-prefixed functions come from the MMForExcel add-in).
@@ -63,6 +64,7 @@ Rules for you:
 - Anything you state about Mind -- what it accepts, refuses, requires, computes or displays -- must come from the Mind documentation the tool holds: the rule findings, the "## Function support" block, the KB extracts and the rule texts in the context. Your general knowledge of Excel or of "actuarial platforms" is NOT evidence about Mind: never conclude "Mind will accept this" or "this is a non-issue" from it. If the tool's material says nothing about a point, say exactly that ("the Mind documentation held by the tool does not cover X") and stop there.
 - Ground every answer in the context; quote rule ids, sheet!cell locations and grid names. If the context doesn't contain what is needed, look it up (below) or say what is missing instead of guessing.
 - Explain findings in plain language and say concretely what to change in Excel to fix them.
+- Whenever you name a rule id, give its plain name with it, as the context does: "FRM-009 (an empty cell is compared with a number)"; and say what an Excel error value means the first time you mention it ("#REF!: the formula points at a cell that no longer exists").
 - Whether Mind accepts an Excel function is decided by the tool's own lists (the Mind supported-function list, the functions accepted on other evidence, and the MM_ registry, applied by rule FRM-002), never by general knowledge. When the context has a "## Function support" block, state its verdict as the answer ("IFERROR is on the Mind supported list" / "the Mind documentation does not list NUMBERVALUE: it neither confirms nor refuses it"); never hedge with "most platforms" or "should be fine". A function the Mind documentation does not list is NOT unsupported and NOT a blocker: say the documentation is silent, and do not propose to replace it unless the user asks for a replacement.
 - `_xlfn.`, `_xlws.`, `_xludf.` and `_xll.` in front of a function name are Excel's internal storage prefixes (Excel writes them for functions newer than Excel 2007 and for add-in calls). They are not a compatibility-mode artefact, not a defect and not something to fix; the rules strip them before checking the function name. If a user asks about one, say exactly that in one sentence.
 - When you replace a function with another, keep the formula's behaviour on blank cells, text and errors: e.g. NUMBERVALUE("") returns 0 but VALUE("") returns #VALUE!, so wrap the replacement (IF(x="",0,VALUE(x))) when the original tolerated blanks; the app recalculates the file in Excel afterwards and every new error is counted against the fix.
@@ -139,19 +141,35 @@ def build_context_pack(analysis: dict[str, Any], validation_report: dict[str, An
         if standalone:
             lines.append("- standalone text: " + "; ".join(f"{c['cell']}='{str(c['text'])[:24]}'" for c in standalone))
 
+    # A  rule's plain  name goes with its first mention only (the assistant has it from there on), and
+    # the names come on top of `max_chars`: they never push out the end of the pack --  the last
+    # findings and the Prep actions -- that fitted before the  names were added.
+    named: set[str] = set()
+    names_chars = 0
+
+    def cite_once(rule_id: Any) -> str:
+        nonlocal names_chars
+        rid = str(rule_id)
+        if rid in named:
+            return rid
+        named.add(rid)
+        text = cite(rid)
+        names_chars += len(text) - len(rid)
+        return text
+
     rep = validation_report
     lines.append(f"\n# Findings -- overall {rep['status']}; counts {rep['summary']['status_counts']}")
     non_pass = [x for x in rep["findings"] if x["status"] != "PASS"]
     order = {"ERROR": 0, "REQUIRES_USER_INPUT": 1, "NOT_SUPPORTED": 2, "WARNING": 3}
     for x in sorted(non_pass, key=lambda x: (order.get(x["status"], 9), x["rule_id"])):
-        lines.append(f"- [{x['status']}] {x['rule_id']} @ {_location(x)}: {_trim(x['message'], 420)}")
+        lines.append(f"- [{x['status']}] {cite_once(x['rule_id'])} @ {_location(x)}: {_trim(x['message'], 420)}")
     lines.append("- PASS: " + ", ".join(x["rule_id"] for x in rep["findings"] if x["status"] == "PASS"))
 
     if prep_actions:
         lines.append("\n# Prep actions the app can apply (user selects and approves them in 'Prep workbook')")
         for a in prep_actions:
-            lines.append(f"- {a['title']} ({a['id']}, rules {', '.join(a['rule_ids'])}): {a['count']} change(s) planned{'; skipped: ' + '; '.join(a['skipped'][:3]) if a.get('skipped') else ''}")
-    return _trim("\n".join(lines), max_chars)
+            lines.append(f"- {a['title']} ({a['id']}, rules {', '.join(cite_once(r) for r in a['rule_ids'])}): {a['count']} change(s) planned{'; skipped: ' + '; '.join(a['skipped'][:3]) if a.get('skipped') else ''}")
+    return _trim("\n".join(lines), max_chars + names_chars)
 
 
 def _cells_block(analysis: dict[str, Any], sheet: str, ref: dict[str, Any], grids: list[dict[str, Any]]) -> str:
@@ -180,7 +198,7 @@ def _sheet_block(s: dict[str, Any]) -> str:
 
 
 def function_support(names: list[str], analysis: dict[str, Any]) -> str:
-    """The tool's verdict on Excel / MM_ function names (the same lists FRM-002
+    """The  tool's verdict  on Excel / MM_ function names (the same lists FRM-002
     applies), with the workbook's usage, so the assistant answers "is X
     supported by Mind?" from fact rather than from general knowledge."""
     from .formula_utils import called_functions
@@ -218,7 +236,7 @@ def function_support(names: list[str], analysis: dict[str, Any]) -> str:
 
 
 def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[str, Any], max_chars: int = MAX_RETRIEVAL_CHARS) -> str:
-    """Detail for the things the question names."""
+    """Detail  for the  things the question names."""
     wb = analysis["workbooks"][0]
     sheet_names = {s["name"]: s for s in wb["sheets"]}
     grids = all_grids(analysis)
@@ -230,7 +248,7 @@ def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[st
         rid = f"{m.group(1)}-{m.group(2)}"
         x = findings.get(rid)
         if x:
-            out.append(f"## Finding {rid}\nstatus {x['status']} | severity {x.get('severity')} | location {_location(x)}\n{x['message']}\nobserved: {_trim(json.dumps(x.get('observed'), default=str), 1800)}")
+            out.append(f"## Finding {cite(rid)}\nstatus {x['status']} | severity {x.get('severity')} | location {_location(x)}\n{x['message']}\nobserved: {_trim(json.dumps(x.get('observed'), default=str), 1800)}")
 
     mentioned_sheets = [n for n in sorted(sheet_names, key=len, reverse=True) if n.lower() in q_low]
     for m in CELL_REF_RE.finditer(question):
@@ -272,7 +290,7 @@ def retrieve(question: str, analysis: dict[str, Any], validation_report: dict[st
 
 
 def retrieve_structured(spec: Any, analysis: dict[str, Any], max_chars: int = MAX_RETRIEVAL_CHARS) -> str:
-    """Answer a ```lookup request: {"cells": [...], "grids": [...], "sheets": [...], "functions": [...]}."""
+    """Answer  a ```lookup  request: {"cells": [...], "grids": [...], "sheets": [...], "functions": [...]}."""
     wb = analysis["workbooks"][0]
     sheet_names = {s["name"]: s for s in wb["sheets"]}
     lower_sheets = {k.lower(): k for k in sheet_names}
@@ -306,7 +324,7 @@ def retrieve_structured(spec: Any, analysis: dict[str, Any], max_chars: int = MA
 
 
 def extract_block(text: str | None, kind: str) -> tuple[Any | None, str | None]:
-    """(parsed JSON, error) for the first ```<kind> block in `text`."""
+    """(parsed  JSON, error)  for the first ```<kind> block in `text`."""
     if not text:
         return None, None
     m = BLOCK_RE[kind].search(text)
@@ -324,7 +342,7 @@ def strip_block(text: str, kind: str) -> str:
 
 
 def recalculation_context(recalc: dict[str, Any] | None, max_sites: int = 40) -> str:
-    """A compact rendering of the last real Excel recalculation for the model:
+    """A  compact rendering  of the last real Excel recalculation for the model:
     status, message, genuine formula-error cells, and the #NAME? cells that
     only fail because the MMForExcel add-in is missing on this machine."""
     if not recalc:
@@ -358,12 +376,12 @@ def answer_question(
     extra_context: str | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one turn (with up to MAX_LOOKUPS lookup round-trips). Returns the
+    """Run  one turn  (with up to MAX_LOOKUPS lookup round-trips). Returns the
     display text, the raw text, and any validated change proposal.
     `extra_context` (e.g. the last recalculation) is appended to the system
-    context for this turn. `on_event` streams the turn: a
+    context for this turn. `on_event` streams  the turn: a
     {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
-    model call, then {"type": "delta", "text"} for each chunk of its reply."""
+    model call, then  {"type": "delta", "text"} for each chunk  of its reply."""
     context = build_context_pack(analysis, validation_report, prep_actions)
     detail = retrieve(question, analysis, validation_report)
     system = SYSTEM_PROMPT + "\n\n<workbook_context>\n" + context + "\n</workbook_context>"
@@ -371,8 +389,8 @@ def answer_question(
         system += "\n\n<recalculation>\n" + _trim(extra_context, 6000) + "\n</recalculation>"
     turn = question if not detail else f"{question}\n\n<retrieved_detail>\n{detail}\n</retrieved_detail>"
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]] + [{"role": "user", "content": turn}]
-    # A ```changes block costs ~30 tokens per cell: a 1200-token limit would cut a
-    # proposal off at ~35 operations without saying so (the rest of the finding's
+    # A ```changes block costs ~30  tokens per cell: a 1200-token limit would cut a
+    # proposal off at  ~35 operations without saying so (the rest  of the finding's
     # cells would never make it into the proposal).
     kwargs: dict[str, Any] = {"max_tokens": PROPOSAL_MAX_TOKENS}
     if model_id:

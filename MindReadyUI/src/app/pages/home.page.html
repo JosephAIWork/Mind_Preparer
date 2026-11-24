@@ -11,16 +11,40 @@
       (drop)="onDrop($event)"
     >
       <p class="drop__text">Drag an .xlsx or .xlsm workbook here</p>
+      <p class="drop__hint">If the model's macros read other files, add those input files too: pick or drag them all at once.</p>
       <label class="cds--btn cds--btn--primary drop__button">
         Choose a workbook
-        <input type="file" accept=".xlsx,.xlsm,.xlsb" (change)="onFileInput($event)" hidden />
+        <input type="file" multiple [accept]="pickAccept" (change)="onFileInput($event)" hidden />
       </label>
     </div>
+    @if (!basic) {
+    <label class="autorun">
+      <input type="checkbox" [checked]="autoRun()" (change)="setAutoRun($any($event.target).checked)" />
+      <span>
+        Do everything right after the upload
+        <span class="autorun__hint">No stops: every sheet is read, then every step runs. Keep the computer awake: if it sleeps, the run waits.</span>
+      </span>
+    </label>
+    }
     @if (uploadError()) {
       <cds-inline-notification [notificationObj]="{ type: 'error', title: 'Could not read it', message: uploadError(), lowContrast: true, showClose: false }"></cds-inline-notification>
     }
-    <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
-    <mr-key-box [onlyWhenMissing]="true"></mr-key-box>
+    @if (scanNote()) {
+      <!-- 17 Nov 2026: the first check was stopped with Cancel: one calm sentence (it is not an error) -->
+      <p class="scan__stopped" role="status">{{ scanNote() }}</p>
+    }
+    @if (!basic) {
+      <p class="trust">Nothing is written to the original. Every change goes through Excel and lands in a new version you can download.</p>
+    }
+    @if (store.restartNotice()) {
+      <!-- 1.14.0: the server let go of the workbook the page had (the app was restarted): it is in the list below -->
+      <p class="chain__text" data-show-me="restart-notice"><strong>{{ store.restartNotice() }}</strong><mr-show-me [text]="store.restartNotice()"></mr-show-me></p>
+    }
+    <!-- the workbooks kept in the data folder (only when there is at least one); nothing opens by itself -->
+    <mr-recent-workbooks [collapsible]="basic" (opened)="openSaved($event)"></mr-recent-workbooks>
+    @if (!basic) {
+      <mr-key-box [onlyWhenMissing]="true"></mr-key-box>
+    }
   } @else if (phase() === "choose" && pending(); as p) {
     <h1 class="page-title">A big workbook</h1>
     <p class="page-lead">{{ p.size.message }} Leaving sheets out makes the scan shorter; {{ p.size.estimate_text ? "the whole file takes about " + p.size.estimate_text + "." : "" }}</p>
@@ -44,7 +68,7 @@
     </div>
   } @else if (phase() === "uploading") {
     <h1 class="page-title">Uploading the workbook</h1>
-    <cds-inline-loading [state]="'active'" loadingText="Sending the file to the app…"></cds-inline-loading>
+    <cds-inline-loading [state]="'active'" [loadingText]="sending() || 'Sending the file to the app…'"></cds-inline-loading>
   } @else if (phase() === "scanning") {
     <h1 class="page-title">Reading the workbook</h1>
     <div class="scan">
@@ -59,7 +83,9 @@
           </li>
         }
       </ul>
-      <p class="trust">A large model takes a minute or two.</p>
+      <p class="trust">A large model takes a minute or two.{{ autoRun() ? " Do everything starts as soon as this is done." : "" }}</p>
+      <!-- 17 Nov 2026: Cancel stops the check on the server; the workbook stays in Recent workbooks, not checked -->
+      <mr-cancel class="scan__cancel" kind="scan" size="md" [session]="scanningId()"></mr-cancel>
     </div>
   } @else {
     <header class="file">
@@ -71,16 +97,235 @@
       </div>
       <div class="file__actions">
         @if (downloadUrl(); as url) {
-          <a cdsButton="tertiary" size="md" [href]="url">Download this version</a>
+          <a cdsButton="tertiary" size="md" [href]="url" data-show-me="download">Download this version</a>
         }
         <button cdsButton="ghost" size="md" (click)="loadAnother()" [disabled]="busy()" [title]="busyHint()">Load another</button>
       </div>
     </header>
 
+    @if (basic) {
+      <!-- Basic: one tick box, one Start button, one short progress line, then the end-of-check banner -->
+      <div class="basic" data-show-me="basic-go">
+        <label class="autorun basic__tick">
+          <input type="checkbox" [checked]="buildLoop()" (change)="buildLoop.set($any($event.target).checked)" [disabled]="chainRunning()" />
+          <span>Build the Mind loop</span>
+        </label>
+        <!-- (17 Nov 2026: the button and its Cancel keep together) -->
+        <div class="basic__run">
+        @if (!chainRunning()) {
+          <button cdsButton="primary" size="lg" class="basic__go" data-show-me="do-everything" (click)="runAll()" [disabled]="startBlocked()" [title]="startHint()">{{ steps().length ? "Start again" : "Start" }}</button>
+        } @else if (outsideWaiting()) {
+          <button cdsButton="primary" size="lg" class="basic__go" disabled>Waiting for the input files</button>
+        } @else {
+          <!-- 16 Nov 2026 (night): the moving dots on the button, so the screen never looks frozen (it was a plain grey "Running…") -->
+          <button cdsButton="primary" size="lg" class="basic__go basic__go--working" disabled>
+            <mr-thinking aria-hidden="true"></mr-thinking>
+            <span>Working</span>
+          </button>
+        }
+        @if (chainRunning() && (!outsideWaiting() || chainStopping())) {
+          <!-- 17 Nov 2026: Cancel, beside the button: it stops the step that runs (on the server) and keeps the
+               steps that finished. While Start waits for the input files, the box below has its own Cancel. -->
+          <mr-cancel class="basic__cancel" [kind]="startKinds" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
+        }
+        </div>
+        @if (!chainRunning() && otherWork() && !interruptedLine()) {
+          <!-- 17 Nov 2026 (live test L2b-2): other work of this workbook runs (a Recalculate pressed under
+               Advanced): Start is greyed, and this says why, beside it -->
+          <p class="basic__wait" data-test="start-wait">{{ startHint() }}</p>
+        }
+      </div>
+      @if (basicLine()) {
+        <div class="basic__said">
+        <!-- one short sentence a line: the step, the time left, the disclaimer (not when the step runs late) -->
+        <p class="basic__line" role="status">
+          @for (sentence of basicLines(); track $index) {
+            <span class="basic__sentence">{{ sentence }}</span>
+          }
+        </p>
+        @if (!chainRunning() && !chainStoppedByCancel()) {
+          <!-- 17 Nov 2026: every stop message on Basic has a "Show me" that opens the place by itself (the
+               screen, then the tab). The question the Prep step ended with has its own (to the problem's
+               cell) and "Send feedback". None after a Cancel: the person stopped it, there is no place to fix. -->
+          @if (chainAsk(); as ask) {
+            <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
+          } @else if (stopPlace(); as p) {
+            <!-- (17 Nov 2026: the place the line names, or the one given with it: the first blocking problem
+                 left at the end, the Versions tab for the assistant's fixes) -->
+            <p class="basic__next"><mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me></p>
+          }
+        }
+        @if (!chainRunning() && chainStoppedByCancel()) {
+          <!-- 19 Nov 2026 (Joseph): after a Cancel, "Show me" leads to the step that was stopped: the place where
+               that step runs by itself -->
+          @if (endPlace(); as p) {
+            <p class="basic__next" data-test="cancelled-show-me"><mr-show-me [to]="p.id" [open]="true"></mr-show-me></p>
+          }
+        }
+        </div>
+      }
+      @if (basicBar(); as bar) {
+        <!-- 16 Nov 2026 (night): how far Start is; it only moves while there is no time estimate yet -->
+        <mr-run-bar class="basic__bar" [percent]="bar.percent"></mr-run-bar>
+      }
+      @if (outsideWaiting()) {
+        <ng-container *ngTemplateOutlet="waiting"></ng-container>
+      }
+      @if (store.readiness() && !chainRunning() && !outsideWaiting()) {
+        <mr-finish-banner [readiness]="store.readiness()" [downloadUrl]="downloadUrl()"></mr-finish-banner>
+      }
+    } @else {
     @if (store.readiness(); as r) {
-      <cds-inline-notification
-        [notificationObj]="{ type: readinessKind(), title: readinessTitle(), message: readinessDetail(), lowContrast: true, showClose: false }"
-      ></cds-inline-notification>
+      <mr-readiness-banner [kind]="readinessKind()" [headline]="readinessTitle()" [detail]="readinessDetail()" [step]="r.next_step"></mr-readiness-banner>
+      <mr-recalc-now kind="primary" size="md" [disabled]="busy()"></mr-recalc-now>
+    }
+
+    <!-- Outside files: the model's macros open other files -->
+    @if (store.outsideInputs(); as oi) {
+      <section class="outside" data-show-me="outside-card" [class.outside--over]="cardDragOver()" (dragover)="onCardDragOver($event)" (dragleave)="cardDragOver.set(false)" (drop)="onCardDrop($event)">
+        <div class="outside__head">
+          <div>
+            <h2 class="outside__title">Outside files</h2>
+            <p class="outside__lead">{{ outsideLead(oi) }}</p>
+          </div>
+          @if (canBringIn(oi)) {
+            <div class="outside__buttons">
+              <button cdsButton="tertiary" size="md" data-show-me="outside-add" (click)="addPicker.click()" [disabled]="busy()" [title]="busyHint()">Add files</button>
+              <input #addPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
+              @if (!oi.brought_in || outsideFailed()) {
+                <button
+                  cdsButton="primary"
+                  size="md"
+                  [attr.data-show-me]="oi.matched ? 'outside-bring-in' : null"
+                  (click)="runOutside()"
+                  [disabled]="busy() || !oi.matched"
+                  [title]="busyHint() || (!oi.matched ? 'Add the input files first' : oi.brought_in || oi.brought_in_reason ? 'Starts again from the version before the first bring-in' : '')"
+                >{{ outsideButton(oi) }}</button>
+              }
+              @if (oi.missing.length && oi.assistant && (!oi.brought_in || outsideFailed())) {
+                <!-- no files: the assistant reads the import macro and makes stand-ins from the model's own numbers -->
+                <!-- with no file matched, "Bring in" is greyed out: the pointer goes to this button instead -->
+                <button
+                  cdsButton="secondary"
+                  size="md"
+                  [attr.data-show-me]="oi.matched ? null : 'outside-bring-in'"
+                  (click)="runOutside(false, true)"
+                  [disabled]="busy()"
+                  [title]="busyHint() || 'The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.'"
+                >Make them with AI</button>
+              }
+            </div>
+          }
+        </div>
+        @if (standInLine(oi); as line) {
+          <p class="outside__standin">{{ line }}</p>
+        }
+        @if (oi.rows.length) {
+          <ul class="outside__rows">
+            @for (r of oi.rows; track r.cell) {
+              <li class="outside__row" [class.outside__row--missing]="!r.file">
+                <bdi>{{ rowLabel(r) }}</bdi>
+                <span class="outside__arrow">→</span>
+                <bdi class="outside__file">{{ r.file || "missing" }}</bdi>
+                @if (r.stand_in) { <span class="outside__tag" title="Made by the AI assistant from the numbers the model holds">stand-in</span> }
+                @if (!r.file && r.candidates.length) { <span class="outside__note">could be <bdi>{{ r.candidates.join(" or ") }}</bdi></span> }
+                @if (r.target_sheet) { <span class="outside__note">(fills <bdi>{{ r.target_sheet }}</bdi>)</span> }
+              </li>
+            }
+          </ul>
+          @if (oi.missing.length) {
+            <p class="outside__note">
+              A missing file keeps the data the model already holds{{ oi.assistant ? ", unless the AI assistant makes a stand-in for it (best results come with the actual input files)" : "" }}.
+            </p>
+          }
+        }
+        @if (oi.extra.length) { <p class="outside__note">Not used: <bdi>{{ oi.extra.join(", ") }}</bdi></p> }
+        @if (addingInputs()) { <cds-inline-loading [state]="'active'" loadingText="Adding the files…"></cds-inline-loading> }
+        @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
+        @if (outsideCard(); as s) {
+          @if (s.running) {
+            <div class="action__progress">
+              <cds-progress-bar [label]="s.line" [helperText]="s.detail" [max]="100"></cds-progress-bar>
+              @if (aiWords(s.line + " " + s.detail)) { <mr-thinking text="The assistant is making the missing files"></mr-thinking> }
+              @if (!chainRunning()) {
+                <!-- 17 Nov 2026: Cancel under the bar (inside Do everything, the Cancel beside its button serves) -->
+                <mr-cancel class="action__cancel" kind="outside" size="sm"></mr-cancel>
+              }
+            </div>
+          } @else if (s.line) {
+            <div class="outside__result">
+              <span class="dot" [class.dot--ok]="s.tone === 'ok'" [class.dot--warn]="s.tone === 'warn'" [class.dot--error]="s.tone === 'error'"></span>
+              <span>{{ s.line }}<mr-show-me [text]="s.line"></mr-show-me></span>
+              @if (s.detail) { <button class="link" (click)="toggle('outside')">{{ s.open ? "Hide details" : "View details" }}</button> }
+            </div>
+            @if (s.open && s.detail) {
+              <div class="action__result" [class.action__result--ok]="s.tone === 'ok'" [class.action__result--warn]="s.tone === 'warn'" [class.action__result--error]="s.tone === 'error'">
+                <span>{{ s.detail }}<mr-show-me [text]="s.detail" [unless]="s.line"></mr-show-me></span>
+              </div>
+            }
+            @if (outsideUnchecked() && oi.brought_in && !chainRunning()) {
+              <!-- the computed values could not be compared: Do everything stopped; going on is the user's choice -->
+              <p class="outside__next">
+                <span>Check them under Advanced › Deliver (Check the numbers), or go on without the check.<mr-show-me to="deliver-numbers"></mr-show-me></span>
+                <button cdsButton="tertiary" size="sm" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">Go on without the check</button>
+              </p>
+            }
+          }
+        }
+        @if (zipUrl(); as url) {
+          <p class="outside__download">
+            <a [href]="url" download>Download Mind inputs.zip</a>
+            <span class="outside__note">one CSV per Mind input: the Mind team puts new ones in Mind's Inputs window each quarter</span>
+          </p>
+        }
+        @if (oi.mind_inputs?.length) {
+          <!-- each quarter: the new RAW files through the model's own import macro, one file per Mind input grid -->
+          <div class="outside__quarter">
+            <div class="outside__head">
+              <div>
+                <h3 class="outside__subtitle">Next quarter</h3>
+                <p class="outside__lead">{{ nextQuarterLead }}</p>
+              </div>
+              <div class="outside__buttons">
+                <button cdsButton="secondary" size="md" (click)="quarterPicker.click()" [disabled]="busy()" [title]="busyHint() || 'Pick the raw input files of the new quarter'">Make next quarter's Mind input files</button>
+                <input #quarterPicker type="file" multiple [accept]="pickAccept" (change)="onNextQuarterFiles($event)" hidden />
+              </div>
+            </div>
+            <p class="outside__note">Mind's Inputs window takes <bdi>{{ oi.mind_inputs!.join(", ") }}</bdi>: one file per grid, named like the grid.</p>
+            @if (nextQuarter().running) {
+              <div class="action__progress">
+                <cds-progress-bar [label]="nextQuarter().line" [helperText]="nextQuarter().detail" [max]="100"></cds-progress-bar>
+                <!-- 17 Nov 2026: Cancel under the bar: no zip is made -->
+                <mr-cancel class="action__cancel" kind="next_quarter" size="sm"></mr-cancel>
+              </div>
+            } @else if (nextQuarter().line) {
+              <div class="outside__result">
+                <span class="dot" [class.dot--ok]="nextQuarter().tone === 'ok'" [class.dot--warn]="nextQuarter().tone === 'warn'" [class.dot--error]="nextQuarter().tone === 'error'"></span>
+                <span>{{ nextQuarter().line }}</span>
+                @if (nextQuarter().detail) { <button class="link" (click)="toggle('nextQuarter')">{{ nextQuarter().open ? "Hide details" : "View details" }}</button> }
+              </div>
+              @if (nextQuarter().open && nextQuarter().detail) {
+                <div class="action__result" [class.action__result--ok]="nextQuarter().tone === 'ok'" [class.action__result--warn]="nextQuarter().tone === 'warn'" [class.action__result--error]="nextQuarter().tone === 'error'">
+                  <span>{{ nextQuarter().detail }}</span>
+                </div>
+              }
+            }
+            @if (nextQuarterFiles().length) {
+              <ul class="outside__rows">
+                @for (line of nextQuarterFiles(); track line) { <li class="outside__row"><bdi>{{ line }}</bdi></li> }
+              </ul>
+            }
+            @if (nextQuarterZipUrl(); as url) {
+              <p class="outside__download">
+                <a [href]="url" download>Download Next quarter Mind inputs.zip</a>
+                <span class="outside__note">unzip it; in Mind, click Inputs, then Browse and pick the folder "Mind inputs"; wait for SUCCESS on every file, then Run</span>
+              </p>
+            }
+          </div>
+        }
+      </section>
+    } @else if (pickedInputs().length) {
+      <p class="outside__aside">The model's macros open no outside files, so the other {{ pickedInputs().length === 1 ? "file" : pickedInputs().length + " files" }} you picked {{ pickedInputs().length === 1 ? "is" : "are" }} not used.</p>
     }
 
     <!-- Do everything -->
@@ -88,9 +333,9 @@
       <div class="chain__head">
         <div>
           <h2 class="chain__title">Do everything</h2>
-          <p class="chain__text">Fix all issues, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
+          <p class="chain__text">{{ store.outsideInputs() ? "Bring in the outside files, fix all issues" : "Fix all issues" }}, fix the formulas and the structure (every blocking action), build the Mind loop, recalculate: each step followed by its check, stopping at the first check that fails.</p>
           @if (store.pivots().length) {
-            <p class="chain__caveat">Pivot tables ({{ store.pivots().length }}): {{ store.pivotModes()[store.pivotMode()] || store.pivotMode() }}. Change it in Advanced › Prep actions.</p>
+            <p class="chain__caveat">Pivot tables ({{ store.pivots().length }}): {{ store.pivotModes()[store.pivotMode()] || store.pivotMode() }}. Change it in Advanced › Prep actions.<mr-show-me to="prep-pivots"></mr-show-me></p>
           }
           @if (chainRunning() && timerLine()) {
             <p class="chain__estimate"><strong>{{ timerLine() }}</strong></p>
@@ -100,37 +345,60 @@
             <p class="chain__caveat">{{ estimate()?.caveat }}</p>
           }
         </div>
+        <div class="chain__buttons">
         @if (!chainRunning()) {
-          <button cdsButton="primary" size="lg" (click)="runAll()" [disabled]="busy()" [title]="busyHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
+          <button cdsButton="primary" size="lg" data-show-me="do-everything" (click)="runAll()" [disabled]="startBlocked()" [title]="startHint()">{{ steps().length ? "Do everything again" : "Do everything" }}</button>
         } @else if (chainStep()?.id === "fixAll" && !fixAll().stopping) {
           <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
+        } @else if (outsideWaiting()) {
+          <button cdsButton="primary" size="lg" disabled>Waiting for the input files</button>
         } @else {
           <button cdsButton="primary" size="lg" disabled>Running…</button>
         }
+        @if (chainRunning() && (!outsideWaiting() || chainStopping())) {
+          <!-- 17 Nov 2026: Cancel, beside "Running…" and beside "Stop, keep what is fixed" (which keeps what the
+               fixer has fixed so far; Cancel throws the running step away and keeps the steps that finished).
+               While Do everything waits for the input files, the box below has its own Cancel. -->
+          <mr-cancel class="chain__cancel" [kind]="startKinds" size="lg" [busy]="chainStopping()" (stopping)="onChainStopping()" (stopped)="onChainStopped()" (failed)="onChainStopFailed()"></mr-cancel>
+        }
+        </div>
       </div>
+      @if (outsideWaiting()) {
+        <ng-container *ngTemplateOutlet="waiting"></ng-container>
+      }
       @if (steps().length) {
         <ol class="chain__steps">
           @for (s of steps(); track s.id) {
-            <li class="chain__step" [class.chain__step--running]="s.state === 'running'" [class.chain__step--done]="s.state === 'done'" [class.chain__step--failed]="s.state === 'failed'" [class.chain__step--skipped]="s.state === 'skipped'">
+            <li class="chain__step" [class.chain__step--running]="s.state === 'running'" [class.chain__step--done]="s.state === 'done'" [class.chain__step--failed]="s.state === 'failed'" [class.chain__step--stopped]="s.state === 'stopped'" [class.chain__step--skipped]="s.state === 'skipped'">
               <div class="chain__label">
-                <span class="dot" [class.dot--ok]="s.state === 'done'" [class.dot--error]="s.state === 'failed'" [class.dot--warn]="s.state === 'skipped'"></span>
+                <span class="dot" [class.dot--ok]="s.state === 'done'" [class.dot--error]="s.state === 'failed'" [class.dot--warn]="s.state === 'skipped' || s.state === 'stopped'"></span>
                 {{ s.label }}
                 <span class="chain__check">check: {{ s.check }}</span>
               </div>
               @if (s.state === "running") {
-                <ng-container *ngTemplateOutlet="result; context: { s: stateOf(s.id), which: s.id, bare: true }"></ng-container>
+                <!-- (17 Nov 2026: a Prep job picked up after a reload stands here alone, with no Do everything
+                     running: then the bar has its own Cancel) -->
+                <ng-container *ngTemplateOutlet="result; context: { s: stateOf(s.id), which: s.id, bare: chainRunning() }"></ng-container>
               } @else if (s.line) {
                 <div class="chain__line">
-                  {{ s.line }}
+                  {{ s.line }}<mr-show-me [text]="s.line"></mr-show-me>
                   @if (s.detail) { <button class="link" (click)="toggleStep(s.id)">{{ s.open ? "Hide details" : "View details" }}</button> }
                 </div>
-                @if (s.open && s.detail) { <div class="action__result"><span>{{ s.detail }}</span></div> }
+                @if (s.open && s.detail) { <div class="action__result"><span>{{ s.detail }}<mr-show-me [text]="s.detail" [unless]="s.line"></mr-show-me></span></div> }
               }
             </li>
           }
         </ol>
       }
-      @if (chainLine()) { <p class="chain__text"><strong>{{ chainLine() }}</strong></p> }
+      @if (endLine()) {
+        <!-- (17 Nov 2026: no "Show me" on the sentence after a Cancel: the person stopped it, there is no place to fix;
+             a place given with the line -- the first blocking problem left at the end -- opens by itself) -->
+        <p class="chain__text"><strong>{{ endLine() }}</strong>@if (!chainAsk()) {@if (endPlace(); as p) {<mr-show-me [to]="p.id" [rule]="p.ruleId" [where]="p.where" [open]="true"></mr-show-me>} @else if (!chainStoppedByCancel()) {<mr-show-me [text]="endLine()"></mr-show-me>}}</p>
+        @if (chainAsk(); as ask) {
+          <!-- 17 Nov 2026: the question the Prep step ended with: Show me, Send feedback, and why under "View details" -->
+          <ng-container *ngTemplateOutlet="question; context: { ask: ask }"></ng-container>
+        }
+      }
     </div>
 
     <div class="actions">
@@ -141,7 +409,7 @@
         <p class="action__fact">{{ errorCount() }} error findings now</p>
         <div class="action__row">
           @if (!fixAll().running) {
-            <button cdsButton="primary" size="lg" (click)="runFixAll()" [disabled]="busy()" [title]="busyHint()">Fix all issues</button>
+            <button cdsButton="primary" size="lg" data-show-me="main-fix-all" (click)="runFixAll()" [disabled]="busy()" [title]="busyHint()">Fix all issues</button>
           } @else if (!fixAll().stopping) {
             <button cdsButton="danger--tertiary" size="lg" (click)="stopFixAll()">Stop, keep what is fixed</button>
           } @else {
@@ -165,8 +433,12 @@
       <!-- Build the Mind loop -->
       <cds-tile class="action">
         <h2 class="action__title">Build the Mind loop</h2>
-        <p class="action__text">Writes the macro's run loop as MM_LOOP and MM_RESULT formulas, from the model map, with the default choices.</p>
-        <p class="action__fact">{{ loopSummary() }}</p>
+        <p class="action__text">Mind runs no macro. This writes the macro's run loop into the model, so Mind runs every pass itself. With the default choices; change them under Advanced › Mind loop.</p>
+        <details class="action__text">
+          <summary>What is this?</summary>
+          Mind's own loop formulas: MM_LOOP in the cell the macro changes (one pass per value), MM_RESULT in the block each pass writes. Read from the model map. The results come out the same as in Excel.
+        </details>
+        <p class="action__fact">{{ loopSummary() }}<mr-show-me [text]="loopSummary()"></mr-show-me></p>
         <div class="action__row">
           <button cdsButton="primary" size="lg" (click)="runLoop()" [disabled]="busy() || !canBuildLoop()" [title]="busyHint()">Build the Mind loop</button>
         </div>
@@ -179,22 +451,74 @@
         <p class="action__text">A full recalculation of the current version in Excel, with the MM for Excel add-in loaded. The only way the app can call the file ready.</p>
         <p class="action__fact">{{ recalcFact() }}</p>
         <div class="action__row">
-          <button cdsButton="primary" size="lg" (click)="runRecalc()" [disabled]="busy()" [title]="busyHint()">Recalculate</button>
+          <button cdsButton="primary" size="lg" data-show-me="main-recalc" (click)="runRecalc()" [disabled]="busy()" [title]="busyHint()">Recalculate</button>
         </div>
         <ng-container *ngTemplateOutlet="result; context: { s: recalc(), which: 'recalc' }"></ng-container>
       </cds-tile>
     </div>
 
     <p class="advanced-link">
-      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }">Advanced</a>.
+      Lists, manual edits and history are under <a routerLink="/advanced" [queryParams]="{ session: store.sessionId() }" data-show-me="link-advanced">Advanced</a>.
     </p>
+    }
   }
 </section>
+
+<ng-template #waiting>
+        <!-- 1.14.0: Do everything stopped at its first step and asks for the input files: one box, nothing runs -->
+        <div class="chain__waiting outside" data-show-me="outside-waiting">
+          <p class="chain__text"><strong>{{ waitingLine() }}</strong></p>
+          <ul class="outside__rows">
+            @for (f of waitingFiles(); track f.name) {
+              <li class="outside__row" [class.outside__row--missing]="!f.present">
+                <bdi class="outside__file">{{ f.name }}</bdi>
+                <span class="outside__note">{{ f.present ? "picked" : "missing" }}</span>
+                @if (f.fills) { <span class="outside__note">(fills <bdi>{{ f.fills }}</bdi>)</span> }
+              </li>
+            }
+          </ul>
+          <div class="outside__buttons">
+            <button cdsButton="tertiary" size="md" data-show-me="outside-waiting-pick" (click)="waitPicker.click()" [disabled]="addingInputs()">{{ addingInputs() ? "Adding…" : "Pick the files" }}</button>
+            <input #waitPicker type="file" multiple [accept]="pickAccept" (change)="onAddInputs($event)" hidden />
+            <button cdsButton="primary" size="md" data-show-me="outside-waiting-go-on" (click)="goOn()" [disabled]="!canGoOn() || goingOn()" [title]="canGoOn() ? 'Brings the files in, then the other steps follow' : 'Pick every file first'">{{ goingOn() ? "Going on…" : "Go on" }}</button>
+            @if (canMakeStandIns()) {
+              <button cdsButton="secondary" size="md" (click)="goOn(true)" [disabled]="goingOn()" title="The AI assistant reads the import macro and makes the missing files from the numbers the model already holds. Best results come with the actual input files.">Make them with AI</button>
+            }
+            <!-- 17 Nov 2026: this button said "Stop": it is the Cancel of the wait (nothing had finished, nothing was changed) -->
+            <button cdsButton="danger--tertiary" size="md" data-show-me="cancel" (click)="stopWaiting()">Cancel</button>
+          </div>
+          @if (inputsError()) { <p class="outside__error">{{ inputsError() }}<mr-show-me [text]="inputsError()"></mr-show-me></p> }
+        </div>
+</ng-template>
+
+<ng-template #question let-ask="ask">
+  <!-- 17 Nov 2026 (never stop for a person when the app can fix it): what goes with the question, on both
+       screens. "Show me" opens the place itself and ends on the line that names the problem's cell;
+       "Send feedback" opens the dialog with the problem already written (not for "no AI key": nothing
+       went wrong). Why the assistant could not fix it is for Custom only, under "View details". -->
+  <p class="chain__next" data-test="question">
+    <mr-show-me [to]="askPlace(ask)" [rule]="ask.show_me?.rule_id" [where]="ask.show_me" [open]="true"></mr-show-me>
+    @if (ask.feedback; as fb) {
+      <button type="button" class="link chain__feedback" (click)="feedback.open(fb.ref, fb.note)">Send feedback</button>
+    }
+    @if (!basic && ask.why) {
+      <button type="button" class="link" (click)="askOpen.set(!askOpen())">{{ askOpen() ? "Hide details" : "View details" }}</button>
+    }
+  </p>
+  @if (!basic && askOpen() && ask.why) {
+    <div class="action__result action__result--warn chain__why"><span>{{ ask.why }}</span></div>
+  }
+</ng-template>
 
 <ng-template #result let-s="s" let-which="which" let-bare="bare">
   @if (s.running) {
     <div class="action__progress">
       <cds-progress-bar [label]="s.line" [helperText]="s.detail" [value]="s.fraction === null ? undefined : s.fraction * 100" [max]="100"></cds-progress-bar>
+      @if (!bare && !chainRunning()) {
+        <!-- 17 Nov 2026: Cancel under the bar, for this tile's own work (in Do everything's list, and while
+             Do everything runs, the Cancel beside its button serves) -->
+        <mr-cancel class="action__cancel" [kind]="cancelKind(which)" size="sm"></mr-cancel>
+      }
     </div>
   } @else if (s.line && !bare) {
     <div class="action__done">
@@ -207,6 +531,7 @@
         @if (s.detail) {
           <span>{{ s.detail }}</span>
         }
+        <mr-show-me [text]="s.line + ' · ' + s.detail"></mr-show-me>
       </div>
     }
   }

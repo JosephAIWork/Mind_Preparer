@@ -1,4 +1,4 @@
-"""Loads config/default.yaml + config/target-version.yaml into one dict
+"""Loads  config/default.yaml +  config/target-version.yaml into one dict
 passed to modes/validators. Kept as plain dicts (not pydantic) since these
 files are host-application configuration, not part of the schema-bound
 output contract."""

@@ -1,23 +1,23 @@
-"""Builds the reviewable Excel outputs.
+"""Builds  the reviewable  Excel outputs.
 
 Two products:
 
 * **Standalone report** (`build_standalone_report`): a brand-new .xlsx with a
   Summary sheet and a Findings sheet, written with openpyxl. It contains no
-  part of the analyzed workbook, so it is always a valid file regardless of
+  part of the analyzed workbook, so it is always a valid  file regardless of
   what the source contains.
-* **Workbook copy + report sheets** (`build_report_workbook`): the analyzed
-  workbook (already an immutable copy -- see app/inventory.py) with
-  `Mind_Readiness_Report` and `..._Summary` sheets appended. This is written
-  by **Excel itself through COM** whenever Excel is available, because a
-  pure-Python (openpyxl) save drops package parts it doesn't model -- Power
+* **Workbook copy + report sheets** (`build_report_workbook`):  the analyzed
+  workbook (already an immutable copy  -- see app/inventory.py) with
+  `Mind_Readiness_Report` and `..._Summary` sheets  appended. This is written
+  by **Excel itself through COM** whenever Excel is  available, because a
+  pure-Python (openpyxl) save drops package  parts it doesn't model -- Power
   Pivot data models, customXml, slicers, controls -- and the result then
   doesn't open in Excel at all (verified on a real 13 MB Mind workbook). The
   openpyxl path remains only as a fallback for machines without Excel and is
   labelled as reduced fidelity in the returned result.
 
 Both are verified by re-opening the output in Excel when Excel is available
-(`ReportBuildResult.verified_opens_in_excel`) -- that check is what "a real
+(`ReportBuildResult.verified_opens_in_excel`)  -- that check is what "a real
 working Excel file" means in this app.
 
 JSON stays available for scripting via scripts/validate_workbook.py.
@@ -35,12 +35,14 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .excel_com import bgr, close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
+from .plain_codes import cite, error_meanings, plain_com_errors_in, plain_error, rule_name
 
 REPORT_SHEET_NAME = "Mind_Readiness_Report"
 SUMMARY_SHEET_NAME = f"{REPORT_SHEET_NAME}_Summary"
 
 HEADERS = [
     "Rule ID",
+    "In plain words",  # the  rule's plain  name, next to its code (rules/plain_names.yaml)
     "Category",
     "Severity",
     "Status",
@@ -60,14 +62,14 @@ STATUS_RGB = {
 STATUS_FILL = {k: PatternFill("solid", fgColor=v) for k, v in STATUS_RGB.items()}
 HEADER_RGB = "305496"
 
-# Deterministic remediation text, keyed by rule id first, falling back to
+# Deterministic  remediation text,  keyed by rule id first, falling back to
 # category. Not LLM-generated -- a report has to render every time, with no
 # extra latency or failure mode; see app/llm.py for the separate, narrower
-# on-demand "suggest a fix" feature used only in the UI.
+# on-demand "suggest  a fix" feature used only in the UI.
 FIX_HINTS: dict[str, str] = {
     "FRM-004": "Not a blocker -- Mind ignores VBA it can't run. Confirm nothing needed depends on the macro actually executing; if something does, reimplement that logic as native formulas/MM_ functions.",
     "FRM-002": "An MM_ function missing from the MM_ registry must be corrected. A native Excel function the Mind documentation does not list is neither documented as supported nor as refused: convert the model in Mind to know, and replace the function only if Mind refuses it.",
-    "FRM-001": "Inventory only -- review the function mix; the per-function verdicts are in FRM-002 / FORMULA-002.",
+    "FRM-001": f"Inventory only -- review the function mix; the per-function verdicts are in {cite('FRM-002')} and {cite('FORMULA-002')}.",
     "FRM-005": "Break each circular reference by hand: a value that feeds the next round is what MM_ITERATIONS with /iterationinput and /iterationoutput is for; otherwise reference the previous period or a fixed starting value. Turn Excel's iterative calculation off afterwards.",
     "FRM-006": "Replace each 'First:Last'!cell reference by the explicit list of the sheets it spans (the finding proposes the formula), by hand or with the assistant.",
     "FRM-008": "Apply the Prep action 'Test for empty text before the arithmetic': =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), so Excel and Mind both return the fallback when the cell holds \"\".",
@@ -75,10 +77,11 @@ FIX_HINTS: dict[str, str] = {
     "STR-008": "Apply the Prep action 'Give a lone text cell that formulas read a title of its own': a '#' title above the cell makes it a one-cell grid Mind imports.",
     "REF-002": "Apply the Prep action 'Freeze external links': each reference to another workbook becomes the copy Excel kept of that cell (NA() where it kept none) and the link is broken; a whole-range reference is left for a person.",
     "FRM-013": "Apply the Prep action 'Keep an error cell an error in Mind': IF(cell=\"\",NA(),...) makes the cell an error in Excel and in Mind alike.",
+    "FRM-014": "Apply the Prep action 'Write a fixed OFFSET range out where arithmetic uses it': 1-OFFSET($H$2,2,0,3,1) becomes 1-$H$4:$H$6, the same cells; Mind computes it as Excel does.",
     "FRM-012": "Apply the Prep action 'Write what CELL / INFO formulas show today in their place': the formula becomes the text or number Excel shows; Mind cannot answer CELL(\"filename\") or INFO().",
     "FRM-011": "Apply the Prep action 'Write line breaks inside text as CHAR(10)': the break typed inside the quotes becomes \"...\"&CHAR(10)&\"...\", the same text in Excel and in Mind.",
     "FRM-009": "Apply the Prep action 'Read empty cells as 0 where they are compared': N() goes around the reading of the empty cell (or around the reference / lookup that lands on it), so it is 0 in Excel and in Mind.",
-    "FRM-007": "Apply the Prep action 'Replace INDIRECT used as a value by the reference its text builds'; what it cannot work out from the workbook's constants is listed for a person.",
+    "FRM-007": "Apply the Prep action 'Replace INDIRECT by the reference its text builds'; what it cannot work out from the workbook's constants is listed for a person.",
     "FRM-003": "Remove the implicit-intersection '@' where the formula returns a single value; replace spilled/array results Mind must resize with MM_RANGE (single-cell table) or fixed-size array formulas.",
     "FORMULA-002": "Re-implement the VBA user-defined function as native formulas / MM_ functions, or register it as a custom C# formula in Mind -- VBA does not run in Mind.",
     "LOOP-002": "Use one consistent capitalization for this loop name everywhere it's defined (loop names are case-sensitive in Mind).",
@@ -134,6 +137,7 @@ FIX_HINTS: dict[str, str] = {
     "EXP-003": "/ExportSettings columns must be from the documented set, GridName must name an /Export grid, boolean columns must be true/false/1/0, FileExtension .csv/.txt.",
     "EXP-004": "FileNamePattern tags must be {ModelName} {GridName} {InstanceName} {LoopsLabels} {yyyyMMdd}.",
     "INP-004": "FileNamePattern tags must be {GridName} {InstanceName} {ModelName} {*} or {???}.",
+    "INP-010": "Use 'Bring in the outside files': pick the files the macro opens together with the workbook; the app runs the workbook's own import macro once on a copy, then makes each imported area a Mind input (an IN_<sheet> /Input grid and its CSV) that the Mind team swaps each quarter in Mind's Input Manager. Without the files, 'Make them with AI' has the assistant build stand-ins from the numbers the model holds; best results come with the actual input files.",
     "PAR-002": "/Parameters grid columns: Label | Type | PossibleValues | one or more value columns.",
     "PAR-003": "Type must be one of number, text, switch, checkbox, radio, slider, dropdown, percentage, date.",
     "PAR-004": "PossibleValues: 'min|max' or 'min|max|step' for number/slider/percentage; 'a|b|c' for checkbox/radio/dropdown; empty for text/switch/date.",
@@ -165,16 +169,19 @@ CATEGORY_FIX_HINTS: dict[str, str] = {
     "kb": "Review against the Milliman Mind knowledge base.",
 }
 
-# Rule IDs app/change_apply.py actually has an automatic handler for.
+# Rule  IDs app/change_apply.py  actually has an automatic handler for.
 AUTO_FIXABLE_RULE_IDS = {"FILE-002", "LOOP-002"}
 
-COLUMN_WIDTHS = [12, 14, 12, 20, 22, 60, 60, 14]
+COLUMN_WIDTHS = [12, 34, 14, 12, 20, 22, 60, 60, 14]
+# 1-based  column numbers,  the same for openpyxl and for Excel
+STATUS_COLUMN = HEADERS.index("Status") + 1
+WRAPPED_COLUMNS = tuple(HEADERS.index(h) + 1 for h in ("In plain words", "Message", "Recommended Fix"))
 
 
 @dataclass
 class ReportBuildResult:
     path: Path
-    method: str  # "excel_com" | "openpyxl"
+    method: str  # "excel_com"  | "openpyxl"
     verified_opens_in_excel: bool | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -184,6 +191,12 @@ class ReportBuildResult:
 
 def _fix_hint(rule_id: str, category: str, message: str) -> str:
     return FIX_HINTS.get(rule_id) or CATEGORY_FIX_HINTS.get(category) or message
+
+
+def _message_text(message: str) -> str:
+    """The  finding's message,  with what each error value it quotes means -- once, on a line of its own."""
+    meanings = error_meanings(message)
+    return f"{message}\n({meanings}.)" if meanings else message
 
 
 def _location_text(location: dict[str, Any]) -> str:
@@ -207,11 +220,12 @@ def findings_rows(validation_report: dict[str, Any], rules_by_id: dict[str, dict
         rows.append(
             [
                 rule_id,
+                finding.get("rule_name") or rule_name(rule_id) or "",
                 category,
                 finding.get("severity", ""),
                 finding["status"],
                 _location_text(finding.get("location") or {}),
-                finding["message"],
+                _message_text(finding["message"]),
                 _fix_hint(rule_id, category, finding["message"]),
                 "Yes" if rule_id in AUTO_FIXABLE_RULE_IDS else "No",
             ]
@@ -237,7 +251,7 @@ def summary_rows(validation_report: dict[str, Any], source_name: str = "", metho
     return rows
 
 
-# --- openpyxl writers (standalone report + fallback) --------------------------
+# ---  openpyxl writers  (standalone report + fallback) --------------------------
 def _style_header(ws: Worksheet) -> None:
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor=HEADER_RGB)
@@ -255,10 +269,10 @@ def _write_findings_sheet_openpyxl(ws: Worksheet, rows: list[list[Any]]) -> None
     for r, values in enumerate(rows, start=2):
         for col_idx, value in enumerate(values, start=1):
             cell = ws.cell(row=r, column=col_idx, value=value)
-            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in (6, 7))
-        fill = STATUS_FILL.get(values[3])
+            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in WRAPPED_COLUMNS)
+        fill = STATUS_FILL.get(values[STATUS_COLUMN - 1])
         if fill:
-            ws.cell(row=r, column=4).fill = fill
+            ws.cell(row=r, column=STATUS_COLUMN).fill = fill
     for col_idx, width in enumerate(COLUMN_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
@@ -282,7 +296,7 @@ def build_standalone_report(
     rules_by_id: dict[str, dict[str, Any]] | None = None,
     source_name: str = "",
 ) -> Path:
-    """A fresh .xlsx holding only the report (Summary + Findings). Always valid."""
+    """A  fresh .xlsx  holding only the report (Summary + Findings). Always valid."""
     wb = openpyxl.Workbook()
     summary_ws = wb.active
     summary_ws.title = "Summary"
@@ -305,7 +319,7 @@ def _append_report_openpyxl(copy_path: Path, validation_report: dict[str, Any], 
     _write_findings_sheet_openpyxl(ws, findings_rows(validation_report, rules_by_id))
     summary_ws = wb.create_sheet(SUMMARY_SHEET_NAME, 0)
     _write_summary_sheet_openpyxl(summary_ws, summary_rows(validation_report, source_name, "openpyxl (reduced fidelity fallback)"), validation_report["status"])
-    # The readiness sheets are for people, not for Mind: hidden so an upload of this copy ignores them.
+    # The  readiness sheets  are for people, not for Mind: hidden so an upload of this copy ignores them.
     ws.sheet_state = "hidden"
     summary_ws.sheet_state = "hidden"
     visible = [i for i, w in enumerate(wb.worksheets) if w.sheet_state == "visible"]
@@ -320,7 +334,7 @@ XL_TOP = -4160
 
 
 def _append_report_excel(copy_path: Path, validation_report: dict[str, Any], output_path: Path, rules_by_id, source_name: str) -> None:
-    shutil.copy2(copy_path, output_path)  # Excel edits the output copy, never the analysis copy
+    shutil.copy2(copy_path, output_path)  # Excel  edits the  output copy, never the analysis copy
     rows = findings_rows(validation_report, rules_by_id)
     summary = summary_rows(validation_report, source_name, "Excel (COM automation, full fidelity)")
     def _write(excel: Any) -> None:
@@ -343,13 +357,13 @@ def _append_report_excel(copy_path: Path, validation_report: dict[str, Any], out
             header.Interior.Color = bgr(HEADER_RGB)
             header.WrapText = True
             for i, row in enumerate(rows, start=2):
-                color = STATUS_RGB.get(row[3])
+                color = STATUS_RGB.get(row[STATUS_COLUMN - 1])
                 if color:
-                    ws.Cells(i, 4).Interior.Color = bgr(color)
+                    ws.Cells(i, STATUS_COLUMN).Interior.Color = bgr(color)
             for col_idx, width in enumerate(COLUMN_WIDTHS, start=1):
                 ws.Columns(col_idx).ColumnWidth = width
-            ws.Columns(6).WrapText = True
-            ws.Columns(7).WrapText = True
+            for col_idx in WRAPPED_COLUMNS:
+                ws.Columns(col_idx).WrapText = True
             try:
                 ws.Range(ws.Cells(1, 1), ws.Cells(n_rows, n_cols)).VerticalAlignment = XL_TOP
                 ws.Range(ws.Cells(1, 1), ws.Cells(n_rows, n_cols)).AutoFilter(1)
@@ -379,7 +393,7 @@ def _append_report_excel(copy_path: Path, validation_report: dict[str, Any], out
             sws.Columns(1).ColumnWidth = 24
             sws.Columns(2).ColumnWidth = 60
             # Hidden (xlSheetHidden = 0): the readiness sheets are for people, not for Mind, so an
-            # upload of this copy ignores them. Excel needs a visible active sheet first.
+            # upload of this copy ignores them. Excel needs a visible active sheet  first.
             for i in range(1, wb.Worksheets.Count + 1):
                 w = wb.Worksheets(i)
                 if w.Name not in (REPORT_SHEET_NAME, SUMMARY_SHEET_NAME) and w.Visible == -1:
@@ -409,10 +423,10 @@ def build_report_workbook(
     verify: bool = True,
     source_name: str = "",
 ) -> ReportBuildResult:
-    """Appends the report sheets to a copy of the analyzed workbook and saves
+    """Appends  the report  sheets to a copy of the analyzed workbook and saves
     it as `output_path`. `copy_path` is the immutable copy already produced
     by app/inventory.py -- never the user's original file. See the module
-    docstring for why Excel does the writing when it can."""
+    docstring for why  Excel does the writing when it can."""
     copy_path = Path(copy_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -424,8 +438,10 @@ def build_report_workbook(
         try:
             _append_report_excel(copy_path, validation_report, output_path, rules_by_id, source_name)
             method = "excel_com"
-        except Exception as exc:  # Excel not installed / COM failure -> fall back, but say so
-            warnings.append(f"Excel COM report writing failed ({str(exc)[:160]}); fell back to openpyxl.")
+        except Exception as exc:  # Excel not installed / COM  failure -> fall back, but say  so
+            # Excel's error in plain words, never pywin32's  tuple: Deliver shows the warnings as they are
+            # (after a colon: the  plain sentence has brackets of its own)
+            warnings.append(f"Excel COM report writing failed: {plain_error(exc)[:300]}; fell back to openpyxl.")
     if method == "openpyxl":
         _append_report_openpyxl(copy_path, validation_report, output_path, rules_by_id, source_name)
         warnings.append(
@@ -438,5 +454,7 @@ def build_report_workbook(
         info = verify_opens_in_excel(output_path)
         verified = info["opens"]
         if verified is False:
-            warnings.append(f"Verification failed: Excel could not open the output ({info['error']}).")
+            # the  check keeps Excel's error as text (cut at 300 characters): said plainly as far as it goes
+            said = plain_com_errors_in(info.get("error")).strip().rstrip(".")
+            warnings.append("Verification failed: Excel could not open the output" + (f" -- {said}." if said else "."))
     return ReportBuildResult(path=output_path, method=method, verified_opens_in_excel=verified, warnings=warnings)

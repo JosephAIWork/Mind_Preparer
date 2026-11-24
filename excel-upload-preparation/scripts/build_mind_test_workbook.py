@@ -1,6 +1,6 @@
-"""A small test workbook for Mind (no client data): the three constructs that came back different
+"""A  small test  workbook for Mind (no client data): the three constructs that came back different
 on a client model, each next to candidate rewrites. Column C is the formula, column D the value Excel
-computed (typed in), so the difference list Mind gives says which construct behaves differently.
+computed  (typed in), so the difference list Mind gives says which construct  behaves differently.
 
     python build_probe.py <output.xlsx>      (run from excel-upload-preparation)
 """
@@ -18,19 +18,19 @@ def serial(y, m, d):
     return (datetime.date(y, m, d) - datetime.date(1899, 12, 30)).days
 
 
-LOANS = [  # loan id, purpose, date, capital, payment -- invented
+LOANS = [  # loan  id, purpose,  date, capital, payment -- invented
     (1, "Home", (2022, 7, 1), 100000, 500), (1, "Home", (2023, 1, 1), 95000, 500), (1, "Home", (2024, 1, 1), 90000, 500),
     (1, "Home", (2025, 1, 1), 85000, 500), (1, "Home", (2026, 1, 1), 80000, 500), (1, "Home", (2027, 1, 1), 75000, 500),
     (2, "Rental", (2022, 7, 1), 60000, 300), (2, "Rental", (2023, 1, 1), 55000, 300), (2, "Rental", (2023, 7, 1), 5000, 300),
     (2, "Rental", (2024, 1, 1), 50000, 300), (2, "Rental", (2025, 1, 1), 45000, 300), (2, "Rental", (2026, 1, 1), 40000, 300),
 ]
-N = len(LOANS) + 1  # last row of the table
+N = len(LOANS) + 1  # last  row of  the table
 
 ID, YEAR_, S0, S1, D0, D1, BLANK, EMPTY, NUM = ("Params!$B$%d" % i for i in range(1, 10))
 ORIG = 'SUMIFS(Loans!D:D,Loans!A:A,%s,Loans!C:C,">="&DATE(%s,1,1),Loans!C:C,"<"&DATE(%s,12,31))' % (ID, YEAR_, YEAR_)
 
 TESTS = [
-    # --- A: SUMIFS with a comparison criterion built from a date
+    # ---  A: SUMIFS  with a comparison criterion built from a date
     ("A00", "the client model's formula: whole columns, criterion \">=\"&DATE()", "=" + ORIG),
     ("A01", "the same on the table's rows only", '=SUMIFS(Loans!$D$2:$D$%d,Loans!$A$2:$A$%d,%s,Loans!$C$2:$C$%d,">="&DATE(%s,1,1),Loans!$C$2:$C$%d,"<"&DATE(%s,12,31))' % (N, N, ID, N, YEAR_, N, YEAR_)),
     ("A02", "control: loan id only", "=SUMIFS(Loans!D:D,Loans!A:A,%s)" % ID),
@@ -74,7 +74,7 @@ TESTS = [
     ("C08", "the check against candidate c", "=+2311+0-2311={C07}"),
     ("C09", "(empty cell)=\"\"", '=%s=""' % EMPTY),
     ("C10", "candidate d: N() on the check's side", "=+2311+0-2311=N({C00})"),
-    # --- D (round 2): a lookup that lands on an empty cell, then compared (the model's H9 and column I)
+    # --- D (round  2): a lookup that lands on an empty cell, then compared  (the model's H9 and column I)
     ("D00", "the model's H9: VLOOKUP that lands on an empty cell", "=VLOOKUP(%s,Loans!A:H,8,0)" % ID),
     ("D01", "the model's column I: IF(1<=that cell,0,1)*60000", "=IF(1<={D00},0,1)*60000"),
     ("D02", "candidate: N(VLOOKUP(...))", "=N(VLOOKUP(%s,Loans!A:H,8,0))" % ID),
@@ -96,7 +96,7 @@ def build(excel):
     loans.Range("A1:H1").Value = (("Loan id", "Purpose", "Date", "Capital", "Payment", "Year", "Date as number", "Deferral"),)
     for i, (lid, purpose, (y, m, d), capital, payment) in enumerate(LOANS, start=2):
         if lid == 1:
-            loans.Range(f"H{i}").Value = 12        # loan 2 has none: the cell stays empty, as in the client model
+            loans.Range(f"H{i}").Value = 12        # loan  2 has  none: the cell stays empty, as in the client model
         loans.Range(f"A{i}:E{i}").Value = ((lid, purpose, serial(y, m, d), capital, payment),)
         loans.Range(f"F{i}").Formula = f"=IF(AND(MONTH(C{i})=12,DAY(C{i})=31),0,YEAR(C{i}))"
         loans.Range(f"G{i}").Formula = f"=C{i}+0"

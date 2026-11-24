@@ -34,10 +34,10 @@ pip install -r requirements.txt
 ## Start
 
 Double-click `excel-upload-preparation\run_mind_ready_web.bat`. A server window opens and then the app
-opens in your browser at <http://localhost:8600>. The browser tab shows the version, for example
-*Mind Ready 1.11.10*.
+opens in your browser at the address the server window prints (by default <http://localhost:8600>: the port is the
+`port` line in `settings.yaml`). The browser tab shows the version, for example *Mind Ready Beta <version>*.
 
-To stop the app, close the server window. If port 8600 is taken, change `port` in the settings (below).
+To stop the app, close the server window. If that port is taken, change `port` in `settings.yaml` (below).
 
 The app runs only on your machine (`127.0.0.1`). Nothing is sent anywhere except the assistant's
 questions to the AI gateway and, when you choose it, your workbook to Mind.
@@ -54,7 +54,7 @@ server window names the line.
 
 1. **Open a workbook** (`.xlsx`, `.xlsm` or `.xlsb`). For a large file the app first asks whether to
    skip some sheets. Skipped sheets are left exactly as they are.
-2. Click **Do everything**. It runs four steps, each followed by its check, and stops at the first check
+2. Click **Go** on the Basic screen (**Do everything** on the Custom screen). It runs four steps, each followed by its check, and stops at the first check
    that fails:
    - **Fix all issues**: finds the cells where errors start, gives each a value to fall back on, and
      undoes any fix that changed a value that was correct. Errors it cannot fix are listed with the
@@ -77,7 +77,7 @@ assistant, Run in Mind, and every version made so far.
 The assistant (grid names from context, the chat, explaining and suggesting fixes) uses the Milliman AI
 gateway with your own key. The app does **not** need it for the main steps.
 
-When no key is saved, the main screen and **Advanced > Assistant** show a box to paste it in. The app
+When no key is saved, the Custom screen and **Advanced > Assistant** show a box to paste it in. The app
 first checks the key with the gateway and does not save a key the gateway refuses. It saves the key
 encrypted for your Windows account in the app's data folder (`%LOCALAPPDATA%\MindReady` unless the
 settings say otherwise), so only you on this machine can read
@@ -117,13 +117,18 @@ run are deleted afterwards. Both names can be changed in the settings.
 
 ## Feedback
 
-Please contact the **Milliman Tel Aviv team** with your feedback.
+When a step fails, a box under the header says what stopped and why, with the button **Send
+feedback**. The same button is in the header, for anything else you want to tell us.
 
-The most useful feedback includes:
+1. Click it, add a line about what you were doing if you like, and click **Prepare the message**.
+2. Read the message if you like, then click **Copy and open email**: the message is copied and an email
+   opens, to the address in the settings (`feedback.email`); the reply comes back to you.
+3. Paste it into the email (**Ctrl+V**) and send. If the email cuts it short, click **Save as a file**
+   and attach the file.
 
-- the version shown on the browser tab;
-- what you did, what you expected, and what happened, with a screenshot;
-- the report (**Download the report**), and the workbook if you are allowed to share it.
+The message is written in codes that tell us where in the app it stopped and why, with the kind of
+formula involved. Nothing from your workbook is in it: no file name, no sheet names, no cell addresses,
+no values.
 
 ## What is in this repository
 

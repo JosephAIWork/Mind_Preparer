@@ -1,11 +1,11 @@
-"""Mind's loop values (from the probe's logs.json) against the macro's values (check_loop_plan.py's check.json).
+"""Mind's  loop values  (from the probe's logs.json) against the macro's values (check_loop_plan.py's check.json).
 
     python scripts/mind_loop_compare.py <probe dir>/logs.json <check.json> --target OUTPUT!A2:J6 --first 2
 
-check.json: expected[<source block>] = one list of values per pass (pass 1 = loop value `first`).
-logs.json: differences[] = {sheet, cell, excel, mind} for every cell where Mind's value differs from the
-workbook's cached value (with the MM for Excel add-in the cached values are the FIRST pass, so pass 1's
-row usually does not appear in the log: it is taken from the cached value, i.e. from Excel's check).
+check.json: expected[<source block>] = one list of values per pass (pass 1 = loop  value `first`).
+logs.json: differences[] = {sheet, cell, excel, mind} for every cell  where Mind's value differs from the
+workbook's  cached value (with the MM for Excel  add-in the cached values are the FIRST pass, so pass 1's
+row  usually does not appear in the log:  it is taken from the cached value, i.e. from Excel's check).
 Prints a table per pass: cell, macro value, Mind value, same / differs; exit 0 when every Mind value
 seen matches the macro and every pass after the first appears in the log.
 """
@@ -51,7 +51,7 @@ def same(a, b, tol: float = 1e-6) -> bool:
             return False
         return abs(a - b) <= tol * max(1.0, abs(a), abs(b))
     if isinstance(a, (int, float)) != isinstance(b, (int, float)):
-        # a date string against a number, or text against a number: compare the text forms loosely
+        # a  date string  against a number, or text against a number: compare the text forms loosely
         return str(a).strip()[:10] == str(b).strip()[:10]
     return str(a).strip() == str(b).strip()
 

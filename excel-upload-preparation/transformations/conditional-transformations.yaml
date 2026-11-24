@@ -1,6 +1,0 @@
-version: 1.0.0
-operations:
-  - id: rewrite-formula-reference
-    deterministic: true
-    approval_required: conditional
-    constraints: [intent_unambiguous, semantics_unchanged, post_validation_available]

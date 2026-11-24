@@ -1,19 +1,19 @@
-"""Places where Mind computes another value than Excel.
+"""Places  where Mind  computes another value than Excel.
 
 The first two were found by uploading a client model that recalculates clean in
 Excel and confirmed with a 49-cell test workbook in Mind:
 
-FRM-008  arithmetic on a cell that holds "" (empty text), inside IFERROR.
-         Excel: ""-1 is #VALUE!, IFERROR returns its fallback.
-         Mind:  "" counts as 0, the arithmetic gives a number, IFERROR never fires.
+FRM-008 arithmetic on a cell  that holds "" (empty text), inside IFERROR.
+         Excel: ""-1 is #VALUE!, IFERROR  returns its fallback.
+         Mind: "" counts as  0, the arithmetic gives a number, IFERROR  never fires.
          =IFERROR(1+INT((A10-1)/12),"") is blank in Excel and a value in Mind
-         where A10 holds "". =IF(A10="","",IFERROR(...)) gives both the same.
+         where  A10 holds "". =IF(A10="","",IFERROR(...)) gives both the  same.
 
-FRM-009  a number compared with a cell that is empty in Excel.
-         Excel: the empty cell is 0.  Mind: it is not (0=empty is false, 1<=empty is true).
+FRM-009 a number compared with a cell that is empty in Excel.
+         Excel: the empty cell is 0. Mind: it is not (0=empty is false, 1<=empty is true).
          The empty cell is read directly (=IF(1<=B8,0,1)) or through a formula
          that lands on it and shows 0 in Excel: a plain reference (=+Sheet2!P4)
-         or an exact VLOOKUP / HLOOKUP. A lookup that lands on an empty cell,
+         or an exact VLOOKUP / HLOOKUP. A lookup that lands on an empty  cell,
          then compared (IF(A35<=$H$9,0,1)), returns another value in Mind for
          every live row. N() around the reading makes it a 0 in both.
 
@@ -23,7 +23,7 @@ empty cell, and arithmetic on an empty cell.
 
 Both rules read the values Excel stored in the file: a formula cell with no
 stored value returned "" (openpyxl gives None for an empty stored string), so a
-workbook that was never calculated and saved by Excel cannot be checked.
+workbook that was  never calculated and saved by  Excel cannot be checked.
 """
 from __future__ import annotations
 
@@ -39,24 +39,24 @@ MAX_SITES = 80
 ARITHMETIC = set("+-*/^")
 COMPARISON = set("=<>")
 TWO_CHAR = ("<=", ">=", "<>")
-# functions that hand an error in an argument straight on: arithmetic on "" inside them is still an error in Excel
+# functions  that hand  an error in an argument straight on: arithmetic on "" inside them is still an error in Excel
 TRANSPARENT = {
     "INT", "ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC", "ABS", "SQRT", "EXP", "LN", "LOG", "LOG10", "POWER", "MOD", "SIGN", "CEILING", "FLOOR", "MROUND",
     "MAX", "MIN", "SUM", "PRODUCT", "AVERAGE", "YEAR", "MONTH", "DAY", "DATE", "EDATE", "EOMONTH", "VALUE", "TEXT",
-    "SUMPRODUCT",  # an error in its array arithmetic (SUMPRODUCT(range*range) with a "" cell) is the call's error
+    "SUMPRODUCT",  # an  error in  its array arithmetic (SUMPRODUCT(range*range) with a "" cell) is the call's error
 }
 NUMERIC_CALLS = (TRANSPARENT - {"TEXT"}) | {"N", "LEN", "ROW", "COLUMN", "ROWS", "COLUMNS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "SUMPRODUCT", "TODAY", "NOW"}
 _CELL_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})")
 _COORD_RE = re.compile(r"^([A-Za-z]{1,3})(\d{1,7})")
-_NAME_BEFORE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*$")
-_IFERROR_RE = re.compile(r"(?<![A-Za-z0-9_.])IFERROR\s*\(", re.IGNORECASE)
-_IF_RE = re.compile(r"(?<![A-Za-z0-9_.])IF\s*\(", re.IGNORECASE)
+_NAME_BEFORE_RE = re.compile(r"([^\W\d][\w.]*)\s*$")
+_IFERROR_RE = re.compile(r"(?<![\w.])IFERROR\s*\(", re.IGNORECASE)
+_IF_RE = re.compile(r"(?<![\w.])IF\s*\(", re.IGNORECASE)
 _IS_TEST_RE = re.compile(r"^(ISNUMBER|ISERROR|ISERR)\s*\(", re.IGNORECASE)
 _LOOKUP_RE = re.compile(r"(VLOOKUP|HLOOKUP)\s*\(", re.IGNORECASE)
-_EXACT_LOOKUP_RE = re.compile(r"(?<![A-Za-z0-9_.])(VLOOKUP|HLOOKUP|MATCH)\s*\(", re.IGNORECASE)
-_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+_EXACT_LOOKUP_RE = re.compile(r"(?<![\w.])(VLOOKUP|HLOOKUP|MATCH)\s*\(", re.IGNORECASE)
+_CALL_RE = re.compile(r"([^\W\d][\w.]*)\s*\(")
 
-_SCANS: dict[str, dict[str, Any]] = {}  # one scan serves both rules and both Prep actions
+_SCANS: dict[str, dict[str, Any]] = {}  # one  scan serves  both rules and both Prep actions
 
 
 def _is_formula(v: Any) -> bool:
@@ -82,7 +82,7 @@ def _same_key(a: Any, b: Any) -> bool:
 
 
 def _bare(body: str) -> str:
-    """=+(X) -> X"""
+    """=+(X)  -> X"""
     while True:
         body = body.strip()
         if body.startswith("+"):
@@ -100,16 +100,35 @@ def _one_cell(text: str) -> dict | None:
     return None
 
 
+# A  formula Excel  stores as an array over several cells (Ctrl+Shift+Enter, or a spill) can only be
+# changed as a whole: those are left for a person. An array over its own cell alone is  rewritten like
+# any formula -- Excel 365 stores most formulas with INDEX,  OFFSET... that way (a one-cell dynamic
+# array,  <f t="array" ref="J222"> with cm="1"): 513,663 cells  of one model, all left by hand before
+# (2026-10-26). The writer keeps  it a one-cell array (app/prep.py, Formula2).
+SEVERAL_CELLS = "an array formula over several cells: rewrite it by hand"
+
+
+def several_cells(f: dict[str, Any]) -> bool:
+    """The  formula is  an array formula over more than its own cell."""
+    ref = str(f.get("array_ref") or "").replace("$", "").upper()
+    return bool(ref) and ref not in (str(f["cell"]).upper(), f"{str(f['cell']).upper()}:{str(f['cell']).upper()}")
+
+
 class _Book:
-    """What each cell holds (formula text or constant) and the value Excel stored for it."""
+    """What  each cell  holds (formula text or constant) and the value Excel stored for it."""
 
     def __init__(self, analysis: dict[str, Any]):
         from ..inventory import _values_workbook, ignored_sheet_names, open_cached
 
         wb0 = analysis["workbooks"][0]
         self.f = open_cached(analysis)
-        self.v = _values_workbook(wb0["copy_path"], ignored_sheet_names(analysis))  # the same view REP-001 loads
-        self.sheets = set(self.f.sheetnames) & set(self.v.sheetnames)
+        self.skipped = set(ignored_sheet_names(analysis))  # left out of the scan at the user's request
+        self.v = _values_workbook(wb0["copy_path"], self.skipped)  # the same view REP-001 loads
+        # The sheets whose cells are known. A skipped  sheet is in both loads but holds no cell
+        # there: reading it  would say "empty" of cells that  were never looked at, and a rule
+        # would  then guard or rewrite a formula on a guess. It is  not read: a formula that
+        # needs its cells  is left as it is.
+        self.sheets = (set(self.f.sheetnames) & set(self.v.sheetnames)) - self.skipped
         self._fc: dict[str, dict] = {}
         self._vc: dict[str, dict] = {}
         self._land: dict[tuple[str, int, int], tuple[str, int, int] | None] = {}
@@ -126,7 +145,7 @@ class _Book:
     def _named(self, text: str) -> dict | None:
         """The range a bare defined name stands for, else None."""
         t = text.strip()
-        if not re.fullmatch(r"[A-Za-z_\\][A-Za-z0-9_.]*", t):
+        if not re.fullmatch(r"(?:[^\W\d]|\\)[\w.?\\]*", t):
             return None
         return self.names.get(t.upper())
 
@@ -195,7 +214,7 @@ class _Book:
 
     def lookup_vector(self, sheet: str, r: dict, name: str) -> tuple[bool, bool] | None:
         """For the column (VLOOKUP) or row (HLOOKUP) a lookup searches, or a one-line MATCH range:
-        (holds an empty cell, holds a formula that returned "") within the sheet's used area."""
+        (holds an empty  cell, holds a formula that returned "") within the sheet's used area."""
         tsheet = r["sheet"] or sheet
         if tsheet not in self.sheets:
             return None
@@ -307,7 +326,7 @@ class _Book:
 
 # --- reading one formula ----------------------------------------------------------------------
 def _around(masked: str, s: int, e: int) -> tuple[int, int]:
-    """Index of the first non-blank character before `s` (-1 if none) and after `e` (len if none)."""
+    """Index  of the  first non-blank character before `s` (-1 if none) and after `e` (len if none)."""
     i = s - 1
     while i >= 0 and masked[i].isspace():
         i -= 1
@@ -348,7 +367,7 @@ def _operand_start(masked: str, a: int) -> int:
 
 
 def _other_side(masked: str, s: int, e: int) -> tuple[int, int] | None:
-    """If the reference at [s, e) is one whole side of a comparison, the span of the other side."""
+    """If  the reference  at [s, e) is one whole side of a comparison, the span of the other side."""
     i, j = _around(masked, s, e)
     n = len(masked)
     prev = masked[i] if i >= 0 else ""
@@ -363,7 +382,7 @@ def _other_side(masked: str, s: int, e: int) -> tuple[int, int] | None:
 
 
 def _numeric_side(book: _Book, text: str, masked: str, sheet: str) -> bool:
-    """Is the other side of the comparison a number (as far as can be told without computing it)?"""
+    """Is  the other  side of the comparison a number (as far as can be told without computing it)?"""
     t = text.strip()
     if not t or '"' in t or "&" in masked:
         return False
@@ -402,7 +421,7 @@ def _is_arithmetic_operand(masked: str, s: int, e: int, lo: int, hi: int) -> boo
 
 
 def _reaches_unconditionally(masked: str, pos: int, call_open: int) -> bool:
-    """Only parentheses and error-transparent functions between `pos` and the IFERROR that encloses it."""
+    """Only  parentheses and  error-transparent functions between `pos` and the IFERROR that encloses it."""
     depth = 0
     for i in range(pos - 1, call_open - 1, -1):
         ch = masked[i]
@@ -441,11 +460,11 @@ def _iferror_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int
 
 
 def _guard_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int]]]]:
-    """Every construct that hides an error of X behind a fallback: IFERROR(X, fb), and
+    """Every  construct that  hides an error of X behind a fallback: IFERROR(X, fb), and
     IF(ISNUMBER(X), ..., fb) / IF(ISERROR(X), fb, ...) / IF(ISERR(X), fb, ...). Each as
-    (start, open paren of X's call, close of the whole construct, [X span, fallback span]):
-    Excel takes the fallback when X errors on a "" cell, Mind computes X with "" as 0
-    (e.g. IF(ISNUMBER(Sheet2!H171*NOT(Flag_name)),...,"") where H171 holds "")."""
+    (start, open paren of X's call, close of the  whole construct, [X span, fallback span]):
+    Excel takes the fallback when X  errors on a "" cell, Mind  computes X with "" as 0
+    (e.g. IF(ISNUMBER(Sheet2!H171*NOT(Flag_name)),...,"")  where H171 holds "")."""
     out = _iferror_calls(masked)
     for m in _IF_RE.finditer(masked):
         open_at = m.end() - 1
@@ -464,7 +483,7 @@ def _guard_calls(masked: str) -> list[tuple[int, int, int, list[tuple[int, int]]
             continue
         t_open = a0 + lead + mt.end() - 1
         if _closing_paren(masked, t_open) != a0 + lead + len(test_s) - 1:
-            continue  # the test is more than the one IS... call
+            continue  # the test is more than the one IS...  call
         fallback = spans[2] if mt.group(1).upper() == "ISNUMBER" else spans[1]
         out.append((m.start(), t_open, close, [(t_open + 1, a0 + lead + len(test_s) - 1), fallback]))
     out.sort(key=lambda c: c[0])
@@ -477,7 +496,7 @@ def _has_guard_form(formula: str) -> bool:
 
 
 def _relative_form(formula: str, masked: str, refs: list[re.Match], row: int, col: int) -> str:
-    """The formula with every reference written relative to its own cell: equal for a filled-down block."""
+    """The  formula with  every reference written relative to its own cell: equal for a filled-down block."""
     def rel(mm: re.Match) -> str:
         c_abs, c, r_abs, r = mm.groups()
         return (f"C{col_to_num(c)}" if c_abs else f"C[{col_to_num(c) - col}]") + (f"R{r}" if r_abs else f"R[{int(r) - row}]")
@@ -491,8 +510,15 @@ def _relative_form(formula: str, masked: str, refs: list[re.Match], row: int, co
     return "".join(out)
 
 
+def relative_form(formula: str, row: int, col: int) -> str:
+    """_relative_form  for a  formula alone: equal for two cells of the same formula filled down."""
+    masked = mask_strings(formula) if ('"' in formula or "'" in formula) else formula
+    refs = [m for m in REF_RE.finditer(masked) if not (m.start() and masked[m.start() - 1] == "]")]
+    return _relative_form(formula, masked, refs, row, col)
+
+
 def _guarded(formula: str, refs: list[re.Match], calls: list, guards: dict[int, set[int]], extra: dict[int, list[str]] | None = None) -> str:
-    """IFERROR(X, fallback) -> IF(cell="", fallback, IFERROR(X, fallback)) for each call in `guards`;
+    """IFERROR(X,  fallback) ->  IF(cell="", fallback, IFERROR(X, fallback)) for each call in `guards`;
     `extra` adds tests written as text (the "" cells found inside a range operand)."""
     keys = set(guards) | set(extra or {})
     for ci in sorted(keys, key=lambda i: calls[i][0], reverse=True):
@@ -512,7 +538,7 @@ def _guarded(formula: str, refs: list[re.Match], calls: list, guards: dict[int, 
 
 
 def _fallback_fired(book: _Book, formula: str, calls: list, ci: int, sheet: str, row: int, col: int) -> bool:
-    """When the IFERROR is the whole formula, the cell must show the fallback in Excel."""
+    """When  the IFERROR  is the whole formula, the cell must show the fallback in Excel."""
     start, _open, close, spans = calls[ci]
     if _bare(formula[1:]) != formula[start:close + 1]:
         return True  # inside a larger formula: nothing to read off the cell
@@ -534,7 +560,9 @@ def scan(analysis: dict[str, Any]) -> dict[str, Any]:
         stamp = os.stat(path).st_mtime_ns
     except OSError:
         stamp = 0
-    key = f"{path}|{stamp}|{len(wb0.get('formulas', []))}|{sorted(wb0.get('ignored_sheets') or [])}"
+    # the  skipped sheets  by name (they are dicts: sorting them raised TypeError with two or more)
+    skipped = sorted(str(x.get("name") if isinstance(x, dict) else x) for x in (wb0.get("ignored_sheets") or []))
+    key = f"{path}|{stamp}|{len(wb0.get('formulas', []))}|{skipped}"
     hit = _SCANS.get(key)
     if hit is None:
         hit = _scan(analysis)
@@ -553,9 +581,14 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         m = _COORD_RE.match(str(f.get("cell") or ""))
         if m and isinstance(f.get("formula"), str) and not f.get("data_table") and f["sheet"] in book.sheets:
             formulas.append((f, int(m.group(2)), col_to_num(m.group(1))))
-            if f.get("array_ref"):
+            if several_cells(f):
                 array_cells.add((f["sheet"], int(m.group(2)), col_to_num(m.group(1))))
-    out: dict[str, Any] = {"checked": True, "formulas": len(formulas), "blank_arithmetic": [], "origins": [], "direct": [], "readers": 0, "blank_errors": []}
+    out: dict[str, Any] = {"checked": True, "formulas": len(formulas), "blank_arithmetic": [], "origins": [], "direct": [], "readers": 0, "blank_errors": [], "skipped_sheets": sorted(book.skipped), "skipped_sheet_readers": 0}
+    if book.skipped:
+        # the  formulas that  read a sheet left out of the scan: its cells are unknown, so these are
+        # checked no further here (the findings say so)
+        marks = [f"{name}!" for name in book.skipped] + [f"{name.replace(chr(39), chr(39) * 2)}'!" for name in book.skipped]
+        out["skipped_sheet_readers"] = sum(1 for f, _r, _c in formulas if any(mk in f["formula"] for mk in marks))
     if not any(book.stored(f["sheet"], row, col) is not None for f, row, col in formulas):
         out["checked"] = False
         return out
@@ -596,7 +629,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     if land is None:
                         continue
                 else:
-                    # =IF(B5="","",IF(B5>0,...)): the formula asks first whether the cell is empty -- both take the same branch
+                    # =IF(B5="","",IF(B5>0,...)): the formula asks first whether the  cell is empty -- both take the same branch
                     if compact is None:
                         compact = _compact(masked)
                     if _tests_for_empty_text(compact, _compact(masked[m.start():m.end()])):
@@ -615,15 +648,15 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                 fixed = formula
                 for s, e, _ in sorted(spans, reverse=True):
                     fixed = fixed[:s] + "N(" + fixed[s:e] + ")" + fixed[e:]
-                array = bool(f.get("array_ref"))
+                array = several_cells(f)
                 out["direct"].append({
                     "sheet": sheet, "cell": f["cell"], "formula": formula, "empty_cells": sorted({c for _, _, c in spans}),
-                    "suggested_formula": None if array else fixed, "issue": "an array formula: rewrite it by hand" if array else None,
+                    "suggested_formula": None if array else fixed, "issue": SEVERAL_CELLS if array else None,
                 })
 
         own = book.stored(sheet, row, col)
         if _is_error_value(own) and own in ("#VALUE!",) and any(ch in rest for ch in "+-*/^"):
-            # FRM-013: the cell shows #VALUE! -- which of its arithmetic operands holds ""?
+            # FRM-013: the cell  shows #VALUE! -- which of its  arithmetic operands holds ""?
             blanks = []
             for k, m in enumerate(refs):
                 if ":" in m.group("ref") or not _is_arithmetic_operand(masked, m.start(), m.end(), 1, len(masked)):
@@ -640,9 +673,9 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     if t not in tests:
                         tests.append(t)
                 test = tests[0] if len(tests) == 1 else "OR(" + ",".join(tests) + ")"
-                array = bool(f.get("array_ref"))
+                array = several_cells(f)
                 out["blank_errors"].append({"sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": [formula[refs[k].start():refs[k].end()] for k in blanks],
-                                            "suggested_formula": None if array else f"=IF({test},NA(),{formula[1:]})", "issue": "an array formula: rewrite it by hand" if array else None})
+                                            "suggested_formula": None if array else f"=IF({test},NA(),{formula[1:]})", "issue": SEVERAL_CELLS if array else None})
         if has_iferror:
             iferror_by_column.setdefault((sheet, col), []).append((f, row, col))
             calls = _guard_calls(masked)
@@ -656,14 +689,14 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     if m.start() < lo or m.end() > hi or not _is_arithmetic_operand(masked, m.start(), m.end(), lo, hi):
                         continue
                     if ":" in m.group("ref"):
-                        # a range in array arithmetic (SUMPRODUCT(I53:DL53*...)): its "" cells, named one by one
+                        # a range in array  arithmetic (SUMPRODUCT(I53:DL53*...)): its "" cells, named one by one
                         r = parse_ref(formula[m.start():m.end()])
                         if not r or r["whole_column"] or r["whole_row"] or (r["r2"] - r["r1"] + 1) * (r["c2"] - r["c1"] + 1) > 600:
                             continue
                         tsheet = r["sheet"] or sheet
                         if tsheet not in book.sheets or not _reaches_unconditionally(masked, m.start(), open_at):
                             continue
-                        prefix = formula[m.start():m.start("ref")]  # the sheet part, quoted as written
+                        prefix = formula[m.start():m.start("ref")]  # the sheet part,  quoted as written
                         if compact is None:
                             compact = _compact(masked)
                         for rr in range(r["r1"], r["r2"] + 1):
@@ -671,7 +704,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                                 if _is_formula(book.content(tsheet, rr, cc)) and book.stored(tsheet, rr, cc) is None:
                                     text = f"{prefix}{num_to_col(cc)}{rr}"
                                     if _tests_for_empty_text(compact, _compact(text)):
-                                        continue  # already guarded (a second Prep round)
+                                        continue  # already guarded (a second Prep  round)
                                     range_blanks.setdefault(ci, []).append(text + '=""')
                         continue
                     tsheet = _ref_sheet(formula, m, sheet)
@@ -721,12 +754,12 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
                     guards.pop(ci, None)
                     range_blanks.pop(ci, None)
             if range_blanks and not guards:
-                # a site of its own (no filled-down-block treatment: each row names its own "" cells)
-                array = bool(f.get("array_ref"))
+                # a site of its own (no filled-down-block treatment: each row names its own ""  cells)
+                array = several_cells(f)
                 cells = sorted({t[:-3] for ts in range_blanks.values() for t in ts})
                 out["blank_arithmetic"].append({
                     "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": True, "arithmetic": True, "lookup_key": False,
-                    "suggested_formula": None if array else _guarded(formula, refs, calls, {}, range_blanks), "issue": "an array formula: rewrite it by hand" if array else None,
+                    "suggested_formula": None if array else _guarded(formula, refs, calls, {}, range_blanks), "issue": SEVERAL_CELLS if array else None,
                 })
             elif guards:
                 if range_blanks:
@@ -758,7 +791,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             continue
         formula = f["formula"]
         calls = _guard_calls(masked)
-        array = bool(f.get("array_ref"))
+        array = several_cells(f)
         cells = sorted({formula[refs[k].start():refs[k].end()] for ks in union.values() for k in ks})
         kinds = pattern_kinds.get((sheet, col, rel), set())
         # A cell the new test reads must not hold an error: IF(#REF!="", ...) is #REF!, where the
@@ -769,7 +802,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
             for ks in union.values() for k in ks
             if _is_error_value(book.value(_ref_sheet(formula, refs[k], sheet), *_ref_cell(refs[k])))
         })
-        issue = "an array formula: rewrite it by hand" if array else (f"{', '.join(errors[:3])} holds an error: the IFERROR already returns its fallback in Excel and in Mind; left as it is" if errors else None)
+        issue = SEVERAL_CELLS if array else (f"{', '.join(errors[:3])} holds an error: the IFERROR already returns its fallback in Excel and in Mind; left as it is" if errors else None)
         out["blank_arithmetic"].append({
             "sheet": sheet, "cell": f["cell"], "formula": formula, "blank_cells": cells, "blank_now": (sheet, row, col) in blank_flagged,
             "arithmetic": "arithmetic" in kinds, "lookup_key": "lookup" in kinds,
@@ -777,7 +810,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         })
 
     # every formula cell that lands on an empty cell and is read by some formula -- AVERAGE,
-    # COUNT, MIN and MAX skip an empty where Excel saw a 0
+    # COUNT, MIN  and MAX skip an empty  where Excel saw a 0
     try:
         from ..prep import reference_index, referenced_by
         index = reference_index(analysis)
@@ -803,7 +836,7 @@ def _scan(analysis: dict[str, Any]) -> dict[str, Any]:
         array = key in array_cells
         body = _bare(o["formula"][1:])
         o["suggested_formula"] = None if array else f"=N({body})"
-        o["issue"] = "an array formula: rewrite it by hand" if array else None
+        o["issue"] = SEVERAL_CELLS if array else None
         out["origins"].append(o)
     return out
 
@@ -819,8 +852,27 @@ def _not_checked(exc: Exception | None) -> dict:
     return finding("NOT_SUPPORTED", "The workbook holds no stored values (it was never calculated and saved by Excel), so it cannot be told which cells are empty text or land on an empty cell: not checked. Open it in Excel, save it and upload it again.", {"sites": []})
 
 
+def _skipped_note(res: dict) -> str:
+    """What  the findings  say about the formulas that read a sheet left out of the scan."""
+    n = int(res.get("skipped_sheet_readers") or 0)
+    if not n:
+        return ""
+    names = list(res.get("skipped_sheets") or [])
+    return (f" {n} formula(s) read a sheet left out of the scan at your request ({', '.join(names[:4])}{', ...' if len(names) > 4 else ''}): "
+            "its cells were not read, so those formulas are checked no further and left as they are.")
+
+
+def _noting_skipped(out: dict, res: dict) -> dict:
+    note = _skipped_note(res)
+    if note:
+        out["message"] = out["message"] + note
+        if isinstance(out.get("observed"), dict):
+            out["observed"]["skipped_sheets_note"] = note.strip()
+    return out
+
+
 def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
-    """FRM-008: arithmetic on a cell that holds "" inside IFERROR -- a fallback in Excel, a number in Mind."""
+    """FRM-008:  arithmetic on  a cell that holds "" inside IFERROR -- a fallback in Excel, a number in Mind."""
     try:
         res = scan(analysis)
     except Exception as exc:
@@ -830,8 +882,8 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
     sites = [s for s in res["blank_arithmetic"] if s["arithmetic"]]
     observed, first, now, with_fix = _blank_text_observed(sites, limit)
     if not sites:
-        return finding("PASS", 'No IFERROR (or IF on ISNUMBER / ISERROR) hides arithmetic on a cell that holds "" (empty text).', observed)
-    return finding(
+        return _noting_skipped(finding("PASS", 'No IFERROR (or IF on ISNUMBER / ISERROR) hides arithmetic on a cell that holds "" (empty text).', observed), res)
+    return _noting_skipped(finding(
         "ERROR",
         f'{now} formula(s) do arithmetic on a cell that holds "" (empty text) inside IFERROR, or inside an IF that tests ISNUMBER / ISERROR on it. Excel stops on the "" (#VALUE!) and returns the fallback; '
         'Mind counts "" as 0, computes a number and never reaches the fallback, so these cells get another value in Mind (confirmed in a real Mind conversion: '
@@ -840,10 +892,10 @@ def blank_text_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks, "
         "so each column keeps one formula; Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 BLANK_TEXT_ACTION = "Test for empty text before the arithmetic or lookup"
@@ -861,8 +913,8 @@ def _blank_text_observed(sites: list[dict], limit: int | None) -> tuple[dict, di
 
 
 def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
-    """FRM-010: an exact lookup whose key is a cell that holds "", inside IFERROR -- Excel finds nothing and
-    returns the fallback; Mind matches an empty cell of the looked-up column (the header of a titled table)."""
+    """FRM-010:  an exact  lookup whose key is a cell that holds "", inside IFERROR -- Excel finds nothing and
+    returns the fallback; Mind matches an empty cell of the looked-up column (the header of a  titled table)."""
     try:
         res = scan(analysis)
     except Exception as exc:
@@ -872,8 +924,8 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
     sites = [s for s in res["blank_arithmetic"] if s["lookup_key"]]
     observed, first, now, with_fix = _blank_text_observed(sites, limit)
     if not sites:
-        return finding("PASS", 'No IFERROR hides an exact lookup (VLOOKUP, HLOOKUP, MATCH) whose key is a cell that holds "" over a column or row with an empty cell.', observed)
-    return finding(
+        return _noting_skipped(finding("PASS", 'No IFERROR hides an exact lookup (VLOOKUP, HLOOKUP, MATCH) whose key is a cell that holds "" over a column or row with an empty cell.', observed), res)
+    return _noting_skipped(finding(
         "ERROR",
         f'{now} formula(s) look up (VLOOKUP, HLOOKUP or MATCH, exact match) a key that holds "" (empty text) in a column or row that has an empty cell, inside IFERROR. '
         'Excel finds nothing and returns the IFERROR fallback; Mind matches the empty cell -- the header cell of a table Prep gave a title -- and returns that row '
@@ -881,14 +933,14 @@ def blank_text_lookup_key(rule, analysis: dict[str, Any], config: dict[str, Any]
         f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action '{BLANK_TEXT_ACTION}' rewrites {with_fix} formula(s) -- these and the rest of their filled-down blocks; Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
-    """FRM-009: a number compared with a cell that is empty in Excel -- 0 in Excel, not 0 in Mind."""
+    """FRM-009:  a number  compared with a cell that is empty in Excel -- 0 in Excel, not 0 in Mind."""
     try:
         res = scan(analysis)
     except Exception as exc:
@@ -903,7 +955,7 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
         "comparisons": res["readers"], "with_proposal": with_fix, "without_proposal": len(sites) - with_fix,
     }
     if not sites:
-        return finding("PASS", "No formula compares a number with a cell that is empty (directly, or through a reference or lookup that lands on an empty cell).", observed)
+        return _noting_skipped(finding("PASS", "No formula compares a number with a cell that is empty (directly, or through a reference or lookup that lands on an empty cell).", observed), res)
     parts = []
     if origins:
         o = origins[0]
@@ -920,28 +972,28 @@ def empty_cell_compared(rule, analysis: dict[str, Any], config: dict[str, Any], 
             + (f" -> proposed {_short(d['suggested_formula'], 100)}" if d["suggested_formula"] else "")
         )
     first = origins[0] if origins else direct[0]
-    return finding(
+    return _noting_skipped(finding(
         "ERROR",
         "A number is compared with a cell that is empty. Excel reads the empty cell as 0; Mind does not (0 = empty is false there, 1 <= empty is true), so the comparison goes the "
         "other way in Mind (confirmed in a real Mind conversion: IF(<a number> <= <an empty cell>, 0, 1) returned 0 on 157 live rows where Excel returns 1, and the reserves came out wrong). "
         + " ".join(p + "." for p in parts)
         + f" The Prep action 'Read empty cells as 0 where they are compared' puts N() around {with_fix} of them (N of an empty cell is 0 in both; N of a number is the number); "
         "Excel's results stay the same"
-        + (f"; {len(sites) - with_fix} left as they are (an array formula, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
+        + (f"; {len(sites) - with_fix} left as they are (an array formula over several cells, or a cell the test would read holds an error -- see the Prep action's skip list)." if len(sites) - with_fix else "."),
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
-    )
+    ), res)
 
 
 # --- FRM-011: a line break inside a string literal -------------------------------------------
-# =B62&"<line break>/ text - "&D8 came back from Mind as another text, while =B62&CHAR(10)&"x"
-# came back the same (observed in Mind, 2026-10-08). The break written as CHAR(10) is the same
-# text in Excel.
+# =B62&"<line break>/ text - "&D8 came  back from Mind as another text, while =B62&CHAR(10)&"x"
+# came back the same  (observed in Mind, 2026-10-08). The break  written as CHAR(10) is the same
+# text in  Excel.
 _BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 
 def string_literal_spans(formula: str) -> list[tuple[int, int]]:
-    """(start, end) of every "..." literal, quotes included, "" inside a literal being an escaped quote."""
+    """(start,  end) of  every "..." literal, quotes included, "" inside a literal being an escaped quote."""
     spans, i, n = [], 0, len(formula)
     while i < n:
         if formula[i] == '"':
@@ -961,7 +1013,7 @@ def string_literal_spans(formula: str) -> list[tuple[int, int]]:
 
 
 def line_breaks_as_char(formula: str) -> str | None:
-    """The formula with every line break inside a string literal written as CHAR(10) / CHAR(13); None when there is none."""
+    """The  formula with  every line break inside a string literal written as CHAR(10) / CHAR(13); None when there is none."""
     if not formula or not formula.startswith("=") or not _BREAK_RE.search(formula):
         return None
     out, last, changed = [], 0, False
@@ -989,7 +1041,7 @@ def line_breaks_as_char(formula: str) -> str | None:
 
 
 def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
-    """FRM-011: a line break typed inside a formula's string literal -- Mind computes another text."""
+    """FRM-011:  a line  break typed inside a formula's string literal -- Mind computes another text."""
     wb0 = analysis["workbooks"][0]
     sites = []
     for f in wb0.get("formulas", []):
@@ -997,8 +1049,8 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
         fixed = line_breaks_as_char(formula)
         if fixed is None:
             continue
-        array = bool(f.get("array_ref"))
-        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed, "issue": "an array formula: rewrite it by hand" if array else None})
+        array = several_cells(f)
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed, "issue": SEVERAL_CELLS if array else None})
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for s in sites if s["suggested_formula"])}
     if not sites:
         return finding("PASS", "No formula holds a line break inside a string literal.", observed)
@@ -1017,14 +1069,61 @@ def line_break_in_text(rule, analysis: dict[str, Any], config: dict[str, Any], l
 
 # --- FRM-012: a formula that asks Excel about itself --------------------------------------------
 # =MID(CELL("filename",Sheet2!A1),FIND("[",CELL("filename",...))+1,...): the file's path and
-# name, used to build save paths for a macro. Mind has no file: its CELL("filename")
-# returned a text without "[", FIND failed and the run stopped ("startIndex ('-1') must be a
-# non-negative value", 2026-10-08). The value such a formula shows today is written in its place.
-_ENV_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
-# The app's own session folders (tempfile.mkdtemp(prefix="mind_ready_"), app/web/server.py). Once the
+# name, used to build save paths for  a macro. Mind has no file: its CELL("filename")
+# returned a text without  "[", FIND failed and the run  stopped ("startIndex ('-1') must be a
+# non-negative value",  2026-10-08). The value such a formula shows today is written in  its place.
+_ENV_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?(CELL|INFO)\s*\(", re.IGNORECASE)
+# The  app's own  session folders (tempfile.mkdtemp(prefix="mind_ready_"), app/web/server.py). Once the
 # app's Excel has saved a version there, CELL("filename") shows that folder -- the app's working copy,
-# with the Windows user's name in it, not the user's own path.
+# with the Windows user's name in it, not the user's own  path.
 _APP_FOLDER_MARK = "\\mind_ready_"
+
+
+_FILE_EXT_RE = re.compile(r"\.(xlsx|xlsm|xlsb|xls|xltx|xltm)$", re.IGNORECASE)
+_FULL_NAME_RE = re.compile(r"^(?P<folder>.*[\\/])\[(?P<file>[^\]]+)\](?P<sheet>.*)$", re.DOTALL)
+
+
+def _same_length(text: str, size: int) -> str:
+    """`text`  cut or  padded with its last letter to exactly `size` characters (a length that formulas
+    built on the value -- LEN, MID, FIND -- may depend on stays the same)."""
+    return (text + "_" * max(0, size - len(text)))[:size] if text else text
+
+
+def _neutral_file_name(name: str) -> str:
+    m = _FILE_EXT_RE.search(name)
+    ext = m.group(0) if m else ""
+    stem = _same_length("model", max(1, len(name) - len(ext))) if ext else _same_length("model", len(name))
+    return stem + ext
+
+
+def _neutral_folder(folder: str) -> str:
+    sep = "\\" if "\\" in folder or ":" in folder[:3] else "/"
+    trailing = sep if folder[-1:] in ("\\", "/") else ""
+    body = _same_length("C:" + sep + "Folder", max(1, len(folder) - len(trailing)))
+    return body + trailing
+
+
+def neutral_environment_text(formula: str, value: Any) -> tuple[Any, str | None]:
+    """What  a CELL("filename")  / INFO("directory") formula is frozen to instead of the model owner's own
+    path and file name (a client's network path must not be written into the prepared workbook):
+    -> (the neutral text, a  plain description) or (value, None) when the value carries no path  or file name.
+    The text stays text  and keeps its length; every number stays  as it was."""
+    if not isinstance(value, str) or not value:
+        return value, None
+    low = (formula or "").lower()
+    if "filename" not in low and "directory" not in low:
+        return value, None
+    full = _FULL_NAME_RE.match(value)
+    if full:
+        out = _neutral_folder(full["folder"]) + "[" + _neutral_file_name(full["file"]) + "]" + full["sheet"]
+        return out, f"a neutral folder and file name ({out!r}) instead of the real path and file name"
+    if "\\" in value or "/" in value or value[1:3] in (":\\", ":/"):
+        out = _neutral_folder(value)
+        return out, f"a neutral folder ({out!r}) instead of the real folder path"
+    if _FILE_EXT_RE.search(value):
+        out = _neutral_file_name(value)
+        return out, f"a neutral file name ({out!r}) instead of the real file name"
+    return value, None
 
 
 def in_app_folder(value: Any) -> bool:
@@ -1032,7 +1131,7 @@ def in_app_folder(value: Any) -> bool:
 
 
 def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
-    """FRM-012: CELL(...) / INFO(...) -- the Excel session, the file, its path: nothing Mind can answer."""
+    """FRM-012:  CELL(...) /  INFO(...) -- the Excel session, the file, its path: nothing Mind can answer."""
     wb0 = analysis["workbooks"][0]
     try:
         book = _Book(analysis)
@@ -1046,9 +1145,11 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
         m = _COORD_RE.match(str(f.get("cell") or ""))
         stored = book.stored(f["sheet"], int(m.group(2)), col_to_num(m.group(1))) if m else None
         calls = sorted({x.upper() for x in _ENV_RE.findall(mask_strings(formula))})
-        multi_cell = bool(f.get("array_ref")) and str(f["array_ref"]).replace("$", "") not in (f["cell"], f"{f['cell']}:{f['cell']}")
+        multi_cell = several_cells(f)
+        if stored is None and m and (int(m.group(2)), col_to_num(m.group(1))) in _empty_text_cells(book, f["sheet"]):
+            stored = ""  # Excel saved "" for it (CELL("filename") in an IFERROR(..., "")): written as =""
         if multi_cell:
-            value, issue = None, "an array formula over several cells: rewrite it by hand"
+            value, issue = None, SEVERAL_CELLS
         elif stored is None:
             value, issue = None, 'the cell shows "" or no value is stored: by hand'
         elif _is_error_value(stored):
@@ -1073,20 +1174,28 @@ def environment_formulas(rule, analysis: dict[str, Any], config: dict[str, Any],
     )
 
 
+def _empty_text_cells(book: Any, sheet: str) -> set[tuple[int, int]]:
+    """The  formula cells  Excel saved with the value "" (app/fast_xlsx.py); empty when not known."""
+    try:
+        return getattr(book.f[sheet], "mind_ready_empty_text", None) or set()
+    except Exception:
+        return set()
+
+
 def environment_values(analysis: dict[str, Any]) -> dict[tuple[str, str], Any]:
-    """What each CELL / INFO formula shows in this workbook, by (sheet, cell); None where it shows
+    """What  each CELL  / INFO formula shows in this workbook, by (sheet, cell); None where it shows
     no usable value. Taken from the original upload, these are the values the user's own Excel saved."""
     sites = (environment_formulas(None, analysis, {}, limit=None).get("observed") or {}).get("sites", [])
     return {(x["sheet"], x["cell"]): x["value"] for x in sites}
 
 
-# --- FRM-013: an error cell kept on purpose that Mind computes ---------------------------------
-# =AB77-AB84 with AB84 holding "": #VALUE! in Excel, kept on purpose (the fixer would have changed
-# a good value by hiding it); 0 in Mind, which counts "" as 0 -- and the IFERROR cells fed by it
+# --- FRM-013:  an error cell kept on purpose that Mind computes ---------------------------------
+# =AB77-AB84 with  AB84 holding "": #VALUE! in Excel,  kept on purpose (the fixer would have  changed
+# a good value by hiding it); 0 in Mind, which counts  "" as 0 -- and the IFERROR  cells fed by it
 # (a text label in Excel) turned into numbers there. Written as IF(AB84="",NA(),AB77-AB84) it is an
 # error in both (another error in Excel: #N/A for #VALUE!; what reads it sees an error as before).
 def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
-    """FRM-013: arithmetic on a cell that holds "", with no IFERROR around it, in a cell that shows an error."""
+    """FRM-013:  arithmetic on  a cell that holds "", with no IFERROR around it, in a cell that shows an error."""
     try:
         res = scan(analysis)
     except Exception as exc:
@@ -1097,9 +1206,9 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
     with_fix = sum(1 for x in sites if x["suggested_formula"])
     observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": with_fix, "without_proposal": len(sites) - with_fix}
     if not sites:
-        return finding("PASS", 'No error cell comes from arithmetic on a cell that holds "" (empty text).', observed)
+        return _noting_skipped(finding("PASS", 'No error cell comes from arithmetic on a cell that holds "" (empty text).', observed), res)
     first = sites[0]
-    return finding(
+    return _noting_skipped(finding(
         "ERROR",
         f'{len(sites)} cell(s) show an error in Excel because their formula does arithmetic on a cell that holds "" (empty text), with no IFERROR to catch it -- errors kept on purpose. '
         'Mind counts "" as 0 and computes a number there, and everything that read the error (IFERROR fallbacks, text labels) changes with it '
@@ -1108,6 +1217,143 @@ def blank_text_error_kept(rule, analysis: dict[str, Any], config: dict[str, Any]
         + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
         + f". The Prep action 'Keep an error cell an error in Mind' rewrites {with_fix} of them as IF(cell=\"\",NA(),...): an error in both (#N/A in place of #VALUE!), what reads it sees an error as before"
         + (f"; {len(sites) - with_fix} left as they are." if len(sites) - with_fix else "."),
+        observed,
+        location={"sheet": first["sheet"], "cell": first["cell"]},
+    ), res)
+
+
+# --- FRM-014: arithmetic on a range that OFFSET returns -----------------------------------------
+# =SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1)) (Model D (an IFRS 17  tool), BBA_01!B45 and
+# 27 more per calculation sheet): Excel gives -16,220; Mind  gave -5,513,051 -- the last cell  of the
+# second range. -OFFSET(...) and (1-OFFSET(...))*OFFSET(...) came  out wrong too, while the same
+# arithmetic on the written-out range (1-$H$4:$H$6)  and SUMPRODUCT over OFFSET ranges alone were  right
+# (probe workbook in real Mind, 2026-11-09). An OFFSET whose arguments are all numbers always
+# designates the same cells: it is written as that range, which Excel computes the same.
+_ARITH_OPS = set("+-*/^")
+_ANCHOR_RE = re.compile(r"^(?P<prefix>(?:'[^']*(?:''[^']*)*'|[^'!]+)!)?(?P<cd>\$?)(?P<col>[A-Za-z]{1,3})(?P<rd>\$?)(?P<row>\d+)$")
+_MAX_ROW, _MAX_COL = 1048576, 16384
+
+
+def _const_int(text: str) -> int | None:
+    """The  value of  a constant whole-number expression (5, 1200-3, 2+3, 2*6), else None."""
+    import ast
+
+    s = (text or "").strip()
+    if not s or not re.fullmatch(r"[\d\s+\-*()]+", s) or "**" in s:
+        return None
+    try:
+        node = ast.parse(s, mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+
+    def ev(n: Any) -> int | None:
+        if isinstance(n, ast.Constant) and type(n.value) is int:
+            return n.value
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
+            v = ev(n.operand)
+            return None if v is None else (v if isinstance(n.op, ast.UAdd) else -v)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Add, ast.Sub, ast.Mult)):
+            a, b = ev(n.left), ev(n.right)
+            if a is None or b is None:
+                return None
+            return a + b if isinstance(n.op, ast.Add) else a - b if isinstance(n.op, ast.Sub) else a * b
+        return None
+
+    v = ev(node)
+    return v if v is not None and abs(v) <= _MAX_ROW else None
+
+
+def _arith_operand(masked: str, start: int, end: int) -> bool:
+    """The  call masked[start:end]  is an operand of + - * / ^ (bare brackets around it allowed; the
+    bracket of a function call around it is not bare: SUM(OFFSET(...))*2 multiplies the SUM)."""
+    i, opened = start - 1, 0
+    while i >= 0 and (masked[i].isspace() or masked[i] == "("):
+        if masked[i] == "(":
+            if i > 0 and (masked[i - 1].isalnum() or masked[i - 1] in "_."):
+                break  # a function's own bracket:  what follows the call inside it decides
+            opened += 1
+        i -= 1
+    if i >= 0 and masked[i] in _ARITH_OPS:
+        return True
+    j, closed = end, 0
+    while j < len(masked) and (masked[j].isspace() or (masked[j] == ")" and closed < opened)):
+        closed += masked[j] == ")"
+        j += 1
+    return j < len(masked) and masked[j] in _ARITH_OPS
+
+
+def offset_as_range(args: list[str]) -> str | None:
+    """OFFSET(anchor,  rows, cols[,  height, width]) with a one-cell anchor and numbers for the rest, as
+    the range it designates (the anchor's $ signs and sheet kept); None when that is not so, or when the
+    range  is a single cell or falls off the sheet."""
+    if not 3 <= len(args) <= 5:
+        return None
+    m = _ANCHOR_RE.match(args[0].strip())
+    if not m:
+        return None
+    nums = [_const_int(a) for a in args[1:3]] + [(_const_int(a) if a.strip() else 1) for a in args[3:5]]
+    nums += [1] * (4 - len(nums))
+    if any(v is None for v in nums):
+        return None
+    dr, dc, h, w = nums
+    if h < 1 or w < 1 or h * w == 1:
+        return None
+    r1, c1 = int(m.group("row")) + dr, col_to_num(m.group("col")) + dc
+    r2, c2 = r1 + h - 1, c1 + w - 1
+    if r1 < 1 or c1 < 1 or r2 > _MAX_ROW or c2 > _MAX_COL:
+        return None
+    cd, rd = m.group("cd"), m.group("rd")
+    return f"{m.group('prefix') or ''}{cd}{num_to_col(c1)}{rd}{r1}:{cd}{num_to_col(c2)}{rd}{r2}"
+
+
+def offset_arithmetic_as_range(formula: str) -> str | None:
+    """The  formula with  every OFFSET that is an operand of arithmetic and designates a fixed range
+    written as that range; None when there is none."""
+    from ..formula_utils import find_calls_detailed
+
+    if not formula or not formula.startswith("=") or "OFFSET" not in formula.upper():
+        return None
+    masked = mask_strings(formula)
+    out, last, changed = [], 0, False
+    for c in find_calls_detailed(formula, "OFFSET"):
+        if c["start"] < last:  # inside an OFFSET already written out
+            continue
+        rng = offset_as_range(c["args"]) if _arith_operand(masked, c["start"], c["end"]) else None
+        if rng is None:
+            continue
+        out.append(formula[last:c["start"]])
+        out.append(rng)
+        last = c["end"]
+        changed = True
+    if not changed:
+        return None
+    out.append(formula[last:])
+    return "".join(out)
+
+
+def offset_range_arithmetic(rule, analysis: dict[str, Any], config: dict[str, Any], limit: int | None = MAX_SITES) -> dict:
+    """FRM-014:  arithmetic on  a range that OFFSET returns (1-OFFSET(A1,2,0,3,1) inside SUMPRODUCT) -- Mind computes another number."""
+    wb0 = analysis["workbooks"][0]
+    sites = []
+    for f in wb0.get("formulas", []):
+        formula = f.get("formula") or ""
+        fixed = offset_arithmetic_as_range(formula)
+        if fixed is None:
+            continue
+        array = several_cells(f)
+        sites.append({"sheet": f["sheet"], "cell": f["cell"], "formula": formula[:300], "suggested_formula": None if array else fixed,
+                      "issue": SEVERAL_CELLS if array else None, "array": bool(f.get("array_ref"))})
+    observed = {"sites": sites if limit is None else sites[:limit], "sites_count": len(sites), "with_proposal": sum(1 for s in sites if s["suggested_formula"])}
+    if not sites:
+        return finding("PASS", "No formula does arithmetic on a range that OFFSET returns.", observed)
+    first = sites[0]
+    return finding(
+        "ERROR",
+        f"{len(sites)} formula(s) do arithmetic on a range that OFFSET returns, such as SUMPRODUCT(1-OFFSET(...),OFFSET(...)): Mind computes another number for them "
+        "(confirmed in real Mind: -5,513,051 for Excel's -16,220; the same arithmetic on the written-out range was right). "
+        f"First: {first['sheet']}!{first['cell']} = {_short(first['formula'])}"
+        + (f" -> proposed {_short(first['suggested_formula'], 150)}" if first["suggested_formula"] else "")
+        + f". The Prep action 'Write a fixed OFFSET range out where arithmetic uses it' rewrites {observed['with_proposal']} of them; Excel's values stay the same.",
         observed,
         location={"sheet": first["sheet"], "cell": first["cell"]},
     )

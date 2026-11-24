@@ -1,16 +1,16 @@
-"""Play a Mind loop in Excel, value by value, and read a block of cells for each: what Mind's loop instances
-should show for that block, computed by Excel from the very file uploaded to Mind.
+"""Play  a Mind  loop in Excel, value by value, and read a block of cells for each: what Mind's loop instances
+should show for that block, computed by Excel from the very file uploaded to  Mind.
 
     python scripts/excel_loop_values.py <workbook> --driver "Projection!C3" --first 1 --last 19 \
-        --block "Macro!A11:J138" --out values.json [--errors]
+        --block "Macro!A11:J138"  --out values.json [--errors]
 
-A copy of the workbook is opened in a hidden Excel of its own (macros off, no add-in: the driver cell's
-MM_LOOP formula is replaced by each loop value, which is what MM_LOOP gives for that instance). For each
+A copy of the  workbook is opened in a hidden Excel  of its own (macros off, no add-in: the driver cell's
+MM_LOOP formula  is replaced by each loop value, which  is what MM_LOOP gives for that instance). For each
 value: write it into the driver cell, recalculate (one full recalculation first, then
 Application.Calculate per value, as the workbook's own macro does), read the block. With --errors, every formula cell holding an error in the whole workbook is
 counted per pass (Range.SpecialCells), with the first addresses. Nothing is saved.
 
-values.json: {"driver", "block", "values": [k...], "passes": {k: [[row values]...]}, "errors": {k: {...}}}
+values.json: {"driver", "block", "values": [k...], "passes": {k:  [[row values]...]}, "errors": {k: {...}}}
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def error_cells(wb) -> dict:
     for ws in wb.Worksheets:
         try:
             rng = ws.UsedRange.SpecialCells(XL_FORMULAS, XL_ERRORS)
-        except Exception:  # no error cell on this sheet
+        except Exception:  # no  error cell  on this sheet
             continue
         n = int(rng.Count)
         total += n
@@ -87,7 +87,7 @@ def main() -> int:
             driver = wb.Worksheets(d_sheet).Range(d_cell)
             out["driver_formula"] = driver.Formula
             driver.Value2 = a.first
-            excel.CalculateFull()  # every cell from scratch once, as Mind computes them
+            excel.CalculateFull()  # every  cell from  scratch once, as Mind computes them
             block = wb.Worksheets(b_sheet).Range(b_range)
             for k in out["values"]:
                 t0 = time.time()

@@ -1,13 +1,20 @@
 import { CommonModule } from "@angular/common";
 import { Component, computed, inject, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
-import { ButtonModule, ContentSwitcherModule, NotificationModule, TagModule } from "carbon-components-angular";
-import { ApiService, errorText } from "../core/api.service";
-import { Finding, Grid, Status } from "../core/models";
+import { ButtonModule, ContentSwitcherModule, TagModule } from "carbon-components-angular";
+import { ApiService, errorText, wasCancelled } from "../core/api.service";
+import { CancelButton } from "../core/cancel-button";
+import { CodeName } from "../core/code-name";
+import { Finding, Grid, STOPPED_NOTHING_CHANGED, Status } from "../core/models";
+import { PlainCodes } from "../core/plain-codes";
+import { ReadinessBanner } from "../core/readiness-banner";
+import { RecalcNow } from "../core/recalc-now";
 import { SessionStore } from "../core/session.store";
+import { ShowMeLink } from "../core/show-me-link";
 import { AssistantPanel } from "./advanced/assistant-panel";
 import { DeliverPanel } from "./advanced/deliver-panel";
 import { GridNamerPanel } from "./advanced/grid-namer-panel";
+import { InstancesPanel } from "./advanced/instances-panel";
 import { LoopPanel } from "./advanced/loop-panel";
 import { MapPanel } from "./advanced/map-panel";
 import { MindRunPanel } from "./advanced/mind-run-panel";
@@ -16,23 +23,24 @@ import { RecalcPanel } from "./advanced/recalc-panel";
 import { StackBar } from "./advanced/stack-bar";
 
 const STATUS_TAG: Record<Status, { type: "red" | "magenta" | "purple" | "blue" | "cyan" | "teal" | "green" | "gray" | "cool-gray" | "warm-gray" | "high-contrast" | "outline"; label: string }> = {
-  ERROR: { type: "red", label: "Error" },
-  REQUIRES_USER_INPUT: { type: "magenta", label: "Needs input" },
+  ERROR: { type: "red", label: "Problem" },
+  REQUIRES_USER_INPUT: { type: "magenta", label: "Needs an answer" },
   WARNING: { type: "warm-gray", label: "Warning" },
-  NOT_SUPPORTED: { type: "gray", label: "Not supported" },
-  PASS: { type: "green", label: "Pass" },
+  NOT_SUPPORTED: { type: "gray", label: "Not checked" },
+  PASS: { type: "green", label: "Fine" },
 };
 
-/** The lists and the manual work: findings, the Prep actions by hand, versions. Grows in later chunks. */
+/** The  lists and  the manual work: findings, the Prep actions by hand, versions. Grows in later chunks. */
 @Component({
   selector: "mr-advanced",
   standalone: true,
-  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, NotificationModule, TagModule, PrepPanel, RecalcPanel, LoopPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar],
+  imports: [CommonModule, RouterLink, ButtonModule, ContentSwitcherModule, TagModule, CodeName, PrepPanel, RecalcPanel, LoopPanel, InstancesPanel, MapPanel, AssistantPanel, MindRunPanel, DeliverPanel, GridNamerPanel, StackBar, ShowMeLink, ReadinessBanner, RecalcNow, CancelButton],
   templateUrl: "./advanced.page.html",
   styleUrl: "./advanced.page.scss",
 })
 export class AdvancedPage {
   private api = inject(ApiService);
+  private codes = inject(PlainCodes);
   readonly store = inject(SessionStore);
   readonly onlyOpen = signal(true);
   readonly tab = this.store.advancedTab;
@@ -42,7 +50,7 @@ export class AdvancedPage {
 
   readonly readinessKind = computed(() => {
     const r = this.store.readiness();
-    return !r ? "info" : r.state === "ready" ? "success" : r.state === "unverified" ? "warning" : "error";
+    return !r ? "info" : r.state === "ready" ? "success" : r.state === "unverified" ? (r.recalc?.ran ? "warning" : "info") : "error";
   });
   readonly readinessDetail = computed(() => {
     const r = this.store.readiness();
@@ -54,7 +62,7 @@ export class AdvancedPage {
     const d = this.store.delta();
     return d && d.previous_version_id && (d.fixed.length || d.improved.length || d.regressed.length) ? d : null;
   });
-  /** The workbook map: every sheet with its grids and the findings that point at each grid. */
+  /** The  workbook map:  every sheet with its grids and the findings that point at each grid. */
   readonly sheetMap = computed(() => {
     const sheets = this.store.summary()?.sheets ?? [];
     const findings = this.store.findings().filter((f) => f.status !== "PASS");
@@ -84,6 +92,9 @@ export class AdvancedPage {
     return g.first_row <= r && r <= g.last_row && g.first_col <= c && c <= g.last_col;
   }
   readonly restoreLine = signal("");
+  /** 17 Nov 2026: the version "Make current" is working on (null: none). One at a time: until tonight
+   *  the button  could be clicked twice, and its Cancel needs to know that  the work runs. */
+  readonly restoring = signal<string | null>(null);
 
   readonly findings = computed<Finding[]>(() => {
     const all = this.store.findings();
@@ -92,6 +103,8 @@ export class AdvancedPage {
     const rank: Record<string, number> = { ERROR: 0, REQUIRES_USER_INPUT: 1, NOT_SUPPORTED: 2, WARNING: 3, PASS: 4 };
     return [...list].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.rule_id.localeCompare(b.rule_id));
   });
+  /** The table's rows: each  finding with what the error values its  message quotes mean, once each. */
+  readonly rows = computed(() => this.findings().map((f) => ({ f, meanings: this.codes.meaningsIn(f.message) })));
   readonly manualActions = computed(() => this.store.plan().filter((a) => a.level === "blocking" || a.level === "optional"));
   readonly versionsNewestFirst = computed(() => [...this.store.versions()].reverse());
 
@@ -105,14 +118,14 @@ export class AdvancedPage {
     return [loc.sheet, loc.cell ?? loc.ref].filter(Boolean).join("!");
   }
 
-  ruleList(list: { rule_id: string }[]): string {
-    const ids = list.map((d) => d.rule_id);
-    return ids.length > 8 ? ids.slice(0, 8).join(", ") + ` and ${ids.length - 8} more` : ids.join(", ");
+  /** A chip shows the code; its tooltip  says it in plain words. */
+  chipTip(f: Finding): string {
+    return this.codes.name(f.rule_id, f.rule_name) ?? f.message;
   }
 
   askAbout(f: Finding): void {
     const loc = (f.location ?? {}) as { sheet?: string; cell?: string; ref?: string };
-    this.store.ask({ kind: "finding", rule_id: f.rule_id, sheet: loc.sheet, cell: loc.cell ?? loc.ref });
+    this.store.ask({ kind: "finding", rule_id: f.rule_id, rule_name: f.rule_name, sheet: loc.sheet, cell: loc.cell ?? loc.ref });
   }
 
   changesOpen(id: string): boolean {
@@ -138,7 +151,8 @@ export class AdvancedPage {
 
   async restore(versionId: string): Promise<void> {
     const id = this.store.sessionId();
-    if (!id) return;
+    if (!id || this.restoring()) return;
+    this.restoring.set(versionId);
     this.restoreLine.set(`Restoring ${versionId}…`);
     try {
       const out = await this.api.reanalyze(id, versionId);
@@ -147,7 +161,11 @@ export class AdvancedPage {
       if (v) this.store.currentVersion.set(v);
       this.restoreLine.set(`${versionId} is the current version.`);
     } catch (e) {
-      this.restoreLine.set(errorText(e));
+      // 17 Nov 2026:  stopped with Cancel is no error. The server put the current version back; the list
+      // comes from the Cancel's own answer, never from this call.
+      this.restoreLine.set(wasCancelled(e) ? STOPPED_NOTHING_CHANGED : errorText(e));
+    } finally {
+      this.restoring.set(null);
     }
   }
 }

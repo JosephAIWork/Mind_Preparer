@@ -458,6 +458,128 @@ which is exactly what the model should give.
 
 The demo files are kept outside the app.
 
+## The Model D loop model: CELL("filename") and OFFSET in arithmetic (2026-11-09)
+
+**The case.** The four loops of the anonymized Model D (an IFRS 17 tool) (MM_LOOP in Ctrl_01!C22, C27 and
+ロールフォワード!B4, B6) were written on a version Prep had not repaired yet. Mind's test listed 14,737
+differences: "Mind value: NaN" on every formula of BBA_01..BBA_05 and VFA_01.
+
+**What caused the NaN -- not the loops.** B3 of each of these sheets is
+`=RIGHT(CELL("filename",B3),LEN(CELL("filename",B3))-FIND("]",CELL("filename",B3)))`, the sheet's own
+name, and B4 = `VLOOKUP($B$3,...)` is the key of every lookup on the sheet. Probe workbooks with and
+without an MM_LOOP (zzz_mindready_model_d_loops_probe_1 and _2) gave the same answer: Mind's
+`CELL("filename",B3)` is the workbook's name alone (`tiny_loop`, no path, no `[...]`), so FIND("]")
+fails, B3 is NaN, and everything keyed on it is NaN. FRM-012 freezes such a formula to what Excel shows
+(="BBA_01"); the Do-everything version had it, the loop test file had not.
+
+**A second difference, in the repaired version too.** With B3 frozen, the model without loops and the
+model with the four loops (both through the app) still had 396 / 402 differences, all from one formula
+shape, 14 per calculation sheet (B45, B48, ... B96) and the Result_CF cells that copy them:
+`SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))+...`. A probe workbook
+(zzz_mindready_model_d_loops_probe_4 and _6) showed:
+
+| Formula | Excel | Mind |
+| --- | --- | --- |
+| `SUMPRODUCT(1-OFFSET($H$2,2,0,3,1),OFFSET($O$2,2,0,3,1))` | -16,220 | -5,513,051 (the last cell of O4:O6) |
+| `SUMPRODUCT(1-OFFSET($H$2,2,0,3,1))` | 0.0029 | 0 |
+| `SUMPRODUCT((1-OFFSET(...))*OFFSET(...))` | -16,220 | -0 |
+| `SUMPRODUCT(-OFFSET(...),OFFSET(...))` | 16,608,022 | -5,541,417 |
+| `SUMPRODUCT(1-$H$4:$H$6,OFFSET($O$2,2,0,3,1))` | -16,220 | same |
+| `SUMPRODUCT(OFFSET(...),OFFSET(...))`, `SUM(OFFSET(...))-SUMPRODUCT(...)` | | same |
+
+So arithmetic on a range that OFFSET returns is wrong in Mind; the same arithmetic on the written-out
+range is right, and so is OFFSET passed to SUMPRODUCT as it is. **FRM-014** finds it; the Prep action
+**Write a fixed OFFSET range out where arithmetic uses it** writes an OFFSET whose arguments are all
+numbers (2, 0, 3, 1, also 1200-3) as the range it designates (`1-$H$4:$H$6`) where it is an operand of
++ - * / ^. An OFFSET with a cell among its arguments is reported, not rewritten.
+
+**Same in Mind (do not "fix"):** `1-OFFSET($H$2,5,0)` (one cell), `SUMPRODUCT(...)/OFFSET($H$2,5,0)`.
+
+## Mind's upload test after a loop or instances build: two harmless kinds of cell (2026-11-10)
+
+Every model checked in Mind since 9 November 2026 -- with a loop, with instances, through Do everything
+-- has had the same two kinds of cell left in Mind's upload test once the real differences were gone.
+They are not errors, and nobody should chase them:
+
+- **Rounding dust on check cells.** A check cell that is 0 in Excel (the difference of two equal
+  totals, often near a billion) is a residue below 0.00001 in Mind (seen: below 0.000004 and below
+  0.00002). Mind adds the same numbers in another order; the totals it compares agree.
+- **The text TRUE / FALSE.** A cell holding the text "TRUE" or "FALSE" (a label typed in, or a formula
+  giving `"TRUE"` as text) is listed because the test reads Excel's side as 1 or 0. The cell holds the
+  same text on both sides.
+
+The loop plan and the instances plan carry one line saying so (`loop_builder.UPLOAD_TEST_NOTE`), so a
+first-time user reading the test's list knows which cells to leave alone. A difference of any other
+kind -- a NaN, another number, an empty cell -- is real: see the cases above.
+
+## Which formulas need a lone text cell: the made-up probe of 2026-11-20
+
+Since 17 November 2026 the app lists a lone text cell only when a formula that reads it would get another
+result from an empty cell (`prep.readers_needing`); since 19 November an INDEX whose stepped row never lands
+on the cell counts as a reader that does not need it. Both were reasoned from Excel, not seen in Mind.
+`scripts/build_lone_text_probe.py` builds the workbook that asks Mind: invented numbers, 30 formulas on the
+sheet `Probe`, Excel's value typed beside each. It went to Mind twice on 20 November 2026: as written, and
+after Prep of the 1.15.0 exe built that night (2 titles written, the text put into 2 formulas, 5 lone cells
+inside ranges left for a person, no computed value changed). "Mind" is its difference list after the upload
+test; *same* = not in the list.
+
+| Test | What it tests | Excel | The app | Mind, as written | Mind, after Prep |
+|---|---|---|---|---|---|
+| A1-A7 | MAX, MIN, SUM, AVERAGE, COUNT, PRODUCT, SUMPRODUCT over a column with a lone text inside it | 10, 1, 55, 4.58, 12, 10886400, 137 | not listed | same | same |
+| A8 | COUNTA over such a column | 13 | listed, left for a person | **12** | **12** |
+| A9, H1 | INDEX that returns the lone text itself | Second part | listed, left for a person | **empty** | **empty** |
+| B1 | VLOOKUP, the lone text in a column neither searched nor returned | 1035 | not listed | same | same |
+| B2, H2 | VLOOKUP that returns the lone text's column | note | listed, left for a person | **empty** | **empty** |
+| B3 | HLOOKUP, the lone text in a row neither searched nor returned | 2012 | not listed | same | same |
+| C1, H4 | N() of a lone text, and that result plus 5 | 0, 5 | not listed | same | same |
+| D1, D2 | INDEX whose row is 1 + n x 6 and never lands on the headings (the Model B shape) | 201, 202 | not listed | same | same |
+| D3, H3 | INDEX that does land on a heading | Per Capita Cost | listed, left for a person | **empty** | **empty** |
+| E1-E3 | the lone text as the criterion of SUMIFS, COUNTIFS, AVERAGEIFS | 18, 3, 6 | listed; Prep writes a title above it | **0, 0, NaN** | same |
+| E4, E5 | the same with no room for a title | 18, 3 | listed; Prep writes the text into the formula | **0, 0** | same |
+| E6 | the criterion typed into the formula | 18 | nothing to list | same | same |
+| F1 | a lone text joined to a text | x#Line 1 | listed; Prep writes a title above it | **x#** | same |
+| G1, G2, H5 | a table whose first header is a bare `#`: a number and a name out of it | 30, beta | a header, not a title | same | same |
+
+What it shows:
+
+- **The app's list is Mind's list.** Every formula the app lists differs in Mind (10 of 10), every formula it
+  treats as harmless agrees (15 of 15). After Prep the only differences left are the four rows of the five
+  cells the app itself says are left for a person (a title above them would sit inside the range that is read).
+- **A lone text inside a range is left out even when the range is read as a whole.** COUNTA counts one fewer;
+  INDEX and VLOOKUP that land on it return nothing.
+- **Mind's list does not name a cell where Excel shows a text and Mind returns nothing.** A9, B2 and D3
+  (`Probe!C10`, `C12`, `C17`) are absent from the list on both uploads. The same value in brackets one cell
+  further is listed: `[Second part]` against `[]`. So "not in the list" does not prove that a text result
+  agrees; a formula that reads it shows it. (The first case above already had this for an empty cell that
+  Excel shows as 0.)
+- **A sheet that holds nothing but lone text cells is not imported, and the conversion stops.** The first
+  build of the probe had two such sheets. Mind: `Spreadsheet not found error: Sheet "Nw" not found in workbook
+  "probe_20nov" on compiling formula: N(Nw!R3C3)`. Rule FRM-006 says the same on the exe ("Mind stops with
+  'Spreadsheet not found'"). The probe now puts a label and a number on those sheets.
+
+Not asked: MAXIFS and MINIFS criteria, a lone text read through a defined name, the labels Prep writes to close
+a gap in a table's first column (Model C), and anything inside a loop.
+
+The four sandbox projects were kept: `zzz_mindready_probe_20nov_raw` (the first build, conversion stopped),
+`zzz_mindready_probe_20nov_b_raw`, `zzz_mindready_probe_20nov_c_raw`, `zzz_mindready_probe_20nov_c_prepared`.
+
+## A label beside a lone text inside a range: the made-up probe of 2026-11-20 (day)
+
+The probe above left five cells for a person: a lone text inside a range a formula reads as a whole (COUNTA, an
+INDEX that returns it), where a title above would sit inside the range and the cell cannot move. Joseph, 20 Nov 2026:
+"App tries, never stops". Prep's last try (`prep._label_beside`) writes a label in the empty cell beside it, left
+first, else right, so the two touching texts are a small grid -- the shape Mind imported on 8 Oct 2026 (Lone!F3
+'Name' beside G3 'Line 4'). `scripts/build_lone_text_probe.py`'s sheet ColN, twice, built by
+`scripts/build_label_probe.py`: ColR!A15 (nothing left of it, the label goes right, B15) and ColL!C15 (B empty,
+the label goes left), each read by `COUNTA($x$7:$x$23)` (13 in Excel) and `INDEX($x$7:$x$23,9)` ('Second part'),
+and the INDEX result in brackets.
+
+Prep wrote the two labels, the numbers check was clean, and the app listed nothing more. Uploaded to Mind
+(`zzz_mindready_label_probe_20nov_prepared`, kept, not run): **"Upload successful"**, with no "with warnings":
+Mind agrees with Excel on all six. Without the label the same layout gave COUNTA 12 and an empty INDEX (the probe
+above, ColN). The app stays careful: no label where any formula or name reads the label's cell (even a SUM), on a
+sheet an OFFSET, an `INDEX(...):` range, an INDIRECT or a 3-D reference reaches, or where another cell touches the pair.
+
 ## In the app
 
 - Rules **FRM-008**, **FRM-009** and **FRM-010** (`app/validators/mind_values.py`), all

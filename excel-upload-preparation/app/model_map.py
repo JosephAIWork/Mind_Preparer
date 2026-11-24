@@ -1,17 +1,17 @@
-"""Model map -- where a workbook's inputs, loop driver, run settings and outputs are.
+"""Model  map --  where a workbook's inputs, loop driver, run settings and outputs are.
 
 Everything here is read off the workbook itself; nothing is guessed:
 
-- its VBA (through olevba): each `For` loop, the cell the macro sets on every pass
-  (the loop driver), the cells that give the first and last value (the bounds), the
-  ranges it copies results into (the outputs), the named cells it tests (`If
-  Range("Full_Run?") = "No"`: the switches) and the areas it clears before a run;
+- its VBA (through olevba): each `For` loop, the cell the  macro sets on every pass
+  (the loop driver), the cells that give  the first and last value (the  bounds), the
+  ranges it copies results into (the  outputs), the named cells it tests (`If
+  Range("Full_Run?") = "No"`: the switches)  and the areas it clears before a  run;
 - its defined names: a single-cell name on a constant that formulas read is a setting,
   a name the macros use says what a range is for;
 - its data validations: a list dropdown is a switch, with its options;
 - its sheet names (Inputs, Data, Assumptions, Output, Results, Reporting ...);
 - its formulas: the constant cells the calculation reads most through absolute
-  references (the key of a model that has no macro loop, e.g. a line-of-business selector cell).
+  references (the key  of a model that has no macro loop, e.g. a line-of-business selector cell).
 
 Each item carries its evidence (the macro line, the name, the dropdown) so a person can
 check it. The web app shows the map on its "Model map" screen and jumps to any cell.
@@ -29,13 +29,13 @@ from typing import Any
 
 from .formula_utils import REF_RE, col_to_num, num_to_col, parse_ref
 
-# --- words that say what a sheet is for -----------------------------------------------------------
+# ---  words that  say what a sheet is for -----------------------------------------------------------
 INPUT_WORDS = ("input", "data", "base", "assumption", "hypoth", "param", "tarif", "rate", "critere", "criteria", "yield", "curve", "table", "mapping", "population", "list")
 OUTPUT_WORDS = ("output", "result", "report", "summary", "exhibit", "dashboard", "saved", "paste")
 CALC_WORDS = ("calc", "projection", "model", "working", "cashflow", "cash flow", "decrement", "macro", "temp", "coc", "lob", "provider", "adjustment", "baseline", "cost")
 SWITCH_WORDS = ("boolean", "choice", "model", "switch", "flag", "run", "scenario", "method", "option", "type", "basis", "select", "active", "full", "delete", "del_", "send", "mode", "indicator", "version")
 
-# --- VBA ------------------------------------------------------------------------------------------
+# ---  VBA ------------------------------------------------------------------------------------------
 _FOR_RE = re.compile(r"^\s*For\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<start>.+?)\s+To\s+(?P<end>.+?)(?:\s+Step\s+.+)?\s*$", re.IGNORECASE)
 _NEXT_RE = re.compile(r"^\s*Next\b", re.IGNORECASE)
 _PROC_RE = re.compile(r"^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(Sub|Function)\s+(?P<name>[A-Za-z_]\w*)\s*\(", re.IGNORECASE)
@@ -47,6 +47,8 @@ _IF_RANGE_RE = re.compile(r"""^\s*(?:If|ElseIf)\s+Range\(\s*"(?P<name>[^"]+)"\s*
 _CLEAR_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)\s*\.ClearContents""", re.IGNORECASE)
 _SHEET_CLEAR_RE = re.compile(r"""(?:Worksheets|Sheets)\(\s*"(?P<sheet>[^"]+)"\s*\)\s*\.\s*Range\(\s*(?P<arg>[^()]*)\)\s*\.ClearContents""", re.IGNORECASE)
 _COPY_RE = re.compile(r"""Range\(\s*"(?P<name>[^"]+)"\s*\)\s*\.Copy\s*$""", re.IGNORECASE)
+_NAMES_RANGE_RE = re.compile(r"""(?:(?:ThisWorkbook|ActiveWorkbook|Application)\s*\.\s*)?Names\(\s*"(?P<name>[^"]+)"\s*\)\s*\.\s*RefersToRange""", re.IGNORECASE)
+_SET_ANY_RE = re.compile(r"^\s*Set\s+(?P<var>[A-Za-z_]\w*)\s*=", re.IGNORECASE)
 _SET_RE = re.compile(r"""^\s*Set\s+(?P<var>[A-Za-z_]\w*)\s*=\s*Range\(\s*"(?P<name>[^"]+)"\s*\)""", re.IGNORECASE)
 _VAR_FROM_RANGE_RE = re.compile(r"""^\s*(?:Dim\s+[^:]+:\s*)?(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<expr>(?:Worksheets|Sheets|Range)\(.+?\)(?:\.Value2?)?)\s*$""", re.IGNORECASE)
 _CALL_RE = re.compile(r"^\s*(?:Call\s+)?(?P<name>[A-Za-z_]\w*)\s*$", re.IGNORECASE)
@@ -54,8 +56,170 @@ _SAVEAS_RE = re.compile(r"SaveAs\s+Filename\s*:=\s*(?P<expr>[^,]+)", re.IGNORECA
 _ASSIGN_RE = re.compile(r"^(?P<lhs>[^=<>]+?)\s*=\s*(?P<rhs>.+)$")
 
 
+# ---  the macro's  text in its own code page --------------------------------------------------------
+# The VBE stores module text in the ANSI code page of the PC that saved it (cp932 on a Japanese PC,
+# cp1255 on a Hebrew one),  and the project's `dir` stream records which (PROJECTCODEPAGE). Excel 365
+# writes 0  there ("the system's"), which olevba answers  with UTF-8 and replacement characters, so a
+# Japanese  comment or a search word -- Find("年月") -- arrived as mojibake  and the stand-in assistant
+# and the message-box matching  could not read it. The bytes are decoded here instead: the stored
+# code page when there is one (trusted), else the first of a short list that decodes without error
+# and gives the script it is for (Japanese: the kana and the common kanji; Korean: the common Hangul
+# syllables), then the system's own (trusted), then cp1252.
+_KANA_RE = re.compile("[\u3040-\u30ff\uff66-\uff9f]")  # hiragana,  katakana, half-width  katakana
+_HANGUL_RE = re.compile("[\uac00-\ud7a3]")
+_CJK_RE = re.compile("[\u4e00-\u9fff]")
+_FALLBACK_CODE_PAGE = "cp1252"
+
+
+def _looks_japanese(text: str) -> bool:
+    """cp932  gave Japanese:  at least half of its non-ASCII characters come from the first half of the
+    code page -- the kana, the full-width symbols and the common (JIS level 1) kanji, lead bytes
+    0x81-0x9F --  so kanji-only text (Find("年月"), Worksheets("計算")) counts as much as kana. Half-width
+    katakana  are neutral: any single-byte text read  as cp932 gives them (bytes 0xA1-0xDF). Hebrew,
+    Western,  Korean or Chinese bytes read as cp932 give half-width katakana, rare  (level 2) kanji and
+    private-use characters, never the  common ones."""
+    strong = weak = 0
+    for ch in text:
+        if ord(ch) <= 127 or "\uff61" <= ch <= "\uff9f":
+            continue
+        try:
+            b = ch.encode("cp932")
+        except UnicodeEncodeError:
+            weak += 1
+            continue
+        if len(b) == 2 and 0x81 <= b[0] <= 0x9F:
+            strong += 1
+        else:
+            weak += 1
+    return strong >= 1 and strong >= 0.5 * (strong + weak)
+
+
+def _looks_korean(text: str) -> bool:
+    """cp949  gave Korean:  mostly Hangul, and mostly the 2,350 common syllables of KS X 1001 (lead
+    bytes 0xB0-0xC8, trail bytes 0xA1-0xFE). Japanese bytes read as cp949 give the rare syllables of
+    the UHC extension; Chinese bytes  give Hanja with a third of Hangul."""
+    foreign = sum(1 for ch in text if ord(ch) > 127)
+    hangul = _HANGUL_RE.findall(text)
+    if not foreign or len(hangul) < 0.5 * foreign:
+        return False
+    common = sum(1 for ch in hangul if 0xB0 <= ch.encode("cp949")[0] <= 0xC8 and ch.encode("cp949")[1] >= 0xA1)
+    return common >= 0.7 * len(hangul)
+
+
+def _looks_chinese(text: str) -> bool:
+    """cp936  / cp950  gave Chinese: mostly ideographs."""
+    foreign = sum(1 for ch in text if ord(ch) > 127)
+    return bool(foreign) and len(_CJK_RE.findall(text)) >= 0.5 * foreign
+
+
+_SCRIPT_CHECKS = {"cp932": _looks_japanese, "cp949": _looks_korean, "cp936": _looks_chinese, "cp950": _looks_chinese}
+
+
+def _system_code_page() -> int | None:
+    """Windows'  ANSI code  page (GetACP), None elsewhere."""
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetACP())  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def _codec_of(codepage: int | None) -> str | None:
+    """The  Python codec  of a stored VBA code page; None for 0 (not recorded) or an unknown one."""
+    if not codepage:
+        return None
+    try:
+        from oletools.common.codepages import codepage2codec
+
+        codec = codepage2codec(int(codepage))
+        if codec == "utf8" and int(codepage) != 65001:
+            return None  # olevba's answer for a code page it does not know
+    except Exception:
+        codec = f"cp{codepage}"
+    try:
+        import codecs
+
+        codecs.lookup(codec)
+    except LookupError:
+        return None
+    return codec
+
+
+def decode_vba_source(raw: bytes, codepage: int | None = None, system_codepage: int | None = None) -> tuple[str, str]:
+    """The  module text  of `raw` and the codec it was read with. `codepage` is the project's stored
+    code page (0 / None: not recorded); `system_codepage` the PC's own (default: Windows' GetACP).
+    Order: the stored code page  (trusted: taken as soon as it decodes every byte, whatever the  text
+    looks like -- a module of  half-width katakana only, MsgBox "ｴﾗｰ", is Japanese  when the project says
+    932); UTF-8; cp932 when it gives Japanese; cp949  when it gives Korean; the system's own  (trusted
+    at its place: it is tried with its check first among the East Asian ones, so a Korean file on a
+    Japanese PC is read as Korean, and trusted after them); cp936 / cp950 when they give ideographs;
+    cp1252 -- each only when it decodes every byte. cp1252 with replacement characters is the last
+    resort. The limits: a single-byte script with no code page  recorded reads in the PC's own code
+    page (a Western file on a Hebrew PC gets Hebrew letters); Chinese on a Western or Hebrew PC with
+    no code page recorded is not told apart from that PC's own code page."""
+    if not any(b > 127 for b in raw):
+        return raw.decode("ascii"), "ascii"
+    if system_codepage is None:
+        system_codepage = _system_code_page()
+    stored, system = _codec_of(codepage), _codec_of(system_codepage)
+    order: list[tuple[str | None, bool]] = [(stored, True), ("utf-8", False), ("cp932", False), ("cp949", False)]
+    if system in _SCRIPT_CHECKS:  # a CJK PC: the other East Asian code pages get their checks before it is trusted
+        order += [("cp936", False), ("cp950", False), (system, True)]
+    else:
+        order += [(system, True), ("cp936", False), ("cp950", False)]
+    order.append((_FALLBACK_CODE_PAGE, False))
+    tried: set[tuple[str, bool]] = set()
+    for codec, trusted in order:
+        if not codec or (codec, trusted) in tried or (codec, True) in tried:
+            continue
+        tried.add((codec, trusted))
+        try:
+            text = raw.decode(codec)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        check = _SCRIPT_CHECKS.get(codec)
+        if not trusted and check is not None and not check(text):
+            continue
+        return text, codec
+    return raw.decode(_FALLBACK_CODE_PAGE, errors="replace"), _FALLBACK_CODE_PAGE
+
+
+def _vba_modules_raw(vp: Any) -> list[tuple[str, bytes, int]] | None:
+    """(module  name, source  bytes, the project's stored code page) for every module of an olevba
+    parser, read from the streams themselves; None when olevba's internals are not as expected
+    (the caller then takes olevba's own text)."""
+    from oletools.olevba import VBA_Project
+
+    parsers: list[Any] = []
+
+    def walk(p: Any) -> None:
+        subs = getattr(p, "ole_subfiles", None) or []
+        if subs:
+            for s in subs:
+                walk(s)
+        elif getattr(p, "ole_file", None) is not None:
+            parsers.append(p)
+
+    walk(vp)
+    out: list[tuple[str, bytes, int]] = []
+    for p in parsers:
+        for vba_root, project_path, dir_path in p.find_vba_projects() or []:
+            project = VBA_Project(p.ole_file, vba_root, project_path, dir_path, True)
+            project.parse_project_stream()
+            for _ in project.parse_modules():
+                pass
+            for m in project.modules:
+                raw = getattr(m, "code_raw", None)
+                if raw:
+                    out.append((str(m.name), bytes(raw), int(getattr(project, "codepage", 0) or 0)))
+    return out
+
+
 def read_vba(path: str | Path) -> list[tuple[str, str]]:
-    """(module name, code) for every VBA module in the file; [] without macros or olevba."""
+    """(module  name, code)  for every VBA module in the file; [] without macros or olevba. The text
+    is read in the project's own code page (decode_vba_source), so comments and string literals in
+    Japanese, Korean, Hebrew or  accented letters arrive as they were written."""
     try:
         from oletools.olevba import VBA_Parser
     except Exception:
@@ -64,10 +228,17 @@ def read_vba(path: str | Path) -> list[tuple[str, str]]:
         vp = VBA_Parser(str(path))
         out: list[tuple[str, str]] = []
         if vp.detect_vba_macros():
-            for _fn, _stream, vba_filename, code in vp.extract_macros():
-                code = "\n".join(ln for ln in (code or "").splitlines() if not ln.startswith("Attribute "))
+            modules: list[tuple[str, str]] = []
+            try:
+                modules = [(name, decode_vba_source(raw, codepage)[0]) for name, raw, codepage in _vba_modules_raw(vp) or []]
+            except Exception:
+                modules = []
+            if not modules:
+                modules = [(Path(vba_filename).stem, code or "") for _fn, _stream, vba_filename, code in vp.extract_macros()]
+            for name, code in modules:
+                code = "\n".join(ln for ln in code.splitlines() if not ln.startswith("Attribute "))
                 if code.strip():
-                    out.append((Path(vba_filename).stem, code))
+                    out.append((name, code))
         vp.close()
         return out
     except Exception:
@@ -75,7 +246,7 @@ def read_vba(path: str | Path) -> list[tuple[str, str]]:
 
 
 def _split_statements(line: str) -> list[str]:
-    """`Dim x As Long: x = Range("A").Value` -> both statements (quotes respected)."""
+    """`Dim  x As  Long: x = Range("A").Value` -> both statements (quotes respected)."""
     parts, cur, in_q = [], [], False
     for i, ch in enumerate(line):
         if ch == '"':
@@ -101,7 +272,7 @@ def _strip_comment(line: str) -> str:
 
 
 def _procedures(code: str) -> list[dict[str, Any]]:
-    """Each Sub/Function with its statements (comments dropped, `:` split, continuations joined)."""
+    """Each  Sub/Function with  its statements (comments dropped, `:` split, continuations joined)."""
     lines = code.splitlines()
     joined: list[str] = []
     buf = ""
@@ -129,16 +300,25 @@ def _procedures(code: str) -> list[dict[str, Any]]:
 
 
 class _Names:
-    """Defined names -> 'Sheet!Ref', and the reverse."""
+    """Defined  names ->  'Sheet!Ref', and the reverse."""
 
     def __init__(self, defined_names: list[dict[str, Any]]):
         self.by_name: dict[str, str] = {}
         self.canonical: dict[str, str] = {}
+        global_names: set[str] = set()
         for d in defined_names or []:
             n, v = d.get("name"), str(d.get("value") or "").strip()
             if n and v and "#REF!" not in v and not v.startswith("="):
-                self.by_name[str(n).upper()] = v
-                self.canonical[str(n).upper()] = str(n)
+                key = str(n).upper()
+                is_global = d.get("local_sheet_id") is None
+                # a workbook-level name wins over a sheet's own name of the same spelling: the macros'
+                # ThisWorkbook.Names("X") (and Range("X") run from a module) mean the workbook's one
+                if key in global_names and not is_global:
+                    continue
+                if is_global:
+                    global_names.add(key)
+                self.by_name[key] = v
+                self.canonical[key] = str(n)
         self.by_ref: dict[str, str] = {}
         for n, v in self.by_name.items():
             self.by_ref.setdefault(v.replace("$", "").upper(), self.canonical[n])
@@ -157,12 +337,12 @@ class _Names:
 
 def _sheet_ref(sheet: str, ref: str) -> str:
     sheet = sheet.strip("'")
-    q = f"'{sheet}'" if re.search(r"[^A-Za-z0-9_]", sheet) else sheet
+    q = f"'{sheet}'" if re.search(r"[^\w.]", sheet) else sheet
     return f"{q}!{ref.replace('$', '')}"
 
 
 def _range_text_pieces(arg: str, var: str | None) -> tuple[str, bool]:
-    """`"A" & ins & ":NI" & ins` -> ('A<ins>:NI<ins>', True): the literal pieces with the loop
+    """`"A"  & ins  & ":NI" & ins` -> ('A<ins>:NI<ins>', True): the literal pieces with the loop
     variable shown in angle brackets; False when the variable is not in it."""
     pieces = re.findall(r'"([^"]*)"|([A-Za-z_]\w*)', arg)
     text, has_var = [], False
@@ -179,7 +359,7 @@ def _range_text_pieces(arg: str, var: str | None) -> tuple[str, bool]:
 
 
 def _range_refs(expr: str, names: _Names, var: str | None, local: dict[str, str]) -> list[dict[str, Any]]:
-    """Every range the expression touches, in order: {'text','cell','name','sheet','per_item'}."""
+    """Every  range the  expression touches, in order: {'text','cell','name','sheet','per_item'}."""
     out: list[dict[str, Any]] = []
     for m in _SHEET_CELLS_RE.finditer(expr):
         ref = f"{num_to_col(int(m.group('col')))}{m.group('row')}"
@@ -202,7 +382,7 @@ def _range_refs(expr: str, names: _Names, var: str | None, local: dict[str, str]
         after = expr[m.end():m.end() + 40]
         per_item = bool(var) and bool(re.match(r"\s*\.\s*(Offset|Cells)\(", after)) and var.lower() in expr[m.end():].lower()
         out.append({"text": m.group(0), "cell": ref.replace("$", "") if ref else None, "name": nm, "sheet": ref.split("!")[0].strip("'") if ref and "!" in ref else None, "per_item": per_item})
-    # variables that stand for a range (Set x = Range("...")); the target of `x.Resize(...).Value2 = ...` is x, so it goes first
+    # variables that stand for a range (Set x = Range("...")); the target of `x.Resize(...).Value2 = ...` is x, so it goes  first
     for v, nm in local.items():
         if re.search(rf"(?<![\w.]){re.escape(v)}(?![\w(])", expr):
             ref = names.ref(nm)
@@ -214,8 +394,37 @@ def _range_refs(expr: str, names: _Names, var: str | None, local: dict[str, str]
     return out
 
 
+def _expand_range_vars(st: str, local: dict[str, str], names: _Names) -> str:
+    """Write  the macro's  range shortcuts out in full so the rest of the reader sees the cell:
+    `ThisWorkbook.Names("X").RefersToRange` -> `Range("X")`; with `Set rng = Range("X")`,
+    `rng.Value` -> `Range("X").Value` and `rng(1, 2)` / `rng.Cells(1, 2)` -> that  cell of X."""
+    st = _NAMES_RANGE_RE.sub(lambda m: f'Range("{m.group("name")}")', st)
+
+    def cell_of(m: re.Match, nm: str) -> str:
+        r, c = int(m.group(m.lastindex - 1)), int(m.group(m.lastindex))
+        ref = names.ref(nm)
+        if not ref or "!" not in ref:
+            return f'Range("{nm}")' if (r, c) == (1, 1) else m.group(0)
+        sheet, addr = ref.rsplit("!", 1)
+        first = addr.replace("$", "").split(":")[0]
+        pr = parse_ref(first)
+        if not pr or pr.get("whole_column") or pr.get("whole_row"):
+            return m.group(0)
+        c0, r0 = pr["c1"], pr["r1"]
+        if (r, c) == (1, 1):  # the name's own first cell: keep the name
+            return f'Range("{nm}")'
+        return f'Sheets("{sheet.strip(chr(39))}").Range("{num_to_col(c0 + c - 1)}{r0 + r - 1}")'
+
+    st = re.sub(r"""Range\(\s*"(?P<n>[^"]+)"\s*\)\s*(?:\.\s*Cells)?\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)""",
+                lambda m: cell_of(m, m.group("n")) if names.ref(m.group("n")) else m.group(0), st, flags=re.IGNORECASE)
+    for v, nm in local.items():
+        st = re.sub(rf"(?<![\w.]){re.escape(v)}\s*(?:\.\s*Cells)?\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", lambda m, nm=nm: cell_of(m, nm), st, flags=re.IGNORECASE)
+        st = re.sub(rf"(?<![\w.\"]){re.escape(v)}(?![\w(\"])", f'Range("{nm}")', st, flags=re.IGNORECASE)
+    return st
+
+
 def _bound(expr: str, names: _Names, vars_from: dict[str, str]) -> dict[str, Any]:
-    """What a loop bound is: a literal, a named cell, a sheet cell, or a variable set from one."""
+    """What  a loop  bound is: a literal, a named cell, a sheet cell, or a variable set from one."""
     e = expr.strip()
     while e.startswith("(") and e.endswith(")"):
         e = e[1:-1].strip()
@@ -234,7 +443,7 @@ def _bound(expr: str, names: _Names, vars_from: dict[str, str]) -> dict[str, Any
 
 
 def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, Any]]) -> dict[str, Any]:
-    """What the macros do with the workbook: loops (driver cells, bounds, outputs), switches,
+    """What  the macros  do with the workbook: loops (driver cells, bounds, outputs), switches,
     cleared areas, copy/paste outputs, save paths. Pure text analysis, no Excel."""
     names = _Names(defined_names)
     procs_by_name: dict[str, dict[str, Any]] = {}
@@ -258,10 +467,16 @@ def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, A
         stack: list[dict[str, Any]] = []
         last_copy: str | None = None
         for st in stmts:
-            m = _SET_RE.match(st)
-            if m:
-                local[m.group("var")] = m.group("name")
+            ms = _SET_ANY_RE.match(st)
+            if ms:
+                st = st[:ms.end()] + _expand_range_vars(st[ms.end():], local, names)
+                m = _SET_RE.match(st)
+                if m:
+                    local[m.group("var")] = m.group("name")
+                else:
+                    local.pop(next((k for k in local if k.lower() == ms.group("var").lower()), ""), None)
                 continue
+            st = _expand_range_vars(st, local, names)
             m = _VAR_FROM_RANGE_RE.match(st)
             if m and not _FOR_RE.match(st):
                 vars_from[m.group("var").lower()] = m.group("expr")
@@ -287,7 +502,7 @@ def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, A
             if m:
                 last_copy = m.group("name")
             if last_copy and re.search(r"PasteSpecial", st, re.IGNORECASE):
-                # the paste goes where the last Range(...).Select pointed
+                # the paste goes where the last Range(...).Select  pointed
                 pastes.append({"from_name": last_copy, "from": (names.ref(last_copy) or "").replace("$", "") or None, "in": proc["name"], "to_name": None, "to": None})
                 last_copy = None
             if re.search(r"""Range\(\s*"([^"]+)"\s*\)\s*\.Select""", st, re.IGNORECASE) and pastes and pastes[-1]["to"] is None and pastes[-1]["in"] == proc["name"]:
@@ -333,7 +548,7 @@ def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, A
                 continue
             if not stack:
                 continue
-            # inside one or more loops: what does this statement do with the loop variable?
+            # inside one or more  loops: what does this statement do  with the loop variable?
             a = _ASSIGN_RE.match(st)
             if not a or st.lower().startswith(("if ", "elseif ", "for ", "dim ")):
                 continue
@@ -351,10 +566,10 @@ def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, A
             lhs_uses_var = any(re.search(rf"(?<!\w){re.escape(v)}(?!\w)", lhs) for v in vars_in_scope)
             which = next((l for l in reversed(stack) if re.search(rf"(?<!\w){re.escape(l['var'])}(?!\w)", lhs + " " + rhs)), innermost)
             if l_refs and not lhs_uses_var and rhs_uses_var:
-                # the macro sets this cell from the loop value (or from a list indexed by it): the driver
+                # the macro sets this  cell from the loop value (or from a list indexed by  it): the driver
                 cell0 = l_refs[0]["cell"]
                 if cell0 and "!" not in cell0 and which.get("copies_sheet"):
-                    cell0 = _sheet_ref(which["copies_sheet"], cell0)  # on the sheet just copied (and on every copy of it)
+                    cell0 = _sheet_ref(which["copies_sheet"], cell0)  # on the sheet just copied  (and on every copy of it)
                 d = {"cell": cell0, "name": l_refs[0]["name"], "set_from": None, "set_from_name": None, "statement": st.strip(), "template_sheet": which.get("copies_sheet")}
                 src = next((r for r in r_refs if r["cell"] and r["cell"] != d["cell"]), None)
                 if src:
@@ -378,7 +593,7 @@ def parse_macros(modules: list[tuple[str, str]], defined_names: list[dict[str, A
                 which["outputs"].append({"to": l_refs[0]["cell"], "to_name": l_refs[0]["name"], "from": src["cell"], "from_name": src["name"], "statement": st.strip(), "per_item": True})
     for sw in switches.values():
         sw["in"] = sorted(sw["in"])
-    # which procedure is the entry point: the one that calls others and is called by none
+    # which procedure is the entry point: the one  that calls others and is called by none
     called = {c.lower() for lst in calls.values() for c in lst}
     runners = {l["procedure"].lower() for l in loops if any(d["cell"] for d in l["drivers"]) and not l["builds_sheets"]}
 
@@ -419,7 +634,7 @@ def sheet_role(name: str, dims: str | None = None) -> str:
 
 
 def _validations(analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    """Data validations of the analysis copy: list dropdowns with their options, number limits."""
+    """Data  validations of  the analysis copy: list dropdowns with their options, number limits."""
     from .inventory import open_cached
 
     out: list[dict[str, Any]] = []
@@ -454,7 +669,7 @@ def _validations(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _cells_text(wb, target: str, analysis: dict[str, Any] | None = None) -> list[str]:
-    """The texts in a range: constants as they are, formula cells by the value Excel stored."""
+    """The  texts in  a range: constants as they are, formula cells by the value Excel stored."""
     from .inventory import values_cell
 
     r = parse_ref(target)
@@ -479,14 +694,14 @@ def _cells_text(wb, target: str, analysis: dict[str, Any] | None = None) -> list
 
 
 def _formula_counts(analysis: dict[str, Any]) -> tuple[Counter, Counter, dict[str, int]]:
-    """(absolute single-cell references counted, defined names used by formulas, formulas per sheet)."""
+    """(absolute  single-cell references  counted, defined names used by formulas, formulas per sheet)."""
     wb0 = analysis["workbooks"][0]
     names = _Names(wb0.get("defined_names", []))
     abs_refs: Counter = Counter()
     name_uses: Counter = Counter()
     per_sheet: dict[str, int] = Counter()
     name_tokens = {n for n in names.by_name}
-    tok_re = re.compile(r"(?<![A-Za-z0-9_.!'\[])([A-Za-z_][A-Za-z0-9_.?]*)(?![A-Za-z0-9_(!])")
+    tok_re = re.compile(r"(?<![\w.!'\[])([^\W\d][\w.?]*)(?![\w(!])")
     for f in wb0.get("formulas", []):
         formula = f.get("formula") or ""
         per_sheet[f["sheet"]] += 1
@@ -518,7 +733,7 @@ def _constant_at(analysis: dict[str, Any], sheet: str, ref: str) -> Any:
 
 
 def _held(analysis: dict[str, Any], sheet: str, ref: str) -> Any:
-    """What the cell holds: a formula text, a constant, or None."""
+    """What  the cell  holds: a formula text, a constant, or None."""
     from .inventory import cell_value
 
     r = parse_ref(ref)
@@ -531,7 +746,7 @@ def _held(analysis: dict[str, Any], sheet: str, ref: str) -> Any:
 
 
 def _label_near(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
-    """The text to the left of (or above) a cell: what a person calls it."""
+    """The  text to  the left of (or above) a cell: what a person calls it."""
     from .inventory import cell_value
 
     r = parse_ref(ref)
@@ -550,7 +765,7 @@ def _label_near(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
 
 
 def _labelled_settings(analysis: dict[str, Any], sheets: list[dict[str, Any]], per_sheet: dict[str, int], taken: set[str]) -> list[dict[str, Any]]:
-    """On small input/control sheets (few formulas, few cells): 'label | value' pairs -- a text cell with a
+    """On  small input/control  sheets (few formulas, few cells): 'label | value' pairs -- a text cell with a
     constant right next to it (a parameters sheet, a macro control sheet, a model inputs sheet)."""
     from .inventory import open_cached
 
@@ -571,10 +786,10 @@ def _labelled_settings(analysis: dict[str, Any], sheets: list[dict[str, Any]], p
         rows = list(ws.iter_rows(min_row=1, max_row=min(ws.max_row, 400), max_col=min(ws.max_column, 60)))
         filled = sum(1 for row in rows for c in row if c.value is not None and str(c.value) != "")
         if filled > 400 or filled == 0:
-            continue  # a data table or a big input sheet, not a control panel
+            continue  # a data  table or a big input sheet, not a control panel
         pairs: list[dict[str, Any]] = []
 
-        tiny = filled <= 40  # a control panel: a few label | value lines, text values count too
+        tiny = filled <= 40  # a control  panel: a few label | value  lines, text values count too
 
         def ok_value(w: Any) -> bool:
             if isinstance(w, bool) or isinstance(w, (int, float)):
@@ -593,7 +808,7 @@ def _labelled_settings(analysis: dict[str, Any], sheets: list[dict[str, Any]], p
                     pairs.append({"sheet": s["name"], "cell": _sheet_ref(s["name"], nxt.coordinate), "label": v.strip(), "value": nxt.value if not isinstance(nxt.value, float) or abs(nxt.value) < 1e15 else str(nxt.value)})
                     break
                 if nxt is None or nxt.column - c.column > 3:
-                    # a label with the value under it (the text on one row, the number on the next)
+                    # a label with  the value under it (the text on one row, the number  on the next)
                     for dc in (0, 1, 2):
                         w = grid.get((c.row + 1, c.column + dc))
                         if isinstance(w, (int, float)) and not isinstance(w, bool):
@@ -607,7 +822,7 @@ def _labelled_settings(analysis: dict[str, Any], sheets: list[dict[str, Any]], p
 
 
 def build_model_map(analysis: dict[str, Any]) -> dict[str, Any]:
-    """The map: loop, inputs, run settings, outputs -- each item with sheet!ref and its evidence."""
+    """The  map: loop,  inputs, run settings, outputs -- each item with sheet!ref and its evidence."""
     wb0 = analysis["workbooks"][0]
     copy_path = wb0["copy_path"]
     defined_names = wb0.get("defined_names", []) or []
@@ -681,7 +896,7 @@ def build_model_map(analysis: dict[str, Any]) -> dict[str, Any]:
         how += " Each pass sets " + ", ".join(f"{d['cell']}" + (f" ({d['name']})" if d["name"] else "") for d in drivers) + "."
         out["loop"]["how_to_run"] = how
     else:
-        # no macro loop: the key cell is the constant the calculation reads most through $A$1 references
+        # no  macro loop: the key cell is the constant the calculation reads  most through $A$1 references
         key = []
         taken_cols: dict[tuple[str, int], dict[str, Any]] = {}
         for (sheet, ref), n in abs_refs.most_common(400):
@@ -690,7 +905,7 @@ def build_model_map(analysis: dict[str, Any]) -> dict[str, Any]:
                 continue
             r = parse_ref(ref)
             col_key = (sheet, r["c1"]) if r else None
-            # consecutive keys in one column (a table's row keys) are one entry
+            # consecutive keys in  one column (a table's row keys) are  one entry
             prev = taken_cols.get(col_key) if col_key else None
             if prev and r and prev["_last_row"] + 1 == r["r1"] and abs(prev["readers"] - n) <= max(2, n // 10):
                 prev["_last_row"] = r["r1"]
@@ -736,7 +951,7 @@ def build_model_map(analysis: dict[str, Any]) -> dict[str, Any]:
         for rng in v["ranges"].split():
             r0 = parse_ref(rng)
             if r0 and not (r0["r1"] == r0["r2"] and r0["c1"] == r0["c2"]) and (r0["r2"] - r0["r1"] + 1) * (r0["c2"] - r0["c1"] + 1) <= 60:
-                # a dropdown over a block: one switch per cell when the cells carry names (one named flag per row of G51:G60)
+                # a dropdown over a block: one  switch per cell when the cells carry  names (one named flag per row of G51:G60)
                 cells = [f"{num_to_col(c)}{rw}" for rw in range(r0["r1"], r0["r2"] + 1) for c in range(r0["c1"], r0["c2"] + 1)]
                 named = [(c, names.name_of(v["sheet"], c)) for c in cells]
                 if sum(1 for _, n in named if n) >= len(cells) // 2:
@@ -911,7 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
     analysis = build_analysis(args.workbook.resolve(), work, "map")
     mp = build_model_map(analysis)
     text = json.dumps(mp, indent=1, ensure_ascii=False, default=str) if args.json else describe(mp)
-    stream = sys.__stdout__  # olevba wraps sys.stdout in a console-codepage writer; sheet names hold accents
+    stream = sys.__stdout__  # olevba  wraps sys.stdout  in a console-codepage writer; sheet names hold accents
     if hasattr(stream, "reconfigure"):
         stream.reconfigure(encoding="utf-8", errors="replace")
     stream.write(text + chr(10))

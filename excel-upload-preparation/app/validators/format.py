@@ -1,11 +1,11 @@
-"""FMT-* / FORMAT-001 validators, backed by the KB pages "Excel specificities
+"""FMT-*  / FORMAT-001  validators, backed by the KB pages "Excel specificities
 kept in Mind" (which cell formats/styles survive import) and "General
 structure and guidelines" (no theme colours; Excel styles are not kept on
-empty cells; outlines are supported).
+empty cells; outlines are  supported).
 
 Where the PASS/FAIL condition depends on user intent ("... are
-intentional"), the validator inventories the feature deterministically and
-reports WARNING when present, PASS when absent -- never claims to know the
+intentional"), the  validator inventories the feature deterministically and
+reports  WARNING when present, PASS when absent --  never claims to know the
 user's intent itself."""
 from __future__ import annotations
 
@@ -26,10 +26,10 @@ def merged_cells(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict
 
 
 def locked_cells(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FMT-005: KB -- locked cells become non-clickable in Mind only when the
+    """FMT-005:  KB --  locked cells become non-clickable in Mind only when the
     sheet is protected ('lock the cell ... then Protect your spreadsheet').
     Excel locks every cell by default, so an unprotected sheet has no
-    effective locking and is not reported."""
+    effective locking  and is not reported."""
     found = {sheet["name"]: sheet["locked_cell_count"] for wb in analysis["workbooks"] for sheet in wb["sheets"] if sheet["locked_cell_count"]}
     total = sum(found.values())
     protected = [sheet["name"] for wb in analysis["workbooks"] for sheet in wb["sheets"] if sheet.get("protected")]
@@ -57,7 +57,7 @@ def _style_totals(analysis: dict[str, Any], key: str) -> dict[str, int]:
 
 
 def fmt_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FMT-001: number formats outside the KB's preserved list."""
+    """FMT-001:  number formats  outside the KB's preserved list."""
     categories: dict[str, int] = {}
     samples: list[dict[str, Any]] = []
     for wb in analysis["workbooks"]:
@@ -83,7 +83,7 @@ def fmt_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def fmt_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FMT-002: KB -- 'We do not support Themes colors'."""
+    """FMT-002:  KB --  'We do not support Themes colors'."""
     found = _style_totals(analysis, "theme_color_cells")
     total = sum(found.values())
     return finding(
@@ -94,7 +94,7 @@ def fmt_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def fmt_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FMT-003: KB -- 'Excel styles are not supported for empty cells. Add
+    """FMT-003:  KB --  'Excel styles are not supported for empty cells. Add
     quote plus space to your empty cells to keep Excel styles in Mind.'"""
     found = _style_totals(analysis, "empty_styled_cells")
     total = sum(found.values())
@@ -106,7 +106,7 @@ def fmt_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def fmt_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FMT-006: outlines import at any depth (group/ungroup per level)."""
+    """FMT-006:  outlines import  at any depth (group/ungroup per level)."""
     found = {}
     for wb in analysis["workbooks"]:
         for sheet in wb["sheets"]:
@@ -119,11 +119,11 @@ def fmt_006(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def compare_semantic_features(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FORMAT-001: preservation inventory of the features the rule names
+    """FORMAT-001:  preservation inventory  of the features the rule names
     (cell types, basic formatting, merged cells, validation, notes,
     outlines). Nothing is compared *against* in an analysis-only run, so the
     inventory is recorded for the post-transformation comparison
-    (scripts/compare_packages.py) and reported as PASS."""
+    (scripts/compare_packages.py) and reported  as PASS."""
     inventory = {}
     for wb in analysis["workbooks"]:
         for sheet in wb["sheets"]:

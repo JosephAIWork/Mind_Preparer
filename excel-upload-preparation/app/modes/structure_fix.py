@@ -1,4 +1,4 @@
-"""STRUCTURE_FIX: focuses on structure/format/risk rules (modes/structure-fix.md).
+"""STRUCTURE_FIX:  focuses on  structure/format/risk rules (modes/structure-fix.md).
 ANALYZE+VALIDATE+ASK only -- moving/splitting/merging grids needs change-set
 application (phase 8), not built yet."""
 from __future__ import annotations

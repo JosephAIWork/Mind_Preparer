@@ -1,7 +1,7 @@
-"""LKP-* validators: MM_READTABLE / MM_READTABLENAN (KB 'MM_READTABLE
+"""LKP-*  validators: MM_READTABLE  / MM_READTABLENAN (KB 'MM_READTABLE
 function': Range must include headers; Header names exactly one column; up
 to 6 comparisons test the first columns in order; first matching row wins;
-not-found returns a text message vs NaN for the NAN variant)."""
+not-found returns a text message vs  NaN for the NAN variant)."""
 from __future__ import annotations
 
 from typing import Any
@@ -24,7 +24,7 @@ def _calls(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _resolve_range(analysis: dict[str, Any], call: dict[str, Any]) -> dict[str, Any] | None:
-    """The table range of a call as {sheet, r1, c1, r2, c2, via}: a literal
+    """The  table range  of a call as {sheet, r1, c1, r2, c2, via}: a literal
     range, or MM_TABLE(cell) resolved through the detected grid."""
     if not call["args"]:
         return None
@@ -55,7 +55,7 @@ def lkp_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def lkp_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """LKP-002: the Range must include the header row."""
+    """LKP-002:  the Range  must include the header row."""
     calls = _calls(analysis)
     if not calls:
         return finding("PASS", "No MM_READTABLE calls.", {"checked": 0})
@@ -91,7 +91,7 @@ def lkp_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def lkp_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """LKP-003: the Header argument must match exactly one header of the range."""
+    """LKP-003:  the Header  argument must match exactly one header of the range."""
     calls = _calls(analysis)
     if not calls:
         return finding("PASS", "No MM_READTABLE calls.", {"checked": 0})
@@ -134,7 +134,7 @@ def lkp_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def lkp_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """LKP-004: duplicate key combinations in the tested columns -> first match wins."""
+    """LKP-004:  duplicate key  combinations in the tested columns -> first match wins."""
     calls = _calls(analysis)
     if not calls:
         return finding("PASS", "No MM_READTABLE calls.", {"checked": 0})
@@ -171,7 +171,7 @@ def lkp_004(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def lkp_005(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """LKP-005: not-found behaviour -- text message (MM_READTABLE) vs NaN (MM_READTABLENAN)."""
+    """LKP-005:  not-found behaviour  -- text message (MM_READTABLE) vs NaN (MM_READTABLENAN)."""
     calls = _calls(analysis)
     plain = [c for c in calls if c["function"] == "MM_READTABLE"]
     nan = [c for c in calls if c["function"] == "MM_READTABLENAN"]

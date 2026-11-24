@@ -1,11 +1,11 @@
-"""Container-level facts about an uploaded workbook, read from the zip (OPC)
+"""Container-level  facts about  an uploaded workbook, read from the zip (OPC)
 package alone -- no openpyxl, no Excel, no cell is parsed:
 
   * the size on disk and the *decompressed* size (what the scanner really
-    has to chew through -- an .xlsb is small on disk because its parts are
-    binary AND deflated; the unpacked size is the honest measure),
-  * every sheet, in workbook order, with the decompressed size of its part,
-    so a user asked to skip sheets can see which ones are heavy.
+    has to chew  through -- an .xlsb is small on disk because its parts  are
+    binary AND deflated; the unpacked size  is the honest measure),
+  * every sheet, in workbook  order, with the decompressed size of its part,
+    so a user asked  to skip sheets can see which ones  are heavy.
 
 Sheet names come from ``xl/workbook.xml`` for .xlsx/.xlsm and from the
 BIFF12 ``xl/workbook.bin`` (BrtBundleSh records, MS-XLSB 2.4.304) for
@@ -33,7 +33,7 @@ _PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 
 def size_threshold_bytes(config: dict[str, Any] | None = None) -> int:
-    """Decompressed-size threshold above which the app asks about skipping
+    """Decompressed-size  threshold above  which the app asks about skipping
     sheets. Environment override first, then config/default.yaml, then the
     built-in default."""
     raw: Any = os.environ.get("MIND_READY_SIZE_THRESHOLD_MB")
@@ -50,7 +50,7 @@ def size_threshold_bytes(config: dict[str, Any] | None = None) -> int:
 
 # --- workbook part: sheet list ------------------------------------------------------------
 def _rels(zf: zipfile.ZipFile, rels_name: str) -> dict[str, str]:
-    """rId -> zip member name (targets are relative to xl/ unless absolute)."""
+    """rId  -> zip  member name (targets are relative to xl/ unless absolute)."""
     out: dict[str, str] = {}
     if rels_name not in zf.namelist():
         return out
@@ -78,7 +78,7 @@ def _sheets_from_xml(zf: zipfile.ZipFile) -> list[dict[str, Any]]:
 
 
 def _read_varint(data: bytes, pos: int, max_bytes: int) -> tuple[int, int]:
-    """BIFF12 record type (up to 2 bytes) / record size (up to 4 bytes):
+    """BIFF12  record type  (up to 2 bytes) / record size (up to 4 bytes):
     7 data bits per byte, high bit = another byte follows."""
     value, shift = 0, 0
     for n in range(max_bytes):
@@ -94,7 +94,7 @@ def _read_varint(data: bytes, pos: int, max_bytes: int) -> tuple[int, int]:
 
 
 def _wide_string(payload: bytes, pos: int) -> tuple[str | None, int]:
-    """XLWideString / XLNullableWideString: 4-byte char count (0xFFFFFFFF =
+    """XLWideString  / XLNullableWideString:  4-byte char count (0xFFFFFFFF =
     null), then UTF-16LE characters."""
     (cch,) = struct.unpack_from("<I", payload, pos)
     pos += 4
@@ -105,7 +105,7 @@ def _wide_string(payload: bytes, pos: int) -> tuple[str | None, int]:
 
 
 def _sheets_from_bin(zf: zipfile.ZipFile) -> list[dict[str, Any]]:
-    """BrtBundleSh records of xl/workbook.bin: hsState (4), iTabID (4),
+    """BrtBundleSh  records of  xl/workbook.bin: hsState (4), iTabID (4),
     strRelID (nullable wide string), strName (wide string)."""
     data = zf.read("xl/workbook.bin")
     rels = _rels(zf, "xl/_rels/workbook.bin.rels")
@@ -129,7 +129,7 @@ def _sheets_from_bin(zf: zipfile.ZipFile) -> list[dict[str, Any]]:
 
 
 def inspect_container(path: str | Path) -> dict[str, Any]:
-    """Sizes and the sheet list of a workbook package, from the zip alone."""
+    """Sizes  and the  sheet list of a workbook package, from the zip alone."""
     path = Path(path)
     fmt = path.suffix.lower().lstrip(".")
     file_bytes = path.stat().st_size if path.is_file() else 0
@@ -181,7 +181,7 @@ def inspect_container(path: str | Path) -> dict[str, Any]:
 
 
 def size_gate(path: str | Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The upload gate: container facts plus the threshold verdict. The
+    """The  upload gate:  container facts plus the threshold verdict. The
     measure is always the decompressed size -- for an .xlsb that is the only
     honest one, and it is the same yardstick for every format."""
     info = inspect_container(path)

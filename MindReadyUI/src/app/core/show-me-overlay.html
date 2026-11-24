@@ -1,0 +1,17 @@
+@if (showMe.pointer(); as p) {
+  @if (layout(); as l) {
+    @if (p.last) {
+      <div class="show-me__ring" [style.top.px]="l.ring.top" [style.left.px]="l.ring.left" [style.width.px]="l.ring.width" [style.height.px]="l.ring.height"></div>
+    }
+    <svg class="show-me__arrow" [style.left.px]="l.arrow.left" [style.top.px]="l.arrow.top" [attr.width]="l.arrow.width" [attr.height]="l.arrow.height" [attr.viewBox]="'0 0 ' + l.arrow.width + ' ' + l.arrow.height" aria-hidden="true">
+      <path [attr.d]="arrow(l.side)" />
+    </svg>
+  }
+  <!-- drawn before it is placed (invisible), so its size is known when it is -->
+  <div #bubble class="show-me__bubble" [class.show-me__bubble--shown]="!!layout()" [style.left.px]="layout()?.bubble?.x ?? 0" [style.top.px]="layout()?.bubble?.y ?? 0" role="status" aria-live="polite">
+    <span>{{ p.text }}</span>
+    @if (p.last) {
+      <button type="button" class="show-me__done" data-show-me-ui (click)="showMe.stop()">Got it</button>
+    }
+  </div>
+}

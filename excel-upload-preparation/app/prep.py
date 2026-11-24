@@ -1,14 +1,14 @@
-"""Workbook preparation: turn findings into concrete,
+"""Workbook  preparation: turn  findings into concrete,
 reviewable *operations* and apply the ones the user approves to a fresh copy
 through Excel.
 
 Design (the source is never modified, nothing is invented, nothing is applied without approval):
-  * `plan_actions()` never touches a file: every action lists exactly which
-    cells / sheets it would change, with before/after, and says what it had
+  * `plan_actions()` never touches  a file: every action lists exactly which
+    cells / sheets it would  change, with before/after, and says what  it had
     to skip and why.
-  * `apply_operations()` copies the source (hash first), opens the copy in
-    Excel once, applies the operations, saves, verifies the result opens in
-    Excel, and appends the change log sidecar. openpyxl is only a fallback
+  * `apply_operations()` copies the  source (hash first), opens the copy in
+    Excel once, applies the operations,  saves, verifies the result opens in
+    Excel, and  appends the change log sidecar. openpyxl is only a fallback
     for the value/formula operations (it can't keep references intact on
     structural edits, so those refuse without Excel).
   * Nothing here converts formulas to values or removes VBA/links/names/
@@ -16,7 +16,7 @@ Design (the source is never modified, nothing is invented, nothing is applied wi
     becomes a grid title) or when the user explicitly asked the assistant
     for it.
 
-Operation shape: {op, action_id, rule_id, sheet, before, after, note, ...}
+Operation shape: {op, action_id, rule_id, sheet,  before, after, note, ...}
   set_value / set_formula / clear_cell   -> cell ("B3" or a range "B3:D3")
   rename_sheet                           -> after = new name
   insert_row / insert_column             -> row / column
@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -38,8 +39,14 @@ from typing import Any
 import openpyxl
 
 from .change_apply import append_change_log, plan_loop_case_fix
-from .excel_com import close_quietly, com_available, excel_session, open_for_write, save_in_place, verify_opens_in_excel
+from .excel_com import close_quietly, com_available, excel_session, excel_text, open_for_write, save_in_place, verify_opens_in_excel
+from .feedback import failed_op_facts
 from .formula_utils import (
+    ERROR_LITERAL_RE,
+    REF_RE,
+    _arg_spans,
+    _closing_paren,
+    as_number,
     cell_refs_in_formula,
     col_to_num,
     collapse_na_reference_calls,
@@ -50,25 +57,29 @@ from .formula_utils import (
     parse_ref,
     ref_text,
     reference_arg_problems,
+    strip_storage_prefix,
     undefined_names,
 )
-from .grids import all_grids, grid_containing, looks_like_title, parse_flags
-from .inventory import cell_value, make_immutable_copy, sha256_of, values_cell
+from .grids import ERROR_LITERALS, all_grids, grid_containing, looks_like_title, parse_flags
+from .inventory import cell_value, make_immutable_copy, sha256_of, sheet_order, values_cell
 from .perf import record as perf_record, stage as perf_stage
+from .plain_codes import cite, is_com_error, plain_com_error, rule_name
 from .theme_colors import explicit_theme_colors_in_package
 from .validators.io import EXPORT_COLUMNS
 from .validators.kb import documented_flags
 
-STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values"}
+STRUCTURAL_OPS = {"rename_sheet", "insert_row", "insert_column", "explicit_colors", "unprotect_sheet", "set_sheet_visibility", "break_external_link", "pivot_to_formulas", "pivot_to_values", "move_cell"}
 PIVOT_OPS = {"pivot_to_formulas", "pivot_to_values"}
-# What Prep does with the pivot tables (Advanced > Prep actions; Do everything follows it)
+# What  Prep does  with the pivot tables (Advanced > Prep actions; Do everything follows it)
 # (every pivot table blocks Mind's converter -- validators/structure.blocking_pivot -- so none is left)
 PIVOT_MODES = {
-    "formulas": "Turn every pivot table into formulas",
     "values": "Turn every pivot table into plain values",
+    "formulas": "Turn every pivot table into formulas",
 }
-DEFAULT_PIVOT_MODE = "formulas"
-CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula"}
+DEFAULT_PIVOT_MODE = "values"
+# set_range_values  (1.12.5, the  Mind instances): one block of plain values written in one go
+# {sheet, ref: "A7:A94938", cell: the same, values: [[v], [v], ...] one list per row, note}
+CELL_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula", "set_range_values"}
 HIDE_MARKER = "&&Hide"
 EXCEL_SHEET_NAME_MAX = 31
 TITLE_NAME_MAX = 60
@@ -94,9 +105,9 @@ def _is_text(v: Any) -> bool:
     return isinstance(v, str) and v.strip() != "" and not v.startswith("=")
 
 
-# --- individual action planners -------------------------------------------------
+# ---  individual action  planners -------------------------------------------------
 def plan_hide_marker(analysis, report) -> tuple[list[dict], list[str]]:
-    """STR-007: hidden sheets get the '&&Hide' marker in their name (Excel
+    """STR-007:  hidden sheets  get the '&&Hide' marker in their name (Excel
     updates every formula reference when a sheet is renamed through COM)."""
     ops, skipped = [], []
     for s in analysis["workbooks"][0]["sheets"]:
@@ -111,7 +122,7 @@ def plan_hide_marker(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_loop_name_case(analysis, report) -> tuple[list[dict], list[str]]:
-    """LOOP-002 + RES-002 (case-only mismatches): rewrite loop-name string
+    """LOOP-002  + RES-002  (case-only mismatches): rewrite loop-name string
     arguments to the casing the loop is defined with."""
     ops, skipped = [], []
     renames, edits = plan_loop_case_fix(analysis)
@@ -140,7 +151,7 @@ def _title_edit(g: dict[str, Any], new_title: str, action_id: str, rule_id: str,
 
 
 def plan_reorder_input_flag(analysis, report) -> tuple[list[dict], list[str]]:
-    """INP-005: a /Reorder grid must carry /Input."""
+    """INP-005:  a /Reorder  grid must carry /Input."""
     ops, skipped = [], []
     for g in all_grids(analysis):
         if "reorder" in g["flag_names"] and "input" not in g["flag_names"] and g.get("title_cell"):
@@ -149,7 +160,7 @@ def plan_reorder_input_flag(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_flag_spelling(analysis, report) -> tuple[list[dict], list[str]]:
-    """FLG-001: an undocumented flag that is a near-miss of a documented one
+    """FLG-001:  an undocumented  flag that is a near-miss of a documented one
     is corrected to the documented spelling; anything ambiguous is skipped."""
     ops, skipped = [], []
     docs = documented_flags()
@@ -176,7 +187,7 @@ def plan_flag_spelling(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_special_headers(analysis, report) -> tuple[list[dict], list[str]]:
-    """EXP-003 / PRJ-002 / PAR-002 / INP-003: headers of the documented special
+    """EXP-003  / PRJ-002  / PAR-002 / INP-003: headers of the documented special
     grids that are near-misses of the documented column names."""
     ops, skipped = [], []
     for g in all_grids(analysis):
@@ -200,41 +211,112 @@ def plan_special_headers(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def _row_insert_is_safe(grids: list[dict[str, Any]], sheet: str, row: int, own: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Grids on `sheet` that a whole-row insert at `row` would cut in two."""
+    """Grids  on `sheet`  that a whole-row insert at `row` would cut in two."""
     return [o for o in grids if o["sheet"] == sheet and o is not own and o["first_row"] < row <= o["last_row"]]
 
 
-# --- what the model's formulas read ------------------------------------------
+def insert_columns(o: dict[str, Any]) -> tuple[int, int] | None:
+    """The  columns (first,  last) a row insert shifts down, or None for a whole-row insert."""
+    cols = o.get("columns")
+    if not cols:
+        return None
+    a, _, b = str(cols).partition(":")
+    return col_to_num(a), col_to_num(b or a)
+
+
+def insert_moves(o: dict[str, Any], col: int) -> bool:
+    """Does  the row  insert `o` shift cells of column `col` (whole row: every column)?"""
+    band = insert_columns(o)
+    return band is None or band[0] <= col <= band[1]
+
+
+def plan_row_insert(analysis: dict[str, Any], grids: list[dict[str, Any]], sheet: str, row: int, own: dict[str, Any]) -> tuple[tuple[int, int] | None, list[dict[str, Any]]]:
+    """How  to insert  an empty row at `row` for the grid `own` without disturbing the grids beside it
+    (the Mind team, 2026-11: "insert row should be aware of other grids in the row").
+
+    -> (band, cut).  `band` = (first, last) column: only those columns shift down (Excel's  Insert,
+    shift cells down), so a grid  next to `own` stays where it is;  None = a whole-row insert, kept
+    when nothing at or below the  row sits outside the band (it then  does exactly what a whole
+    row did) or when the sheet holds an Excel table (its range is not known here). The band starts
+    as `own`'s columns and widens until it cuts nothing at or below the row across its edges: a
+    grid, a merged range, a pivot table, a range a formula or a name reads (a range cut across
+    would no longer read  the cells it read). A formula reading a whole row there makes it a
+    whole-row insert. `cut` = the grids the insert would split in two (they span the row, inside
+    the band): the caller skips the insert then."""
+    sheet_grids = [g for g in grids if g["sheet"] == sheet]
+    whole = (None, _row_insert_is_safe(grids, sheet, row, own=own))
+    info = next((x for x in analysis["workbooks"][0].get("sheets", []) if x.get("name") == sheet), {})
+    if info.get("tables"):
+        return whole
+    index = reference_index(analysis)
+    if any(r >= row for r in (index.get("whole_rows", {}).get(sheet) or {})):
+        return whole
+    blocks: list[tuple[int, int, int, int]] = [(g["first_row"], g["last_row"], g["first_col"], g["last_col"]) for g in sheet_grids if g["last_row"] >= row]
+    for m in info.get("merged_cells") or []:
+        ref = parse_ref(str(m))
+        if ref and ref["r2"] >= row:
+            blocks.append((ref["r1"], ref["r2"], ref["c1"], ref["c2"]))
+    for r1, r2, c1, c2, _ in pivot_ranges(analysis).get(sheet, []):
+        if r2 >= row:
+            blocks.append((r1, r2, c1, c2))
+    for r1, r2, c1, c2, *_ in index.get("rects", {}).get(sheet, []):
+        if r2 >= row and c2 > c1:
+            blocks.append((r1, r2, c1, c2))
+    lo, hi = own["first_col"], own["last_col"]
+    changed = True
+    while changed:
+        changed = False
+        for _, _, c1, c2 in blocks:
+            if c1 <= hi and c2 >= lo and (c1 < lo or c2 > hi):
+                lo, hi = min(lo, c1), max(hi, c2)
+                changed = True
+    if not any(c2 < lo or c1 > hi for _, _, c1, c2 in blocks):
+        return whole  # nothing beside the band at or below the row: a whole row does the same
+    cut = [g for g in sheet_grids if g is not own and g["first_row"] < row <= g["last_row"] and g["first_col"] <= hi and g["last_col"] >= lo]
+    return (lo, hi), cut
+
+
+def _insert_fields(row: int, band: tuple[int, int] | None) -> dict[str, Any]:
+    """The  extra fields  of a row insert that shifts only `band`'s columns."""
+    if band is None:
+        return {}
+    return {"columns": f"{num_to_col(band[0])}:{num_to_col(band[1])}"}
+
+
+def _insert_words(row: int, band: tuple[int, int] | None) -> str:
+    if band is None:
+        return f"empty row {row} inserted"
+    return f"empty cells {num_to_col(band[0])}{row}:{num_to_col(band[1])}{row} inserted (only columns {num_to_col(band[0])}:{num_to_col(band[1])} shift down; the grids beside them stay)"
+
+
+# ---  what the  model's formulas read ------------------------------------------
 # A title is text written into a cell; a moved label is a cell emptied; a row
-# insert shifts every cell below it. None of that may change a computed value.
-# A real model showed how it can: a `=COUNTA(Sheet!A:A)` counted a title written
-# into column A and the model picked a different policy, and `=Info!A1` on five
-# sheets read 0 after the company name was "moved" into a title. So every write
-# site asks this index first.
+# insert shifts every cell below it. None of that may change a  computed value.
+# A real model showed how it can: a `=COUNTA(Sheet!A:A)` counted  a title written
+# into column A and  the model picked a different policy, and  `=Info!A1` on five
+# sheets read 0 after the company name was "moved"  into a title. So every write
+# site asks  this index first.
 _REF_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 
-# Two ways a formula reads a sheet that Excel does not move along when a row is
+# Two  ways a  formula reads a sheet that Excel does not move along when a row is
 # inserted there. Both changed computed values on a real model (2,462 cells, 1,781
-# of them into errors) after an ordinary Prep:
-#   * a 3-D reference, =SUM('Line 1:>>'!K65): it reads the SAME cell on every sheet of the
-#     range, by position. A row inserted on one of them shifts that sheet alone.
-#   * an address built as text, =INDIRECT("'"&$E$2&"'!H"&n): text is not a reference.
+# of them into errors) after an  ordinary Prep:
+#   * a 3-D reference, =SUM('Line 1:>>'!K65): it reads the SAME  cell on every sheet of the
+#     range,  by position. A row inserted on one  of them shifts that sheet alone.
+#   * an address built as text,  =INDIRECT("'"&$E$2&"'!H"&n): text is not a reference.
 _STRING_LITERAL_RE = re.compile(r'"(?:[^"]|"")*"')
 _THREE_D_QUOTED_RE = re.compile(r"'((?:[^']|'')+)'!")
-_THREE_D_BARE_RE = re.compile(r"(?<![A-Za-z0-9_.'])([A-Za-z0-9_.]+):([A-Za-z0-9_.]+)!")
-_INDIRECT_RE = re.compile(r"(?<![A-Za-z0-9_.])INDIRECT\s*\(", re.IGNORECASE)
+_THREE_D_BARE_RE = re.compile(r"(?<![\w.'])([\w.]+):([\w.]+)!")
+_INDIRECT_RE = re.compile(r"(?<![\w.])INDIRECT\s*\(", re.IGNORECASE)
 
 
 def _sheet_order(wb: dict[str, Any]) -> list[str]:
-    """Sheet names in tab order, the sheets left out of the scan included."""
-    names = [s["name"] for s in wb.get("sheets", [])]
-    for ig in sorted(wb.get("ignored_sheets", []), key=lambda s: s.get("index", 0)):
-        names.insert(min(int(ig.get("index", len(names))), len(names)), ig["name"])
-    return names
+    """Sheet  names in  tab order, the sheets left out of the scan included (inventory.sheet_order)."""
+    return sheet_order(wb)
 
 
 def _three_d_sheets(formula: str, order: list[str]) -> list[tuple[str, list[str]]]:
-    """[("First:Last", [every sheet from First to Last in tab order])] for each 3-D reference."""
+    """[("First:Last",  [every sheet  from First to Last in tab order])] for each 3-D reference."""
     text = _STRING_LITERAL_RE.sub('""', formula)
     pairs = []
     for m in _THREE_D_QUOTED_RE.finditer(text):
@@ -252,12 +334,12 @@ def _three_d_sheets(formula: str, order: list[str]) -> list[tuple[str, list[str]
 
 
 def _text_addressed_sheets(analysis: dict[str, Any], formula: str, home: str | None, order: list[str], seen_values: dict[tuple[str, int, int], Any]) -> list[str]:
-    """The sheets an INDIRECT in `formula` may build an address on: a sheet named
+    """The  sheets an  INDIRECT in `formula` may build an address on: a sheet named
     in one of its text pieces ("'Year "&n&"'!F14" names every sheet starting with
-    'Year '), or named by a cell the formula reads ($E$2 holds 'Line 1'). A cell
-    that holds some other text names a sheet that does not exist: that INDIRECT
-    points nowhere and no sheet is at stake. When nothing can be read at all:
-    the formula's own sheet for an address without a sheet, every sheet
+    'Year '), or named by a cell the formula  reads ($E$2 holds 'Line 1'). A cell
+    that holds some other text  names a sheet that does not  exist: that INDIRECT
+    points nowhere and no sheet  is at stake. When nothing can be read at all:
+    the formula's  own sheet for an address without a  sheet, every sheet
     otherwise -- unknown is not safe."""
     literals = [m.group(0)[1:-1].replace('""', '"') for m in _STRING_LITERAL_RE.finditer(formula)]
     found: list[str] = []
@@ -294,11 +376,11 @@ def _text_addressed_sheets(analysis: dict[str, Any], formula: str, home: str | N
 
 
 def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
-    """Every cell range the workbook's formulas and defined names read:
+    """Every  cell range  the workbook's formulas and defined names read:
     {'rects': {sheet: [(r1, r2, c1, c2, owner)]}, 'whole_cols': {sheet: {col: owner}},
      'whole_rows': {sheet: {row: owner}}} where owner names the reading formula,
-    plus 'positional': {sheet: owner} for the sheets inside a 3-D reference and
-    'text_addressed': {sheet: owner} for the sheets an INDIRECT builds addresses on."""
+    plus 'positional': {sheet: owner} for the  sheets inside a 3-D reference and
+    'text_addressed': {sheet: owner} for the sheets  an INDIRECT builds addresses on."""
     key = str(analysis.get("analysis_id") or id(analysis)) + ":" + str(analysis["workbooks"][0].get("copy_path"))
     cached = _REF_INDEX_CACHE.get(key)
     if cached is not None:
@@ -306,6 +388,8 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
     rects: dict[str, list[tuple[int, int, int, int, str]]] = {}
     whole_cols: dict[str, dict[int, str]] = {}
     whole_rows: dict[str, dict[int, str]] = {}
+    lookup_cols: dict[str, dict[int, str]] = {}  # the whole-column  / whole-row reads whose function sees text  cells
+    lookup_rows: dict[str, dict[int, str]] = {}
     positional: dict[str, str] = {}
     text_addressed: dict[str, str] = {}
     wb = analysis["workbooks"][0]
@@ -318,6 +402,7 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
             sources.append((val if val.startswith("=") else "=" + val, None, f"name {d.get('name')}"))
     for formula, home, owner in sources:
         spans: dict[str, list[str]] = {}
+        sees_text = bool(_TEXT_SEEING_RE.search(formula))
         if ":" in formula and "!" in formula:
             for label, sheets in _three_d_sheets(formula, order):
                 spans[label.lower()] = sheets
@@ -330,34 +415,44 @@ def reference_index(analysis: dict[str, Any]) -> dict[str, Any]:
             sheet = ref.get("sheet") or home
             if not sheet:
                 continue
-            # a 3-D reference reads the same cells on every sheet of its range
+            # a 3-D reference reads the same cells on every sheet of  its range
             for sheet in spans.get(sheet.lower(), [sheet]):
                 if ref.get("whole_column"):
                     cols = whole_cols.setdefault(sheet, {})
                     for c in range(ref["c1"], ref["c2"] + 1):
                         cols.setdefault(c, owner)
+                        if sees_text:
+                            lookup_cols.setdefault(sheet, {}).setdefault(c, owner)
                 elif ref.get("whole_row"):
                     rows = whole_rows.setdefault(sheet, {})
                     for r in range(ref["r1"], ref["r2"] + 1):
                         rows.setdefault(r, owner)
+                        if sees_text:
+                            lookup_rows.setdefault(sheet, {}).setdefault(r, owner)
                 else:
                     rects.setdefault(sheet, []).append((ref["r1"], ref["r2"], ref["c1"], ref["c2"], owner))
-    index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows, "positional": positional, "text_addressed": text_addressed}
-    _REF_INDEX_CACHE.clear()  # one workbook at a time is plenty
+    index = {"rects": rects, "whole_cols": whole_cols, "whole_rows": whole_rows, "lookup_cols": lookup_cols, "lookup_rows": lookup_rows, "positional": positional, "text_addressed": text_addressed}
+    _REF_INDEX_CACHE.clear()  # one workbook at a time is  plenty
     _REF_INDEX_CACHE[key] = index
     return index
 
 
-def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int) -> str | None:
-    """The formula (or name) that reads this cell, else None."""
-    owner = index["whole_cols"].get(sheet, {}).get(col) or index["whole_rows"].get(sheet, {}).get(row)
+_TEXT_SEEING_RE = re.compile(r"\b(MATCH|XMATCH|INDEX|VLOOKUP|HLOOKUP|LOOKUP|XLOOKUP|COUNTA|COUNTBLANK|OFFSET|INDIRECT|FILTER|SORT|UNIQUE|TEXTJOIN|CONCAT|CONCATENATE)\s*\(", re.I)
+
+
+def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int, text_only: bool = False) -> str | None:
+    """The  formula (or  name) that reads this cell, else None. text_only: a whole-column or whole-row
+    reference counts only when its function looks at text cells (a lookup, MATCH, INDEX, COUNTA ...);
+    Excel's SUM / AVERAGE /  MIN / MAX skip text, so a title in such a  range changes no result."""
+    cols, rows = ("lookup_cols", "lookup_rows") if text_only else ("whole_cols", "whole_rows")
+    owner = index.get(cols, {}).get(sheet, {}).get(col) or index.get(rows, {}).get(sheet, {}).get(row)
     if owner:
         return owner
     rects = index["rects"].get(sheet)
     if not rects:
         return None
-    # The first rectangle (in reading order) that holds the cell, from the few in its band of
-    # rows instead of all of them (a large workbook asks thousands of questions of a million rectangles)
+    # The first rectangle  (in reading order) that holds the cell,  from the few in its band of
+    # rows instead of all of  them (a large workbook asks thousands of  questions of a million rectangles)
     blocks, tall = _row_blocks(index, sheet, rects)
     best = None
     for i in blocks.get(row // _BLOCK_ROWS, ()):
@@ -376,12 +471,12 @@ def referenced_by(index: dict[str, Any], sheet: str, row: int, col: int) -> str 
 
 
 _BLOCK_ROWS = 64
-_TALL_BLOCKS = 256  # a rectangle over more bands than this is checked on every question instead
-_ROW_BLOCKS: dict[str, Any] = {}  # the last index's bands, per sheet
+_TALL_BLOCKS = 256  # a  rectangle over  more bands than this is checked on every question instead
+_ROW_BLOCKS: dict[str, Any] = {}  # the  last index's  bands, per sheet
 
 
 def _row_blocks(index: dict[str, Any], sheet: str, rects: list[tuple[int, int, int, int, str]]) -> tuple[dict[int, list[int]], list[int]]:
-    """Per band of rows, the rectangles (by position, in order) that reach into it; the tall ones apart."""
+    """Per  band of  rows, the rectangles (by position, in order) that reach into it; the tall ones apart."""
     if _ROW_BLOCKS.get("index") is not index:
         _ROW_BLOCKS.clear()
         _ROW_BLOCKS["index"] = index
@@ -402,16 +497,38 @@ def _row_blocks(index: dict[str, Any], sheet: str, rects: list[tuple[int, int, i
 
 
 def whole_reference_to(index: dict[str, Any], sheet: str) -> str | None:
-    """A formula that reads a whole column or row of `sheet` -- inserting a
+    """A  formula that  reads a whole column or row of `sheet` -- inserting a
     row there shifts what it counts or indexes."""
     cols = index["whole_cols"].get(sheet) or {}
     rows = index["whole_rows"].get(sheet) or {}
     return next(iter(cols.values()), None) or next(iter(rows.values()), None)
 
 
-def insert_blocker(index: dict[str, Any], sheet: str) -> str | None:
-    """Why a row must not be inserted on `sheet`, in words -- or None when
-    nothing reads it in a way an insert would shift."""
+def stretched_reader(index: dict[str, Any], sheet: str, row: int, band: tuple[int, int] | None = None) -> str | None:
+    """A  range a  formula or a name reads that an empty row inserted at `row` (in the columns of
+    `band`, or the whole row) would land inside -- it starts above the row and reaches  it -- so the
+    range grows by a row: what reads it  by position (INDEX(table, Scenario+1, 4), MATCH,  OFFSET, a
+    lookup) then reads another cell. Model  D IFRS 17 tool, 2026-11-07: a title row inside the scenario
+    table  D29:H32 turned "New" into "Old". Excel's own  names (print area, filter range) do not count."""
+    rects = index["rects"].get(sheet) or []
+    if not rects:
+        return None
+    blocks, tall = _row_blocks(index, sheet, rects)
+    lo, hi = band if band else (1, 1 << 20)
+    for i in list(blocks.get(row // _BLOCK_ROWS, ())) + tall:
+        r1, r2, c1, c2, own = rects[i]
+        if r1 < row <= r2 and c1 <= hi and c2 >= lo and not own.lower().startswith(("name _xlnm.", "name print_", "name _filterdatabase")):
+            return own
+    return None
+
+
+def insert_blocker(index: dict[str, Any], sheet: str, row: int | None = None, band: tuple[int, int] | None = None) -> str | None:
+    """Why  a row  must not be inserted on `sheet` (at `row`, over `band`'s columns), in words -- or
+    None when nothing reads it in a way an insert would shift."""
+    if row is not None:
+        inside = stretched_reader(index, sheet, row, band)
+        if inside:
+            return f"the new row would fall inside a range {inside} reads, which would then read other cells"
     whole = whole_reference_to(index, sheet)
     if whole:
         return f"inserting a row would shift what {whole} counts or indexes over whole columns of this sheet"
@@ -425,7 +542,7 @@ def insert_blocker(index: dict[str, Any], sheet: str) -> str | None:
 
 
 def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]:
-    """STR-001: a '#Title' trapped inside a grid gets an empty row inserted
+    """STR-001:  a '#Title'  trapped inside a grid gets an empty row inserted
     above it -- only when no other grid on the sheet spans that row (a
     whole-row insert would split it too)."""
     ops, skipped = [], []
@@ -438,29 +555,29 @@ def plan_separate_merged_grids(analysis, report) -> tuple[list[dict], list[str]]
                 continue
             row = ref["r1"]
             if row <= g["first_row"]:
-                # A '#Title' on the grid's own first row (next to a label or a
-                # header) is not separated by a row above it -- the whole block
-                # just moves down and the next scan finds the same trapped title,
-                # an endless Prep round. It is a manual job.
+                # A '#Title' on the  grid's own first row (next to a label or a
+                # header) is  not separated by a row above  it -- the whole block
+                # just moves down  and the next scan finds the same trapped title,
+                # an endless Prep  round. It is a manual job.
                 skipped.append(f"{g['sheet']}!{cell}: the title shares the grid's first row with other content -- an empty row above would not separate it; move the title to its own row by hand")
                 continue
-            others = _row_insert_is_safe(grids, g["sheet"], row, own=g)
+            band, others = plan_row_insert(analysis, grids, g["sheet"], row, g)
             if others:
                 skipped.append(f"{g['sheet']}!{cell}: inserting a row would also split {', '.join(o['display_name'] for o in others[:3])} -- separate manually")
                 continue
-            blocker = insert_blocker(index, g["sheet"])
+            blocker = insert_blocker(index, g["sheet"], row, band)
             if blocker:
                 skipped.append(f"{g['sheet']}!{cell}: {blocker} -- separate manually")
                 continue
-            ops.append(_op("insert_row", "separate_merged_grids", "STR-001", g["sheet"], row=row, before=f"'{cell_value(analysis, g['sheet'], row, ref['c1'])}' directly below grid {g['display_name']}", after=f"empty row {row} inserted; title moves to row {row + 1}", note="Excel shifts every reference automatically"))
+            ops.append(_op("insert_row", "separate_merged_grids", "STR-001", g["sheet"], row=row, before=f"'{cell_value(analysis, g['sheet'], row, ref['c1'])}' directly below grid {g['display_name']}", after=f"{_insert_words(row, band)}; title moves to row {row + 1}", note="Excel shifts every reference automatically", **_insert_fields(row, band)))
     return ops, skipped
 
 
-# --- context-aware grid titles ---------------------------------------------
+# --- context-aware  grid titles ---------------------------------------------
 def _clean_name(text: Any) -> str:
     s = str(text).strip()
     s = s.lstrip("#").strip()
-    s = re.sub(r"\s*/[A-Za-z][A-Za-z0-9_.()]*", " ", s)  # a '/Flag' token would be read as a flag
+    s = re.sub(r"\s*/[A-Za-z][A-Za-z0-9_.()]*", " ", s)  # a  '/Flag' token  would be read as a flag
     s = s.replace("&&", " ")
     s = re.sub(r"[\r\n\t]+", " ", s)
     s = re.sub(r"\s{2,}", " ", s).strip(" :-–—")
@@ -479,14 +596,14 @@ def _unique_name(name: str, used: set[str]) -> str:
 
 
 def _section_header_name(analysis: dict[str, Any], g: dict[str, Any]) -> tuple[str, str] | None:
-    """The section heading written in the row *directly* above the grid.
+    """The  section heading  written in the row *directly* above the grid.
 
     Real models label a block with a heading row that is itself part of a
-    small grid (a section number next to a section title, or a row label
-    beside the header row), so it is neither blank nor a 'standalone' text
-    cell and the label searches below never see it. Preference:
+    small grid (a section number next to a section title,  or a row label
+    beside the header row), so it is neither  blank nor a 'standalone' text
+    cell and  the label searches below never see it.  Preference:
       1. the cell just left of the grid on that row  ('Mortality' beside
-         the 'Age | MNS | MS' header row),
+         the 'Age | MNS | MS'  header row),
       2. the leftmost text cell inside the grid's own columns
          ('Demographic Assumptions' above the block it heads).
     Formulas, numbers and existing '#Titles' are never used.
@@ -506,10 +623,17 @@ def _section_header_name(analysis: dict[str, Any], g: dict[str, Any]) -> tuple[s
     return None
 
 
+def _name_cell(source: str) -> str | None:
+    """The  cell a  name was taken from, when its source names one ("section heading above at B2",
+    "label to the left at B2", "the caption above at A1"); None for a header row, the assistant,  ..."""
+    m = re.search(r" at ([A-Z]{1,3}\d+)$", source or "")
+    return m.group(1) if m else None
+
+
 def _context_name(analysis: dict[str, Any], g: dict[str, Any], labels: list[dict[str, Any]], consumed: set[tuple[str, str]]) -> tuple[str, str, dict[str, Any] | None]:
-    """(name, source, consumed_label) for an untitled grid, from the cells around it:
+    """(name,  source, consumed_label)  for an untitled grid, from the cells around it:
     the section heading directly above it, a standalone label above it (a blank
-    row or more between), a standalone label to its left, its text header row,
+    row or more between), a standalone label to its left, its  text header row,
     else sheet + anchor."""
     r0, c0, c1 = g["first_row"], g["first_col"], g["last_col"]
     sheet = g["sheet"]
@@ -549,7 +673,7 @@ def _context_name(analysis: dict[str, Any], g: dict[str, Any], labels: list[dict
 
 
 def standalone_labels(analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    """Loose text cells that are not themselves '#Titles' -- the pool the
+    """Loose  text cells  that are not themselves '#Titles' -- the pool the
     naming heuristics draw a grid's name from."""
     labels: list[dict[str, Any]] = []
     for s in analysis["workbooks"][0]["sheets"]:
@@ -561,7 +685,7 @@ def standalone_labels(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def deterministic_name(analysis: dict[str, Any], grid: dict[str, Any], labels: list[dict[str, Any]] | None = None) -> tuple[str, str]:
-    """(name, source) the heuristics alone would give a grid -- what the
+    """(name,  source) the  heuristics alone would give a grid -- what the
     assistant's proposal is compared against."""
     try:
         name, source, _ = _context_name(analysis, grid, labels if labels is not None else standalone_labels(analysis), set())
@@ -571,9 +695,9 @@ def deterministic_name(analysis: dict[str, Any], grid: dict[str, Any], labels: l
 
 
 def is_weak_name(name: str | None, sheet: str) -> bool:
-    """True when a grid name carries no meaning: absent, the '<Sheet> <Anchor>'
+    """True  when a  grid name carries no meaning: absent, the '<Sheet> <Anchor>'
     fallback, or a scrap of a header row ('I', 'I I ...'). These are the names
-    worth sending to the assistant for a context-aware alternative."""
+    worth sending to the assistant for a context-aware  alternative."""
     text = (name or "").strip()
     if not text:
         return True
@@ -585,6 +709,119 @@ def is_weak_name(name: str | None, sheet: str) -> bool:
     return bool(re.fullmatch(r"[I|\s.]+", text))
 
 
+def _short_text(value: Any, limit: int = 40) -> str:
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _caption_shown(analysis: dict[str, Any], g: dict[str, Any]) -> str | None:
+    """The  text a  table's caption cell shows: its own text, or -- when the caption is a formula --
+    the text Excel last computed for it (the workbook's cached value; Joseph, 11 November 2026: the
+    formula  is replaced by '#' + that text). None when the caption  is not text, or the formula's
+    last  value is empty, an error or not  text: the table is then reported, not titled (a made-up name  never goes over a formula whose text  is unknown)."""
+    cap = g.get("caption_value")
+    if _is_text(cap):
+        return cap
+    if isinstance(cap, str) and cap.startswith("=") and g.get("caption_cell"):
+        ref = parse_ref(g["caption_cell"])
+        shown = values_cell(analysis, g["sheet"], ref["r1"], ref["c1"]) if ref else None
+        if _is_text(shown) and shown.strip().upper() not in ERROR_LITERALS:
+            return shown
+    return None
+
+
+def _title_site(
+    analysis: dict[str, Any],
+    index: dict[str, Any],
+    by_sheet: dict[str, list[dict[str, Any]]],
+    g: dict[str, Any],
+    titled_cells: set[tuple[str, str]],
+    label: dict[str, Any] | None = None,
+    name_cell: str | None = None,
+) -> dict[str, Any]:
+    """Where  the title  of the untitled grid `g` goes, moving nothing: the cell directly above its
+    top-left cell, the one cell Mind reads a title from. -> {"cell", "before", "note"} when it can be
+    written, {"skip":  reason} when it cannot (the reason says what to do by  hand).
+
+    A table made of a key  column and the block beside it (grids._merge_key_columns)  has a caption on
+    top of the key column: that caption cell  is the title cell, and its own  text becomes the title.
+    A caption that is a formula is replaced too (Joseph, 11 November 2026): the cell loses its
+    formula and gets '#' + the text the formula last showed (_caption_shown), and the note says so
+    -- an open issue, since the cell no longer follows what the formula read. An empty
+    cell above is written when nothing reads it and nothing sits  right above it that Mind would
+    read on through the title into the grid (a lone text, or a grid whose first column is this one;
+    a label this plan moves into the title does not count -- and a label is moved only when the
+    title's name was made from its own text: `label`, or the heading cell `name_cell`; any other
+    title beside a label is reported). A grid that starts on row 1, or whose
+    cell above belongs to another grid (a section heading  row, a table right above),  is reported."""
+    sheet = g["sheet"]
+    r0, c0 = g["first_row"], g["first_col"]
+    if g.get("caption_cell"):
+        cap = g.get("caption_value")
+        parts = g.get("merged_from") or []
+        table = f" (the key column {parts[0]} and the block {parts[1]} are one table)" if len(parts) == 2 else ""
+        reader = referenced_by(index, sheet, r0 - 1, c0)
+        if reader:
+            return {"skip": f"the caption above it ({g['caption_cell']}) is read by {reader} -- turning it into a title would change that result"}
+        # a reader the index cannot pin  to one cell  (as _move_to_free_column  refuses too): an INDIRECT that
+        # builds addresses on this sheet, or a 3-D reference across it, may read the caption cell as well
+        through = index.get("text_addressed", {}).get(sheet)
+        if through:
+            return {"skip": f"the caption above it ({g['caption_cell']}) may be read by {through} through an address built as text (INDIRECT) -- turning it into a title could change that result"}
+        three_d = index.get("positional", {}).get(sheet)
+        if three_d:
+            return {"skip": f"the caption above it ({g['caption_cell']}) may be read by the 3-D reference in {three_d}, which finds its cells by position on every sheet of its range -- turning it into a title could change that result"}
+        if isinstance(cap, str) and cap.startswith("="):
+            if _caption_shown(analysis, g) is None:
+                # no text to carry into the title: a workbook never  calculated, an error, a number or a date
+                return {"skip": f"the caption above it ({g['caption_cell']}) is a formula whose last computed value is not text (or the workbook holds no computed value for it) -- recalculate the workbook and name it again, or leave an empty row above the table by hand"}
+            # the caption's formula goes:  nothing reads the cell, and the  title carries the text it last showed
+            return {"cell": g["caption_cell"], "before": cap, "note": f"; this cell held a formula ({_short_text(cap, 160)}); it is replaced by the title{table}. Open issue: if the caption must stay a formula, leave an empty row above the table instead"}
+        return {"cell": g["caption_cell"], "before": cap, "note": f"; the caption becomes the title{table}"}
+    if r0 == 1:
+        return {"skip": "starts on row 1, so there is no cell above it for a title. Insert an empty row above it by hand, then name it again"}
+    above_cell = ref_text(c0, r0 - 1)
+    if (sheet, above_cell) in titled_cells:
+        return {"skip": f"the cell above ({above_cell}) gets another grid's title in this plan"}
+    above_val = cell_value(analysis, sheet, r0 - 1, c0)
+    holder = grid_containing(by_sheet.get(sheet, []), r0 - 1, c0)
+    if holder is not None or not _blank(above_val):
+        what = f"holds '{_short_text(above_val)}'" if not _blank(above_val) else "is taken"
+        part = f" (part of the grid {holder['display_name']}, {holder['ref']})" if holder is not None else ""
+        return {"skip": f"the cell above ({above_cell}) {what}{part} -- a title needs that cell and nothing is moved to make room. Leave an empty row above the grid by hand, then name it again"}
+    if r0 > 2:
+        over_val = cell_value(analysis, sheet, r0 - 2, c0)
+        moved = label is not None and label["sheet"] == sheet and label["row"] == r0 - 2 and label["col"] == c0 and not referenced_by(index, sheet, r0 - 2, c0)
+        if not _blank(over_val) and not moved:
+            over = grid_containing(by_sheet.get(sheet, []), r0 - 2, c0)
+            if over is None or over["first_col"] == c0:
+                return {"skip": f"a title in {above_cell} would touch {ref_text(c0, r0 - 2)} ('{_short_text(over_val)}') right above it, and Mind would read the two as one grid. Leave an empty row between them by hand, then name it again"}
+    reader = referenced_by(index, sheet, r0 - 1, c0)
+    if reader:
+        return {"skip": f"the cell above ({above_cell}) is read by {reader} -- a title there would change that result"}
+    # Mind  reads left to right: a cell right beside the title, on  its left, is read first and runs  on
+    # into the title (a lone text, or a grid that starts on that row). A lone label nothing reads is
+    # moved into the title (its text names the grid: _section_header_name); anything else is reported.
+    if c0 > 1:
+        left_cell = ref_text(c0 - 1, r0 - 1)
+        left_val = cell_value(analysis, sheet, r0 - 1, c0 - 1)
+        left_grid = grid_containing(by_sheet.get(sheet, []), r0 - 1, c0 - 1)
+        if not _blank(left_val) and (left_grid is None or left_grid["first_row"] == r0 - 1):
+            left_reader = referenced_by(index, sheet, r0 - 1, c0 - 1)
+            # moved only when its own text IS the title (the name came from it): a user's or an
+            # assistant's name would not carry the label's words, and the label would  just be lost
+            from_label = (label is not None and label["sheet"] == sheet and label["row"] == r0 - 1 and label["col"] == c0 - 1) or name_cell == left_cell
+            if left_grid is None and not left_reader and _is_text(left_val) and from_label:
+                return {"cell": above_cell, "before": None, "note": f"; the label beside it ({left_cell}) is moved into the title", "clear": {"cell": left_cell, "text": left_val}}
+            why = f"is read by {left_reader}" if left_reader else f"is part of the grid {left_grid['display_name']}, {left_grid['ref']}" if left_grid is not None else "is a label of its own (the title is not made from it)" if _is_text(left_val) else "is not a plain label"
+            return {"skip": f"a title in {above_cell} would touch {left_cell} ('{_short_text(left_val)}') beside it, which {why}, and Mind would read the two as one grid. Leave an empty cell between them by hand, then name it again"}
+    return {"cell": above_cell, "before": None, "note": ""}
+
+
 def plan_create_grid_titles(
     analysis,
     report,
@@ -593,35 +830,46 @@ def plan_create_grid_titles(
     reserved: set[str] | list[str] | None = None,
     pre_titled: set[tuple[str, str]] | None = None,
     pre_inserted: dict[str, set[int]] | None = None,
+    pre_banded: dict[str, list[tuple[int, int, int]]] | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """STR-004 / STR-002 / STR-001: every untitled grid gets exactly one
-    '#Name' title with a name taken from its surroundings.
+    """STR-004  / STR-002  / STR-001: every untitled grid gets exactly one
+    '#Name' title with a name taken from its surroundings -- and no cell is
+    ever moved to make room for it (Joseph, 10 November 2026:  a row inserted
+    for one grid's title pushed the key column of  the IFRS 17 tool's Result_CF
+    out of  line with its rows).
 
-    Cases, in order:
-      A. caption above a table -- a text cell whose right neighbour is empty
-         while the row below starts a block that is wider: Mind (and this
-         app) read the caption as a one-column grid that swallows the table's
-         first column, and the rest of the table as a second grid ("two
-         headers for one range"). Prepending '#' turns the caption into the
-         title and the table below becomes one grid.
-      B. the cell above the grid is empty -> write '#<name>' there; the name
-         comes from a nearby standalone label (which is then moved into the
-         title), else the header row, else sheet + position.
-      C. the grid starts on row 1 -> insert a row first (only when that
-         cuts no other grid), then write the title.
+    The title goes into  the one cell Mind reads a title from: the cell
+    directly above  the grid's top-left cell (_title_site).
+      * empty -> '#<name>'  is written there; the name comes from the section
+        heading or a nearby standalone label (which is then moved into the
+        title), else the header row, else sheet + position;
+      * a caption on top of the table's key column (the table is one grid of a
+        key column plus the block beside it, grids._merge_key_columns): the
+        caption's own text becomes the title ('#' + text); a caption  that is
+        a formula is replaced by '#' + the text it last showed (the cached
+        value), and the action's note says the formula went (an open issue,
+        Joseph, 11 November 2026); a formula whose last value is empty, an
+        error or not text is reported instead (recalculate, or leave an empty
+        row above the table by hand): no made-up name over a formula whose
+        text the app does not know;
+      * another grid's cell there, a cell something reads, or no cell there
+        at all (the grid starts on  row 1): the grid is  left as it is and
+        reported under "could  not name" with  the reason  and what to do by
+        hand.
     Names are unique across the workbook; a grid that already has a title
     or contains a trapped title (STR-001) is never given another one.
 
-    `names` (optional) maps "Sheet!Ref" to a name proposed by the assistant
-    (app/grid_naming.py). It is only ever consulted when the deterministic
-    name would be a weak one, and it goes through the same cleaning and
-    uniqueness rules, so it can change *which* name is written but never
-    where it is written or whether the operation is safe.
+    `names` (optional) maps "Sheet!Ref" to  a name proposed by the assistant
+    (app/grid_naming.py). It is only ever consulted  when the deterministic
+    name would be a  weak one, and it goes through the  same cleaning and
+    uniqueness rules, so it can change *which* name is  written but never
+    where it is written or  whether the operation is safe.
 
-    `exclude` / `reserved` / `pre_titled` / `pre_inserted` come from the Grid
-    Namer (plan_named_areas): grids the user handled by hand are left alone,
-    their chosen names are already taken, and their write sites and row
-    inserts count as used, so one combined apply never collides."""
+    `exclude` / `reserved` / `pre_titled` come from the Grid Namer
+    (plan_named_areas): grids the user handled by hand are left alone, their
+    chosen names are already taken, and their write sites count as used, so
+    one combined apply never collides. `pre_inserted` / `pre_banded` are kept
+    for the callers of older versions: nothing inserts rows any more."""
     ops: list[dict[str, Any]] = []
     skipped: list[str] = []
     exclude = exclude or set()
@@ -632,90 +880,36 @@ def plan_create_grid_titles(
     labels = standalone_labels(analysis)
     consumed: set[tuple[str, str]] = set()
     titled_cells: set[tuple[str, str]] = set(pre_titled or ())
-    inserted_rows: dict[str, set[int]] = {k: set(v) for k, v in (pre_inserted or {}).items()}
     by_sheet: dict[str, list[dict[str, Any]]] = {}
     for g in grids:
         by_sheet.setdefault(g["sheet"], []).append(g)
 
-    # A. captions that split a table
-    caption_handled: set[int] = set()
     for g in grids:
-        if g.get("name") or g["n_cols"] != 1 or not _is_text(g.get("header_values", [None])[0]):
-            continue
-        r0, c0 = g["first_row"], g["first_col"]
-        right = [h for h in by_sheet.get(g["sheet"], []) if h is not g and h["first_row"] == r0 + 1 and h["first_col"] == c0 + 1]
-        if not right:
-            continue
-        if f"{g['sheet']}!{g['ref']}" in exclude or f"{right[0]['sheet']}!{right[0]['ref']}" in exclude:
-            continue  # the user named this pair (or one of it) in the Grid Namer
-        caption = str(g["header_values"][0])
-        reader = referenced_by(index, g["sheet"], r0, c0)
-        if reader:
-            skipped.append(f"{g['sheet']}!{g['anchor']}: the caption is read by {reader} -- turning it into a title would change that result")
-            caption_handled.add(id(g))
-            caption_handled.add(id(right[0]))
-            continue
-        name = _unique_name(_clean_name(caption), used)
-        ops.append(_op("set_value", "create_grid_titles", "STR-001", g["sheet"], cell=g["anchor"], before=caption, after=f"#{name}", note=f"caption above the table {right[0]['ref']}: becomes its title so the table is one grid"))
-        titled_cells.add((g["sheet"], g["anchor"]))
-        caption_handled.add(id(g))
-        caption_handled.add(id(right[0]))
-
-    # B / C. every other untitled grid
-    for g in grids:
-        if g.get("name") or id(g) in caption_handled or f"{g['sheet']}!{g['ref']}" in exclude:
+        if g.get("name") or f"{g['sheet']}!{g['ref']}" in exclude:
             continue
         if g.get("inner_title_cells"):
-            skipped.append(f"{g['sheet']}!{g['ref']}: contains a trapped '#Title' (STR-001) -- separate the grids first")
+            skipped.append(f"{g['sheet']}!{g['ref']}: contains a trapped '#Title', {cite('STR-001')} -- separate the grids first")
             continue
-        r0, c0 = g["first_row"], g["first_col"]
-        name, source, label = _context_name(analysis, g, labels, consumed)
+        label = None
+        shown = _caption_shown(analysis, g) if g.get("caption_cell") else None
+        if shown and _clean_name(shown):
+            name, source = _clean_name(shown), f"the caption above at {g['caption_cell']}"
+        else:
+            name, source, label = _context_name(analysis, g, labels, consumed)
         proposed = _clean_name((names or {}).get(f"{g['sheet']}!{g['ref']}", ""))
         if proposed and is_weak_name(name, g["sheet"]):
-            name, source = proposed, "the assistant, from the surrounding cells"
+            name, source, label = proposed, "the assistant, from the surrounding cells", None  # the label's text is not the title:  it stays
+        site = _title_site(analysis, index, by_sheet, g, titled_cells, label, _name_cell(source))
+        if site.get("skip"):
+            skipped.append(f"{g['sheet']}!{g['ref']}: {site['skip']}")
+            continue
         name = _unique_name(name, used)
         title = f"#{name}"
-        above_cell = ref_text(c0, r0 - 1) if r0 > 1 else None
-        above_val = cell_value(analysis, g["sheet"], r0 - 1, c0) if r0 > 1 else None
-        above_is_free = (
-            r0 > 1
-            and (g["sheet"], above_cell) not in titled_cells
-            and (above_val is None or (isinstance(above_val, str) and above_val.strip() == ""))
-            and grid_containing(by_sheet.get(g["sheet"], []), r0 - 1, c0) is None
-        )
-        if above_is_free:
-            reader = referenced_by(index, g["sheet"], r0 - 1, c0)
-            if reader:
-                skipped.append(f"{g['sheet']}!{g['ref']}: the cell above ({above_cell}) is read by {reader} -- a title there would change that result")
-                continue
-            ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=above_cell, before=None, after=title, note=f"name from {source}"))
-            titled_cells.add((g["sheet"], above_cell))
-        else:
-            # The cell above is taken (a section heading, another grid, another
-            # grid's title) or the grid starts on row 1: make room with a whole
-            # row insert -- but only when no other grid spans that row and no
-            # formula counts or indexes whole columns of this sheet.
-            reason = "starts on row 1" if r0 == 1 else f"the cell above ({above_cell}) is not free"
-            already = r0 in inserted_rows.get(g["sheet"], set())
-            if not already:
-                cutting = _row_insert_is_safe(grids, g["sheet"], r0, own=g)
-                if cutting:
-                    skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
-                    continue
-                blocker = insert_blocker(index, g["sheet"])
-                if blocker:
-                    skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and {blocker}")
-                    continue
-            reader = referenced_by(index, g["sheet"], r0, c0)
-            if reader:
-                skipped.append(f"{g['sheet']}!{g['ref']}: {reason} and the title row would fall inside the range {reader} reads")
-                continue
-            if not already:
-                before = f"grid {g['ref']} starts on row 1" if r0 == 1 else f"'{above_val}' sits directly above grid {g['ref']}"
-                ops.append(_op("insert_row", "create_grid_titles", "STR-004", g["sheet"], row=r0, before=before, after=f"empty row {r0} inserted (the grid moves down one row)", note="makes room for the title; Excel shifts every reference automatically"))
-                inserted_rows.setdefault(g["sheet"], set()).add(r0)
-            ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=ref_text(c0, r0), before=None, after=title, note=f"name from {source}; written after the row insert", after_inserts=True, insert_at=r0))
-            titled_cells.add((g["sheet"], ref_text(c0, r0)))
+        ops.append(_op("set_value", "create_grid_titles", "STR-004", g["sheet"], cell=site["cell"], before=site["before"], after=title, note=f"name from {source}{site['note']}"))
+        titled_cells.add((g["sheet"], site["cell"]))
+        if site.get("clear"):
+            consumed.add((g["sheet"], site["clear"]["cell"]))
+            ops.append(_op("clear_cell", "create_grid_titles", "STR-002", g["sheet"], cell=site["clear"]["cell"], before=site["clear"]["text"], after=None, note=f"label beside the title moved into the title of {g['sheet']}!{g['ref']}"))
         if label is not None:
             lref = parse_ref(label["cell"])
             reader = referenced_by(index, label["sheet"], lref["r1"], lref["c1"]) if lref else None
@@ -733,7 +927,7 @@ def plan_create_grid_titles(
 
 
 def _canonical_flags(flags: Any, docs: dict[str, dict[str, Any]]) -> tuple[list[str], list[str]]:
-    """User-typed flags -> ('Input', 'Resize.A', ...) with the documented casing
+    """User-typed  flags ->  ('Input', 'Resize.A', ...) with the documented casing
     for the name part; anything that does not parse as exactly one '/Flag'
     token comes back in the second list."""
     out: list[str] = []
@@ -758,29 +952,30 @@ def _canonical_flags(flags: Any, docs: dict[str, dict[str, Any]]) -> tuple[list[
 
 
 def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> dict[str, Any]:
-    """The Grid Namer screen: the user selected an area of a sheet,
+    """The  Grid Namer  screen: the user selected an area of a sheet,
     chose a name and flags, and submitted. Naming cannot redraw Mind's grid
-    boundaries -- only label what its detection already sees -- so each area
-    is resolved to the detected grid it touches (exactly one, or the
-    documented caption-above-a-table pair) and the '#Name /Flags' title is
-    written with the same reference-safety rules as create_grid_titles: a
-    write site some formula reads is refused, with the reader named.
+    boundaries -- only label what its detection already sees -- so each  area
+    is resolved to the detected grid it touches (exactly one, or  the
+    documented caption-above-a-table pair) and the '#Name  /Flags' title is
+    written with the same reference-safety  rules as create_grid_titles: a
+    write site some formula reads is refused, with  the reader named.
 
-    areas: [{"sheet", "ref", "name", "flags": ["Input", ...]}], ref being the
+    areas: [{"sheet", "ref", "name", "flags":  ["Input", ...]}], ref being the
     user's selection (a cell or a range) in that sheet.
 
     Returns {"ops", "skipped", "named" (grid keys "Sheet!Ref" a title was
     planned for), "exclude" (grid keys the automatic pass must leave alone,
     including refused ones -- retrying them would only repeat the refusal),
-    "reserved" (names now taken), "titled_cells", "inserted_rows"} -- the last
-    four feed plan_create_grid_titles so one combined apply never collides."""
+    "reserved" (names now taken), "titled_cells"} -- the last three feed
+    plan_create_grid_titles so one combined apply never collides
+    ("inserted_rows" / "banded_rows" stay,  empty: no row is inserted for a
+    title any more; the title goes where _title_site says or nowhere)."""
     ops: list[dict[str, Any]] = []
     skipped: list[str] = []
     named: list[str] = []
     exclude: set[str] = set()
     reserved: list[str] = []
     titled_cells: set[tuple[str, str]] = set()
-    inserted_rows: dict[str, set[int]] = {}
     grids = all_grids(analysis)
     index = reference_index(analysis)
     docs = documented_flags()
@@ -812,46 +1007,14 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
         c1, c2 = min(r["c1"], r["c2"]), max(r["c1"], r["c2"])
         hits = []
         for g in by_sheet[sheet]:
-            t = parse_ref(g["title_cell"]) if g.get("title_cell") else None
+            # the title cell, and the caption on top of a table's key column, belong to the grid
+            t = parse_ref(g["title_cell"] or g.get("caption_cell") or "") if (g.get("title_cell") or g.get("caption_cell")) else None
             in_rect = not (g["last_row"] < r1 or g["first_row"] > r2 or g["last_col"] < c1 or g["first_col"] > c2)
             on_title = t is not None and r1 <= t["r1"] <= r2 and c1 <= t["c1"] <= c2
             if in_rect or on_title:
                 hits.append(g)
         if len(hits) == 1:
-            # A hit that is one half of an untitled caption-above-a-table pair is
-            # extended to the pair: titling only one half would leave the other to
-            # the automatic pass, whose separate title lands adjacent and makes the
-            # re-detected grids merge wrongly (seen live on the caption layout).
-            g = hits[0]
-            cap = table = None
-            if not g.get("name"):
-                if g["n_cols"] == 1 and _is_text(g.get("header_values", [None])[0]):
-                    t = [h for h in by_sheet[sheet] if h is not g and not h.get("name") and h["first_row"] == g["first_row"] + 1 and h["first_col"] == g["first_col"] + 1]
-                    if t:
-                        cap, table = g, t[0]
-                if cap is None:
-                    c = [
-                        h for h in by_sheet[sheet]
-                        if h is not g and not h.get("name") and h["n_cols"] == 1 and _is_text(h.get("header_values", [None])[0])
-                        and g["first_row"] == h["first_row"] + 1 and g["first_col"] == h["first_col"] + 1
-                    ]
-                    if c:
-                        cap, table = c[0], g
-            resolved.append({"grid": cap or g, "name": name, "flags": flags, "table": table})
-            continue
-        # the documented caption-above-a-table split reads as two grids; the
-        # user naturally selects both -- turning the caption into the title
-        # merges them into one named grid
-        if len(hits) == 2:
-            for cap, table in ((hits[0], hits[1]), (hits[1], hits[0])):
-                if (
-                    not cap.get("name") and cap["n_cols"] == 1 and _is_text(cap.get("header_values", [None])[0])
-                    and table["first_row"] == cap["first_row"] + 1 and table["first_col"] == cap["first_col"] + 1
-                ):
-                    resolved.append({"grid": cap, "name": name, "flags": flags, "table": table})
-                    break
-            else:
-                skipped.append(f"{label}: the selection touches 2 grids ({hits[0]['ref']}, {hits[1]['ref']}) -- Mind reads them separately; select and name one at a time")
+            resolved.append({"grid": hits[0], "name": name, "flags": flags})
             continue
         if not hits:
             skipped.append(f"{label}: Mind detects no grid there (an alone text cell or empty space is ignored) -- nothing to name")
@@ -862,25 +1025,12 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
     used = {g["name"].strip().lower() for g in grids if g.get("name") and id(g) not in retitled}
 
     for item in resolved:
-        g, table = item["grid"], item["table"]
+        g = item["grid"]
         gkey = f"{g['sheet']}!{g['ref']}"
         exclude.add(gkey)
-        if table is not None:
-            exclude.add(f"{table['sheet']}!{table['ref']}")
         unique = _unique_name(item["name"], used)
         suffix = "" if unique == item["name"] else f" (made unique: '{item['name']}' is already a grid name)"
         title = "#" + unique + "".join(f" /{f}" for f in item["flags"])
-
-        if table is not None:  # caption case: the caption cell becomes the title of the table below
-            reader = referenced_by(index, g["sheet"], g["first_row"], g["first_col"])
-            if reader:
-                skipped.append(f"{gkey}: the caption is read by {reader} -- turning it into a title would change that result")
-                continue
-            ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=g["anchor"], before=g["header_values"][0], after=title, note=f"user-chosen name; the caption becomes the title of the table {table['ref']}{suffix}"))
-            titled_cells.add((g["sheet"], g["anchor"]))
-            named.append(gkey)
-            reserved.append(unique)
-            continue
 
         if g.get("title_cell"):  # already titled: rewrite the title cell
             if (g.get("title") or "").strip() == title:
@@ -898,53 +1048,23 @@ def plan_named_areas(analysis: dict[str, Any], areas: list[dict[str, Any]]) -> d
             reserved.append(unique)
             continue
 
-        # untitled: same write sites and safety checks as create_grid_titles
-        r0, c0 = g["first_row"], g["first_col"]
-        above_cell = ref_text(c0, r0 - 1) if r0 > 1 else None
-        above_val = cell_value(analysis, g["sheet"], r0 - 1, c0) if r0 > 1 else None
-        above_is_free = (
-            r0 > 1
-            and (g["sheet"], above_cell) not in titled_cells
-            and (above_val is None or (isinstance(above_val, str) and above_val.strip() == ""))
-            and grid_containing(by_sheet.get(g["sheet"], []), r0 - 1, c0) is None
-        )
-        if above_is_free:
-            reader = referenced_by(index, g["sheet"], r0 - 1, c0)
-            if reader:
-                skipped.append(f"{gkey}: the cell above ({above_cell}) is read by {reader} -- a title there would change that result")
-                continue
-            ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=above_cell, before=None, after=title, note=f"user-chosen name and flags{suffix}"))
-            titled_cells.add((g["sheet"], above_cell))
-        else:
-            reason = "starts on row 1" if r0 == 1 else f"the cell above ({above_cell}) is not free"
-            already = r0 in inserted_rows.get(g["sheet"], set())
-            if not already:
-                cutting = _row_insert_is_safe(grids, g["sheet"], r0, own=g)
-                if cutting:
-                    skipped.append(f"{gkey}: {reason} and inserting a row would cut {cutting[0]['display_name']}")
-                    continue
-                blocker = insert_blocker(index, g["sheet"])
-                if blocker:
-                    skipped.append(f"{gkey}: {reason} and {blocker}")
-                    continue
-            reader = referenced_by(index, g["sheet"], r0, c0)
-            if reader:
-                skipped.append(f"{gkey}: {reason} and the title row would fall inside the range {reader} reads")
-                continue
-            if not already:
-                before = f"grid {g['ref']} starts on row 1" if r0 == 1 else f"'{above_val}' sits directly above grid {g['ref']}"
-                ops.append(_op("insert_row", "named_areas", "STR-004", g["sheet"], row=r0, before=before, after=f"empty row {r0} inserted (the grid moves down one row)", note="makes room for the user-chosen title; Excel shifts every reference automatically"))
-                inserted_rows.setdefault(g["sheet"], set()).add(r0)
-            ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=ref_text(c0, r0), before=None, after=title, note=f"user-chosen name and flags{suffix}; written after the row insert", after_inserts=True, insert_at=r0))
-            titled_cells.add((g["sheet"], ref_text(c0, r0)))
+        # untitled: the same write site and safety checks as create_grid_titles, nothing moved
+        site = _title_site(analysis, index, by_sheet, g, titled_cells)
+        if site.get("skip"):
+            skipped.append(f"{gkey}: {site['skip']}")
+            continue
+        ops.append(_op("set_value", "named_areas", "STR-004", g["sheet"], cell=site["cell"], before=site["before"], after=title, note=f"user-chosen name and flags{suffix}{site['note']}"))
+        titled_cells.add((g["sheet"], site["cell"]))
+        if site.get("clear"):
+            ops.append(_op("clear_cell", "named_areas", "STR-002", g["sheet"], cell=site["clear"]["cell"], before=site["clear"]["text"], after=None, note=f"label beside the title moved into the title of {gkey}"))
         named.append(gkey)
         reserved.append(unique)
 
-    return {"ops": ops, "skipped": skipped, "named": named, "exclude": exclude, "reserved": reserved, "titled_cells": titled_cells, "inserted_rows": inserted_rows}
+    return {"ops": ops, "skipped": skipped, "named": named, "exclude": exclude, "reserved": reserved, "titled_cells": titled_cells, "inserted_rows": {}, "banded_rows": {}}
 
 
 def plan_explicit_colors(analysis, report) -> tuple[list[dict], list[str]]:
-    """FMT-002: theme colours become explicit RGB (same look, no theme dependency)."""
+    """FMT-002:  theme colours  become explicit RGB (same look, no theme dependency)."""
     ops, skipped = [], []
     for s in analysis["workbooks"][0]["sheets"]:
         refs = s.get("style_stats", {}).get("theme_color_cell_refs", [])
@@ -957,7 +1077,7 @@ def plan_explicit_colors(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_keep_empty_styles(analysis, report) -> tuple[list[dict], list[str]]:
-    """FMT-003: KB -- add an apostrophe + space to styled empty cells so Mind
+    """FMT-003:  KB --  add an apostrophe + space to styled empty cells so Mind
     keeps their style. Changes cell content (COUNTA etc.), so off by default."""
     ops, skipped = [], []
     for s in analysis["workbooks"][0]["sheets"]:
@@ -971,7 +1091,7 @@ def plan_keep_empty_styles(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_unprotect_sheets(analysis, report) -> tuple[list[dict], list[str]]:
-    """FMT-005: sheet protection makes locked cells non-clickable in Mind."""
+    """FMT-005:  sheet protection  makes locked cells non-clickable in Mind."""
     ops, skipped = [], []
     for s in analysis["workbooks"][0]["sheets"]:
         if s.get("protected"):
@@ -979,23 +1099,24 @@ def plan_unprotect_sheets(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-_SHEET_REF_ERROR_RE = re.compile(r"(?<![:\w'.])(?:'(?:[^']|'')+'|[A-Za-z0-9_.]+)!#REF!(?![:\w])")
+_SHEET_REF_ERROR_RE = re.compile(r"(?<![:\w'.])(?:'(?:[^']|'')+'|[\w.]+)!#REF!(?![:\w])")
 
 
 def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool, bool]:
-    """Replace broken references with NA(): every standalone reference to a broken
+    """Replace  broken references  with NA(): every standalone reference to a broken
     defined name and every standalone literal #REF!, sheet-qualified or not
     ('Policy data'!#REF!). A call that then holds NA() where Excel needs
-    a range (SUMIFS(NA(),...) -- Excel refuses such a formula) becomes NA()
-    itself (`collapse_na_reference_calls`; exact, it could only ever produce an
-    error). Returns (fixed, has_unfixable, collapsed) where has_unfixable is
-    True if a #REF! remains (e.g. a range endpoint A1:#REF! that cannot be
-    safely NA()-swapped) or Excel would still refuse the result, and collapsed
+    a range (SUMIFS(NA(),...) -- Excel  refuses such a formula) becomes NA()
+    itself (`collapse_na_reference_calls`; exact, it could only  ever produce an
+    error). Returns (fixed, has_unfixable,  collapsed) where has_unfixable is
+    True if a #REF!  remains (e.g. a range endpoint A1:#REF! that cannot be
+    safely NA()-swapped) or  Excel would still refuse the result, and  collapsed
     is True if a whole call had to become NA() (the broken reference stood for
     a range)."""
     fixed = formula
     for nm in sorted(broken_names, key=len, reverse=True):
-        fixed = re.sub(r"(?<![A-Za-z0-9_.])" + re.escape(nm) + r"(?![A-Za-z0-9_.])", "NA()", fixed)
+        # with its sheet, if it has one: Projn!Name -> NA(), not Projn!NA() (Excel refuses that)
+        fixed = re.sub(r"(?<![\w.\]])(?:(?:'(?:[^']|'')+'|[\w.]+)!)?" + re.escape(nm) + r"(?![\w.])", "NA()", fixed)
     fixed = _SHEET_REF_ERROR_RE.sub("NA()", fixed)
     fixed = re.sub(r"(?<![:!\w])#REF!(?![:\w])", "NA()", fixed)  # standalone #REF! only
     swapped = fixed
@@ -1004,12 +1125,12 @@ def _na_fix_formula(formula: str, broken_names) -> tuple[str, bool, bool]:
 
 
 def plan_fix_broken_refs(analysis, report) -> tuple[list[dict], list[str]]:
-    """REF-001 fix: rewrite formulas that reference broken (#REF!) defined names or
+    """REF-001  fix: rewrite  formulas that reference broken (#REF!) defined names or
     contain a literal #REF!, replacing the broken reference with NA(). Conservative:
-    a broken reference only ever produced an error and NA() is also an error, so no
-    valid result changes (IFERROR/valid branches keep their value). Array formulas are
-    rewritten as arrays; a #REF! that cannot be safely swapped (range endpoint) is
-    skipped for review."""
+    a broken reference only ever produced an error and NA() is also an error,  so no
+    valid result changes (IFERROR/valid branches keep their value). Array formulas  are
+    rewritten as arrays; a #REF! that  cannot be safely swapped (range endpoint) is
+    skipped  for review."""
     ops, skipped = [], []
     for f, fixed, unfixable, collapsed in _broken_reference_sites(analysis):
         sheet, cell, formula = f["sheet"], f["cell"], f["formula"]
@@ -1025,17 +1146,17 @@ def plan_fix_broken_refs(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, Any], str, bool, bool]]:
-    """Every formula with a broken reference: (formula record, NA()-rewritten
+    """Every  formula with  a broken reference: (formula record, NA()-rewritten
     formula, unfixable, collapsed) where `unfixable` means a #REF! remains after
     the rewrite -- it stood for a range (A1:#REF!), which NA() cannot replace
-    without changing the formula's meaning -- and `collapsed` means a call that
-    needs a range (SUMIFS('Sheet'!#REF!,...)) had to become NA() as a whole."""
+    without changing the formula's meaning  -- and `collapsed` means a call that
+    needs a range (SUMIFS('Sheet'!#REF!,...)) had  to become NA() as a whole."""
     wb0 = analysis["workbooks"][0]
     broken = sorted({d["name"] for d in wb0.get("defined_names", []) if "#REF!" in str(d.get("value") or "")})
-    name_re = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(re.escape(n) for n in broken) + r")(?![A-Za-z0-9_.])") if broken else None
+    name_re = re.compile(r"(?<![\w.])(" + "|".join(re.escape(n) for n in broken) + r")(?![\w.])") if broken else None
     lit_re = re.compile(r"#REF!")
-    # A name no definition exists for (misspelt, or deleted) is broken too -- Excel shows
-    # #NAME? where it is evaluated, Mind refuses the formula ('not a function') even in a branch
+    # A  name no definition exists for (misspelt, or  deleted) is broken too -- Excel shows
+    # #NAME? where it is evaluated,  Mind refuses the formula ('not a function')  even in a branch
     # never taken. It becomes NA() like a #REF! name.
     known = {str(d["name"]).upper() for d in wb0.get("defined_names", []) if d.get("name")} | {str(t).upper() for sh in wb0.get("sheets", []) for t in sh.get("tables", [])}
     out = []
@@ -1051,13 +1172,13 @@ def _broken_reference_sites(analysis: dict[str, Any]) -> list[tuple[dict[str, An
 
 
 def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]:
-    """REF-001, the range case: a formula whose broken reference stands
+    """REF-001,  the range  case: a formula whose broken reference stands
     for a whole range cannot be patched piecewise, so the *whole* formula
     becomes =NA(). Conservative for the same reason as the piecewise fix: the
-    cell already evaluated to an error, and it still does -- no valid value
-    changes. It is a bigger decision (a calculation is replaced, not repaired),
-    so it is its own action with its own checkbox and a caution note.
-    Where only the call that needs the range has to go
+    cell already evaluated  to an error, and it still does -- no valid value
+    changes.  It is a bigger decision (a  calculation is replaced, not repaired),
+    so it is  its own action with its own checkbox and a caution note.
+    Where  only the call that needs the range  has to go
     (`collapse_na_reference_calls`), only that call becomes NA() --
     =IFERROR(SUMIF(#REF!,1),0) -> =IFERROR(NA(),0) keeps its 0."""
     ops, skipped = [], []
@@ -1083,21 +1204,21 @@ def plan_fix_broken_refs_whole(analysis, report) -> tuple[list[dict], list[str]]
 # into) as `_xlfn.ANCHORARRAY(A1)`. Mind rejects every such formula with
 # "Unsupported formula: ANCHORARRAY()". The spill's current extent is known:
 # Excel writes the anchor as an array formula whose `ref` is the spilled
-# range. Replacing the reference by that fixed range keeps today's result and
+# range. Replacing the reference by  that fixed range keeps today's result and
 # gives Mind a formula it compiles; if the source grows later, the range will
 # not follow (the caution says so).
-SPILL_CALL_RE = re.compile(r"(?<![A-Za-z0-9_.])(?:_xlfn\.)?ANCHORARRAY\(\s*((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})\s*\)", re.IGNORECASE)
-SPILL_HASH_RE = re.compile(r"(?<![A-Za-z0-9_.#])((?:'[^']+'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})#", re.IGNORECASE)
+SPILL_CALL_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?ANCHORARRAY\(\s*((?:'[^']+'|[\w.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})\s*\)", re.IGNORECASE)
+SPILL_HASH_RE = re.compile(r"(?<![\w.#])((?:'[^']+'|[\w.]+)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7})#", re.IGNORECASE)
 
 
 def _absolute(ref: str) -> str:
-    """'B12' -> '$B$12' (a single A1 reference)."""
+    """'B12'  -> '$B$12'  (a single A1 reference)."""
     m = re.match(r"^[$]?([A-Za-z]{1,3})[$]?([0-9]{1,7})$", ref)
     return "$" + m.group(1) + "$" + m.group(2) if m else ref
 
 
 def _spill_anchors(analysis: dict[str, Any]) -> dict[tuple[str, str], str]:
-    """(sheet, anchor cell) -> the range its array formula covers, from the inventory."""
+    """(sheet,  anchor cell)  -> the range its array formula covers, from the inventory."""
     out: dict[tuple[str, str], str] = {}
     for f in analysis["workbooks"][0].get("formulas", []):
         ref = f.get("array_ref")
@@ -1107,11 +1228,11 @@ def _spill_anchors(analysis: dict[str, Any]) -> dict[tuple[str, str], str]:
 
 
 def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], str]) -> tuple[str, list[str]]:
-    """Rewrite every `A1#` / ANCHORARRAY(A1) in `formula` (a formula on `sheet`)
+    """Rewrite  every `A1#`  / ANCHORARRAY(A1) in `formula` (a formula on `sheet`)
     as the fixed range the anchor spills into today. Returns (fixed formula,
     references that could not be resolved -- their anchor is not an array
-    formula in the inventory, so the spill extent is unknown)."""
-    masked = mask_strings(formula)  # string literals become spaces; positions line up with `formula`
+    formula  in the inventory, so the spill extent is unknown)."""
+    masked = mask_strings(formula)  # string literals become  spaces; positions line up with `formula`
     unresolved: list[str] = []
     frozen: list[str] = []
     pieces: list[tuple[int, int, str]] = []
@@ -1124,7 +1245,7 @@ def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], s
             if rng is None:
                 unresolved.append(f"{prefix}{cell}#")
                 continue
-            if "$" in cell:  # keep the reference absolute when the original was
+            if "$" in cell:  # keep  the reference absolute when the original was
                 rng = ":".join(_absolute(part) for part in rng.split(":"))
             pieces.append((m.start(), m.end(), f"{prefix}{rng}"))
             frozen.append(f"{prefix}{cell}# -> {prefix}{rng}")
@@ -1133,7 +1254,7 @@ def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], s
     pieces.sort()
     out, pos = [], 0
     for start, end, text in pieces:
-        if start < pos:  # overlapping match (cannot happen with these patterns, but never corrupt a formula)
+        if start < pos:  # overlapping  match (cannot happen with these patterns, but never corrupt a formula)
             continue
         out.append(formula[pos:start])
         out.append(text)
@@ -1143,11 +1264,11 @@ def freeze_spill_refs(formula: str, sheet: str, anchors: dict[tuple[str, str], s
     return "".join(out), unresolved
 
 
-FROZEN_NOTES: dict[str, list[str]] = {}  # last rewrite's "A1# -> A1:A3" texts, for the operation note
+FROZEN_NOTES: dict[str, list[str]] = {}  # last  rewrite's "A1#  -> A1:A3" texts, for the operation note
 
 
 def plan_freeze_spill_refs(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-003: each spilled-range reference becomes the range it covers today."""
+    """FRM-003:  each spilled-range  reference becomes the range it covers today."""
     ops, skipped = [], []
     anchors = _spill_anchors(analysis)
     for f in analysis["workbooks"][0].get("formulas", []):
@@ -1181,11 +1302,11 @@ def _mind_values(analysis: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def plan_guard_blank_arithmetic(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-008: =IFERROR(x, fallback) whose x does arithmetic on a cell that holds ""
+    """FRM-008:  =IFERROR(x, fallback)  whose x does arithmetic on a cell that holds ""
     becomes =IF(cell="", fallback, IFERROR(x, fallback)). In Excel the "" made x an
-    error and the fallback came out; now the fallback comes out before the arithmetic
-    is tried, in Excel and in Mind alike. The rest of a filled-down block gets the
-    same formula: where the cell is not "", the IF hands straight on to the original."""
+    error and the fallback came out; now the fallback comes out  before the arithmetic
+    is tried, in Excel and in Mind alike. The  rest of a filled-down block gets  the
+    same formula: where the cell is not  "", the IF hands straight on to the original."""
     ops, skipped = [], []
     res = _mind_values(analysis)
     for s in (res or {}).get("blank_arithmetic", []):
@@ -1208,11 +1329,11 @@ def plan_guard_blank_arithmetic(analysis, report) -> tuple[list[dict], list[str]
 
 
 def plan_empty_cells_as_zero(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-009: N() around what reads an empty cell into a comparison with a number --
+    """FRM-009:  N() around  what reads an empty cell into a comparison with a number --
     around the formula that lands on the empty cell (a plain reference, an exact
-    lookup: one rewrite serves every formula that reads it), or around the
-    reference itself where the empty cell is read directly. N(empty) is 0 and
-    N(number) is the number, in Excel and in Mind."""
+    lookup: one rewrite serves every formula that  reads it), or around the
+    reference itself where the empty cell is  read directly. N(empty) is 0 and
+    N(number)  is the number, in Excel and in  Mind."""
     ops, skipped = [], []
     res = _mind_values(analysis)
     if not res:
@@ -1238,11 +1359,11 @@ def plan_empty_cells_as_zero(analysis, report) -> tuple[list[dict], list[str]]:
 
 # --- FRM-006: 3-D references written out sheet by sheet -------------------------------
 def plan_expand_3d_references(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-006: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets between the
+    """FRM-006:  =SUM('First:Last'!E5) becomes  =SUM('A'!E5,'B'!E5,...) over the sheets between the
     two tabs, the ones Mind imports (a sheet with no grid is left out). Exact as long as the
-    sheets left out hold nothing at the referenced cells -- checked here, cell by cell; a
-    sheet that does hold something there is left for a person (Mind imports no such sheet, and
-    the sum would change without it)."""
+    sheets left out hold nothing at the referenced  cells -- checked here, cell by cell; a
+    sheet that does hold  something there is left for a  person (Mind imports no such sheet, and
+    the  sum would change without it)."""
     from .validators.references import three_d_references
 
     ops, skipped = [], []
@@ -1262,7 +1383,10 @@ def plan_expand_3d_references(analysis, report) -> tuple[list[dict], list[str]]:
             skipped.append(f"{where}: {', '.join(held[:3])} hold(s) a value at the referenced cell(s) but Mind imports no such sheet (nothing on it makes a grid): listing the sheets would change the result -- by hand")
             continue
         omitted = sorted({x for r in site["references"] if r.get("sheets") for x in r.get("omitted_empty", [])})
+        unscanned = sorted({x for r in site["references"] for x in r.get("unscanned", [])})
         note = "each sheet between the two tabs listed explicitly (Mind reads 'First:Last' as one sheet name)" + (f"; {', '.join(omitted[:4])} left out: no grid, nothing at those cells" if omitted else "")
+        if unscanned:
+            note += f"; {', '.join(unscanned[:4])} left out of the scan at your request: listed as without the skip, its cells and grids were not checked"
         f = by_cell.get((site["sheet"], site["cell"]))
         if f:
             ops.append(_op("set_array_formula", "expand_3d_references", "FRM-006", site["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=formula, after=site["suggested_formula"], note=note))
@@ -1272,7 +1396,7 @@ def plan_expand_3d_references(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def _held_on_omitted_sheets(analysis: dict[str, Any], formula: str, references: list[dict[str, Any]]) -> list[str]:
-    """The sheets a 3-D proposal leaves out that hold something at the referenced cells."""
+    """The  sheets a  3-D proposal leaves out that hold something at the referenced cells."""
     held: list[str] = []
     refs = [r for r in cell_refs_in_formula(formula) if r.get("sheet") and ":" in str(r["sheet"])]
     for span in references:
@@ -1290,15 +1414,17 @@ def _held_on_omitted_sheets(analysis: dict[str, Any], formula: str, references: 
     return held
 
 
-# --- FRM-007: INDIRECT used as a value, replaced by the reference it builds ------------
+# --- FRM-007: INDIRECT (as a value or as a range), replaced by the reference it builds --
 def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-007: Mind returns a reference for INDIRECT and cannot use it as a value
+    """FRM-007:  Mind returns  a reference for INDIRECT and cannot use it as a value
     ('Unable to cast AM.Models.AMReference to System.IConvertible'). Where the text INDIRECT
-    builds can be worked out from the workbook's constants ("'"&$G10&"'!$Z$16" with G10 =
-    "Line 1"), the call becomes that direct reference -- the value Excel computes today. A target
-    that does not exist becomes NA() where it stands (that call was an error already). Text
-    that depends on a computed value is left for a person: the direct reference would freeze
-    one state of the model."""
+    builds can be worked out from the workbook's constants ("'"&$G10&"'!$Z$16" with G10  =
+    "Line 1"), the call becomes that direct reference -- the value  Excel computes today. A target
+    that does  not exist becomes NA() where it stands  (that call was an error already). Text
+    that depends on a computed  value is left for a person: the  direct reference would freeze
+    one state of the model. A sheet the scan skipped at the user's request exists: a target on
+    it becomes the plain reference exactly as without the skip (its cells and grids were not
+    checked, and the note says so); a text that needs one of its cells is left for a person."""
     from .validators.references import indirect_as_value
 
     ops, skipped = [], []
@@ -1313,9 +1439,16 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
             skipped.append(f"{where}: {site.get('issue') or 'no rewrite proposed'}")
             continue
         targets = sorted({c["target"] for c in site.get("calls", []) if c.get("target")})
-        note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind cannot use INDIRECT as a value; a text built from a changed input would no longer be followed"
+        listed = sorted({c["by_position"] for c in site.get("calls", []) if c.get("by_position")})
+        if listed:
+            # INDIRECT("Cluster"&n) over the names Cluster1..Cluster20: INDEX over their  cells gives the same cell for every whole n
+            note = "INDIRECT replaced by INDEX over the cells the names " + ", ".join(listed) + " stand for (" + ", ".join(targets[:3]) + "): the same cell for every number the formula builds, and Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed)"
+        else:
+            note = "INDIRECT replaced by the reference its text designates today (" + ", ".join(targets[:3]) + ("..." if len(targets) > 3 else "") + "): Mind does not follow INDIRECT (as a value it stops the run, as a range it is not computed); a text built from a changed input would no longer be followed"
         if site.get("issue"):
             note += "; " + site["issue"]
+        if site.get("unscanned_sheets"):
+            note += f"; {', '.join(site['unscanned_sheets'][:4])} left out of the scan at your request: the sheet exists, so the reference is written as without the skip; its cells and grids were not checked"
         f = arrays.get((site["sheet"], site["cell"]))
         if f:
             ops.append(_op("set_array_formula", "direct_references", "FRM-007", site["sheet"], range=str(f["array_ref"]), cell=str(f["array_ref"]), before=site["formula"], after=site["suggested_formula"], note=note))
@@ -1326,11 +1459,11 @@ def plan_direct_references(analysis, report) -> tuple[list[dict], list[str]]:
 
 # --- REF-002: external links frozen to the values Excel keeps ------------------------
 def plan_freeze_external_links(analysis, report) -> tuple[list[dict], list[str]]:
-    """REF-002: each reference to another workbook becomes the value Excel shows for it (the
+    """REF-002:  each reference  to another workbook becomes the value Excel shows for it (the
     copy kept in the link's cache: a number, a text, TRUE/FALSE), or NA() where Excel kept none
-    (#REF! already). Once every reference to a link is gone, the link itself is broken through
-    Excel, so the package carries no external link. A reference to a whole range of the other
-    workbook has no single value to write and is left for a person."""
+    (#REF! already). Once every reference  to a link is gone, the link itself is broken through
+    Excel,  so the package carries no external  link. A reference to a whole range  of the other
+    workbook has no single value to write and is  left for a person."""
     from .external_links import external_references, freeze_formula, read_external_links
 
     ops, skipped = [], []
@@ -1369,16 +1502,16 @@ def plan_freeze_external_links(analysis, report) -> tuple[list[dict], list[str]]
     return ops, skipped
 
 
-# --- RSK-002: headers over every column an array formula covers -----------------------
+# --- RSK-002: headers over  every column an array formula covers -----------------------
 def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
-    """RSK-002: Mind refuses an array formula that reaches past its grid ('Ensure that the
+    """RSK-002:  Mind refuses  an array formula that reaches past its grid ('Ensure that the
     column headers cover the entire array formula'). The grid's header row is extended over
-    every column the arrays cover: each empty header cell gets 'Period n', n being the column's
-    place in the array (a merged header already covers the columns it spans). An array that
-    reaches below the grid is left for a person."""
+    every column the arrays cover: each empty header  cell gets 'Period n', n being the column's
+    place in the array  (a merged header already covers the  columns it spans). An array that
+    reaches below  the grid is left for a person."""
     ops, skipped = [], []
     wb0 = analysis["workbooks"][0]
-    grids: dict[str, list[dict[str, Any]]] = {}  # per sheet once, not once per array formula
+    grids: dict[str, list[dict[str, Any]]] = {}  # per sheet once, not once  per array formula
     for x in all_grids(analysis):
         grids.setdefault(x["sheet"], []).append(x)
     by_grid: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1411,7 +1544,7 @@ def plan_cover_array_headers(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 def plan_line_breaks_as_char(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-011: a line break typed inside a string literal becomes CHAR(10) (CHAR(13) for a
+    """FRM-011:  a line  break typed inside a string literal becomes CHAR(10) (CHAR(13) for a
     carriage return): the same text in Excel, and the text Mind computes too."""
     from .validators.mind_values import line_break_in_text
 
@@ -1428,19 +1561,43 @@ def plan_line_breaks_as_char(analysis, report) -> tuple[list[dict], list[str]]:
     return ops, skipped
 
 
-def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-012: a formula that calls CELL(...) or INFO(...) becomes the value it shows,
-    written as a formula (="<the path>" or =12): Mind cannot answer what those ask, and the value
-    is what the model carries in Excel.
+def plan_offset_ranges(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-014:  an OFFSET  with numbers for its rows, columns, height and width, used in arithmetic
+    (1-OFFSET($H$2,2,0,3,1) inside SUMPRODUCT), is written as the range it designates ($H$4:$H$6):
+    the same cells in Excel, and the number Excel computes  in Mind too (it computed another one)."""
+    from .validators.mind_values import offset_range_arithmetic
 
-    The value is the one the original upload shows when the caller supplies it
-    (`analysis["original_environment_values"]`, "Sheet!A1" -> value, keyed by where each cell sits
-    in this version; app/web/server.py): those are what the user's own Excel saved. A version the
-    app's Excel has saved shows the app's working folder instead (in a client model the folder cell
+    ops, skipped = [], []
+    try:
+        finding = offset_range_arithmetic(None, analysis, {}, limit=None)
+    except Exception as exc:
+        return ops, [f"planner error: {exc}"]
+    for s in (finding.get("observed") or {}).get("sites", []):
+        if not s["suggested_formula"]:
+            skipped.append(f"{s['sheet']}!{s['cell']}: {s.get('issue') or 'no rewrite proposed'}")
+            continue
+        note = "arithmetic on a range OFFSET returns: Mind computes another number; the same cells written out give Excel's number in Mind too"
+        if s.get("array"):
+            # a single-cell array formula: written  back as a one-cell array so  Excel accepts the overwrite
+            ops.append(_op("set_array_formula", "offset_ranges", "FRM-014", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+        else:
+            ops.append(_op("set_formula", "offset_ranges", "FRM-014", s["sheet"], cell=s["cell"], before=s["formula"], after=s["suggested_formula"], note=note))
+    return ops, skipped
+
+
+def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list[str]]:
+    """FRM-012:  a formula  that calls CELL(...) or INFO(...) becomes the value it shows,
+    written as a formula (="<the path>" or =12): Mind cannot answer what those ask, and the value
+    is what the model carries in  Excel.
+
+    The value is the one the original upload shows when the  caller supplies it
+    (`analysis["original_environment_values"]`, "Sheet!A1" -> value,  keyed by where each cell sits
+    in this  version; app/web/server.py): those are what the user's own Excel saved. A  version the
+    app's Excel has saved shows the  app's working folder instead (in a client model the folder cell
     held the app's temporary folder, and the save folder built from it came out empty), and such a
     value is never written."""
     from .external_links import _literal
-    from .validators.mind_values import environment_formulas, in_app_folder
+    from .validators.mind_values import environment_formulas, in_app_folder, neutral_environment_text
 
     ops, skipped = [], []
     try:
@@ -1456,6 +1613,10 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
         if original is not None and where in original:
             value, whose = original[where], "the original upload"
             issue = None if value is not None else 'the original upload shows "", an error or no value: by hand'
+            if value is None and s["value"] == "":
+                # an error in the original that this version shows as "" (the fixer's IFERROR(..., "")):
+                # "" names no folder of the app's, and it is what this version computes (Model D, 2026-11-07)
+                value, whose, issue = "", "this version", None
         else:
             value, whose, issue = s["value"], "this version", s["issue"]
         if issue:
@@ -1464,20 +1625,677 @@ def plan_freeze_environment_formulas(analysis, report) -> tuple[list[dict], list
         if in_app_folder(value):
             skipped.append(f"{where}: shows the app's working folder, not the user's own: by hand")
             continue
+        value, neutral = neutral_environment_text(s["formula"], value)
         note = f"{', '.join(s['calls'])} asks Excel about itself; the value {whose} shows is written in its place (as a formula, so the numbers check still follows the cell)"
+        if neutral:
+            note = (f"{', '.join(s['calls'])} asks Excel about itself; the value {whose} shows is a location, so {neutral} is written in its place (text, same length; "
+                    "as a formula, so the numbers check still follows the cell). The model owner's own path and file name are not kept in the prepared workbook")
         if s.get("array"):
-            # a single-cell array formula: written back as a one-cell array so Excel accepts the overwrite
+            # a  single-cell array formula: written back as a one-cell array so Excel accepts the overwrite
             ops.append(_op("set_array_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], range=s["cell"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
         else:
             ops.append(_op("set_formula", "freeze_environment_formulas", "FRM-012", s["sheet"], cell=s["cell"], before=s["formula"], after="=" + _literal(value), note=note))
     return ops, skipped
 
 
+def _range_reader(analysis: dict[str, Any], sheet: str, row: int, col: int) -> str | None:
+    """The  formula (or  a name some formula uses) whose range holds this cell; a defined name no formula
+    or other name uses (a macro's) reads nothing, as for the lone text cells themselves (Mind runs  no macro)."""
+    index = reference_index(analysis)
+    owner = referenced_by(index, sheet, row, col, text_only=True)
+    if not owner or not owner.startswith("name "):
+        return owner
+    wb = analysis["workbooks"][0]
+    key = ("used_names", id(analysis))
+    used = _USED_NAMES.get(key)
+    if used is None:
+        _USED_NAMES.clear()
+        text = " ".join(str(f.get("formula") or "") for f in wb.get("formulas", [])) + " " + " ".join(str(d.get("value") or "") for d in wb.get("defined_names", []))
+        used = _USED_NAMES[key] = {m.lower() for m in re.findall(r"[A-Za-z_][\w.]*", text)}
+    return owner if owner[5:].strip().lower() in used else None
+
+
+_USED_NAMES: dict[Any, set[str]] = {}
+
+
+# ---  STR-008: which  formulas need the text of a lone text cell (17 Nov 2026) ----------------------
+# Mind does not import a lone text cell: in Mind it is empty. A formula that gets the same  result from an
+# empty cell does not need it. Model C: Calc!A259  'LH2_calc' is read only by MAX($A$7:A304)+1
+# (MAX  skips text and empty cells alike), CFs!E62  only by VLOOKUP(key, CFs!$C$30:$G$110, 5, FALSE)
+# (column E is neither the column  searched, C, nor the one returned, G).  Both stopped Start.
+# Functions that skip text and empty cells alike when given a reference as a whole argument:
+_TEXT_BLIND = frozenset({"SUM", "MAX", "MIN", "AVERAGE", "COUNT", "PRODUCT", "SUMPRODUCT"})
+# Argument  positions (0-based)  where Excel wants a reference, or reads a reference as a table: a single
+# cell there cannot be replaced by its text.
+_REFERENCE_POSITIONS = {
+    "ROW": {0}, "COLUMN": {0}, "ROWS": {0}, "COLUMNS": {0}, "AREAS": {0}, "ISREF": {0}, "CELL": {1}, "OFFSET": {0},
+    "INDEX": {0}, "MATCH": {1}, "XMATCH": {1}, "VLOOKUP": {1}, "HLOOKUP": {1}, "LOOKUP": {1, 2}, "XLOOKUP": {1, 2},
+    "SUMIF": {0, 2}, "AVERAGEIF": {0, 2}, "COUNTIF": {0}, "COUNTBLANK": {0}, "SUBTOTAL": None, "AGGREGATE": None,
+    "SUMIFS": None, "AVERAGEIFS": None, "MAXIFS": None, "MINIFS": None, "COUNTIFS": None, "FILTER": None, "SORT": None, "UNIQUE": None,
+    "ISFORMULA": {0}, "FORMULATEXT": {0}, "SHEET": {0}, "SHEETS": {0}, "GETPIVOTDATA": {1},
+}
+# 19  Nov 2026  (Model B 'Cost data'!AF10, the criterion of SUMIFS in 20 formulas): in the ...IFS functions only the ranges
+# must stay references. A criterion is a value, and the cell's own text does  the same there:
+# SUMIFS($H:$H,$C:$C,$AF10) = SUMIFS($H:$H,$C:$C,"Deliveries and inpatient services").
+# SUMIFS / AVERAGEIFS /  MAXIFS / MINIFS (values, range 1,  criterion 1, ...): the criteria are arguments  2, 4, 6 ...
+# counted from 0; COUNTIFS (range 1, criterion 1,  ...): arguments 1, 3, 5 ...
+_CRITERION_FIRST = {"SUMIFS": 2, "AVERAGEIFS": 2, "MAXIFS": 2, "MINIFS": 2, "COUNTIFS": 1}
+_CALL_NAME_RE = re.compile(r"([^\W\d][\w.]*)\s*$")
+_FORMULA_AT: dict[Any, dict[str, Any]] = {}
+
+
+def _formula_record(analysis: dict[str, Any], owner: str) -> dict[str, Any] | None:
+    # the  very analysis  object is kept with its table and compared by identity: an id() alone can be given to another
+    # workbook's analysis once the first is gone (a server runs for days)
+    cached = _FORMULA_AT.get("table")
+    if cached is None or cached[0] is not analysis:
+        _FORMULA_AT.clear()
+        cached = _FORMULA_AT["table"] = (analysis, {f"{f['sheet']}!{f['cell']}": f for f in analysis["workbooks"][0].get("formulas", []) if isinstance(f.get("formula"), str)})
+    return cached[1].get(owner)
+
+
+def _reference_uses(formula: str, home: str, sheet: str, row: int, col: int) -> list[dict[str, Any]] | None:
+    """Every  A1 reference  in `formula` (written on sheet `home`) that holds `sheet`!(row, col), with what
+    surrounds it: {start, end, single, function (upper case, '' for a bracket or none), position (0-based
+    argument), whole (the reference is  that argument, nothing else), arguments (the call's argument texts)}.
+    None when the  formula reads the sheet in a  way this cannot follow (a 3-D reference,  INDIRECT)."""
+    masked = mask_strings(formula, mask_sheet_quotes=False)
+    if "INDIRECT" in masked.upper():
+        return None
+    uses = []
+    for m in REF_RE.finditer(masked):
+        name = m.group("sheet")
+        if name and name.startswith("'"):
+            name = formula[m.start("sheet") + 1 : m.end("sheet") - 1].replace("''", "'")
+        if name and ":" in name:
+            return None  # a 3-D reference
+        ref = parse_ref(m.group("ref"))
+        if not ref or ref.get("whole_column") or ref.get("whole_row"):
+            continue
+        if (name or home).lower() != sheet.lower() or not (ref["r1"] <= row <= ref["r2"] and ref["c1"] <= col <= ref["c2"]):
+            continue
+        # the call (or bracket) the reference sits in, and  its argument
+        depth, open_at = 0, -1
+        for i in range(m.start() - 1, -1, -1):
+            ch = masked[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth == 0:
+                    open_at = i
+                    break
+                depth -= 1
+        function, position, whole, arguments = "", 0, False, []
+        if open_at >= 0:
+            call = _CALL_NAME_RE.search(masked[:open_at])
+            function = strip_storage_prefix(call.group(1)).upper() if call else ""
+            close = _closing_paren(masked, open_at)
+            if close > 0:
+                spans = _arg_spans(masked, open_at + 1, close)
+                for k, (a, b) in enumerate(spans):
+                    if a <= m.start() < b:
+                        position, whole = k, formula[a:b].strip() == formula[m.start() : m.end()]
+                arguments = [formula[a:b].strip() for a, b in spans]
+        # A1:INDEX(...), INDEX(...):A1 build a range; (A1,B1)  is a union: the cell cannot become a text there
+        in_range = masked[m.end():].lstrip().startswith(":") or masked[: m.start()].rstrip().endswith(":") or (open_at >= 0 and not function and len(arguments) > 1)
+        # 19 Nov 2026: so is a reference beside the intersection operator (a space: D5 $A:$A), and one in a bracket
+        # that is itself an end of a range -- (D5):E5, E5:(D5). Excel refuses a text in those places.
+        if not in_range:
+            in_range = _beside_a_reference(masked, m.start(), m.end())
+        if not in_range and open_at >= 0 and not function:
+            shut = _closing_paren(masked, open_at)
+            in_range = shut < 0 or masked[shut + 1 :].lstrip().startswith(":") or masked[:open_at].rstrip().endswith(":") or _beside_a_reference(masked, open_at, shut + 1)
+        uses.append({"start": m.start(), "end": m.end(), "single": ref["r1"] == ref["r2"] and ref["c1"] == ref["c2"], "function": function,
+                     "position": position, "whole": whole, "arguments": arguments, "r1": ref["r1"], "c1": ref["c1"], "in_range": in_range,
+                     "r2": ref["r2"], "c2": ref["c2"], "home": home, "masked": masked})
+    return uses
+
+
+# 19 Nov 2026, Model B: 332 column headings "Per Capita Cost" stopped Start. Eight formulas cover  the yearly tables of
+# 'RAC Baseline' with INDEX($X$237:$MI$705, 1+(active_year-proj_year-1)*117, MATCH(...)): the row is always
+# 1 + a whole number x 117 (the 'Specialised Services' line of each year), never a heading row.
+# A reference INDEX returns can still be moved or stretched afterwards, and then other rows are read:
+# OFFSET(INDEX(...),8,0); INDEX(...):A9, A1:INDEX(...), and x:A9 with x a LET name that holds it (any ':' that does not
+# sit between two plain cells); INDEX(...)#; a function that is not Excel's own -- a macro's, a LAMBDA name,  Mind's
+# MM_COLUMN -- which can do  anything with the reference. Such a formula  is left alone.
+_REFERENCE_MOVERS = frozenset({"OFFSET", "INDIRECT", "LET", "LAMBDA", "ANCHORARRAY"})
+_ANY_CALL_RE = re.compile(r"([^\W\d][\w.]*)\s*\(")
+_STEP_TOKEN_RE = re.compile(
+    r"\s*(?:(?P<num>\d+(?:\.\d+)?)(?![\w.])"
+    r"|(?P<cell>(?:(?:'(?:[^']|'')+'|[\w.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7})(?![\w.(:!#\[])"
+    r"|(?P<name>[^\W\d][\w.]*)(?![\w.(:!#\[])"
+    r"|(?P<op>[-+*()]))"
+)
+_ONE_CELL_RE = re.compile(r"^=?(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^'!]+))!\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>\d{1,7})$")
+_MIND_LOOP_RE = re.compile(r"^=\s*(?:[\w.]+\.)?MM_LOOP\s*\(", re.IGNORECASE)
+_LOOP_CELLS_MAX = 10_000
+_WHOLE_AT: dict[str, Any] = {}
+
+
+def _index_result_may_move(masked: str) -> bool:
+    """Could  this formula  read cells around the one INDEX returns? `masked`: the formula, its "..." texts blanked."""
+    from .validators.excel_functions import EXCEL_FUNCTIONS
+
+    for m in _ANY_CALL_RE.finditer(masked):
+        fn = strip_storage_prefix(m.group(1)).upper()
+        if fn in _REFERENCE_MOVERS or fn not in EXCEL_FUNCTIONS:
+            return True
+    rest = REF_RE.sub(" ", masked)
+    return ":" in rest or "#" in ERROR_LITERAL_RE.sub("", rest)
+
+
+def _whole_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value).is_integer()
+
+
+def _cell_at(analysis: dict[str, Any], target: str, home: str) -> tuple[str, int, int] | None:
+    """(sheet  as the  workbook spells it, row, column) of a one-cell reference, with or without its sheet."""
+    target = target.strip()
+    if "!" in target:
+        m = _ONE_CELL_RE.match(target)
+        if not m:
+            return None
+        sheet = m.group("quoted").replace("''", "'") if m.group("quoted") is not None else m.group("plain").strip()
+        ref = parse_ref(m.group("col") + m.group("row"))
+    else:
+        sheet, ref = home, parse_ref(target.lstrip("=").replace("$", ""))
+    if not ref or ref.get("whole_column") or ref.get("whole_row") or (ref["r1"], ref["c1"]) != (ref["r2"], ref["c2"]):
+        return None
+    known = next((s["name"] for s in analysis["workbooks"][0].get("sheets", []) if str(s.get("name", "")).lower() == str(sheet).lower()), None)
+    return (known, ref["r1"], ref["c1"]) if known else None
+
+
+def _loop_values_whole(analysis: dict[str, Any], formula: str, home: str) -> bool:
+    """=MM_LOOP("Name",  range) and  nothing else, every cell of the range a typed-in whole number: the cell takes
+    those values in turn (what Build the Mind loop writes in a driver cell)."""
+    masked = mask_strings(formula, mask_sheet_quotes=False)
+    if not _MIND_LOOP_RE.match(masked):
+        return False
+    open_at = masked.index("(")
+    close = _closing_paren(masked, open_at)
+    if close < 0 or masked[close + 1 :].strip():
+        return False
+    spans = _arg_spans(masked, open_at + 1, close)
+    if len(spans) != 2:
+        return False
+    over = formula[spans[1][0] : spans[1][1]].strip()
+    first, _, last = over.partition(":")
+    start = _cell_at(analysis, first, home)
+    end = start if not last else (None if (not start or "!" in last) else _cell_at(analysis, last, start[0]))
+    if not start or not end:
+        return False
+    sheet, r1, c1 = start
+    r2, c2 = end[1], end[2]
+    if r2 < r1 or c2 < c1 or (r2 - r1 + 1) * (c2 - c1 + 1) > _LOOP_CELLS_MAX:
+        return False
+    return all(_whole_number(cell_value(analysis, sheet, r, c)) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1))
+
+
+def _holds_whole(analysis: dict[str, Any], kind: str, token: str, home: str) -> bool:
+    """Does  this cell  -- or the one cell this name stands for -- hold a whole number today: one typed in, or the
+    values of a Mind loop that are all typed-in whole numbers? Anything  else (a formula, a text, an empty cell, a
+    name of a  range or of two sheets) is  not known to be whole."""
+    cached = _WHOLE_AT.get("table")
+    if cached is None or cached[0] is not analysis:
+        _WHOLE_AT.clear()
+        cached = _WHOLE_AT["table"] = (analysis, {})
+    key = (kind, token.upper(), home)
+    if key not in cached[1]:
+        where = None
+        if kind == "name":
+            found = [d for d in analysis["workbooks"][0].get("defined_names", []) if str(d.get("name") or "").upper() == token.upper()]
+            # a name of  one sheet only is not followed: which formulas it serves is  not worked out here
+            if len(found) == 1 and found[0].get("local_sheet_id") is None and "!" in str(found[0].get("value") or ""):
+                where = _cell_at(analysis, str(found[0]["value"]), home)
+        else:
+            where = _cell_at(analysis, token, home)
+        value = cell_value(analysis, *where) if where else None
+        cached[1][key] = _whole_number(value) or (isinstance(value, str) and value.startswith("=") and _loop_values_whole(analysis, value, where[0]))
+    return cached[1][key]
+
+
+def _row_steps(analysis: dict[str, Any], text: str, home: str) -> tuple[int, int] | None:
+    """The  rows an  INDEX row number can ask for when it is plain whole-number arithmetic: (first, every) stands for
+    first + every x n, n any whole number -- every 0: the one row `first`;  every 1: any row.
+    None when that cannot be told: only +  - * and brackets are followed,  over whole constants and single cells (or
+    names  of one cell) that hold a whole number today. INDEX cuts  a fraction off its row number, so  one operand
+    that may not be whole and the row can land anywhere.
+    1+(active_year-proj_year-1)*117 gives (1, 117)."""
+    tokens: list[tuple[str, str]] = []
+    text, at = text.strip(), 0
+    while at < len(text):
+        m = _STEP_TOKEN_RE.match(text, at)
+        if not m or len(tokens) >= 200:
+            return None
+        tokens.append((m.lastgroup, m.group(m.lastgroup)))
+        at = m.end()
+    spot = 0
+
+    def peek() -> tuple[str | None, str | None]:
+        return tokens[spot] if spot < len(tokens) else (None, None)
+
+    def factor() -> tuple[int, int] | None:
+        nonlocal spot
+        kind, token = peek()
+        if kind is None:
+            return None
+        spot += 1
+        if kind == "num":
+            whole, _, fraction = token.partition(".")
+            return (int(whole), 0) if not fraction.strip("0") else None
+        if kind != "op":
+            return (0, 1) if _holds_whole(analysis, kind, token, home) else None
+        if token in "+-":
+            inner = factor()
+            return None if inner is None else (inner[0] if token == "+" else -inner[0], inner[1])
+        if token == "(":
+            inner = total()
+            if inner is None or peek() != ("op", ")"):
+                return None
+            spot += 1
+            return inner
+        return None
+
+    def product() -> tuple[int, int] | None:
+        nonlocal spot
+        left = factor()
+        while left is not None and peek() == ("op", "*"):
+            spot += 1
+            right = factor()
+            if right is None:
+                return None
+            # (a + g.m)(b + h.n) = a.b + a.h.n + b.g.m + g.h.m.n
+            left = (left[0] * right[0], math.gcd(left[0] * right[1], right[0] * left[1], left[1] * right[1]))
+        return left
+
+    def total() -> tuple[int, int] | None:
+        nonlocal spot
+        left = product()
+        while left is not None and peek() in (("op", "+"), ("op", "-")):
+            sign = 1 if tokens[spot][1] == "+" else -1
+            spot += 1
+            right = product()
+            if right is None:
+                return None
+            left = (left[0] + sign * right[0], math.gcd(left[1], right[1]))
+        return left
+
+    steps = total()
+    return steps if steps is not None and spot == len(tokens) else None
+
+
+def _beside_a_reference(masked: str, start: int, end: int) -> bool:
+    """Is  masked[start:end] joined  to what stands before or after it by nothing but a space -- Excel's intersection
+    operator? (After a comma, a bracket or an operator a space is only a space.)"""
+    after, before = masked[end:], masked[:start]
+    nxt, prev = after.lstrip()[:1], before.rstrip()[-1:]
+    return bool((after[:1].isspace() and nxt and (nxt.isalnum() or nxt in "$'(_")) or (before[-1:].isspace() and prev and (prev.isalnum() or prev in "$')_")))
+
+
+def _use_needs_cell(use: dict[str, Any], row: int, col: int, analysis: dict[str, Any] | None = None) -> bool:
+    """Does  this one  reference give another result when the cell is empty (as in Mind) than when it holds text?"""
+    fn, pos, args = use["function"], use["position"], use["arguments"]
+    if use["whole"] and fn in _TEXT_BLIND:
+        return False  # SUM / MAX / MIN / AVERAGE / COUNT / PRODUCT / SUMPRODUCT of a  reference skip text and empty cells alike
+    if use["whole"] and not use["single"] and fn in ("VLOOKUP", "HLOOKUP") and pos == 1 and len(args) >= 3:
+        n = as_number(args[2])
+        if n is not None and n == int(n) and n >= 1:
+            offset = (col - use["c1"]) if fn == "VLOOKUP" else (row - use["r1"])
+            return offset in (0, int(n) - 1)  # only the column searched and  the column returned are read
+    if analysis is not None and use["whole"] and not use["single"] and fn == "INDEX" and pos == 0 and len(args) >= 2 and use["r2"] > use["r1"] and not _index_result_may_move(use["masked"]):
+        # 19 Nov  2026 (Model B): INDEX(range, 1+(year-first_year)*117, column) returns  every 117th row only. A range
+        # of one row is left alone:  its one index runs along the row.
+        steps = _row_steps(analysis, args[1], use["home"])
+        if steps is not None:
+            first, every = steps
+            nth = row - use["r1"] + 1  # the  cell's row inside the range, counted from 1
+            if every == 0:
+                return first < 1 or nth == first  # one fixed row; row 0 is the whole column
+            if every > 1 and first % every:
+                return (nth - first) % every == 0
+            # every 1: any row. first a multiple of every: the row can be 0, and INDEX then returns the whole column
+    return True
+
+
+def _rewritable(use: dict[str, Any]) -> bool:
+    """A  single-cell reference  that its own text can take the place of (not where Excel wants a reference)."""
+    if not use["single"] or use["in_range"]:
+        return False
+    if use["function"].startswith("MM_"):
+        return False  # Mind's own functions (MM_LOOP, MM_INSTANCE ...) take references
+    positions = _REFERENCE_POSITIONS.get(use["function"], set())
+    if positions is None:
+        first = _CRITERION_FIRST.get(use["function"])
+        return first is not None and use["position"] >= first and (use["position"] - first) % 2 == 0
+    return use["position"] not in positions
+
+
+def readers_needing(analysis: dict[str, Any], sheet: str, row: int, col: int, used: Any = None) -> list[tuple[str, list[dict[str, Any]] | None]]:
+    """The  readers of  sheet!(row, col) that need its text -- whose result would change if the cell were empty,
+    as Mind leaves a lone text cell -- each with the references to rewrite (None: it  cannot be rewritten:
+    a defined name, a range, a reference-only argument, a  3-D reference or INDIRECT, an array  formula).
+    A reader that is as a whole  N(...) needs nothing (N() of a text is 0, like an  empty cell); a defined name
+    no formula uses  reads nothing (`used`: validators.structure._names_in_use). Whole-column and whole-row
+    reads are left out, as the lone-text rule leaves them out."""
+    from .validators.structure import _names_in_use, _wrapped_in_n
+
+    index = reference_index(analysis)
+    rects = index["rects"].get(sheet) or []
+    if not rects:
+        return []
+    blocks, tall = _row_blocks(index, sheet, rects)
+    owners: list[str] = []
+    seen: set[str] = set()
+    for i in sorted(set(blocks.get(row // _BLOCK_ROWS, ())) | set(tall)):
+        r1, r2, c1, c2, own = rects[i]
+        if r1 <= row <= r2 and c1 <= col <= c2 and own not in seen:
+            seen.add(own)
+            owners.append(own)
+    needing: list[tuple[str, list[dict[str, Any]] | None]] = []
+    for own in owners:
+        if own.startswith("name "):
+            used = used or _names_in_use(analysis)
+            if used(own[5:]):
+                needing.append((own, None))
+            continue
+        if _wrapped_in_n(analysis, own):
+            continue
+        rec = _formula_record(analysis, own)
+        if rec is None:
+            needing.append((own, None))
+            continue
+        uses = _reference_uses(rec["formula"], rec["sheet"], sheet, row, col)
+        if uses is None or not uses:
+            needing.append((own, None))
+            continue
+        need = [u for u in uses if _use_needs_cell(u, row, col, analysis)]
+        if need:
+            ok = not rec.get("array_ref") and all(_rewritable(u) for u in need)
+            needing.append((own, need if ok else None))
+    return needing
+
+
+def _with_text(formula: str, uses: list[dict[str, Any]], text: str) -> str:
+    """`formula`  with each  of `uses` (references) replaced by the text as a "..." literal."""
+    literal = '"' + text.replace('"', '""') + '"'
+    out = formula
+    for u in sorted(uses, key=lambda u: u["start"], reverse=True):
+        out = out[: u["start"]] + literal + out[u["end"] :]
+    return out
+
+
+def _planned_value(analysis: dict[str, Any], planned: dict[tuple[str, int, int], Any] | None, sheet: str, row: int, col: int) -> Any:
+    """What  the cell  will hold once the operations planned so far in this pass are applied: the text a
+    planned label or title writes, None for a cell a planned move empties, else what it  holds today."""
+    if planned is not None and (sheet, row, col) in planned:
+        return planned[(sheet, row, col)]
+    return cell_value(analysis, sheet, row, col)
+
+
+def _label_joining_grid_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
+                              planned: dict[tuple[str, int, int], Any] | None = None) -> dict[str, Any] | None:
+    """A  lone cell  right under a grid whose first column -- its labels -- stops one row above
+    (Base!J414 = 'N' under I406:J413, labels in I, I414 empty; 2026-10-26): a label in that first
+    column makes  the grid one row longer, the cell part of it. Only  when the grid's last label is  a
+    text, the label's cell lies in no  grid, and the cell under it is empty -- the grid  then takes
+    this row alone.
+    `grids` and `planned` are  the sheet as this pass will leave it (the grid already one row longer
+    for each label planned before, those labels written): the next cell of a staircase joins too."""
+    for g in grids:
+        first = g["first_col"]
+        if g["last_row"] != row - 1 or not (first < col <= g["last_col"]):
+            continue
+        if not _is_text(_planned_value(analysis, planned, s["sheet"], row - 1, first)):
+            return None
+        if _planned_value(analysis, planned, s["sheet"], row, first) is not None or grid_containing(grids, row, first) or _planned_value(analysis, planned, s["sheet"], row + 1, first) is not None:
+            return None
+        if _range_reader(analysis, s["sheet"], row, first):
+            return None  # the empty label cell lies inside a range a formula reads
+        return _op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(first, row), before=None, after=f"Value in {s['cell']}",
+                   note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just under the grid {g['ref']}, whose labels in column "
+                        f"{num_to_col(first)} stop one row above; with a label beside it the grid takes this row and Mind imports the cell with it")
+    return None
+
+
+_GAP_LABELS_MAX = 5  # labels  written to  close one gap
+_GAP_ROWS_MAX = 20  # rows  between the  grid and the lone cell
+
+
+def _labels_closing_gap_above(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
+                              planned: dict[tuple[str, int, int], Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any], int] | None:
+    """A  lone cell  a few rows under a grid whose first column stops early: Mind reads a grid down its first
+    column, so a few empty cells there end the table above the cell (Model  C TVOG Calc, CFs!F109
+    'Sum of ANNUITYVD', a key of the lookup  table F30:L110 that 3,143 VLOOKUPs read:  the row numbers in
+    B29:B110 skip B101:B103, so  Mind's grid stops at row 100, 2026-11-17). A label in each  of those empty
+    cells ('Row 101') lets the  grid run on down its first column, and the cell is part of it.
+    Only when the grid carries no flag; at most _GAP_LABELS_MAX labels within _GAP_ROWS_MAX rows; every label
+    cell is empty and inside no range a formula reads; and what the longer grid takes in -- the grid's columns,
+    from the row under it to the row where its first column ends  -- holds no '#' title and no grid that
+    reaches outside it or has a title or a flag (it would be cut in two, or a title trapped).
+    -> (the label operations, the grid, its new last row), else None."""
+    sheet = s["sheet"]
+    index = reference_index(analysis)
+    if sheet in index["positional"] or sheet in index["text_addressed"]:
+        return None  # an INDIRECT or a 3-D reference may name a label cell by its address
+
+    def value(r: int, c: int) -> Any:
+        v = _planned_value(analysis, planned, sheet, r, c)
+        return None if v == "" else v
+
+    above = [g for g in grids if g["first_col"] < col <= g["last_col"] and g["last_row"] < row - 1 and row - g["last_row"] <= _GAP_ROWS_MAX]
+    for g in sorted(above, key=lambda g: -g["last_row"]):  # the nearest grid above first
+        first, last, end = g["first_col"], g["last_col"], g["last_row"]
+        if g.get("flags") or g.get("inner_title_cells"):
+            continue
+        empty = [r for r in range(end + 1, row + 1) if value(r, first) is None]
+        if not empty or len(empty) > _GAP_LABELS_MAX or any(_planned_value(analysis, planned, sheet, r, first) is not None for r in empty):
+            continue  # a cell holding "" is empty for Mind, but something for Excel: no label goes there
+        bottom = row
+        while value(bottom + 1, first) is not None and bottom - row < 1000:
+            bottom += 1
+        if value(bottom + 1, first) is not None:
+            continue  # a first column that runs on and on: too much to  take in
+        if any(_range_reader(analysis, sheet, r, first) for r in empty):
+            continue  # an empty label cell  lies inside a range a formula reads
+        if index["whole_cols"].get(sheet, {}).get(first) or any(index["whole_rows"].get(sheet, {}).get(r) for r in empty):
+            continue  # a  whole column or  row read  by any function (COUNTIF(B:B,""), SUMPRODUCT(--(B:B=""))) sees a label
+        taken_in = [o for o in grids if o is not g and o["first_col"] <= last and o["last_col"] >= first and o["last_row"] > end and o["first_row"] <= bottom]
+        if any(o["first_col"] < first or o["last_col"] > last or o["last_row"] > bottom or o.get("title_cell") or o.get("inner_title_cells") or o.get("flags") for o in taken_in):
+            continue
+        if any(looks_like_title(value(r, c)) for r in range(end + 1, bottom + 1) for c in range(first, last + 1)):
+            continue
+        labels = [
+            _op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(first, r), before=None, after=f"Row {r}",
+                note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits under the grid {g['ref']}, whose first column {num_to_col(first)} "
+                     f"has empty cells before it; with a label in each the grid runs on to row {bottom} and Mind imports the cell with it")
+            for r in empty
+        ]
+        return labels, g, bottom
+    return None
+
+
+def _header_joining_grid_beside(analysis: dict[str, Any], grids: list[dict[str, Any]], lone: set[tuple[str, int, int]], s: dict[str, Any], row: int, col: int,
+                                planned: dict[tuple[str, int, int], Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The  mirror of  _label_joining_grid_above: a lone cell right beside a grid whose first row -- its
+    headers -- stops one column to the left (an IFRS risk model, 2026-11-16: Parameters!C46 = 'Not Used'
+    beside B34:B119, a  caption over a column of names, C34 empty; the cell above  it lies inside the
+    range an INDEX  reads, so no title can go there,  and the range keeps it from moving). A header in
+    that first  row makes the grid one column wider,  and every cell of that column on the grid's rows
+    part of it.
+    Only when the grid carries no flag (an /Input or /Resize grid keeps its columns) and its last header
+    is a text; the header's cell is empty, in no grid, inside no range a formula reads, with nothing
+    above it and nothing right of it (the grid then takes this one column);  and that column holds, on
+    the grid's rows, no '#' title and no grid other than one-column pieces that lie wholly on those rows
+    (anything else would be cut in two, or a title trapped).
+    -> (the header's operation, the grid it widens), else None."""
+    sheet = s["sheet"]
+    for g in grids:
+        top, bottom, last = g["first_row"], g["last_row"], g["last_col"]
+        if last != col - 1 or not (top < row <= bottom):
+            continue
+        if g.get("flags") or not _is_text(_planned_value(analysis, planned, sheet, top, last)):
+            return None
+        if _planned_value(analysis, planned, sheet, top, col) is not None or grid_containing(grids, top, col) or _planned_value(analysis, planned, sheet, top, col + 1) is not None:
+            return None
+        if top > 1 and _planned_value(analysis, planned, sheet, top - 1, col) is not None:
+            return None  # a cell above the header would take it (and the column) into a grid of its own
+        if _range_reader(analysis, sheet, top, col):
+            return None  # the empty header cell lies inside a range a formula reads
+        for o in grids:
+            if o is g or not (o["first_col"] <= col <= o["last_col"] and o["first_row"] <= bottom and o["last_row"] >= top):
+                continue
+            if o.get("title_cell") or o.get("inner_title_cells") or o["first_col"] != o["last_col"] or o["first_row"] <= top or o["last_row"] > bottom:
+                return None
+        if any(sh == sheet and c == col and top <= r <= bottom and looks_like_title(_planned_value(analysis, planned, sheet, r, c)) for sh, r, c in lone):
+            return None
+        letter = num_to_col(col)
+        return (
+            _op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(col, top), before=None, after=f"Values in column {letter}",
+                note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} but sits just beside the grid {g['ref']}, whose headers on row "
+                     f"{top} stop one column to the left; with a header over it the grid takes column {letter} and Mind imports the cell with it"),
+            g,
+        )
+    return None
+
+
+def _text_into_readers(analysis: dict[str, Any], s: dict[str, Any], row: int, col: int, rewriting: set[str] | None = None) -> list[dict[str, Any]] | None:
+    """No  title, label,  header or move fits (17 Nov 2026): each formula that needs the cell's text gets the text
+    itself in place of the reference -- =IF(A259="LH2_calc",...) becomes =IF("LH2_calc"="LH2_calc",...). The
+    text is what the cell  holds, so Excel's value is the same in every use (text  in arithmetic is #VALUE! either
+    way), and  the formula no longer needs a cell  Mind does not import. Only when every such reader names the  cell
+    alone where a value may stand (not  in a range, not where Excel wants a reference, not an array formula, not
+    a defined name) and the text fits in a formula (255 characters). The formulas that read it without needing
+    it (MAX of a range, a lookup column never read) are left as they are.
+    -> the formula operations, else None."""
+    sheet = s["sheet"]
+    text = cell_value(analysis, sheet, row, col)
+    # 255 characters as Excel counts them (two for a character outside  the basic plane)
+    if not isinstance(text, str) or text.startswith("=") or len(text.encode("utf-16-le")) // 2 > 255:
+        return None
+    needing = readers_needing(analysis, sheet, row, col)
+    if not needing or any(uses is None or own in (rewriting or ()) for own, uses in needing):
+        return None
+    ops = []
+    for own, uses in needing:
+        rec = _formula_record(analysis, own)
+        after = _with_text(rec["formula"], uses, text)
+        if len(after) > 8192:
+            return None
+        ops.append(_op("set_formula", "title_lone_text_cells", "STR-008", rec["sheet"], cell=rec["cell"], before=rec["formula"], after=after,
+                       note=f"{sheet}!{s['cell']} = {text[:40]!r} stands alone, and Mind does not import a lone text cell; the formula now holds "
+                            f"that text itself in place of the reference (the same value), so it no longer needs the cell"))
+    if rewriting is not None:
+        rewriting.update(own for own, _uses in needing)
+    return ops
+
+
+_MOVED_OVER: dict[str, frozenset[str]] = {}
+_MOVER_RE = re.compile(r"(?<![\w.])(?:_xlfn\.)?OFFSET\s*\(|INDEX\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*:|:\s*(?:_xlfn\.)?INDEX\s*\(", re.I)
+
+
+def _sheets_moved_over(analysis: dict[str, Any]) -> frozenset[str]:
+    """The  sheets a  formula reads through OFFSET, or through a range one of whose ends is INDEX(...): the cells it
+    reaches depend on numbers worked out at run time (Haiku 5.5 refuter, 20 Nov 2026).  Once per analysis."""
+    wb0 = analysis["workbooks"][0]
+    key = str(analysis.get("analysis_id") or id(analysis)) + ":" + str(wb0.get("copy_path"))
+    if key not in _MOVED_OVER:
+        sheets: set[str] = set()
+        for f in wb0.get("formulas", []):
+            formula = f.get("formula") or ""
+            if ("OFFSET" not in formula.upper() and "INDEX" not in formula.upper()) or not _MOVER_RE.search(mask_strings(formula)):
+                continue
+            for r in cell_refs_in_formula(formula):
+                sheets.add(r.get("sheet") or f["sheet"])
+        if len(_MOVED_OVER) > 8:
+            _MOVED_OVER.clear()
+        _MOVED_OVER[key] = frozenset(sheets)
+    return _MOVED_OVER[key]
+
+
+def _label_beside(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int,
+                  planned: dict[tuple[str, int, int], Any] | None = None) -> dict[str, Any] | None:
+    """The  last try  before a lone text cell is left (20 Nov 2026, Joseph: "App tries, never stops"): a label in
+    the empty cell beside it, left first, else right, so that the two touching  texts are a small grid Mind
+    imports (a label next to a  value, no title: Lone!F3 'Name' beside  G3 'Line 4' came back as Excel  has it,
+    2026-10-08). For a cell inside a range a formula reads  (ColN!A15 inside COUNTA(ColN!$A$7:$A$23)), where no
+    title can go  above it and the range keeps it from moving.
+    Only when the label's cell is empty, in no grid, inside no range or name a formula reads (a label there
+    would be read as a value), on no whole row or column read, on a sheet no INDIRECT or 3-D reference
+    addresses; and every other cell around the pair is empty and in no  grid (the pair is a grid of its own,
+    joined to nothing). -> the label's operation, else None."""
+    sheet = s["sheet"]
+    index = reference_index(analysis)
+    if sheet in index["positional"] or sheet in index["text_addressed"] or index["whole_rows"].get(sheet, {}).get(row):
+        return None
+    if sheet in _sheets_moved_over(analysis):
+        return None  # OFFSET(H3,0,-3) or INDEX(...):A9 may reach the label's cell, and no index of ranges shows it
+
+    def empty(r: int, c: int) -> bool:
+        return r < 1 or c < 1 or (_planned_value(analysis, planned, sheet, r, c) is None and not grid_containing(grids, r, c))
+
+    for side in (-1, 1):
+        at = col + side
+        if at < 1 or at > 16384 or not empty(row, at):
+            continue
+        if _range_reader(analysis, sheet, row, at) or index["whole_cols"].get(sheet, {}).get(at):
+            continue
+        pair = {(row, col), (row, at)}
+        around = {(r, c) for r in (row - 1, row, row + 1) for c in range(min(col, at) - 1, max(col, at) + 2)} - pair
+        if not all(empty(r, c) for r, c in around):
+            continue
+        return _op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(at, row), before=None, after=f"Text in {s['cell']}",
+                   note=f"{s['cell']} = {s['text'][:40]!r} is read by {s['read_by']} inside a range, so no title can go above it and it cannot move; "
+                        f"with a label {'left' if side < 0 else 'right'} of it the two are a small grid, and Mind imports the cell with it")
+    return None
+
+
+def _move_to_free_column(analysis: dict[str, Any], grids: list[dict[str, Any]], s: dict[str, Any], row: int, col: int, free: dict[str, int]) -> tuple[dict[str, Any], str] | None:
+    """No  room for  a title above and no grid to join (Base!J414 = 'N', read by LH3!I103, under a row of
+    numbers, flags and dates; 2026-10-26): the cell moves -- Excel's cut and paste, so  every formula and
+    name that reads it follows -- to a column  of its own right of everything  the sheet holds, with its
+    title above it.  Only when every reader reads this one cell: a range or  a name over several cells would
+    lose it  (and an INDIRECT or a 3-D reference on the sheet may name it by its address).
+    -> (the move, the cell its title goes in), else None."""
+    index = reference_index(analysis)
+    sheet = s["sheet"]
+    if index["whole_cols"].get(sheet, {}).get(col) or index["whole_rows"].get(sheet, {}).get(row) or sheet in index["positional"] or sheet in index["text_addressed"]:
+        return None
+    if any(r1 <= row <= r2 and c1 <= col <= c2 and (r1, c1) != (r2, c2) for r1, r2, c1, c2, _ in index["rects"].get(sheet, ())):
+        return None
+    if sheet not in free:
+        info = next((x for x in analysis["workbooks"][0]["sheets"] if x["name"] == sheet), {})
+        dims = parse_ref(str(info.get("dimensions") or "").replace("$", ""))
+        free[sheet] = max([dims["c2"] if dims else 1] + [g["last_col"] for g in grids]) + 2
+    target = free[sheet]
+    if target > 16384:  # Excel's last column
+        return None
+    free[sheet] = target + 2
+    at = max(row, 2)
+    return (
+        _op("move_cell", "title_lone_text_cells", "STR-008", sheet, cell=s["cell"], to=ref_text(target, at), before=f"{s['cell']} = {s['text'][:40]!r}", after=ref_text(target, at),
+            note=f"{s['cell']} is read by {s['read_by']} but has no room for a title above it; moved (cut and paste: what reads it follows) to {ref_text(target, at)}, a column of its own"),
+        ref_text(target, at - 1),
+    )
+
+
 def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]:
-    """STR-008: a '#' title in the empty cell above a text cell that stands alone and is read
-    by a formula, so that Mind imports it as a one-cell grid. Named after the label to its
-    left on the same row when there is one ('Nom Onglet :' -> '#Nom Onglet value'), else after
-    the cell. A cell with no empty cell above it is left for a person."""
+    """STR-008:  a '#'  title in the empty cell above a text cell that stands alone and is read
+    by a formula, so that Mind imports it as a one-cell grid. Named after the label to  its
+    left on the same row when there is one ('Nom Onglet  :' -> '#Nom Onglet value'), else  after
+    the cell. With no empty cell above  it: a label joining it to the grid just above
+    (_label_joining_grid_above), else  a header joining it to the grid  just beside
+    (_header_joining_grid_beside), else the cell moves to a free column with its title
+    (_move_to_free_column), else the text goes into the formulas that need it (_text_into_readers), else a
+    label beside it makes the two a small grid (_label_beside, 20 Nov 2026), else it is left for a person.
+
+    One pass fixes every cell it can (2026-11-16, Model D (an IFRS 17 tool): W25, X26, Y27  under the grid
+    U21:AA24, one row and one column further each time; each cell above is read by a formula, so only
+    the first could join the grid, the next one pass later, the third a pass after that -- and Do
+    everything ran out of passes). The cells are taken in reading order and each sees the sheet as the
+    operations planned before it will leave it: the grid one row longer for each label (`on`), the
+    labels and titles written and the moved cells  gone (`planned`). So the second  step of a staircase
+    joins the grid the  first one lengthened,  and no  title is planned where an earlier one of the same
+    pass would be read as one grid with it."""
     from .validators.structure import lone_text_cells_read
 
     ops, skipped = [], []
@@ -1489,17 +2307,30 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
     if not sites:
         return ops, skipped
     used = {g["name"].strip().lower() for g in all_grids(analysis) if g.get("name")}
-    grids = all_grids(analysis)
+    free: dict[str, int] = {}  # per sheet, the next free column a cell can move to
+    site_sheets = {s["sheet"] for s in sites}
+    # the sheet as this  pass will leave it: its grids (a grid a label lengthens  is replaced by a longer
+    # copy --  the analysis' own records are never changed),  what the planned operations write or empty,
+    # and which of the cells  handled here still stand alone where they  were (`waiting`)
+    on: dict[str, list[dict[str, Any]]] = {name: [] for name in site_sheets}
+    for g in all_grids(analysis):
+        if g["sheet"] in on:
+            on[g["sheet"]].append(g)
+    planned: dict[tuple[str, int, int], Any] = {}
+    rewriting: set[str] = set()  # the formulas this pass already rewrites (a second cell they read waits for the next pass)
+    waiting: set[tuple[str, int, int]] = set()
     for s in sites:
-        ref = parse_ref(s["cell"])
-        row, col = ref["r1"], ref["c1"]
-        if row == 1:
-            skipped.append(f"{s['sheet']}!{s['cell']}: on the first row, no cell above for a title -- by hand (move the cell down one row, or write its value into the formulas)")
-            continue
-        above = cell_value(analysis, s["sheet"], row - 1, col)
-        if above is not None or grid_containing([g for g in grids if g["sheet"] == s["sheet"]], row - 1, col):
-            skipped.append(f"{s['sheet']}!{s['cell']}: the cell above ({ref_text(col, row - 1)}) is taken -- by hand")
-            continue
+        at = parse_ref(s["cell"])
+        waiting.add((s["sheet"], at["r1"], at["c1"]))
+    lone: set[tuple[str, int, int]] = set()  # every text cell standing alone on those sheets, read or not
+    for sh in analysis["workbooks"][0]["sheets"]:
+        if sh["name"] in site_sheets:
+            for c in sh.get("standalone_text_cells", []):
+                at = parse_ref(c["cell"])
+                if at:
+                    lone.add((sh["name"], at["r1"], at["c1"]))
+
+    def title(s: dict[str, Any], row: int, col: int) -> str:
         label = None
         for c in range(col - 1, max(0, col - 5), -1):
             v = cell_value(analysis, s["sheet"], row, c)
@@ -1509,13 +2340,102 @@ def plan_title_lone_text_cells(analysis, report) -> tuple[list[dict], list[str]]
         base = (_clean_name(str(label).rstrip(": ").strip()) + " value") if label else f"{s['sheet']} {s['cell']}"
         name = _unique_name(base, used)
         used.add(name.lower())
-        ops.append(_op("set_value", "title_lone_text_cells", "STR-008", s["sheet"], cell=ref_text(col, row - 1), before=None, after=f"#{name}",
-                       note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
+        return f"#{name}"
+
+    def grown(g: dict[str, Any], sheet: str, **edge: int) -> None:
+        """the grid one row longer / one column wider, in this pass's picture of the sheet"""
+        longer = {**g, **edge, "grown_in_this_pass": True}
+        longer["n_rows"], longer["n_cols"] = longer["last_row"] - longer["first_row"] + 1, longer["last_col"] - longer["first_col"] + 1
+        longer["ref"] = ref_text(longer["first_col"], longer["first_row"], longer["last_col"], longer["last_row"])
+        on[sheet] = [longer if x is g else x for x in on[sheet]]
+
+    for s in sites:
+        ref = parse_ref(s["cell"])
+        row, col = ref["r1"], ref["c1"]
+        sheet = s["sheet"]
+        on_sheet = on[sheet]
+        inside = grid_containing(on_sheet, row, col)
+        if inside and inside.get("grown_in_this_pass"):
+            waiting.discard((sheet, row, col))
+            continue  # a label planned for an earlier cell already takes this one into its grid
+        above_taken = row == 1 or _planned_value(analysis, planned, sheet, row - 1, col) is not None or bool(grid_containing(on_sheet, row - 1, col))
+        range_reader = beside = None
+        if not above_taken:
+            # an empty cell inside a range some  formula reads (INDEX/MATCH, a lookup, SUM ...) must stay empty:
+            # a title there would be read as a value (Parameters!C36:C119 of an IFRS risk model, 2026-11-12)
+            range_reader = _range_reader(analysis, sheet, row - 1, col)
+            # a title right of another cell this pass handles (a lone text still in its place, or a header just
+            # planned) is read as one grid with it, and this cell stays alone (three texts on a diagonal,
+            # 2026-11-16: the titles of the second and third were trapped that way, and a second pass was needed).
+            # A lone label nothing  reads on that spot is  left as it always was: only this  pass's own cells  count.
+            left = (sheet, row - 1, col - 1)
+            if not range_reader and ((left in waiting and not grid_containing(on_sheet, row - 1, col - 1)) or planned.get(left) is not None):
+                beside = ref_text(col - 1, row - 1)
+            if not range_reader and not beside:
+                planned[(sheet, row - 1, col)] = heading = title(s, row, col)
+                ops.append(_op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=ref_text(col, row - 1), before=None, after=heading,
+                               note=f"{s['cell']} = {s['text'][:40]!r} stands alone and is read by {s['read_by']}; Mind imports no loose text cell -- with a title above it, it is a one-cell grid"))
+                continue
+        joined = _label_joining_grid_above(analysis, on_sheet, s, row, col, planned) if above_taken and row > 1 else None
+        if joined:
+            above = next(g for g in on_sheet if g["last_row"] == row - 1 and g["first_col"] < col <= g["last_col"])
+            planned[(sheet, row, above["first_col"])] = joined["after"]
+            grown(above, sheet, last_row=row)
+            waiting.discard((sheet, row, col))
+            ops.append(joined)
+            continue
+        closed = _labels_closing_gap_above(analysis, on_sheet, s, row, col, planned)
+        if closed:
+            labels, above, bottom = closed
+            for o in labels:
+                at = parse_ref(o["cell"])
+                planned[(sheet, at["r1"], at["c1"])] = o["after"]
+            grown(above, sheet, last_row=bottom)
+            waiting.discard((sheet, row, col))
+            ops.extend(labels)
+            continue
+        widened = _header_joining_grid_beside(analysis, on_sheet, lone, s, row, col, planned)
+        if widened:
+            header, beside_grid = widened
+            planned[(sheet, beside_grid["first_row"], col)] = header["after"]
+            grown(beside_grid, sheet, last_col=col)
+            waiting.discard((sheet, row, col))
+            ops.append(header)
+            continue
+        moved = _move_to_free_column(analysis, on_sheet, s, row, col, free) if above_taken or beside else None
+        if moved:
+            move, title_cell = moved
+            to, over = parse_ref(move["to"]), parse_ref(title_cell)
+            heading = title(s, row, col)
+            planned[(sheet, row, col)] = None
+            planned[(sheet, to["r1"], to["c1"])], planned[(sheet, over["r1"], over["c1"])] = s["text"], heading
+            waiting.discard((sheet, row, col))
+            ops.append(move)
+            ops.append(_op("set_value", "title_lone_text_cells", "STR-008", sheet, cell=title_cell, before=None, after=heading,
+                           note=f"the title of {sheet}!{s['cell']}, moved to {move['to']}: a one-cell grid Mind imports"))
+            continue
+        rewritten = _text_into_readers(analysis, s, row, col, rewriting)
+        if rewritten:
+            waiting.discard((sheet, row, col))
+            ops.extend(rewritten)
+            continue
+        labelled = _label_beside(analysis, on_sheet, s, row, col, planned)
+        if labelled:
+            at = parse_ref(labelled["cell"])
+            planned[(sheet, at["r1"], at["c1"])] = labelled["after"]
+            waiting.discard((sheet, row, col))
+            ops.append(labelled)
+        elif range_reader:
+            skipped.append(f"{sheet}!{s['cell']}: could not name it -- the empty cell above ({ref_text(col, row - 1)}) lies inside a range {range_reader} reads, and a title there would change that result -- by hand")
+        else:
+            where = ("on the first row, no cell above for a title" if row == 1 else f"the cell above ({ref_text(col, row - 1)}) is taken" if above_taken
+                     else f"a title in the cell above ({ref_text(col, row - 1)}) would be read as one grid with the text beside it ({beside})")
+            skipped.append(f"{sheet}!{s['cell']}: {where}, and a range or a name over several cells reads it (it cannot move) -- by hand")
     return ops, skipped
 
 
 def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
-    """FRM-013: an error cell kept on purpose (arithmetic on "", no IFERROR) becomes
+    """FRM-013:  an error  cell kept on purpose (arithmetic on "", no IFERROR) becomes
     IF(cell="",NA(),...): an error in Excel (#N/A for #VALUE!) and in Mind alike."""
     ops, skipped = [], []
     res = _mind_values(analysis)
@@ -1529,35 +2449,29 @@ def plan_keep_error_cells(analysis, report) -> tuple[list[dict], list[str]]:
 
 
 # Every action carries its `level` -- "blocking" when Mind's converter
-# refuses the workbook (or computes wrong) without it, "optional" when Mind reads
-# the file as it is and the change only improves it. The level is the priority
-# of the rule the action serves (rules/*.yaml: REQUIRED -> blocking); it is not
-# a judgment about any particular workbook. Blocking actions are on by default;
+# refuses the  workbook (or computes wrong) without it, "optional" when Mind reads
+# the file  as it is and the change  only improves it. The level is the  priority
+# of the rule the action serves (rules/*.yaml: REQUIRED -> blocking); it  is not
+# a judgment about any particular workbook.  Blocking actions are on by default;
 # `caution` says why a blocking action still deserves a look before Apply.
 BLOCKING, OPTIONAL = "blocking", "optional"
 def plan_pivot_tables(analysis, report, mode: str = DEFAULT_PIVOT_MODE) -> tuple[list[dict], list[str]]:
-    """STR-009: one operation per pivot table (every one blocks Mind's converter). To formulas (each
-    falls back to values in Excel when its formulas would not give the same numbers) unless the pivot
-    setting is "values"."""
+    """STR-009:  one operation  per pivot table (every one blocks Mind's converter). To plain values
+    unless the pivot setting is "formulas" (each falls back to values in Excel when its formulas would
+    not give the same numbers).  GETPIVOTDATA reading a pivot is pointed at the cell it returns  today
+    before the pivot becomes cells (app/pivots.point_getpivotdata_at_cells)."""
     from .validators.structure import blocking_pivot
 
     ops: list[dict] = []
     skipped: list[str] = []
-    to = "pivot_to_values" if mode == "values" else "pivot_to_formulas"
-    # GETPIVOTDATA reads a pivot table: once the pivot is cells it returns #REF! (and so does every
-    # cell built on it). Which pivot each one reads is not recorded, so none is converted (as
-    # scripts/pivots_to_values.py refuses such a workbook).
-    # Only looked for when there is a pivot: a big model has hundreds of thousands of formulas.
+    to = "pivot_to_formulas" if mode == "formulas" else "pivot_to_values"
+    # Only  looked for when there is a pivot:  a big model has hundreds of thousands of formulas.
     has_pivots = any(s.get("pivot_tables") for s in analysis["workbooks"][0].get("sheets", []))
     gpd = sorted({f["sheet"] for f in analysis["workbooks"][0].get("formulas", []) or [] if isinstance(f.get("formula"), str) and "GETPIVOTDATA(" in f["formula"].upper()}) if has_pivots else []
     for s in analysis["workbooks"][0].get("sheets", []):
         for p in s.get("pivot_tables", []) or []:
             why = blocking_pivot(p)
-            if gpd:
-                skipped.append(f"{s['name']}!{p['ref']} ({p['name']}): left as a pivot table -- GETPIVOTDATA on {', '.join(gpd)} reads pivot tables and would become #REF!; "
-                               f"Mind cannot read it as it is ({why}): replace the GETPIVOTDATA by hand first")
-                continue
-            note = f"blocking: {why}"
+            note = f"blocking: {why}" + (f"; GETPIVOTDATA on {', '.join(gpd)} will read the cells it reads today" if gpd else "")
             ops.append(_op(to, "pivot_tables", "STR-009", s["name"], cell=p["ref"].split(":")[0], range=p["ref"], pivot=p["name"],
                            before=f"pivot table {p['name']}", after="formulas over its source" if to == "pivot_to_formulas" else "plain values", note=note))
     return ops, skipped
@@ -1574,7 +2488,7 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: =SUM('First:Last'!E5) becomes =SUM('A'!E5,'B'!E5,...) over the sheets Mind imports; a sheet with no grid is left out only when it holds nothing at those cells, so Excel's result is the same ('Did the numbers change?' proves it)", "planner": plan_expand_3d_references},
     {"id": "freeze_external_links", "title": "Freeze external links: write the value Excel shows for each reference to another workbook, then break the link", "rule_ids": ["REF-002"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a reference to another workbook becomes the copy Excel kept of that cell (a number or a text), NA() where it kept none; the values stop following the other file -- which they already do not when it cannot be reached", "planner": plan_freeze_external_links},
-    {"id": "direct_references", "title": "Replace INDIRECT used as a value by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
+    {"id": "direct_references", "title": "Replace INDIRECT by the reference its text builds", "rule_ids": ["FRM-007"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: INDIRECT(\"'\"&$G10&\"'!$Z$16\") becomes 'Line 1'!$Z$16, the reference the text designates with today's inputs (Mind cannot use INDIRECT as a value); a text built from an input that changes later would no longer be followed -- Excel's values today stay the same", "planner": plan_direct_references},
     {"id": "cover_array_headers", "title": "Extend the header row over every column an array formula covers", "rule_ids": ["RSK-002"], "default_on": True, "level": BLOCKING,
      "caution": "writes 'Period n' into the empty header cells above the array's columns (Mind refuses an array formula that reaches past its grid); rename them by hand if the model has better words", "planner": plan_cover_array_headers},
@@ -1584,6 +2498,8 @@ ACTIONS: list[dict[str, Any]] = [
      "caution": "rewrites formulas: =IFERROR(x, fallback) becomes =IF(cell=\"\", fallback, IFERROR(x, fallback)), down the whole filled-down block; Excel returns the same values ('Did the numbers change?' proves it)", "planner": plan_guard_blank_arithmetic},
     {"id": "freeze_environment_formulas", "title": "Write what CELL / INFO formulas show today in their place", "rule_ids": ["FRM-012"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: CELL(\"filename\") / INFO() ask Excel about the file and the session, which Mind cannot answer; the text or number Excel shows today is written instead", "planner": plan_freeze_environment_formulas},
+    {"id": "offset_ranges", "title": "Write a fixed OFFSET range out where arithmetic uses it", "rule_ids": ["FRM-014"], "default_on": True, "level": BLOCKING,
+     "caution": "rewrites formulas: 1-OFFSET($H$2,2,0,3,1) becomes 1-$H$4:$H$6, the cells that OFFSET designates (its arguments are numbers, so always the same cells); Excel's values stay the same", "planner": plan_offset_ranges},
     {"id": "line_breaks_as_char", "title": "Write line breaks inside text as CHAR(10)", "rule_ids": ["FRM-011"], "default_on": True, "level": BLOCKING,
      "caution": "rewrites formulas: a line break typed inside quotes becomes \"...\"&CHAR(10)&\"...\"; the text Excel shows is the same", "planner": plan_line_breaks_as_char},
     {"id": "keep_error_cells", "title": "Keep an error cell an error in Mind (arithmetic on \"\" with no IFERROR)", "rule_ids": ["FRM-013"], "default_on": True, "level": BLOCKING,
@@ -1596,7 +2512,8 @@ ACTIONS: list[dict[str, Any]] = [
     {"id": "reorder_input_flag", "title": "Add /Input to /Reorder grids", "rule_ids": ["INP-005"], "default_on": True, "level": BLOCKING, "planner": plan_reorder_input_flag},
     {"id": "special_headers", "title": "Correct headers of /ExportSettings, /ProjectSettings, /Parameters, /InputSettings grids", "rule_ids": ["EXP-003", "PRJ-002", "PAR-002", "INP-003"], "default_on": True, "level": BLOCKING, "planner": plan_special_headers},
     {"id": "title_lone_text_cells", "title": "Give a lone text cell that formulas read a title of its own", "rule_ids": ["STR-008"], "default_on": True, "level": BLOCKING,
-     "caution": "writes a '#' title in the empty cell above a text cell that stands alone and is read by a formula: Mind imports grids, not loose text cells, and the formula would get nothing", "planner": plan_title_lone_text_cells},
+     "caution": "writes a '#' title in the empty cell above a text cell that stands alone and is read by a formula: Mind imports grids, not loose text cells, and the formula would get nothing. "
+                "Where no title fits: a label or a header that joins it to the grid next to it, a move to a column of its own, or, last, the text itself written into the formula in place of the reference (the same value; the formula no longer follows that cell)", "planner": plan_title_lone_text_cells},
     {"id": "create_grid_titles", "title": "Give every untitled grid one '#Name' title taken from the cells around it (captions, labels, headers)", "rule_ids": ["STR-004", "STR-002", "STR-001"], "default_on": True, "level": OPTIONAL,
      "level_note": "Mind accepts an untitled grid but lists it as 'Untitled' -- unusable for whoever opens the model", "planner": plan_create_grid_titles},
     {"id": "flag_spelling", "title": "Correct misspelt flags to the documented spelling", "rule_ids": ["FLG-001"], "default_on": True, "level": OPTIONAL, "planner": plan_flag_spelling},
@@ -1609,7 +2526,7 @@ ACTION_LEVELS: dict[str, str] = {a["id"]: a["level"] for a in ACTIONS}
 
 
 def merged_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int, int]]]:
-    """Per sheet, every merged range as (r1, r2, c1, c2) -- from the inventory."""
+    """Per  sheet, every  merged range as (r1, r2, c1, c2) -- from the inventory."""
     out: dict[str, list[tuple[int, int, int, int]]] = {}
     for s in analysis["workbooks"][0].get("sheets", []):
         rects = []
@@ -1622,7 +2539,7 @@ def merged_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, in
 
 
 def merged_conflict(merged: dict[str, list[tuple[int, int, int, int]]], sheet: str, cell: str) -> str | None:
-    """The merged range that contains `cell` without `cell` being its first cell
+    """The  merged range  that contains `cell` without `cell` being its first cell
     (Excel ignores a write there), else None."""
     ref = parse_ref(str(cell))
     if not ref:
@@ -1634,9 +2551,9 @@ def merged_conflict(merged: dict[str, list[tuple[int, int, int, int]]], sheet: s
 
 
 def _drop_merged_targets(ops: list[dict[str, Any]], skipped: list[str], merged: dict[str, list[tuple[int, int, int, int]]]) -> list[dict[str, Any]]:
-    """A cell write aimed at a non-first cell of a merged range is moved
+    """A  cell write  aimed at a non-first cell of a merged range is moved
     from the operations to the skip list (Excel would ignore it silently).
-    Writes planned for post-insert coordinates are left to the executor's guard."""
+    Writes planned for post-insert coordinates are left to the executor's  guard."""
     kept = []
     for o in ops:
         if o["op"] in ("set_value", "set_formula", "clear_cell") and not o.get("after_inserts"):
@@ -1649,7 +2566,7 @@ def _drop_merged_targets(ops: list[dict[str, Any]], skipped: list[str], merged: 
 
 
 def pivot_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int, int, str]]]:
-    """Per sheet, every pivot table as (r1, r2, c1, c2, its range) -- from the inventory."""
+    """Per  sheet, every  pivot table as (r1, r2, c1, c2, its range) -- from the inventory."""
     out: dict[str, list[tuple[int, int, int, int, str]]] = {}
     for s in analysis["workbooks"][0].get("sheets", []):
         for p in s.get("pivot_tables", []) or []:
@@ -1660,10 +2577,10 @@ def pivot_ranges(analysis: dict[str, Any]) -> dict[str, list[tuple[int, int, int
 
 
 def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: dict[str, list[tuple[int, int, int, int, str]]]) -> list[dict[str, Any]]:
-    """Excel refuses a write into a pivot table ("We can't change this part of the
+    """Excel  refuses a  write into a pivot table ("We can't change this part of the
     PivotTable") and a row or column inserted through one ("it will affect a PivotTable"): those
-    operations move to the skip list -- with the cell writes that wait for a refused insert -- so a
-    round does not plan them again and again."""
+    operations move to the skip list  -- with the cell writes that wait for a refused insert  -- so a
+    round does not plan  them again and again."""
     if not pivots:
         return ops
     refused_inserts: set[tuple[str, int]] = set()
@@ -1675,7 +2592,8 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
             continue
         if o["op"] == "insert_row":
             row = int(o["row"])
-            hit = next((p for p in rects if p[0] <= row <= p[1]), None)
+            band = insert_columns(o)
+            hit = next((p for p in rects if p[0] <= row <= p[1] and (band is None or (p[2] <= band[1] and p[3] >= band[0]))), None)
             if hit:
                 refused_inserts.add((o["sheet"], row))
                 skipped.append(f"{o['sheet']}!{row}:{row}: inserting a row here would cut the pivot table {hit[4]} -- Excel refuses; move the pivot table (or the title) by hand")
@@ -1695,18 +2613,73 @@ def _drop_pivot_targets(ops: list[dict[str, Any]], skipped: list[str], pivots: d
                     skipped.append(f"{o['sheet']}!{o.get('range') or o.get('cell')}: inside the pivot table {hit[4]} -- Excel does not let a cell of a pivot table be written; put{what} next to it by hand if it is needed")
                     continue
         kept.append(o)
-    if refused_inserts:  # a title planned for the row an insert would have made
+    if refused_inserts:  # a title planned for  the row an insert would have made
         kept = [o for o in kept if not (o.get("after_inserts") and o.get("insert_at") is not None and (o["sheet"], int(o["insert_at"])) in refused_inserts)]
     return kept
 
 
+# The Mind-value actions plan one  rewrite per cell. An output table can  hold the same formula on
+# 64,099 rows of 8 columns (512,792 cells of one model, 2026-10-26): one write per cell is ~8 COM
+# calls each, over an hour. Cells next to each other in a column holding the same formula filled
+# down, before and after the rewrite, are written in one assignment instead.
+FILL_DOWN_ACTIONS = {"guard_blank_arithmetic", "keep_error_cells", "line_breaks_as_char", "empty_cells_as_zero"}
+# what  a fill  moves but relative_form keeps as written: whole rows (2:2), another workbook's cells ([1]Data!A5)
+_UNSEEN_IN_A_FILL = re.compile(r"(?<![\w.$])\$?\d+:\$?\d+(?![\d(])|\[")
+
+
+def _fill_down_blocks(ops: list[dict[str, Any]], analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """One  set_formula per  block of cells holding the same formula filled down: `cell` is the block
+    (BK133:BK64231), `before` / `after` its top cell's formulas, `before_last` / `after_last` its last
+    cell's, `block_cells` how many. Two cells join  only when their formulas before AND after are the same
+    once every  reference is written relative to its  own cell (mind_values.relative_form), so the top
+    formula written  over the block -- Excel moves the relative references down as  a fill does -- gives
+    every cell what  its own operation said. A one-cell array formula is marked `one_cell_array` (the
+    writer keeps it one) and joins only other one-cell arrays. A formula with GETPIVOTDATA stays alone
+    (a pivot turned into cells rewrites its calls cell by cell)."""
+    from .validators.mind_values import relative_form
+
+    if not ops:
+        return ops
+    arrays = {(f["sheet"], str(f["cell"]).upper()) for f in analysis["workbooks"][0].get("formulas", []) if f.get("array_ref")}
+    out: list[dict[str, Any]] = []
+    cells: list[tuple[tuple, int, dict[str, Any]]] = []
+    for o in ops:
+        ref = parse_ref(str(o.get("cell") or "")) if o["op"] == "set_formula" and not o.get("after_inserts") and not o.get("range") else None
+        if not ref or ref.get("sheet") or (ref["r1"], ref["c1"]) != (ref["r2"], ref["c2"]):
+            out.append(o)
+            continue
+        if (o["sheet"], str(o["cell"]).upper()) in arrays:
+            o = {**o, "one_cell_array": True}
+        before, after = str(o.get("before") or ""), str(o.get("after") or "")
+        if not (before.startswith("=") and after.startswith("=")) or "GETPIVOTDATA" in before.upper() or _UNSEEN_IN_A_FILL.search(mask_strings(before + after)):
+            out.append(o)
+            continue
+        key = (o["sheet"], ref["c1"], o["rule_id"], bool(o.get("one_cell_array")), relative_form(before, ref["r1"], ref["c1"]), relative_form(after, ref["r1"], ref["c1"]))
+        cells.append((key, ref["r1"], o))
+    cells.sort(key=lambda t: (t[0][0], t[0][1], t[1]))
+    run: list[dict[str, Any]] = []
+    for i, (key, row, o) in enumerate(cells):
+        run.append(o)
+        if i + 1 < len(cells) and cells[i + 1][0] == key and cells[i + 1][1] == row + 1:
+            continue
+        if len(run) == 1:
+            out.append(o)
+        else:
+            first = run[0]
+            fill = f"the same formula down to {o['cell']} ({len(run):,} cells), written as one fill"
+            out.append({**first, "cell": f"{first['cell']}:{o['cell']}", "block_cells": len(run), "before_last": o["before"], "after_last": o["after"],
+                        "note": f"{first['note']} -- {fill}" if first.get("note") else fill})
+        run = []
+    return out
+
+
 def plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], grid_names: dict[str, str] | None = None, pivot_mode: str = DEFAULT_PIVOT_MODE) -> list[dict[str, Any]]:
-    """Every action with its planned operations and skip notes -- no file is touched.
+    """Every  action with  its planned operations and skip notes -- no file is touched.
 
     `grid_names` (optional, "Sheet!Ref" -> name) comes from the assistant
     (app/grid_naming.suggest_names) and is only used by `create_grid_titles`,
-    and there only where the deterministic name would be a weak one.
-    Every formula is parsed once for all the planners (formula_memo; shared with the scan
+    and there only where the deterministic name  would be a weak one.
+    Every formula is parsed once for all  the planners (formula_memo; shared with the  scan
     when the caller opened it around both)."""
     with formula_memo():
         return _plan_actions(analysis, validation_report, grid_names, pivot_mode)
@@ -1716,7 +2689,7 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
     out = []
     merged = merged_ranges(analysis)
     pivots = pivot_ranges(analysis)
-    taken: dict[tuple[str, str], str] = {}  # one write per cell -- the action earlier in the table keeps it
+    taken: dict[tuple[str, str], str] = {}  # one  write per  cell -- the action earlier in the table keeps it
     for a in ACTIONS:
         try:
             if a["id"] == "create_grid_titles":
@@ -1727,10 +2700,12 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
                 ops, skipped = a["planner"](analysis, validation_report)
             ops = _drop_merged_targets(list(ops), skipped, merged)
             ops = _drop_pivot_targets(ops, skipped, pivots)
+            if a["id"] in FILL_DOWN_ACTIONS:
+                ops = _fill_down_blocks(ops, analysis)
             kept = []
             for o in ops:
                 # two actions filling the same EMPTY cell (a header over an array, a grid title): the first keeps it.
-                # A cell that holds something is left to both, as before (a header corrected twice in one round).
+                # A cell that holds  something is left to both, as before (a header corrected twice  in one round).
                 key = (o["sheet"], str(o.get("cell") or o.get("range") or ""))
                 empty_target = o["op"] == "set_value" and o.get("before") in (None, "")
                 if empty_target and key in taken:
@@ -1740,10 +2715,12 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
                     taken[key] = a["id"]
                 kept.append(o)
             ops = kept
-        except Exception as exc:  # a planner bug must never hide the other actions
+        except Exception as exc:  # a planner bug must  never hide the other actions
             ops, skipped = [], [f"planner error: {exc}"]
         out.append({
-            "id": a["id"], "title": a["title"], "rule_ids": a["rule_ids"], "default_on": a["default_on"],
+            "id": a["id"], "title": a["title"], "rule_ids": a["rule_ids"],
+            "rule_names": [rule_name(r) for r in a["rule_ids"]],  # the codes in  plain words, in the same order
+            "default_on": a["default_on"],
             "level": a["level"], "level_note": a.get("level_note"), "caution": a.get("caution"),
             "operations": ops, "count": len(ops), "skipped": skipped,
         })
@@ -1751,7 +2728,7 @@ def _plan_actions(analysis: dict[str, Any], validation_report: dict[str, Any], g
 
 
 def formula_replacement_op(sheet: str, cell: str, before: str, after: str, rule_id: str) -> dict[str, Any]:
-    """A user-approved formula replacement (FRM-002 / RSK-004 / FORMULA-002)."""
+    """A  user-approved formula  replacement (FRM-002 / RSK-004 / FORMULA-002)."""
     after = after.strip()
     if not after.startswith("="):
         raise ValueError("the replacement must be a formula starting with '='")
@@ -1760,12 +2737,12 @@ def formula_replacement_op(sheet: str, cell: str, before: str, after: str, rule_
 
 # --- executor ------------------------------------------------------------------
 def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Cell ops on original coordinates, then inserts (bottom-up / right-to-left),
+    """Cell  ops on  original coordinates, then inserts (bottom-up / right-to-left),
     then cell ops written for post-insert coordinates, then sheet-level ops."""
     # sheet protection comes off first: a protected sheet refuses the pivot conversion and every write
     unprotect = [o for o in operations if o["op"] == "unprotect_sheet"]
-    phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # the pivot tables first, so their cells can be written
-    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "remove_validation"} and not o.get("after_inserts")]
+    phase0 = [o for o in operations if o["op"] in PIVOT_OPS]  # the pivot  tables first, so their cells can be written
+    phase1 = [o for o in operations if o["op"] in CELL_OPS | {"explicit_colors", "remove_validation", "move_cell"} and not o.get("after_inserts")]
     row_inserts = sorted((o for o in operations if o["op"] == "insert_row"), key=lambda o: (o["sheet"], -int(o["row"])))
     col_inserts = sorted((o for o in operations if o["op"] == "insert_column"), key=lambda o: (o["sheet"], -col_to_num(str(o["column"]))))
     phase2 = [_resolve_insert_at(o, row_inserts, col_inserts) for o in operations if o["op"] in CELL_OPS and o.get("after_inserts")]
@@ -1774,35 +2751,37 @@ def _ordered(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _resolve_insert_at(op: dict[str, Any], row_inserts: list[dict[str, Any]], col_inserts: list[dict[str, Any]] = ()) -> dict[str, Any]:
-    """A cell written into a row this plan inserts (`insert_at` = the row the
+    """A  cell written  into a row this plan inserts (`insert_at` = the row the
     companion insert targets) lands one row lower for every *earlier* row this
-    plan inserts on the same sheet -- including inserts planned by other
-    actions the user selected. A second insert at the same row (another entry,
-    e.g. the assistant's) adds a blank row between the title and its grid, so
-    the cell goes down to the last of them, right above the grid. A column
-    inserted at or left of the cell moves it one column right (the columns are
+    plan inserts on the same sheet -- including inserts planned  by other
+    actions the user selected. A second insert at the same  row (another entry,
+    e.g. the assistant's) adds  a blank row between the title and  its grid, so
+    the cell goes down to the last of them,  right above the grid. A column
+    inserted at  or left of the cell moves it one column right (the columns are
     inserted after the rows). Recomputed from `insert_at` every time, so the
     same operation list can be ordered repeatedly without drifting."""
     at = op.get("insert_at")
     if at is None:
         return op
     at = int(at)
-    same_row = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) == at)
-    shift = sum(1 for o in row_inserts if o["sheet"] == op["sheet"] and int(o["row"]) < at) + max(0, same_row - 1)
     ref = parse_ref(str(op["cell"]))
     if not ref:
         return op
+    # an insert that shifts only some columns moves the cell only when its column is one of them
+    mine = [o for o in row_inserts if o["sheet"] == op["sheet"] and insert_moves(o, ref["c1"])]
+    same_row = sum(1 for o in mine if int(o["row"]) == at)
+    shift = sum(1 for o in mine if int(o["row"]) < at) + max(0, same_row - 1)
     cshift = sum(1 for o in col_inserts if o["sheet"] == op["sheet"] and col_to_num(str(o["column"])) <= ref["c1"])
     if not shift and not cshift:
         return op
     return {**op, "cell": ref_text(ref["c1"] + cshift, at + shift)}
 
 
-EXCEL_REFUSED_FORMULA = -2146827284  # 0x800A03EC: Excel would not accept the value/formula
+EXCEL_REFUSED_FORMULA = -2146827284  # 0x800A03EC:  Excel would  not accept the value/formula
 # Excel answers these while it is busy for an instant (a background recalculation, a
 # redraw): the call did nothing and succeeds a moment later. One real Apply of 10,404
-# formulas lost exactly one of them to RPC_E_CALL_REJECTED.
-TRANSIENT_COM_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
+# formulas  lost exactly one of them to RPC_E_CALL_REJECTED.
+TRANSIENT_COM_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED,  RPC_E_SERVERCALL_RETRYLATER
 TRANSIENT_RETRIES = 5
 
 
@@ -1811,12 +2790,13 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 def _com_message(exc: BaseException, op: dict[str, Any] | None = None) -> str:
-    """Excel's own message out of a pywin32 com_error, else a plain-English
+    """Excel's  own message  out of a pywin32 com_error, else a plain-English
     one: Excel often gives no text at all (just 0x800A03EC), which used to
-    reach the user as a raw tuple."""
+    reach the user as a raw tuple. The common errors ("Type mismatch",  "Member not
+    found" ...) come out as a plain sentence with Excel's  words in brackets (app/plain_codes.py)."""
     info = getattr(exc, "excepinfo", None)
     if info and len(info) > 2 and info[2]:
-        return str(info[2])
+        return plain_com_error(exc)
     scode = info[5] if info and len(info) > 5 else None
     if scode == EXCEL_REFUSED_FORMULA:
         formula = str((op or {}).get("after") or "")
@@ -1826,11 +2806,12 @@ def _com_message(exc: BaseException, op: dict[str, Any] | None = None) -> str:
         if formula.startswith("="):
             return "Excel refused this formula -- it is not a formula Excel can store (check the syntax and the function arguments)"
         return "Excel refused this change (error 0x800A03EC)"
-    return str(exc)
+    # the app's own  refusals (a merged range, a cell already  written) are plain words already
+    return plain_com_error(exc) if is_com_error(exc) else str(exc)
 
 
 def _break_external_link(wb: Any, o: dict[str, Any]) -> None:
-    """Excel's own Break Link on the one source whose file name matches: with every formula
+    """Excel's  own Break  Link on the one source whose file name matches: with every formula
     that read it already rewritten, nothing is converted and the link definition goes."""
     want = str(o.get("file_name") or "").lower()
     sources = wb.LinkSources(1)  # xlExcelLinks
@@ -1849,9 +2830,9 @@ def _cells_of(ref_or_range: Any) -> list[str]:
 
 
 def _merged_guard(rng: Any, sheet: str, target: str) -> None:
-    """Raise when `rng` (a single cell or a range) touches a merged area it does
+    """Raise  when `rng`  (a single cell or a range) touches a merged area it does
     not own: Excel ignores a value written into a merged cell other than the
-    area's first cell, with no error. A write on the first cell is fine."""
+    area's first cell, with no error. A  write on the first cell is fine."""
     try:
         merged = rng.MergeCells
     except Exception:
@@ -1874,7 +2855,7 @@ def _merged_guard(rng: Any, sheet: str, target: str) -> None:
 
 
 def _read_back_guard(rng: Any, o: dict[str, Any], sheet: str, target: str) -> None:
-    """After a write, confirm the cell is no longer empty (set_value / set_formula)
+    """After  a write,  confirm the cell is no longer empty (set_value / set_formula)
     or is empty (clear_cell). A silent no-op must never be reported as applied."""
     try:
         first = rng.Cells(1, 1)
@@ -1883,7 +2864,7 @@ def _read_back_guard(rng: Any, o: dict[str, Any], sheet: str, target: str) -> No
         finally:
             first = None
     except Exception:
-        return  # cannot read back: keep the operation, the verify-opens step still runs
+        return  # cannot read back: keep the operation, the verify-opens step still  runs
     has_content = formula is not None and str(formula) != ""
     if o["op"] == "clear_cell":
         if has_content:
@@ -1893,27 +2874,120 @@ def _read_back_guard(rng: Any, o: dict[str, Any], sheet: str, target: str) -> No
             raise ValueError(f"{sheet}!{target}: Excel accepted the write but the cell is still empty (protected, merged or otherwise refused)")
 
 
+def _same_formula(a: Any, b: Any) -> bool:
+    """Excel's  read-back against  the planned text, the function prefixes a file keeps (_xlfn.) and spacing aside."""
+    def norm(x: Any) -> str:
+        return re.sub(r"\s+", "", re.sub(r"_xl(?:fn|ws|pm)\.", "", str(x or ""), flags=re.IGNORECASE)).upper()
+
+    return norm(a) == norm(b)
+
+
+def _write_formulas(rng: Any, o: dict[str, Any], sheet: str, target: str) -> None:
+    """set_formula  on a  one-cell array formula, or on a block of cells holding the same formula filled
+    down (one operation for BK133:BK64231, planned by _fill_down_blocks).
+
+    A one-cell array stays one. Excel 365 stores most formulas with  INDEX, OFFSET... as a one-cell
+    dynamic array (HasArray is False); .Formula would  write it back as a plain  formula with an @ --
+    =IF(N($O133)>0,+@INDEX(...)...), implicit intersection,  another formula (seen 2026-10-26).
+    Formula2 keeps it as it was; a single  Ctrl+Shift+Enter cell (HasArray) gets FormulaArray again
+    (in a  block it comes out a one-cell dynamic array: the same value).
+    A block is one assignment: Excel moves the relative references down as a fill does (64,099 cells
+    in about a second). Its last cell is read back against the plan; when it differs, the block gets
+    its old formula back and the operation fails."""
+    arrays = bool(o.get("one_cell_array"))
+    if ":" not in target:
+        if arrays and rng.HasArray:
+            rng.FormulaArray = o["after"]
+        else:
+            rng.Formula2 = o["after"]
+        return
+    prop = "Formula2" if arrays else "Formula"
+    setattr(rng, prop, o["after"])
+    if o.get("after_last"):
+        last = rng.Cells(rng.Rows.Count, rng.Columns.Count)
+        try:
+            got = getattr(last, prop)
+        finally:
+            last = None
+        if not _same_formula(got, o["after_last"]):
+            setattr(rng, prop, o["before"])
+            raise ValueError(
+                f"{sheet}!{target}: the formula filled down came out as {str(got)[:120]} in its last cell, where "
+                f"{str(o['after_last'])[:120]} was planned -- the block was put back as it was"
+            )
+
+
 def _op_target(o: dict[str, Any]) -> str:
-    """'Sheet!Cell' (or row / column / the sheet alone) an operation writes to, for progress messages."""
-    where = o.get("range") or o.get("cell") or (f"row {o['row']}" if o.get("row") is not None else None) or (f"column {o['column']}" if o.get("column") else None)
+    """'Sheet!Cell'  (or row  / column / the sheet alone) an operation writes to, for progress messages."""
+    where = o.get("range") or o.get("cell") or o.get("ref") or (f"row {o['row']}" if o.get("row") is not None else None) or (f"column {o['column']}" if o.get("column") else None)
     return f"{o['sheet']}!{where}" if where else str(o["sheet"])
 
 
+def _range_values_of(o: dict[str, Any]) -> tuple[dict[str, Any], list[list[Any]]]:
+    """A  set_range_values operation  checked: (the parsed range, the values, one list per row, as many
+    columns as the range)."""
+    ref = str(o.get("ref") or o.get("cell") or "").replace("$", "").upper()
+    r = parse_ref(ref)
+    if not r or r["whole_column"] or r["whole_row"] or r.get("sheet"):
+        raise ValueError(f"{o['sheet']}!{ref}: set_range_values needs a range like A7:A20 (no sheet in it)")
+    values = o.get("values")
+    rows, cols = r["r2"] - r["r1"] + 1, r["c2"] - r["c1"] + 1
+    if not isinstance(values, list) or len(values) != rows or any(not isinstance(row, (list, tuple)) or len(row) != cols for row in values):
+        raise ValueError(f"{o['sheet']}!{ref}: the range has {rows} row(s) of {cols} column(s); the values must be one list per row with that many items")
+    return r, [list(row) for row in values]
+
+
+def _applied_record(o: dict[str, Any]) -> dict[str, Any]:
+    """The  operation as  the log keeps it: the values of a set_range_values are counted, not copied."""
+    if "values" not in o:
+        return o
+    return {k: v for k, v in o.items() if k != "values"} | {"values_count": len(o["values"])}
+
+
+def _write_range_values(ws: Any, o: dict[str, Any]) -> dict[str, Any]:
+    """set_range_values  through Excel:  one assignment for the whole block (a key column of 95,000 rows
+    in a moment, where one write per cell is ~8 COM calls each). Text that Excel would read as a
+    formula  gets the text prefix; None empties the cell."""
+    r, values = _range_values_of(o)
+    target = r["ref"]
+    rng = ws.Range(target)
+    try:
+        _merged_guard(rng, o["sheet"], target)
+        rng.Value2 = tuple(tuple(excel_text(v) for v in row) for row in values)
+        # read back the cell  that holds the LAST NON-EMPTY planned  value (not the range's last cell:
+        # the plan  may end with empty rows, a table whose last row has  no key for instance)
+        spot = next(((i, j) for i in range(len(values) - 1, -1, -1) for j in range(len(values[i]) - 1, -1, -1) if values[i][j] not in (None, "")), None)
+        if spot is not None:
+            tail = rng.Cells(spot[0] + 1, spot[1] + 1)
+            try:
+                got = tail.Value2
+            finally:
+                tail = None
+            if got in (None, ""):
+                raise ValueError(f"{o['sheet']}!{target}: Excel accepted the values but the last cell written is still empty (protected, merged or otherwise refused)")
+    finally:
+        rng = None
+    return _applied_record(o)
+
+
 def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progress: Any = None, excel: Any = None, wb: Any = None) -> tuple[list[dict], list[dict]]:
-    """Write `operations` into `copy_path` through Excel and save it. `excel` / `wb`: an
+    """Write  `operations` into  `copy_path` through Excel and save it. `excel` / `wb`: an
     Excel the caller owns, with `copy_path` already open in it (the per-session worker, which opened
-    the copy while the previous version was being analysed); the workbook is closed here as always."""
+    the copy while the previous version was being  analysed); the workbook is closed here as always."""
     applied: list[dict] = []
     failed: list[dict] = []
-    # Every cell any operation writes. A multi-cell array formula (Ctrl+Shift+Enter)
-    # can only be changed as a whole -- Excel refuses "part of an array" -- so it is
-    # dismantled first when the operations cover all of its cells.
+    # Every cell any operation  writes. A multi-cell array formula (Ctrl+Shift+Enter)
+    # can  only be changed as a whole --  Excel refuses "part of an array" -- so it is
+    # dismantled first  when the operations cover all of its  cells.
     covered: set[tuple[str, str]] = set()
     for o in operations:
         if o["op"] in CELL_OPS:
-            for c in _cells_of(o.get("range") or o.get("cell")):
+            for c in _cells_of(o.get("range") or o.get("cell") or o.get("ref")):
                 covered.add((o["sheet"], c))
     dismantled: set[tuple[str, str]] = set()
+    # (sheet, cell) -> [[GETPIVOTDATA call, the reference it became]] when a pivot was turned into cells:
+    # a later formula planned from the old text gets the same references, not a call giving #REF!
+    relinked: dict[tuple[str, str], list[list[str]]] = {}
 
     def _array_of(ws: Any, target: str) -> str | None:
         """Address (e.g. 'C7:C9') of the multi-cell array formula containing the
@@ -1952,7 +3026,7 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                     f"include every cell of {arr} in the fix, or use set_array_formula on {arr}"
                 )
         else:
-            for sh, a in dismantled:  # a cell of an array dismantled by an earlier operation
+            for sh, a in dismantled:  # a cell of  an array dismantled by an earlier operation
                 if sh == sheet and set(_cells_of(target)) <= set(_cells_of(a)):
                     record = {**o, "array": a}
                     break
@@ -1974,7 +3048,9 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                 area = rng.Cells(1, 1).MergeArea
                 rng = None
                 rng = area
-            if o["op"] == "set_formula":
+            if o["op"] == "set_formula" and (o.get("one_cell_array") or ":" in target):
+                _write_formulas(rng, o, sheet, target)
+            elif o["op"] == "set_formula":
                 if rng.HasArray:  # single-cell array formula: replace it entirely
                     rng.ClearContents()
                 rng.Formula = o["after"]
@@ -2000,6 +3076,15 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             try:
                 rng.FormulaArray = o["after"]
             except Exception as exc:
+                if ":" not in target:
+                    # FormulaArray takes  255 characters at most (a  447-character one-cell array on the Model D
+                    # IFRS  17 tool, 2026-11-08):  Formula2 writes  the same one-cell array as a dynamic array,
+                    # the same value, with no such limit
+                    try:
+                        rng.Formula2 = o["after"]
+                        return {**o, "array": target, "note": f"{o.get('note') or ''} (written as a one-cell dynamic array: FormulaArray refused it)".strip()}
+                    except Exception:
+                        pass
                 raise ValueError(
                     f"could not write the array formula over {o['sheet']}!{target}: {_com_message(exc, o)} -- if the range overlaps an "
                     "existing array formula, the operations must cover all of that array (or use its exact range)"
@@ -2018,8 +3103,8 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             wb = given if given is not None else open_for_write(excel, copy_path)
             given = None
             # Manual calculation while writing: in automatic mode Excel recalculates every
-            # dependent after each write, and 12,678 writes into a 70k-formula model ran for
-            # hours. The mode is restored before the save, so the file keeps its own setting
+            # dependent after each write, and 12,678 writes into a  70k-formula model ran for
+            # hours. The mode is restored before the save,  so the file keeps its own  setting
             # and is recalculated once.
             calc_mode = None
             try:
@@ -2041,12 +3126,12 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
                         except Exception as exc:
                             ws = None
                             if attempt < TRANSIENT_RETRIES and _is_transient(exc):
-                                time.sleep(0.5 * (attempt + 1))  # Excel was busy for an instant: the same call again
+                                time.sleep(0.5 * (attempt + 1))  # Excel was busy for  an instant: the same call again
                                 continue
                             raise
                     applied.append(record)
                 except Exception as exc:
-                    failed.append({**o, "error": _com_message(exc, o)[:300]})
+                    failed.append({**o, "error": _com_message(exc, o)[:300], **failed_op_facts(exc)})
                 finally:
                     ws = None
             perf_record("apply_writes", time.perf_counter() - t_write, file=copy_path.name, operations=total)
@@ -2063,30 +3148,54 @@ def _apply_with_excel(copy_path: Path, operations: list[dict[str, Any]], progres
             close_quietly(wb)
 
     def _write_one(wb: Any, ws: Any, o: dict[str, Any], i: int, total: int) -> dict[str, Any]:
-        """One operation on its sheet; returns the record to log as applied."""
+        """One operation on its sheet; returns  the record to log as applied."""
         record = o
+        if o["op"] == "set_formula" and (o["sheet"], str(o["cell"]).replace("$", "").upper()) in relinked:
+            after = str(o["after"])
+            for call, reference in relinked[(o["sheet"], str(o["cell"]).replace("$", "").upper())]:
+                after = after.replace(call, reference)
+            o = {**o, "after": after}
         if o["op"] in ("set_formula", "set_value", "clear_cell"):
             record = _write_cell(ws, o)
         elif o["op"] == "set_array_formula":
             record = _write_array(ws, o)
+        elif o["op"] == "set_range_values":
+            record = _write_range_values(ws, o)
         elif o["op"] == "unprotect_sheet":
             ws.Unprotect()
         elif o["op"] == "remove_validation":
             ws.Range(o["cell"]).Validation.Delete()
         elif o["op"] == "set_sheet_visibility":
-            ws.Visible = -1 if o["after"] else 0  # xlSheetVisible / xlSheetHidden
+            ws.Visible = -1 if o["after"] else 0  # xlSheetVisible /  xlSheetHidden
         elif o["op"] == "explicit_colors":
             if not o.get("in_style_table"):  # already done for every sheet at once (app/theme_colors.py)
                 _explicit_colors(ws, o, i, total, progress)
         elif o["op"] == "insert_row":
-            ws.Rows(int(o["row"])).Insert()
+            band = insert_columns(o)
+            if band is None:
+                ws.Rows(int(o["row"])).Insert()
+            else:  # only these columns shift down: the grids beside them stay where they are
+                ws.Range(ws.Cells(int(o["row"]), band[0]), ws.Cells(int(o["row"]), band[1])).Insert(Shift=-4121)  # xlShiftDown
         elif o["op"] == "insert_column":
             ws.Columns(col_to_num(str(o["column"]))).Insert()
         elif o["op"] in PIVOT_OPS:
             from .pivots import convert
 
             done = convert(wb.Application, wb, ws, str(o["pivot"]), "formulas" if o["op"] == "pivot_to_formulas" else "values")
-            record = {**o, "result": done, "after": f"{done['formulas']} formulas" if done["to"] == "formulas" else "plain values" + (f" ({done['why_values']})" if done.get("why_values") else "")}
+            after = f"{done['formulas']} formulas" if done["to"] == "formulas" else "plain values" + (f" ({done['why_values']})" if done.get("why_values") else "")
+            for g in done.get("getpivotdata") or []:
+                relinked[(g["sheet"], g["cell"])] = relinked.get((g["sheet"], g["cell"]), []) + g["calls"]
+            calls = [c for g in done.get("getpivotdata") or [] for c in g["calls"]]
+            if any(ref != "NA()" for _, ref in calls):
+                after += f"; {sum(ref != 'NA()' for _, ref in calls)} GETPIVOTDATA call(s) now read its cells"
+            if any(ref == "NA()" for _, ref in calls):
+                after += f"; {sum(ref == 'NA()' for _, ref in calls)} GETPIVOTDATA call(s) giving an error today became NA()"
+            record = {**o, "result": done, "after": after}
+        elif o["op"] == "move_cell":
+            # Excel's cut and paste: every formula and name that reads the cell follows it
+            ws.Range(o["cell"]).Cut(ws.Range(o["to"]))
+            if ws.Range(o["to"]).Value2 is None:
+                raise ValueError(f"{o['sheet']}!{o['cell']}: Excel did not move it to {o['to']}")
         elif o["op"] == "rename_sheet":
             ws.Name = o["after"]
         elif o["op"] == "break_external_link":
@@ -2108,11 +3217,11 @@ XL_COLOR_INDEX_NONE = -4142
 
 
 def _recolor(rng: Any, single: bool) -> bool:
-    """Give a range its own colours back as explicit RGB (font, then fill).
+    """Give  a range  its own colours back as explicit RGB (font, then fill).
     -> False when the range holds more than one font colour or more than one
-    fill: Excel answers Null for a mixed range, and it must be split.
-    A single cell is never mixed (a font colour Excel cannot name -- rich text
-    with several colours -- is left alone, as before)."""
+    fill: Excel answers Null for a mixed range,  and it must be split.
+    A single cell is never mixed (a  font colour Excel cannot name --  rich text
+    with several colours -- is left  alone, as before)."""
     try:
         font = rng.Font.Color
     except Exception:
@@ -2147,15 +3256,15 @@ def _recolor(rng: Any, single: bool) -> bool:
 
 
 def _explicit_colors(ws: Any, o: dict[str, Any], i: int, total: int, progress: Any = None, blockwise: bool = True) -> None:
-    """FMT-002 at the cell level: theme colours become the same colours as
+    """FMT-002  at the  cell level: theme colours become the same colours as
     explicit RGB.
 
     By blocks. The cells are covered with rectangles and a rectangle
-    that has one font colour and one fill is re-coloured in one go; a mixed
-    one is split into its rows, a mixed row into its cells -- the cell-by-cell
-    assignment this replaces, which took ~10 COM calls a cell (37 minutes for
-    the 77,000 cells of one model, 124,000 on another). The result is the same
-    cell for cell (`blockwise=False` is the cell-by-cell way, kept for the test
+    that has one font colour and one fill is re-coloured in one  go; a mixed
+    one is split into its rows, a mixed row  into its cells -- the cell-by-cell
+    assignment  this replaces, which took ~10 COM calls  a cell (37 minutes for
+    the 77,000 cells of one model, 124,000  on another). The result is the same
+    cell  for cell (`blockwise=False` is the cell-by-cell way, kept for the test
     that says so).
 
     With `_colors_in_the_style_table` this is the fallback only (a package
@@ -2226,7 +3335,7 @@ def _range_cells(ref_text_: str) -> list[str]:
 
 
 def _remove_validation_openpyxl(ws: Any, target: str) -> None:
-    """Take the cells of `target` out of every data validation of the sheet (a range is split around them)."""
+    """Take  the cells  of `target` out of every data validation of the sheet (a range is split around them)."""
     from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
 
     t = parse_ref(str(target).replace("$", ""))
@@ -2266,11 +3375,30 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
                 _remove_validation_openpyxl(ws, o["cell"])
                 applied.append(o)
                 continue
+            if o["op"] == "set_range_values":
+                r, values = _range_values_of(o)
+                for i, row in enumerate(values):
+                    for j, v in enumerate(row):
+                        ws.cell(row=r["r1"] + i, column=r["c1"] + j).value = v
+                applied.append(_applied_record(o))
+                continue
+            if o["op"] == "set_formula" and o.get("block_cells"):
+                # a  formula filled  down (_fill_down_blocks): each cell gets it moved to its own row, as Excel's fill does
+                from openpyxl.formula.translate import Translator
+
+                cells = _range_cells(o["cell"])
+                moved = [Translator(o["after"], origin=cells[0]).translate_formula(c) for c in cells]
+                if not _same_formula(moved[-1], o.get("after_last")):
+                    raise ValueError(f"the formula filled down would be {moved[-1][:120]} in its last cell, where {str(o.get('after_last'))[:120]} was planned")
+                for c, formula in zip(cells, moved):
+                    ws[c].value = formula
+                applied.append(o)
+                continue
             for cell in _range_cells(o["cell"]):
                 ws[cell].value = None if o["op"] == "clear_cell" else o["after"]
             applied.append(o)
         except Exception as exc:
-            failed.append({**o, "error": str(exc)[:200]})
+            failed.append({**o, "error": str(exc)[:200], **failed_op_facts(exc)})
     if progress is not None:
         progress("apply_save", "Saving the copy", None, done=total, total=total)
     wb.save(copy_path)
@@ -2279,12 +3407,12 @@ def _apply_with_openpyxl(copy_path: Path, operations: list[dict[str, Any]], prog
 
 
 def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]], warnings: list[str], progress: Any = None) -> list[dict[str, Any]]:
-    """FMT-002: theme colours become RGB in the copy's style table,
+    """FMT-002:  theme colours  become RGB in the copy's style table,
     before Excel opens it -- a few hundred fonts and fills instead of hundreds
-    of thousands of cells, and the default text colour, which Excel keeps as a
-    theme colour when a cell is assigned the colour it already shows, is
-    converted too. -> the operations, the colour ones marked as done; unchanged
-    when the package cannot be converted (they then go cell by cell, as before)."""
+    of thousands of cells, and the default text colour, which Excel keeps  as a
+    theme colour when a cell is assigned the colour it  already shows, is
+    converted too. -> the  operations, the colour ones marked as done;  unchanged
+    when the package cannot be converted (they then go cell by  cell, as before)."""
     if not any(o["op"] == "explicit_colors" for o in operations):
         return operations
     if progress is not None:
@@ -2301,23 +3429,23 @@ def _colors_in_the_style_table(copy_path: Path, operations: list[dict[str, Any]]
 
 
 def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[str, Any]], prefer_excel: bool = True, progress: Any = None, defer_verify: bool = False, run: Any = None, verify: Any = None, excel: Any = None) -> dict[str, Any]:
-    """Apply approved operations to a fresh copy of `source_path`.
+    """Apply  approved operations  to a fresh copy of `source_path`.
 
     `progress(stage, message, fraction, **facts)` (optional) is told every
     stage (app.progress.APPLY_STAGES) and, while writing, every operation
     (`done` / `total`).
 
-    `defer_verify`: the check that the copy opens in Excel (a second Excel, ~40 s on a
-    30 MB model) and the change log that records its answer are left to `res["finish"]()`, which
-    the caller runs while it does something else (the web server: during the re-analysis). Until
-    then `verified_opens_in_excel` is None.
+    `defer_verify`: the check that the copy opens in Excel (a second  Excel, ~40 s on a
+    30 MB model) and the change log  that records its answer are left  to `res["finish"]()`, which
+    the caller runs while it  does something else (the web server: during the re-analysis). Until
+    then `verified_opens_in_excel`  is None.
 
-    `run` (app/excel_worker.py): the per-session Excel worker's warm start -- `run.copy_path`
+    `run` (app/excel_worker.py): the per-session Excel worker's  warm start -- `run.copy_path`
     is already the fresh copy of `source_path` (made by make_immutable_copy, its hash in
     `run.source_sha256`) and open in `run.excel` as `run.wb`; `run.verify(path)` answers the opens-in-
     Excel check instead of a second Excel. An Excel failure is raised (the worker falls back to the
     cold path) instead of falling back to openpyxl. `verify` alone: the check, for a cold start.
-    `excel`: an Excel to write in (the worker's own, for a cold start), instead of a new session."""
+    `excel`: an Excel to  write in (the worker's own, for a cold start), instead of a new session."""
     if not operations:
         return {"status": "NOT_APPLICABLE", "message": "No operations selected."}
     source_path = Path(source_path).resolve()
@@ -2368,8 +3496,8 @@ def apply_operations(source_path: Path, work_dir: Path, operations: list[dict[st
         "source_sha256": source_sha256,
         "output_path": str(copy_path),
         "output_sha256": sha256_of(copy_path),
-        "applied": [{k: v for k, v in o.items() if k != "cells"} | ({"cells": len(o["cells"])} if "cells" in o else {}) for o in applied],
-        "failed": failed,
+        "applied": [{k: v for k, v in _applied_record(o).items() if k != "cells"} | ({"cells": len(o["cells"])} if "cells" in o else {}) for o in applied],
+        "failed": [_applied_record(o) for o in failed],
         "verified_opens_in_excel": verification.get("opens"),
         "warnings": warnings,
     }
@@ -2404,13 +3532,13 @@ def summarize_plan(actions: list[dict[str, Any]]) -> str:
     return json.dumps([{k: v for k, v in a.items() if k in ("id", "title", "rule_ids", "count", "skipped")} for a in actions], indent=1)
 
 
-# --- operations proposed by the assistant --------------------------------------
+# ---  operations proposed  by the assistant --------------------------------------
 ASSISTANT_OPS = {"set_value", "set_formula", "clear_cell", "set_array_formula", "rename_sheet", "insert_row", "insert_column", "set_sheet_visibility", "unprotect_sheet"}
 BAD_SHEET_CHARS = set('[]:*?/\\')
 
 
 def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
-    """Turn the assistant's JSON proposal into executor operations, refusing
+    """Turn  the assistant's  JSON proposal into executor operations, refusing
     anything malformed. Returns (operations, errors)."""
     errors: list[str] = []
     ops: list[dict[str, Any]] = []
@@ -2444,7 +3572,7 @@ def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dic
                     raise ValueError("put the sheet in 'sheet', not in 'cell'")
                 before = cell_value(analysis, sheet, ref["r1"], ref["c1"]) if ref["cells"] == 1 else f"{ref['cells']} cells"
                 if ref["cells"] == 1 and before is None:
-                    # openpyxl keeps a multi-cell array formula in its anchor cell only; the other members are not empty in Excel
+                    # openpyxl keeps a multi-cell array formula in  its anchor cell only; the other members are not empty in  Excel
                     member_of = _array_containing(analysis, sheet, ref["ref"])
                     if member_of:
                         before = f"part of array formula {member_of}"
@@ -2516,9 +3644,9 @@ def validate_proposal(proposal: Any, analysis: dict[str, Any]) -> tuple[list[dic
 
 
 def _refuse_what_excel_refuses(sheet: str, cell: str, formula: str) -> None:
-    """A formula Excel would refuse to store (a value where a function
+    """A  formula Excel  would refuse to store (a value where a function
     needs a cell range, e.g. SUMIFS(NA(), ...)) is rejected here, with the
-    concrete repair, so the assistant fixes it before the user sees it --
+    concrete repair, so the assistant fixes it before the user sees it  --
     instead of Excel failing it at Apply time."""
     problems = reference_arg_problems(formula)
     if not problems:
@@ -2540,7 +3668,7 @@ def _refuse_what_excel_refuses(sheet: str, cell: str, formula: str) -> None:
 
 
 def _same_content(before: Any, after: Any) -> bool:
-    """True when writing `after` would leave the cell as it is (formula text
+    """True  when writing  `after` would leave the cell as it is (formula text
     compared without whitespace/case; other values compared as Excel would)."""
     if before is None or after is None:
         return before is None and after is None
@@ -2556,7 +3684,7 @@ def _same_content(before: Any, after: Any) -> bool:
 
 
 def _array_containing(analysis: dict[str, Any], sheet: str, cell: str) -> str | None:
-    """The multi-cell array formula range that contains `cell`, if any."""
+    """The  multi-cell array  formula range that contains `cell`, if any."""
     cell = cell.replace("$", "").upper()
     for wb in analysis.get("workbooks", []):
         for f in wb.get("formulas", []):
@@ -2566,11 +3694,11 @@ def _array_containing(analysis: dict[str, Any], sheet: str, cell: str) -> str | 
     return None
 
 
-_ARRAY_REF_RE = re.compile(r"(?:(?:'[^']+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}:\$?[A-Za-z]{1,3}\$?\d{1,7}")
+_ARRAY_REF_RE = re.compile(r"(?:(?:'[^']+'|[\w.]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}:\$?[A-Za-z]{1,3}\$?\d{1,7}")
 
 
 def array_size_hint(array_ref: str, formula: str) -> str:
-    """How big a multi-cell array formula is versus the ranges it references,
+    """How  big a  multi-cell array formula is versus the ranges it references,
     with the concrete fix when the array overflows its source (the classic
     cause of #N/A in the extra cells of a Ctrl+Shift+Enter array)."""
     arr = parse_ref(str(array_ref).replace("$", "").upper())
@@ -2601,7 +3729,7 @@ def array_size_hint(array_ref: str, formula: str) -> str:
 
 
 def _array_formula_at(analysis: dict[str, Any], sheet: str, ref: str) -> str | None:
-    """The array formula currently entered over exactly `ref`, if any."""
+    """The  array formula  currently entered over exactly `ref`, if any."""
     for wb in analysis.get("workbooks", []):
         for f in wb.get("formulas", []):
             if f.get("sheet") == sheet and str(f.get("array_ref") or "").replace("$", "").upper() == ref.upper():
@@ -2610,10 +3738,10 @@ def _array_formula_at(analysis: dict[str, Any], sheet: str, ref: str) -> str | N
 
 
 def _array_coverage(ops: list[dict[str, Any]], analysis: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
-    """Excel cannot change part of a multi-cell array formula (Ctrl+Shift+Enter).
+    """Excel  cannot change  part of a multi-cell array formula (Ctrl+Shift+Enter).
     Drop -- with a precise message -- every operation that touches an array the
     proposal does not cover completely; a fully covered array is dismantled by
-    the executor, and set_array_formula writes one as a whole."""
+    the  executor, and set_array_formula writes one as a whole."""
     arrays: dict[str, list[tuple[str, list[str]]]] = {}
     for wb in analysis.get("workbooks", []):
         for f in wb.get("formulas", []):

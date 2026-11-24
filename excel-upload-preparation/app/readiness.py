@@ -1,33 +1,41 @@
-"""The one answer the user needs: is this workbook acceptable by Mind,
+"""The  one answer  the user needs: is this workbook acceptable by Mind,
 and if not, what exactly stands in the way?
 
 The engine already knows everything: each finding carries the rule's
-priority (REQUIRED / RECOMMENDED / INFORMATIONAL), the prep plan says which
-findings have an automatic fix, and the recalculation adapter says whether
-Excel evaluated the file cleanly. This module only assembles those facts into
-one verdict with three states -- it never judges a workbook on its own:
+priority (REQUIRED / RECOMMENDED / INFORMATIONAL),  the prep plan says which
+findings have an automatic fix, and the  recalculation adapter says whether
+Excel evaluated the  file cleanly. This module only assembles those  facts into
+one verdict with three states -- it never judges a  workbook on its own:
 
-  blocked     one or more REQUIRED rules are in ERROR (or wait for user input):
+  blocked     one or more REQUIRED  rules are in ERROR (or wait for user input):
               Mind's converter refuses the file or computes it wrong.
-  unverified  nothing blocks, but the current version was not recalculated
+  unverified nothing blocks, but the current version was not recalculated
               in Excel (or the recalculation found genuine formula errors).
   ready       nothing blocks and a real recalculation of this version is clean
               (add-in gaps -- #NAME? on MM_ functions when MMForExcel is
               missing on this machine -- are not workbook defects).
 
-Everything else (WARNING findings, ERRORs from non-required rules) is
+Everything  else (WARNING findings, ERRORs from non-required rules) is
 "optional": Mind reads the file as it is; the change improves it.
+
+Every entry that names a rule carries its plain name (`rule_name`), and every
+sentence that cites a rule says it with that name: "FRM-009 (an empty cell is
+compared with a number)" (app/plain_codes.py).
 """
 from __future__ import annotations
 
 from typing import Any
 
+from .plain_codes import cite, cite_all, error_meanings, rule_name, plain_status
+
 BLOCKING_STATUSES = ("ERROR", "REQUIRES_USER_INPUT")
 RECALC_RULE = "READY-001"
+# Outside  input files  (app/outside_inputs.py): fixed by its own step, "Bring in the outside files"
+OUTSIDE_RULE = "INP-010"
 
 
 def level_of(finding: dict[str, Any]) -> str:
-    """'blocking' for a REQUIRED rule that fails, 'optional' for anything else
+    """'blocking'  for a  REQUIRED rule that fails, 'optional' for anything else
     that is not PASS, 'pass' otherwise. The recalculation rule is 'verify'."""
     if finding["rule_id"] == RECALC_RULE:
         return "verify"
@@ -40,9 +48,12 @@ def level_of(finding: dict[str, Any]) -> str:
 
 
 def _fix_route(rule_id: str, plan: list[dict[str, Any]]) -> tuple[str, str | None]:
-    """How a finding can be fixed: ('prep', action_id) when a plan action holds
+    """How  a finding  can be fixed: ('prep', action_id) when a plan action holds
     operations for the rule, ('prep_skipped', action_id) when the action
-    exists but left every site for review, else ('assistant', None)."""
+    exists but left every site for review, ('outside_inputs', None) for the
+    outside input files (their  own step), else ('assistant', None)."""
+    if rule_id == OUTSIDE_RULE:
+        return "outside_inputs", None
     for a in plan:
         if rule_id in a.get("rule_ids", []) and a.get("count", 0) > 0:
             return "prep", a["id"]
@@ -53,28 +64,36 @@ def _fix_route(rule_id: str, plan: list[dict[str, Any]]) -> tuple[str, str | Non
 
 
 def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, Any]:
-    """What the last recalculation says about *this* version."""
+    """What  the last  recalculation says about *this* version."""
     if not recalc or recalc.get("version_id") != version_id:
         return {"ran": False, "clean": False, "version_id": recalc.get("version_id") if recalc else None, "formula_errors": 0, "addin_gap_errors": 0, "message": "not recalculated for this version"}
     ran = bool(recalc.get("ran", recalc.get("status") != "NOT_SUPPORTED"))
     errors = recalc.get("formula_errors") or []
     gaps = recalc.get("addin_gap_errors") or []
     # An error cell that was already an error in the original upload is the
-    # model's own (a #DIV/0! on an empty year, a #N/A lookup): it did not come
-    # from the preparation and Mind takes the file with it. Only *new* errors
-    # keep the verdict from turning green.
+    # model's own (a #DIV/0! on an empty year, a #N/A lookup): it did not  come
+    # from the preparation and Mind takes the file with it. Only  *new* errors
+    # keep the verdict from turning  green.
     preexisting = int(recalc.get("preexisting_errors") or 0) if "preexisting_errors" in recalc else 0
     new_errors = int(recalc["new_errors"]) if "new_errors" in recalc else len(errors)
+    # 17 Nov 2026 (Model A): after a  Mind loop, the new errors the version before the loop does  not
+    # have come from the loop's first value  only (server._loop_check): they never block. Only the
+    # new errors that also show without the loop are counted as new here.
+    check = recalc.get("loop_check") if ran else None
+    from_loop = int(check.get("from_loop") or 0) if check and check.get("ran") else 0
+    new_errors = max(0, new_errors - from_loop)
     if ran:
         if not errors:
             message = "full Excel recalculation, no formula error"
+        elif new_errors == 0 and from_loop:
+            message = f"full Excel recalculation: {from_loop} error cell(s) only for the Mind loop's first value" + (f" ({preexisting} more were already in the original)" if preexisting else "")
         elif new_errors == 0:
             message = f"full Excel recalculation: {len(errors)} formula error(s), all already in the original workbook"
         else:
-            message = f"{new_errors} new formula error(s) after a full Excel recalculation" + (f" ({preexisting} more were already in the original)" if preexisting else "")
+            message = f"{new_errors} new formula error(s) after a full Excel recalculation" + (f" ({preexisting} more were already in the original)" if preexisting else "") + (f" ({from_loop} more only for the Mind loop's first value)" if from_loop else "")
     else:
         message = recalc.get("message")
-    return {
+    out = {
         "ran": ran,
         "clean": ran and new_errors == 0,
         "version_id": version_id,
@@ -84,9 +103,52 @@ def recalc_state(recalc: dict[str, Any] | None, version_id: str) -> dict[str, An
         "addin_gap_errors": len(gaps),
         "message": message,
     }
+    if check:
+        out["loop_errors"] = from_loop
+        note = loop_errors_line(check, new_errors)
+        if note:
+            out["loop_note"] = note
+    return out
 
 
-def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc: dict[str, Any] | None, version_id: str) -> dict[str, Any]:
+def _cells(n: int) -> str:
+    return f"{n:,} cell{'' if n == 1 else 's'}"
+
+
+def loop_errors_line(check: dict[str, Any], others: int) -> str:
+    """The  one plain  line on the errors a Mind loop makes (server._loop_check): the cells that show an
+    error only for the loop's first value -- the whole line when they are all the new errors  (`others`
+    0: nothing blocks), one sentence more after the stop when some  new errors also show without the
+    loop  -- or, when the version before the  loop could not be recalculated, that it was not checked."""
+    if not check.get("ran"):
+        return "Whether these errors come only from the Mind loop's first value could not be checked: Excel could not recalculate the version before the loop."
+    n = int(check.get("from_loop") or 0)
+    if not n:
+        return ""
+    ex = check.get("example") or {}
+    where = f"{ex.get('sheet')}!{ex.get('cell')}" if ex.get("sheet") and ex.get("cell") else ""
+    meaning = error_meanings([ex.get("error")]) if ex.get("error") else ""
+    example = f", for example {where}" + (f": {meaning}" if meaning else (f" ({ex['error']})" if ex.get("error") else "")) if where else ""
+    one = n == 1
+    if others:
+        return f"The other {_cells(n)} show{'s' if one else ''} an error only for the Mind loop's first value{example}."
+    return (f"{_cells(n)} show{'s' if one else ''} an error only for the Mind loop's first value{example}. "
+            f"The original never computed {'this cell' if one else 'these cells'}, and Mind will show the same for that value. Check the results in Mind.")
+
+
+LOOP_ERRORS_NOTE = (
+    "These errors may come from the Mind loop, not from the preparation: once the loop is built, Excel computes the "
+    "loop's first value (for example the first policy), which the original never computed. The same cells would show "
+    "for that value in the original model. Check the results in Mind."
+)
+
+
+def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc: dict[str, Any] | None, version_id: str, loop_built: bool = False) -> dict[str, Any]:
+    """loop_built:  a Mind  loop was written into this version or one before it (16 Nov 2026, Model A: the
+    loop step put =MM_LOOP(...) where a stored policy row 6000 was, Excel then computed policy 1,  whose
+    projection runs past the mortality table: 667 #N/A cells counted as  new against the original).
+    17 Nov 2026:  the recalculation itself now says which new  errors show only for the loop's first value
+    (its `loop_check`): those never  block, and the verdict carries one plain  line on them (`loop_note`)."""
     findings = report.get("findings", [])
     blocking, optional = [], []
     for f in findings:
@@ -95,6 +157,7 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
             route, action_id = _fix_route(f["rule_id"], plan)
             blocking.append({
                 "rule_id": f["rule_id"],
+                "rule_name": rule_name(f["rule_id"]),
                 "status": f["status"],
                 "message": f.get("message", ""),
                 "location": f.get("location") or {},
@@ -103,17 +166,24 @@ def compute_readiness(report: dict[str, Any], plan: list[dict[str, Any]], recalc
                 "sites": _site_count(f),
             })
         elif lvl == "optional":
-            optional.append({"rule_id": f["rule_id"], "status": f["status"]})
+            optional.append({"rule_id": f["rule_id"], "rule_name": rule_name(f["rule_id"]), "status": f["status"]})
     rc = recalc_state(recalc, version_id)
     if blocking:
         state = "blocked"
         headline = f"Not acceptable by Mind yet: {len(blocking)} blocking problem(s)"
     elif not rc["ran"]:
         state = "unverified"
-        headline = "Acceptable by Mind, not verified: run the Excel recalculation"
+        headline = "One step left: the Excel recalculation has not run yet"
     elif not rc["clean"]:
         state = "unverified"
         headline = f"Acceptable by Mind, but the recalculation found {rc['new_errors']} new formula error(s)"
+        # (a recalculation saved before 17 Nov 2026 carries no loop check: the guess of 16 Nov stands for it)
+        if loop_built and "loop_errors" not in rc:
+            rc["loop_note"] = LOOP_ERRORS_NOTE
+    elif rc.get("loop_errors"):
+        # 17 Nov 2026 (Model A): the only new errors are the Mind loop's first value's -- the workbook can go to Mind
+        state = "ready"
+        headline = f"Acceptable by Mind: no blocking problem; the recalculation's only new errors ({rc['loop_errors']}) are for the Mind loop's first value"
     else:
         state = "ready"
         headline = "Acceptable by Mind: no blocking problem and a clean Excel recalculation" + (f" ({rc['preexisting_errors']} error cell(s) already in the original)" if rc["preexisting_errors"] else "")
@@ -147,22 +217,33 @@ def _site_count(f: dict[str, Any]) -> int | None:
 
 def _next_step(state: str, blocking: list[dict[str, Any]], rc: dict[str, Any]) -> dict[str, Any]:
     if state == "blocked":
-        # Only a Prep action that targets a *blocking finding* counts here -- a
+        # The  outside files  first: the workbook's own macro brings them in, and it writes to fixed
+        # places -- before Prep inserts a row anywhere
+        outside = next((b for b in blocking if b["rule_id"] == OUTSIDE_RULE), None)
+        if outside is not None:
+            n = outside.get("sites")
+            return {"screen": "outside-inputs", "label": "Bring in the outside files", "detail": f"{n} file{'' if n == 1 else 's'} the workbook's macro opens" if n else None,
+                    "rule_id": OUTSIDE_RULE, "rule_name": rule_name(OUTSIDE_RULE)}
+        # Only a Prep action that targets a *blocking finding* counts here --  a
         # blocking-level action with work left for an optional finding does not.
         via_prep = [b for b in blocking if b["fix"] == "prep"]
         if via_prep:
-            return {"screen": "prep", "label": "Apply the blocking repairs in Prep", "detail": ", ".join(b["rule_id"] for b in via_prep)}
+            return {"screen": "prep", "label": "Apply the blocking repairs in Prep", "detail": cite_all(b["rule_id"] for b in via_prep)}
         first = next((b for b in blocking if b["fix"] != "prep"), blocking[0])
-        return {"screen": "findings", "label": f"Fix {first['rule_id']} with the assistant", "detail": "no automatic repair for what is left", "rule_id": first["rule_id"]}
+        return {"screen": "findings", "label": f"Fix {cite(first['rule_id'])} with the assistant", "detail": "no automatic repair for what is left",
+                "rule_id": first["rule_id"], "rule_name": rule_name(first["rule_id"])}
     if state == "unverified":
         if rc["ran"]:
-            return {"screen": "recalculate", "label": "Review the new formula errors", "detail": f"{rc['new_errors']} cell(s) not in error in the original"}
+            detail = f"{rc['new_errors']} cell(s) not in error in the original"
+            if rc.get("loop_note"):
+                detail += ". " + rc["loop_note"]
+            return {"screen": "recalculate", "label": "Review the new formula errors", "detail": detail}
         return {"screen": "recalculate", "label": "Recalculate in Excel", "detail": "the only way the app can call the file ready"}
-    return {"screen": "reports", "label": "Download or send to Mind", "detail": None}
+    return {"screen": "reports", "label": "Download or send to Mind", "detail": rc.get("loop_note")}
 
 
 def apply_record(outcome: dict[str, Any]) -> dict[str, Any]:
-    """One line of the applied-changes gauge: what an Apply really wrote into
+    """One  line of  the applied-changes gauge: what an Apply really wrote into
     the file, by level, and how many of its repairs resolved their problem."""
     by_level = {lvl: {"applied": 0, "failed": 0} for lvl in ("blocking", "optional")}
     verdicts: dict[str, int] = {}
@@ -187,16 +268,16 @@ def apply_record(outcome: dict[str, Any]) -> dict[str, Any]:
 
 
 def prep_progress(history: list[dict[str, Any]], applies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """How the prep work evolves over the session's versions: one entry per
+    """How  the prep  work evolves over the session's versions: one entry per
     analysis with the operation counts, whether the last rounds stalled (the
     same operations coming back -- Prep cannot resolve them), and one entry
-    per Apply with the changes it really wrote (`applies`, `written`)."""
+    per Apply  with the changes it really wrote (`applies`, `written`)."""
     applies = list(applies or [])
     written = {k: sum(a.get(k, 0) for a in applies) for k in ("sent", "applied", "failed", "blocking_applied", "blocking_failed", "optional_applied", "optional_failed")}
     entries = [{k: h.get(k) for k in ("version_id", "blocking_ops", "optional_ops", "total_ops", "blocking_findings", "open_findings", "status_counts", "by_action")} for h in history]
-    # Stalled: three analyses in a row with work planned and no net decrease.
-    # (Exact repetition is not required -- a row insert that never resolves
-    # shifts its row number every round, yet the count never goes down.)
+    # Stalled: three analyses in  a row with work planned and  no net decrease.
+    # (Exact repetition is not required  -- a row insert that never resolves
+    # shifts its row number every  round, yet the count never goes down.)
     stalled = False
     if len(entries) >= 3:
         totals = [e["total_ops"] or 0 for e in entries[-3:]]
@@ -219,9 +300,9 @@ def plan_counts(plan: list[dict[str, Any]]) -> dict[str, int]:
     return {a["id"]: int(a.get("count", 0)) for a in plan}
 
 
-# --- what an Apply did --------------------------------------------------------------
+# ---  what an  Apply did --------------------------------------------------------------
 STATUS_RANK = {"PASS": 0, "WARNING": 1, "REQUIRES_USER_INPUT": 2, "NOT_SUPPORTED": 3, "ERROR": 4}
-MANUAL_SOURCES = {"assistant": "Assistant fix", "formula_replacement": "Formula fix"}
+MANUAL_SOURCES = {"assistant": "Assistant fix", "formula_replacement": "Formula fix", "mind_loop": "Mind loop", "mind_instances": "Mind instances"}
 
 
 def _plural(n: int, word: str) -> str:
@@ -237,8 +318,9 @@ def _rule_move(rule_id: str, before: dict[str, dict[str, Any]], after: dict[str,
     a = after.get(rule_id) if after is not None else None
     return {
         "rule_id": rule_id,
+        "rule_name": rule_name(rule_id),
         "from": b.get("status") if b else None,
-        # a rule the new analysis no longer reports has nothing left to say: it passes
+        # a  rule the  new analysis no longer reports has nothing left to say: it passes
         "to": None if after is None else (a.get("status") if a else "PASS"),
         "sites_from": _site_count(b) if b else None,
         "sites_to": None if after is None else (_site_count(a) if a else 0),
@@ -248,10 +330,10 @@ def _rule_move(rule_id: str, before: dict[str, dict[str, Any]], after: dict[str,
 
 
 def _verdict(applied: int, rules: list[dict[str, Any]], planned_before: int | None, planned_after: int | None, reanalyzed: bool) -> str:
-    """resolved: every rule the changes serve passes and nothing more is planned.
+    """resolved:  every rule  the changes serve passes and nothing more is planned.
     partial: something moved (a better status, fewer sites, fewer repairs planned).
-    unchanged: the changes were written and the new analysis says the same as before.
-    failed: nothing could be written. written: written, no analysis to compare with."""
+    unchanged: the changes were written and the new analysis says the same as  before.
+    failed: nothing could be written. written: written, no analysis to compare  with."""
     if applied == 0:
         return "failed"
     if not reanalyzed:
@@ -269,7 +351,7 @@ def _verdict(applied: int, rules: list[dict[str, Any]], planned_before: int | No
 
 
 def _action_summary(a: dict[str, Any]) -> tuple[str, str]:
-    """(the whole sentence, its conclusion alone): what was written and how the
+    """(the  whole sentence,  its conclusion alone): what was written and how the
     rules moved, then what is left and who acts."""
     written = f"{_plural(a['applied'], 'change')} written"
     if a["failed"]:
@@ -280,7 +362,7 @@ def _action_summary(a: dict[str, Any]) -> tuple[str, str]:
             continue
         sites = f" ({r['sites_from']:,} -> {r['sites_to']:,} cells)" if r["sites_from"] is not None and r["sites_to"] is not None and r["sites_from"] != r["sites_to"] else ""
         worse = " (worse than before)" if STATUS_RANK.get(r["to"], 0) > STATUS_RANK.get(r["from"] or "PASS", 0) else ""
-        moves.append(f"{r['rule_id']} {r['from'] or 'not reported'} -> {r['to']}{sites}{worse}" if r["from"] != r["to"] else f"{r['rule_id']} still {r['to']}{sites}")
+        moves.append(f"{cite(r['rule_id'])}: was {plain_status(r['from']) if r['from'] else 'not reported'}, now {plain_status(r['to'])}{sites}{worse}" if r["from"] != r["to"] else f"{cite(r['rule_id'])}: still {plain_status(r['to'])}{sites}")
     left = []
     if a["planned_after"]:
         left.append(f"{_plural(a['planned_after'], 'more repair')} planned by the new analysis")
@@ -312,11 +394,11 @@ def apply_outcome(
     version_id: str,
     previous_version_id: str | None,
 ) -> dict[str, Any]:
-    """What an Apply did, repair by repair: how many changes were written, what
+    """What  an Apply  did, repair by repair: how many changes were written, what
     the rule said before and says now, what is still planned or left by hand,
-    and which repairs the new analysis plans that the previous one did not.
-    Only facts from the two analyses and the executor's result -- nothing is
-    judged here. Without a re-analysis (`after_*` None) only the writes are known."""
+    and which repairs the new analysis plans that  the previous one did not.
+    Only facts from the two analyses and  the executor's result -- nothing is
+    judged  here. Without a re-analysis (`after_*` None) only  the writes are known."""
     reanalyzed = after_report is not None and after_plan is not None
     before = {f["rule_id"]: f for f in (before_report or {}).get("findings", [])}
     after = {f["rule_id"]: f for f in after_report.get("findings", [])} if reanalyzed else None
@@ -342,7 +424,7 @@ def apply_outcome(
         now = plan_after.get(aid) if known and reanalyzed else None
         entry = {
             "id": aid if known else f"{aid}:{rid}",
-            "title": known["title"] if known else f"{MANUAL_SOURCES.get(aid, 'Manual fix')}{' for ' + rid if rid in before else ''}",
+            "title": known["title"] if known else f"{MANUAL_SOURCES.get(aid, 'Manual fix')}{' for ' + cite(rid) if rid in before else ''}",
             "level": known["level"] if known else ("blocking" if any(r["blocking_before"] for r in rules) else "optional"),
             "sent": len(g["sent"]),
             "applied": len(g["applied"]),
@@ -360,12 +442,13 @@ def apply_outcome(
 
     applied_ids = {aid for (aid, rid) in groups if not rid}
     appeared = [
-        {"id": a["id"], "title": a["title"], "level": a["level"], "rule_ids": a["rule_ids"], "planned_before": int(plan_before.get(a["id"], {}).get("count", 0)), "planned_after": int(a["count"])}
+        {"id": a["id"], "title": a["title"], "level": a["level"], "rule_ids": a["rule_ids"], "rule_names": [rule_name(r) for r in a["rule_ids"]],
+         "planned_before": int(plan_before.get(a["id"], {}).get("count", 0)), "planned_after": int(a["count"])}
         for a in (after_plan or [])
         if a["id"] not in applied_ids and int(a["count"]) > int(plan_before.get(a["id"], {}).get("count", 0))
     ]
     regressed = [
-        {"rule_id": rid, "from": before[rid]["status"], "to": f["status"]}
+        {"rule_id": rid, "rule_name": rule_name(rid), "from": before[rid]["status"], "to": f["status"]}
         for rid, f in (after or {}).items()
         if rid in before and STATUS_RANK.get(f["status"], 0) > STATUS_RANK.get(before[rid]["status"], 0)
     ]
@@ -375,7 +458,7 @@ def apply_outcome(
     for rid, f in (after or {}).items():
         if level_of(f) == "blocking":
             route, action_id = _fix_route(rid, after_plan or [])
-            remaining.append({"rule_id": rid, "fix": route, "action_id": action_id, "sites": _site_count(f), "touched": rid in touched, "new": rid not in blocking_before})
+            remaining.append({"rule_id": rid, "rule_name": rule_name(rid), "fix": route, "action_id": action_id, "sites": _site_count(f), "touched": rid in touched, "new": rid not in blocking_before})
     resolved = [rid for rid in blocking_before if reanalyzed and rid not in {r["rule_id"] for r in remaining}]
 
     n_applied, n_failed = len(result.get("applied", [])), len(result.get("failed", []))
@@ -387,14 +470,17 @@ def apply_outcome(
     else:
         headline += f". Blocking problems: {len(blocking_before)} before, {len(remaining)} now"
         if resolved:
-            headline += f" -- resolved: {_some(resolved)}"
-        appeared_blocking = [r["rule_id"] for r in remaining if r["new"]]
+            headline += f" -- resolved: {_some([cite(r) for r in resolved])}"
+        appeared_blocking = [cite(r["rule_id"]) for r in remaining if r["new"]]
         if appeared_blocking:
             headline += f" -- new in this version: {_some(appeared_blocking)}"
         if remaining:
-            by_hand = [r["rule_id"] for r in remaining if r["fix"] != "prep"]
-            via_prep = [r["rule_id"] for r in remaining if r["fix"] == "prep"]
-            parts = ([f"{_some(via_prep)} (Prep has a repair: apply it)"] if via_prep else []) + ([f"{_some(by_hand)} (no automatic repair: by hand or with the assistant)"] if by_hand else [])
+            by_hand = [cite(r["rule_id"]) for r in remaining if r["fix"] not in ("prep", "outside_inputs")]
+            via_prep = [cite(r["rule_id"]) for r in remaining if r["fix"] == "prep"]
+            outside = [cite(r["rule_id"]) for r in remaining if r["fix"] == "outside_inputs"]
+            # what to do first, then the rules it  is for: each rule already carries its  name in brackets
+            parts = (([f"Prep has a repair (apply it): {_some(via_prep)}"] if via_prep else []) + ([f"bring in the outside files: {_some(outside)}"] if outside else [])
+                     + ([f"no automatic repair (by hand or with the assistant): {_some(by_hand)}"] if by_hand else []))
             headline += f" -- left: {'; '.join(parts)}"
         headline += "."
     return {

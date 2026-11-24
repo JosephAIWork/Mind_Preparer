@@ -70,7 +70,7 @@ def test_every_pivot_blocks_and_the_setting_says_formulas_or_values():
         f = pivot_tables(None, analysis(grouped), {})
         assert f["status"] == "ERROR" and f["observed"]["blocking"] == 2
     assert pivot_tables(None, {"workbooks": [{"sheets": [{"name": "S"}]}]}, {})["status"] == "PASS"
-    assert DEFAULT_PIVOT_MODE == "formulas" and set(PIVOT_MODES) == {"formulas", "values"}
+    assert DEFAULT_PIVOT_MODE == "values" and set(PIVOT_MODES) == {"formulas", "values"}
     ops, skipped = plan_pivot_tables(analysis(True), {}, "formulas")
     assert [o["pivot"] for o in ops] == ["Plain", "Grouped"] and {o["op"] for o in ops} == {"pivot_to_formulas"} and not skipped
     assert "is grouped" in ops[1]["note"] and "stops on a pivot table" in ops[0]["note"]
@@ -127,16 +127,91 @@ def test_prep_turns_a_plain_pivot_into_formulas_and_a_grouped_one_into_values(tm
     assert (values["C4"].value, values["C5"].value, values["C6"].value) == (10, 26, 36)
 
 
-def test_getpivotdata_anywhere_keeps_every_pivot_as_a_pivot():
+def test_getpivotdata_no_longer_keeps_the_pivots():
+    """2026-10-26: a model whose results read its pivots through GETPIVOTDATA kept every pivot, and Mind
+    refused it. The pivots are converted; the GETPIVOTDATA are pointed at their cells in Excel first."""
     analysis = {"workbooks": [{"sheets": [{"name": "Pivot", "pivot_tables": [{"name": "PT1", "ref": "A3:C9", "grouped_fields": ["Age"]}]}],
                                "formulas": [{"sheet": "Summary", "cell": "C5", "formula": '=GETPIVOTDATA("Sum of BEL",Pivot!$A$3,"Line","Motor")'}]}]}
-    ops, skipped = plan_pivot_tables(analysis, {}, "formulas")
-    assert ops == [] and "GETPIVOTDATA on Summary" in skipped[0] and "#REF!" in skipped[0]
-    assert "Mind cannot read it" in skipped[0]  # a grouped pivot: the user is told it still blocks Mind
-    # no GETPIVOTDATA: the grouped pivot is converted as before
-    analysis["workbooks"][0]["formulas"] = [{"sheet": "Summary", "cell": "C5", "formula": "=Pivot!B4"}]
-    ops, _ = plan_pivot_tables(analysis, {}, "formulas")
-    assert [o["pivot"] for o in ops] == ["PT1"]
+    ops, skipped = plan_pivot_tables(analysis, {})
+    assert [(o["op"], o["pivot"]) for o in ops] == [("pivot_to_values", "PT1")] and not skipped
+    assert "GETPIVOTDATA on Summary" in ops[0]["note"]
+
+
+def test_getpivotdata_calls_split_only_top_level_commas():
+    from app.pivots import getpivotdata_calls
+
+    f = """=IFERROR(+GETPIVOTDATA(T($D5),'LH 3'!$B$148,"Run",I$3+1,"A,B",MAX(1,2)),0)-getpivotdata("x",$F$2)"""
+    (s1, e1, a1), (s2, e2, a2) = getpivotdata_calls(f)
+    assert a1 == ["T($D5)", "'LH 3'!$B$148", '"Run"', "I$3+1", '"A,B"', "MAX(1,2)"]
+    assert f[s1:e1].startswith("GETPIVOTDATA(") and f[e1:e1 + 3] == ",0)"
+    assert a2 == ['"x"', "$F$2"] and f[s2:e2] == 'getpivotdata("x",$F$2)'
+    assert getpivotdata_calls('=GETPIVOTDATA("x"') == []
+
+
+@needs_excel
+def test_values_keep_what_getpivotdata_showed_and_the_custom_style_goes(tmp_path):
+    from app.excel_com import close_quietly, excel_session
+    from app.prep import apply_operations
+
+    path = tmp_path / "gpd.xlsx"
+    with excel_session(mm_addin=False) as excel:
+        wb = excel.Workbooks.Add()
+        try:
+            data = wb.Worksheets(1)
+            data.Name = "Data"
+            rows = [("Line", "Run", "Amount"), ("Motor", 1, 10), ("Motor", 2, 20), ("Home", 1, 5), ("Home", 2, 7)]
+            data.Range(data.Cells(1, 1), data.Cells(len(rows), 3)).Value2 = rows
+            ws = wb.Worksheets.Add()
+            ws.Name = "LH 3"
+            pt = wb.PivotCaches().Create(1, f"Data!R1C1:R{len(rows)}C3").CreatePivotTable(ws.Range("B3"), "Total")
+            pt.PivotFields("Line").Orientation = 1
+            pt.PivotFields("Run").Orientation = 2
+            pt.AddDataField(pt.PivotFields("Amount"), "Sum of Amount", -4157)
+            style = wb.TableStyles.Add("Results")  # a custom pivot style, as Mind refused
+            style.ShowAsAvailablePivotTableStyle = True
+            pt.TableStyle2 = "Results"
+            wb.TableStyles.Add("Results 2").ShowAsAvailablePivotTableStyle = True  # used by nothing
+            out = wb.Worksheets.Add()
+            out.Name = "Out"
+            out.Range("A1").Value2 = "Motor"
+            out.Range("B1").Value2 = 2
+            out.Range("C1").Formula = "=GETPIVOTDATA(\"Sum of Amount\",'LH 3'!$B$3,\"Line\",$A$1,\"Run\",B1)"
+            out.Range("C2").Formula = "=IFERROR(GETPIVOTDATA(\"Sum of Amount\",'LH 3'!$B$3,\"Line\",\"Car\"),0)"  # no such item
+            out.Range("C3").Formula = "=IFERROR(GETPIVOTDATA(\"Amount\",\"Sum of Amount\"),-1)"  # not a pivot at all
+            out.Range("C4").Formula = "=C1+1"
+            out.Range("C5").Formula = "=GETPIVOTDATA(\"Sum of Amount\",'LH 3'!$B$3)"  # the grand total
+            excel.Calculate()
+            shown = [out.Range(f"C{r}").Value2 for r in range(1, 6)]
+            assert shown == [20, 0, -1, 21, 42]
+            wb.SaveAs(str(path), 51)
+        finally:
+            close_quietly(wb)
+    ops = [
+        {"op": "pivot_to_values", "action_id": "pivot_tables", "rule_id": "STR-009", "sheet": "LH 3", "pivot": "Total", "cell": "B3", "range": "B3:E7"},
+        # planned from the formula before the pivot went: written after it, with the same reference
+        {"op": "set_formula", "action_id": "x", "rule_id": "FRM-009", "sheet": "Out", "cell": "C1",
+         "before": "=GETPIVOTDATA(\"Sum of Amount\",'LH 3'!$B$3,\"Line\",$A$1,\"Run\",B1)", "after":"=N(GETPIVOTDATA(\"Sum of Amount\",'LH 3'!$B$3,\"Line\",$A$1,\"Run\",B1))"},
+    ]
+    res = apply_operations(path, tmp_path / "apply", ops)
+    assert res["status"] == "APPLIED", res
+    done = res["applied"][0]["result"]
+    assert done["to"] == "values" and sorted(done["styles_removed"]) == ["Results", "Results 2"]
+    assert res["applied"][0]["after"] == "plain values; 2 GETPIVOTDATA call(s) now read its cells; 2 GETPIVOTDATA call(s) giving an error today became NA()"
+    assert {g["cell"] for g in done["getpivotdata"]} == {"C1", "C2", "C3", "C5"}
+    with excel_session(mm_addin=False) as excel:
+        wb = excel.Workbooks.Open(str(res["output_path"]))
+        try:
+            out = wb.Worksheets("Out")
+            excel.CalculateFull()
+            assert [out.Range(f"C{r}").Value2 for r in range(1, 6)] == [20, 0, -1, 21, 42]
+            formulas = [str(out.Range(f"C{r}").Formula) for r in range(1, 6)]
+            assert not any("GETPIVOTDATA" in f.upper() for f in formulas), formulas
+            assert formulas[0].startswith("=N('LH 3'!$") and formulas[1] == "=IFERROR(NA(),0)" and formulas[2] == "=IFERROR(NA(),-1)"
+            assert int(wb.Worksheets("LH 3").PivotTables().Count) == 0
+            assert all(bool(wb.TableStyles(k).BuiltIn) for k in range(1, int(wb.TableStyles.Count) + 1))
+        finally:
+            wb.Saved = True
+            close_quietly(wb)
 
 
 def test_criterion_treats_only_plain_digits_as_a_number():

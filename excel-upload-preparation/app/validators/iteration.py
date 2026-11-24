@@ -1,4 +1,4 @@
-"""CAL-* validators: KB 'Iterations: design sequential calculations in your
+"""CAL-*  validators: KB  'Iterations: design sequential calculations in your
 model' (/CalculationSteps grid: workbook name | integer step, equal steps
 run in parallel; MM_ITERATIONS once per workbook; /iterationinput.(name)
 paired with /iterationoutput.(name); /NoKeepResults) and 'MM_ITERATIONS

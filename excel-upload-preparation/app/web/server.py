@@ -1,22 +1,27 @@
-"""FastAPI backend of the Mind Ready web app (the front end is the Angular + Carbon
+"""FastAPI  backend of  the Mind Ready web app (the front end is the Angular + Carbon
 app in `MindReadyUI`).
 
 One endpoint per call of the front end's API service, on top of the analysis
-engine (app/modes, app/prep, app/chat_context, app/recalc, app/excel_report,
-app/change_apply). Nothing here re-implements a rule or a change; it only maps
-the engine's dicts onto the front end's TypeScript contracts and keeps a per-session
-**version lineage**: every write is a new file, verified to open in Excel,
+engine (app/modes, app/prep,  app/chat_context, app/recalc, app/excel_report,
+app/change_apply). Nothing here re-implements a rule or a change;  it only maps
+the engine's dicts onto  the front end's TypeScript contracts and keeps  a per-session
+**version lineage**: every write is a new file, verified to  open in Excel,
 with its change log.
 
-Sessions live in memory (this is a local, single-user tool); their files
-live in a temp directory per session. The built front-end (`dist/`) is
-served from the same process with an SPA fallback, so one URL does it all:
+Sessions live  in memory (this is a local, single-user tool); their files
+live in a folder per session under the data folder (`<data folder>/sessions/<id>`), with a state
+file the app writes after every step, so a workbook can be opened again after a restart from the
+main screen's "Recent workbooks" list (app/session_store.py). The built front-end (`dist/`) is
+served from the same process with an SPA fallback, so  one URL does it all:
 
     python -m app.web.server            (or run_mind_ready_web.bat)
     http://localhost:8600
 """
 from __future__ import annotations
 
+import contextlib
+import copy
+import hashlib
 import json
 import os
 import queue
@@ -27,12 +32,15 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PACKAGE_ROOT))
@@ -47,21 +55,34 @@ from app.excel_com import com_available  # noqa: E402
 from app.perf import record as perf_record  # noqa: E402
 from app.perf import stage as perf_stage  # noqa: E402
 from app import excel_worker  # noqa: E402
+from app import cancel  # noqa: E402  (17 Nov 2026: the Cancel button -- one registry of running jobs, one flag, one exception)
+from app import handoff  # noqa: E402  (17 Nov 2026: every rule and sentence of the prep-run job, as plain functions)
 from app.excel_report import build_report_workbook, build_standalone_report  # noqa: E402
 from app.inventory import cell_window, has_vba_project, make_immutable_copy  # noqa: E402
-from app import ai_key  # noqa: E402
+from app import ai_key, feedback  # noqa: E402
+from app import expiry  # noqa: E402  (through the module: tests replace its checker)
+from app import session_store  # noqa: E402  (saved workbooks: each session's folder and state file in the data folder)
 from app.settings import SETTINGS  # noqa: E402
 from app.llm import DEFAULT_MODEL_ID, check_api_key, extract_formula, llm_available, suggest_formula_fix  # noqa: E402
+from app import llm  # noqa: E402  (the token count: a usage scope around every step that may ask the assistant)
 from app.modes import fix_incompatible_formulas, plan_mode, prep_mind_loops, structure_fix  # noqa: E402
 from app.grid_naming import build_grid_context, suggest_names  # noqa: E402
-from app.estimate import estimate_chain  # noqa: E402
+from app.estimate import MIND_STAGE_TITLES, estimate_chain, estimate_mind_run, mind_run_remaining  # noqa: E402
 from app.mind_loop import LoopConfig, run_loop, summarize  # noqa: E402
 from app.model_map import build_model_map
-from app.loop_builder import build_loop_plan  # noqa: E402
+from app import model_map as model_map_module  # noqa: E402  (read_vba through the module: tests replace it)
+from app import outside_inputs  # noqa: E402  (through the module: tests replace run_import / apply_mind_inputs)
+from app import stand_in_inputs  # noqa: E402  (through the module: tests replace make_stand_ins / assistant_ask)
+from app import next_quarter_inputs  # noqa: E402  (through the module: tests replace make_next_quarter)
+from app.loop_builder import _add_repairs, build_loop_plan  # noqa: E402
+from app.instance_builder import build_instance_plan, loop_options_of, pick_loop_plan, write_main_workbook, zip_for_mind  # noqa: E402
+from app.instance_finder import EMPTY_ASSISTANT, find_instances, make_finder_advisor, merge_assistant  # noqa: E402
 from app.grids import all_grids, json_safe  # noqa: E402
-from app.models import Status, aggregate_status  # noqa: E402
-from app.readiness import STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
-from app.formula_utils import col_to_num, formula_memo  # noqa: E402
+from app.models import Finding, Status, aggregate_status  # noqa: E402
+from app.plain_codes import cite_all, glossary, is_com_error, plain_com_error, plain_com_errors_in, plain_error, rule_name  # noqa: E402
+from app.validators import run_rule  # noqa: E402
+from app.readiness import OUTSIDE_RULE, STATUS_RANK, apply_outcome, apply_record, compute_readiness, plan_counts, prep_progress, recalc_state  # noqa: E402
+from app.formula_utils import col_to_num, formula_memo, parse_ref, ref_text  # noqa: E402
 from app.prep import ASSISTANT_OPS, DEFAULT_PIVOT_MODE, PIVOT_MODES, STRUCTURAL_OPS, apply_operations, deterministic_name, is_weak_name, plan_actions, plan_create_grid_titles, plan_named_areas, standalone_labels  # noqa: E402
 from app.validators.kb import documented_flags  # noqa: E402
 from app.validators.mind_values import environment_values  # noqa: E402
@@ -79,7 +100,7 @@ MODE_MAP = {
     "structure_fix": ("Structure Fix", structure_fix),
 }
 ALLOWED_SUFFIXES = {".xlsx", ".xlsm", ".xlsb"}
-# The front end is the Angular + Carbon app in MindReadyUI (its build is committed). Another
+# The  front end  is the Angular + Carbon app in MindReadyUI (its build is committed). Another
 # build can be served with MIND_READY_DIST=<path to its dist folder>.
 DEFAULT_DIST = PACKAGE_ROOT.parent / "MindReadyUI" / "dist" / "mind-ready-ui" / "browser"
 DIST_DIR = Path(os.environ.get("MIND_READY_DIST", str(DEFAULT_DIST)))
@@ -89,9 +110,44 @@ GRID_FIELDS = (
     "inner_title_cells", "formula_count",
 )
 
-# The API's own pages (/docs, /redoc, /openapi.json) only when settings.yaml asks for them.
+# The  API's own  pages (/docs, /redoc, /openapi.json) only when settings.yaml asks for them.
 _API_PAGES = {} if SETTINGS.api_pages else {"docs_url": None, "redoc_url": None, "openapi_url": None}
-app = FastAPI(title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev", **_API_PAGES)
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """At  start: end  the hidden Excels a Mind Ready stopped abruptly left behind, and make closing the
+    window end this one's first (app/excel_com.py). A shared copy with an end date also asks the
+    internet's date, in  the background (app/expiry.py; nothing for the developer version)."""
+    from app.excel_com import clean_leftover_excels, on_window_close
+
+    expiry.start_network_check()
+    ended = clean_leftover_excels()
+    if ended:
+        print(f"Closed {ended} hidden Excel(s) left behind the last time Mind Ready was stopped.", flush=True)
+    on_window_close()
+    yield
+
+
+class _ExpiryGate:
+    """After  a shared  copy's end date (app/expiry.py) every API call but /api/health answers 410 with
+    the plain message, which the screens show instead of the app; the screens' own files still load, to
+    show it. A  plain ASGI middleware: streamed answers and downloads pass through it untouched.  The
+    decision is reused for a minute,  so a call costs nothing more."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if path.startswith("/api/") and path != "/api/health":
+            verdict = expiry.current()
+            if verdict.expired:
+                await JSONResponse(verdict.refusal(), status_code=410)(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+app = FastAPI(lifespan=_lifespan, title="Mind Ready API", version=(PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() if (PACKAGE_ROOT / "VERSION").exists() else "dev", **_API_PAGES)
+app.add_middleware(_ExpiryGate)
 _ENGINE: RulesEngine | None = None
 
 
@@ -108,7 +164,7 @@ class Session:
     work_dir: Path
     mode: str
     versions: list[dict[str, Any]] = field(default_factory=list)
-    paths: dict[str, Path] = field(default_factory=dict)  # version id -> file
+    paths: dict[str, Path] = field(default_factory=dict)  # version  id ->  file
     files: dict[str, Path] = field(default_factory=dict)  # download name -> file
     current_version_id: str = ""
     result: dict[str, Any] | None = None
@@ -119,40 +175,89 @@ class Session:
     recalc_path: Path | None = None  # the recalculated copy: freshest cell values for the workbook view
     grid_names: dict[str, str] = field(default_factory=dict)  # "Sheet!Ref" -> assistant-proposed grid name
     created_at: float = field(default_factory=time.time)
-    # Upload size gate + scan status
+    # Upload  size gate + scan status
     size: dict[str, Any] | None = None  # app.sizing.size_gate of the uploaded file
-    ignore_sheets: list[str] = field(default_factory=list)  # sheets the user chose not to scan
-    pivot_mode: str = DEFAULT_PIVOT_MODE  # what Prep (and Do everything) does with the pivot tables
-    pending: bool = False  # uploaded and inspected, not analysed yet (deferred upload)
-    scan: dict[str, Any] = field(default_factory=dict)  # live status of the current/last scan
-    # One entry per analysis: how much prep work each version still needs (the Prep gauge)
+    ignore_sheets: list[str] = field(default_factory=list)  # sheets the user  chose not to scan
+    pivot_mode: str = DEFAULT_PIVOT_MODE  # what Prep (and  Do everything) does with the pivot tables
+    pending: bool = False  # uploaded  and inspected, not analysed yet (deferred upload)
+    scan: dict[str, Any] = field(default_factory=dict)  # live status of the current/last  scan
+    # One entry per analysis: how much prep  work each version still needs (the Prep gauge)
     plan_history: list[dict[str, Any]] = field(default_factory=list)
     # One entry per Apply: the changes really written into the file (the applied-changes gauge)
     apply_history: list[dict[str, Any]] = field(default_factory=list)
     # The ORIGINAL after a full Excel recalculation: its error cells and its #REF! formulas
-    # (computed once per session, the baseline every later recalculation is compared with)
+    # (the baseline every later recalculation is compared with: the upload, or the version the
+    # outside files were brought into -- `baselines` keeps one per file, computed once)
     original_baseline: dict[str, Any] | None = None
+    baselines: dict[str, dict[str, Any]] = field(default_factory=dict)  # baseline file ->  its recalculation
     # (sheet, cell) of the original's formulas that contain #REF!, taken from its own scan
-    # (None until the original was scanned with no sheet skipped: then the baseline reads the file)
+    # (None until the original was scanned with no sheet skipped: then the baseline reads the file);
+    # `ref_formulas` the same for every baseline file (the upload and each "import" version)
     original_ref_formulas: set[tuple[str, str]] | None = None
+    ref_formulas: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
     # (sheet, cell) -> what each CELL / INFO formula shows in the original upload, as the user's
     # own Excel saved it (FRM-012 freezes these, not the app's working copy's)
     original_environment: dict[tuple[str, str], Any] | None = None
     # Live status of the current/last Apply (GET /status, field "apply")
     apply_status: dict[str, Any] = field(default_factory=dict)
-    # The model map (inputs, loop driver, run settings, outputs) of the analysed version
+    # The model map (inputs,  loop driver, run settings, outputs)  of the analysed version
     model_map: dict[str, Any] | None = None
     model_map_version_id: str | None = None
+    # Outside input files (app/outside_inputs.py):  the files picked  with the  workbook, what its
+    # macros open, the job that brings them in, and the Mind inputs (CSV) that job made
+    inputs: list[dict[str, Any]] = field(default_factory=list)  # {name, path, bytes, sha256}, one per name
+    input_seq: int = 0  # <work>/inputs/<nn>/<name>: one folder per file received
+    outside_vba: dict[str, Any] | None = None  # what the upload's  macros open (read once)
+    outside_inputs: dict[str, Any] | None = None  # {version_id, vba, table, match}; None: the macros open  no outside file
+    outside_run: dict[str, Any] = field(default_factory=dict)  # the bring-in job (GET  .../outside-inputs)
+    # the last job making next quarter's Mind  input files from new raw files (GET .../next-quarter-inputs)
+    next_quarter: dict[str, Any] = field(default_factory=dict)
+    mind_inputs_dir: str | None = None  # the CSV folder of  the last successful bring-in
+    mind_inputs_dirs: dict[str, str] = field(default_factory=dict)  # "mind_inputs" version id ->  its CSV folder
+    # the bring-ins that FINISHED: the last version each made ("mind_inputs", or "import" when no Mind
+    # input was made) -> the fingerprint of the picked files it read (_inputs_fingerprint). A line counts
+    # as brought in only through one of these, and only while the picked files are still those.
+    brought_in_files: dict[str, str] = field(default_factory=dict)
+    # The instance finder's result (where instances or a loop would help) for the analysed  version, and
+    # the assistant's block on it for that same version once it was asked and answered
+    instance_finder: dict[str, Any] | None = None
+    instance_finder_version_id: str | None = None
+    instance_finder_assistant: dict[str, Any] | None = None
+    # The instance builder's plan with no key chosen and keys=present, built once per version: the
+    # panel's preview and the finder's "builder" line both ask for exactly this plan
+    instance_plan_default: dict[str, Any] | None = None
+    instance_plan_default_version_id: str | None = None
+    # The zip of the last "Build the Mind instances" (the model + its main workbook), None until one is built
+    instances_zip: Path | None = None
+    # Saved workbooks (app/session_store.py): the name the Recent workbooks list shows (the upload's
+    # file name) and when the session was last opened there
+    name: str = ""
+    last_opened: float = field(default_factory=time.time)
+    # The  tokens and calls the assistant  spent on this workbook since it was  uploaded (app/llm.py's
+    # usage sink,  set by  _ai_scope / _ai_thread around every step that may ask it; saved with the
+    # state file): {calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}
+    ai_usage: dict[str, int] = field(default_factory=llm.empty_usage)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-    # one Apply at a time: two at once would both copy the same version and the last one to finish
-    # would become current without the other's changes
+    # one Apply at a time: two at once would both copy the same  version and the last one to finish
+    # would become current without the  other's changes
     apply_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def readiness(self) -> dict[str, Any] | None:
-        """The verdict for the current version (None before the first analysis)."""
+        """The verdict for the current  version (None before the first analysis)."""
         if not self.result:
             return None
-        return compute_readiness(self.result["validation_report"], self.plan, self.recalc, self.current_version_id)
+        return compute_readiness(self.result["validation_report"], self.plan, self.recalc, self.current_version_id, loop_built=self.loop_built())
+
+    def loop_built(self) -> bool:
+        """A Mind  loop was written into the current version or one of its  parents."""
+        by_id = {v.get("id"): v for v in self.versions}
+        v, seen = by_id.get(self.current_version_id), set()
+        while v and v.get("id") not in seen:
+            if v.get("source") == "loop":
+                return True
+            seen.add(v.get("id"))
+            v = by_id.get(v.get("parent"))
+        return False
 
     @property
     def current_path(self) -> Path:
@@ -162,16 +267,254 @@ class Session:
 SESSIONS: dict[str, Session] = {}
 
 
-# --- helpers -------------------------------------------------------------------------
+# ---  helpers -------------------------------------------------------------------------
 def _session(session_id: str) -> Session:
     s = SESSIONS.get(session_id)
     if s is None:
+        # saved  on disk  but not in memory (the app was restarted): nothing reopens by itself
+        if session_store.valid_id(session_id) and session_store.read_state(session_id) is not None:
+            raise HTTPException(status_code=404, detail="This workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the Basic screen.")
         raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
     return s
 
 
+def _save(s: Session) -> None:
+    """The  session's state  file (app/session_store.py), after every step that changes it. Never
+    raises: a save that fails is printed and the step answers as before."""
+    session_store.save(s, AUTOFIX.get(s.id))
+
+
+_AI_USAGE_LOCK = threading.Lock()  # one  call added  to a count at a time (jobs end in their own threads)
+
+
+def _ai_sink(s: Session) -> Callable[[dict[str, int]], None]:
+    """Where  the assistant's  completed calls report their tokens while a step of `s` runs: added to
+    the session's count and saved at once, so a restart keeps it (app/llm.py `usage_scope`)."""
+    def add(usage: dict[str, int]) -> None:
+        with _AI_USAGE_LOCK:
+            llm.add_usage(s.ai_usage, usage)
+        _save(s)
+    return add
+
+
+def _ai_scope(s: Session) -> Any:
+    """`with  _ai_scope(s):` around  a step that may ask the assistant in the request's own thread
+    (the chat, a suggestion, the grid namer, the finder's explanation, the feedback's opening lines)."""
+    return llm.usage_scope(_ai_sink(s))
+
+
+def _ai_thread(s: Session, target: Callable[..., Any], name: str, args: tuple[Any, ...] = (), job: cancel.Job | None = None) -> threading.Thread:
+    """A  job's thread  that counts the assistant's calls for `s` (a new thread starts with no context,
+    so the request's scope would not reach it): Fix all issues, the bring-in and its stand-ins, next
+    quarter's files,  the streamed chat, Run in Mind.
+
+    `job` (17 Nov 2026): the thread  works for this job (app/cancel.py), so  every check in the work it
+    calls reads  this job's flag. Bound by hand for the same reason: a  new thread has no context."""
+    counted = llm.under_usage_scope(_ai_sink(s), target)
+
+    def bound(*a: Any) -> Any:
+        with cancel.bind(job):
+            return counted(*a)
+
+    return threading.Thread(target=bound, args=args, name=name, daemon=True)
+
+
+# --- Cancel (app/cancel.py)  -------------------------------------------------------------------------
+# 17 Nov 2026. Every long piece of work is a job: the route begins it, the work reads its flag at its
+# natural stops and leaves with cancel.Cancelled, and POST .../cancel sets the flag. A job that
+# changes the workbook all along (the kinds of _BUSY_WORDS) puts the session back from a snapshot
+# taken at its start; the others write only after their gate  (job.commit()), so a Cancel before it
+# leaves nothing behind.
+CANCEL_WAIT_S = 20  # how  long POST  .../cancel waits for the flagged jobs to end before it answers "stopping"
+_CANCELLED = "Stopped. Nothing was changed."
+# what  a job  that changes the workbook is doing, in words: one such job per workbook at a time
+_BUSY_WORDS = {
+    "scan": "the workbook is still being analysed",
+    "apply": "changes are still being written",
+    "autofix": "Fix all issues is still running",
+    "outside": "the outside files are still being brought in",
+    "prep": "the formulas and the structure are still being fixed",
+}
+# every  kind of  job, as GET .../jobs names it ("Still working: {title}.")
+_JOB_TITLES = {
+    "scan": "Checking the workbook", "apply": "Writing the changes", "autofix": "Fixing the formula errors", "recalc": "Recalculating",
+    "numbers": "Comparing the numbers", "reports": "Making the reports", "outside": "Bringing in the input files",
+    "next_quarter": "Making next quarter's input files", "names": "Suggesting names", "finder": "Looking for instances",
+    "chat": "The assistant is answering", "mind": "Uploading to Mind", "prep": "Fixing the formulas and the structure",
+}
+
+
+class _StoppedOnRequest(HTTPException):
+    """The  answer of  a blocking request whose job was cancelled: 409 {detail, cancelled: true, kind},
+    written by _http_error. Never an incident: the person stopped it."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(status_code=409, detail=_CANCELLED)
+        self.kind = kind
+
+
+def _begin_job(s: Session, kind: str, on_flag: Callable[[], Any] | None = None) -> cancel.Job:
+    """Register  a job  for the workbook (only a route does: helpers read the current job). 409 "Wait a
+    moment: ..." while another job that changes this workbook is registered -- it stays registered
+    until after its  restore, so the workbook never reads free with a half-made version  in it."""
+    try:
+        return cancel.begin(s.id, kind, changes=kind in _BUSY_WORDS, on_flag=on_flag)
+    except cancel.Busy as busy:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_busy_words(busy.kind)}.") from None
+
+
+# what a job that passed  its gate with `alone` is still writing  (cancel.Job.commit): no job that
+# changes the workbook begins meanwhile
+_ALONE_WORDS = {"recalc": "a recalculation is still being saved", "names": "the suggested names are still being saved", "reports": "the reports are still being saved"}
+
+
+def _busy_words(kind: str) -> str:
+    return _BUSY_WORDS.get(kind) or _ALONE_WORDS.get(kind) or "changes are still being written"
+
+
+def _refuse_while_changing(s: Session) -> None:
+    """17  Nov 2026:  409 "Wait a moment: ..." while a job that changes the workbook is registered. For
+    the routes that write what that job's restore puts back after a Cancel (the recalculation, the
+    input files,  the suggested names, the report files, the plan): written meanwhile, it  would be
+    taken back after the person  was told it was done."""
+    job = cancel.changing(s.id)
+    if job is not None:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_busy_words(job.kind)}.")
+
+
+def _commit_alone(job: cancel.Job) -> None:
+    """The  gate of  such a route's job, when its work is long (a recalculation, a model's answer): a
+    job that changes the workbook may have begun since the route was asked. 409 "Wait a moment:  ..."
+    then, and nothing is written; once passed, no such job begins  until this one has ended."""
+    try:
+        job.commit(alone=True)
+    except cancel.Busy as busy:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_busy_words(busy.kind)}.") from None
+
+
+def _job_route(s: Session, kind: str, work: Callable[[cancel.Job], Any]) -> Any:
+    """One  blocking request  as one job: begin (409 while another job changes the workbook), bind this
+    thread, snapshot when the job changes the workbook, run `work(job)`, pass the gate. Cancelled at
+    any point, the gate included  -- or any error once the flag is set: ending Excel  makes ordinary
+    errors -- the session goes  back to the snapshot and the request  answers 409 "cancelled" by
+    itself. A job that does not change the  workbook all along calls `job.commit()` itself just
+    before  its one write (the call here is then a no-op) and never restores."""
+    job = _begin_job(s, kind)
+    outcome = "error"
+    try:
+        snap = _snapshot(s) if job.changes else None
+        try:
+            with cancel.bind(job):
+                out = work(job)
+                job.commit()  # the point of no return: after it a Cancel is too late and the result stands
+            outcome = "done"
+            return out
+        except cancel.Cancelled:
+            pass
+        except Exception:
+            if not job.flag.is_set():
+                raise
+        outcome = "cancelled"
+        if snap is not None:
+            _restore(s, snap)
+            if _statuses_stopped(s, job):
+                _save(s)
+        raise _StoppedOnRequest(kind)
+    finally:
+        cancel.end(job, outcome)  # last: the job stays registered until the session is back as it was
+
+
+_SNAP_COPIES = ("paths", "files", "grid_names", "mind_inputs_dirs", "brought_in_files")
+_SNAP_VALUES = ("current_version_id", "result", "plan", "last_delta", "recalc", "recalc_version_id", "recalc_path", "input_seq",
+                "mind_inputs_dir", "instances_zip", "pending")
+
+
+def _snapshot(s: Session) -> dict[str, Any]:
+    """What  a job  that changes the workbook may touch, as it is now: copies of the lists and dicts,
+    the values of the pointers, the lengths of the two histories, and deep copies of the  two findings
+    the server changes in place (the recalculation's and the outside  files') with the report's status
+    and summary.  `_restore` puts it back. The status objects  are not in it: after a Cancel they say so."""
+    report = s.result["validation_report"] if s.result else None
+    snap: dict[str, Any] = {
+        "versions": [dict(v) for v in s.versions],
+        "inputs": [dict(i) for i in s.inputs],
+        "ignore_sheets": list(s.ignore_sheets),
+        "plan_history": len(s.plan_history),
+        "apply_history": len(s.apply_history),
+        "report": None,
+    }
+    snap.update({k: dict(getattr(s, k) or {}) for k in _SNAP_COPIES})
+    snap.update({k: getattr(s, k) for k in _SNAP_VALUES})
+    if report is not None:
+        snap["report"] = {
+            "status": report.get("status"),
+            "summary": copy.deepcopy(report.get("summary")),
+            "findings": {f["rule_id"]: copy.deepcopy(f) for f in report["findings"] if f.get("rule_id") in ("READY-001", OUTSIDE_RULE)},
+        }
+    return snap
+
+
+def _restore(s: Session, snap: dict[str, Any]) -> None:
+    """The  session as  `_snapshot` took it, saved: the versions made since are dropped (their files stay
+    on disk; nothing points to them). The model map, the finder's result and the instances plan kept
+    for a dropped  version go too: the next version gets the same id."""
+    dropped = {v["id"] for v in s.versions} - {v["id"] for v in snap["versions"]}
+    s.versions = [dict(v) for v in snap["versions"]]
+    s.inputs = [dict(i) for i in snap["inputs"]]
+    s.ignore_sheets = list(snap["ignore_sheets"])
+    for k in _SNAP_COPIES:
+        setattr(s, k, dict(snap[k]))
+    for k in _SNAP_VALUES:
+        setattr(s, k, snap[k])
+    del s.plan_history[snap["plan_history"]:]
+    del s.apply_history[snap["apply_history"]:]
+    if s.model_map_version_id in dropped:
+        s.model_map, s.model_map_version_id = None, None
+    if s.instance_finder_version_id in dropped:
+        s.instance_finder, s.instance_finder_version_id, s.instance_finder_assistant = None, None, None
+    if s.instance_plan_default_version_id in dropped:
+        s.instance_plan_default, s.instance_plan_default_version_id = None, None
+    if dropped:
+        # the session's  Excel worker may still be at  work for a version that is gone  (the recalculation
+        # made ahead of a Mind loop version runs for minutes,  and the next step would wait behind  it):
+        # what belongs to no job is let go. Only when a version was dropped: otherwise that work is
+        # for a version that stays.
+        with contextlib.suppress(Exception):
+            excel_worker.cancel(s.id, [], free=True)
+    report = s.result["validation_report"] if s.result else None
+    kept = snap.get("report")
+    if report is not None and kept is not None:
+        for i, f in enumerate(report["findings"]):
+            old = kept["findings"].get(f.get("rule_id"))
+            if old is not None:
+                report["findings"][i] = copy.deepcopy(old)
+        report["status"] = kept["status"]
+        if kept["summary"] is not None:
+            report["summary"] = copy.deepcopy(kept["summary"])
+    _rematch(s)
+    _sync_recalc_finding(s)
+    if report is not None:
+        _recount_report(report)
+    _save(s)
+
+
+def _statuses_stopped(s: Session, job: cancel.Job) -> bool:
+    """After  a cancelled  job that changes the workbook: the scan and the Apply status it opened say
+    "cancelled" (they are never restored). `_run_scan` and `_tracked_apply` close their own when the
+    Cancel lands inside them; this is  for one that had already finished (an Apply done, then the
+    Cancel  during its scan: the version it  reported is gone). True when one was  changed."""
+    changed = False
+    if not job.changes:
+        return changed
+    for status, finish in ((s.scan, _scan_finish), (s.apply_status, _apply_finish)):
+        if status and status.get("state") != "cancelled" and float(status.get("started_at") or 0) >= job.started:
+            finish(s, cancelled=True)
+            changed = True
+    return changed
+
+
 def _register_file(s: Session, path: Path) -> str:
-    """Download name for a file, unique within the session."""
+    """Download  name for  a file, unique within the session."""
     path = Path(path)
     name = path.name
     if s.files.get(name) not in (None, path):
@@ -187,10 +530,11 @@ def _register_file(s: Session, path: Path) -> str:
 def _add_version(
     s: Session, path: Path, source: str, label_body: str, change_log: list[dict[str, Any]], verified: bool | None, sha256: str, minor: bool = False
 ) -> dict[str, Any]:
-    """Versions are numbered major.minor. A fix made on the Recalculate
+    """Versions  are numbered  major.minor. A fix made on the Recalculate
     step (`minor`) is the next minor of the current major (v2 -> v2.1 -> v2.2);
-    everything else -- and a recalculation after such fixes -- starts the next
+    everything else -- and a recalculation after such fixes -- starts  the next
     major (v3). Ids follow the number: ver-002, ver-002.1, ..."""
+    cancel.check()  # 17 Nov  2026: whatever slipped through, a cancelled  job never makes a version
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
     if minor and current is not None:
         major = current.get("major", 1)
@@ -203,7 +547,7 @@ def _add_version(
     download_name = _register_file(s, path)
     version = {
         "id": vid,
-        "parent": s.current_version_id or None,  # the version this one was made from
+        "parent": s.current_version_id or None,  # the version this  one was made from
         "major": major,
         "minor": n_minor,
         "label": f"v{number} — {label_body}",
@@ -221,9 +565,15 @@ def _add_version(
 
 
 def _public_op(o: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in o.items() if k != "cells"}
+    """An  operation as  the screen and the change log get it: long lists cut short (the first 50
+    cells; the first 20 values of a set_range_values, with their count)."""
+    out = {k: v for k, v in o.items() if k not in ("cells", "values")}
     if "cells" in o:
         out["cells"] = list(o["cells"])[:50]
+    if "values" in o:
+        values = list(o["values"])
+        out["values"] = values[:20]
+        out["values_count"] = len(values)
     return out
 
 
@@ -269,9 +619,9 @@ def _summary(analysis: dict[str, Any]) -> dict[str, Any]:
 
 
 def _delta(previous: dict[str, Any] | None, current: dict[str, Any], version_id: str) -> dict[str, Any]:
-    """What changed between two analyses of the same session: findings fixed
+    """What  changed between  two analyses of the same session: findings fixed
     (now PASS), improved (better status or a changed message while still not
-    PASS), regressed, and the status counts side by side -- so a fix never
+    PASS), regressed, and the status counts side by side -- so a fix  never
     just *vanishes* from a filtered table."""
     cur = {f["rule_id"]: f for f in current["findings"]}
     if not previous:
@@ -284,11 +634,11 @@ def _delta(previous: dict[str, Any] | None, current: dict[str, Any], version_id:
             continue
         before, after = STATUS_RANK.get(p["status"], 0), STATUS_RANK.get(f["status"], 0)
         if p["status"] != "PASS" and f["status"] == "PASS":
-            fixed.append({"rule_id": rid, "from": p["status"], "to": f["status"]})
+            fixed.append({"rule_id": rid, "rule_name": rule_name(rid), "from": p["status"], "to": f["status"]})
         elif after < before or (after == before and f["status"] != "PASS" and f["message"] != p["message"]):
-            improved.append({"rule_id": rid, "from": p["status"], "to": f["status"], "note": "status improved" if after < before else "same status, details changed"})
+            improved.append({"rule_id": rid, "rule_name": rule_name(rid), "from": p["status"], "to": f["status"], "note": "status improved" if after < before else "same status, details changed"})
         elif after > before:
-            regressed.append({"rule_id": rid, "from": p["status"], "to": f["status"]})
+            regressed.append({"rule_id": rid, "rule_name": rule_name(rid), "from": p["status"], "to": f["status"]})
     return {
         "version_id": version_id,
         "previous_version_id": previous.get("_version_id"),
@@ -326,6 +676,7 @@ def _scan_start(s: Session, needs_convert: bool) -> None:
 
 def _progress_for(s: Session):
     def cb(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        cancel.check()  # 17  Nov 2026:  a cancelled scan leaves at its next stage, sheet or rule (the scanner lets it through)
         sc = s.scan
         now = time.time()
         if sc.get("stage") != stage:
@@ -345,9 +696,13 @@ def _progress_for(s: Session):
     return cb
 
 
-def _scan_finish(s: Session, error: str | None = None) -> None:
+def _scan_finish(s: Session, error: str | None = None, cancelled: bool = False) -> None:
     sc = s.scan
     now = time.time()
+    if cancelled:
+        # 17  Nov 2026:  stopped on request -- not an error, no incident (GET .../status: state "cancelled")
+        sc.update(state="cancelled", finished_at=now, updated_at=now, error=None, title="Stopped", message="Stopped.")
+        return
     if sc.get("stage"):
         sc["stages"].append({"stage": sc["stage"], "seconds": round(now - sc.get("stage_started", now), 2)})
     sc.update(state="error" if error else "ready", finished_at=now, updated_at=now, error=error, overall=sc.get("overall", 0.0) if error else 1.0)
@@ -364,6 +719,8 @@ def _scan_snapshot(s: Session) -> dict[str, Any]:
     sc["elapsed_s"] = round(((finished or now) - started), 1) if started else 0.0
     sc.pop("stage_started", None)
     sc["state"] = sc.get("state") or ("pending" if s.pending else "idle")
+    if sc["state"] == "cancelled":
+        sc["version_id"] = s.current_version_id  # 17  Nov 2026:  the version a cancelled check was of may be gone
     sc["version_id"] = sc.get("version_id") or s.current_version_id
     sc["apply"] = _apply_snapshot(s)
     return sc
@@ -395,6 +752,9 @@ def _apply_start(s: Session, total: int, reanalyze: bool) -> None:
 
 def _apply_progress_for(s: Session):
     def cb(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        # 17  Nov 2026:  a cancelled Apply leaves at its next stage or written change (the worker's thread
+        # is bound to the job of the item it runs; the openpyxl fallback calls this first)
+        cancel.check()
         st = s.apply_status
         now = time.time()
         if st.get("stage") != stage:
@@ -410,9 +770,13 @@ def _apply_progress_for(s: Session):
     return cb
 
 
-def _apply_finish(s: Session, res: dict[str, Any] | None = None, error: str | None = None) -> None:
+def _apply_finish(s: Session, res: dict[str, Any] | None = None, error: str | None = None, cancelled: bool = False) -> None:
     st = s.apply_status
     now = time.time()
+    if cancelled:
+        # 17  Nov 2026:  stopped on request -- not an error (GET .../status, field "apply": state "cancelled")
+        st.update(state="cancelled", finished_at=now, updated_at=now, error=None, fraction=None, title="Stopped", message="Stopped.")
+        return
     if st.get("stage"):
         st["stages"].append({"stage": st["stage"], "seconds": round(now - st.get("stage_started", now), 2)})
     st.update(state="error" if error else "done", finished_at=now, updated_at=now, error=error, fraction=None if error else 1.0)
@@ -434,24 +798,32 @@ def _apply_snapshot(s: Session) -> dict[str, Any] | None:
 
 
 def _tracked_apply(s: Session, ops: list[dict[str, Any]], reanalyze: bool, defer_verify: bool = False, source: str | None = None) -> dict[str, Any]:
-    """apply_operations on the current version, every stage and every written
+    """apply_operations  on the  current version, every stage and every written
     operation reported into `s.apply_status` (GET /status, field "apply")."""
     _apply_start(s, len(ops), reanalyze)
     try:
         # Through the session's Excel worker -- the copy is already open when the previous
-        # version's check opened it; Excel dead or hung -> the way it was done before
+        # version's check opened it; Excel  dead or hung -> the way it was done before
         worker = excel_worker.worker_for(s.id, s.work_dir / "apply")
         res = None
         if worker is not None:
             try:
                 res = worker.apply(s.current_path, ops, progress=_apply_progress_for(s), defer_verify=defer_verify, recalc_ahead=source == "loop")
             except excel_worker.WorkerUnavailable as exc:
+                cancel.check()  # 17 Nov  2026: its Excel was ended by  a Cancel -- the Apply is not  run again in a fresh one
                 perf_record("excel_worker_fallback", 0.0, session=s.id, error=str(exc)[:160])
                 _apply_start(s, len(ops), reanalyze)
         if res is None:
             res = apply_operations(s.current_path, s.work_dir / "apply", ops, progress=_apply_progress_for(s), defer_verify=defer_verify)
+    except cancel.Cancelled:
+        # 17 Nov 2026: the status is  closed where it was opened, or it  would say "running" for good
+        _apply_finish(s, cancelled=True)
+        raise
     except Exception as exc:
-        _apply_finish(s, error=f"apply failed: {exc}")
+        if cancel.flagged():  # a set flag wins over any error: ending Excel makes ordinary ones
+            _apply_finish(s, cancelled=True)
+            raise cancel.Cancelled() from None
+        _apply_finish(s, error=f"apply failed: {plain_error(exc)}")
         raise
     if res["status"] == "NOT_APPLICABLE":
         _apply_finish(s, error=res.get("message", "nothing to apply"))
@@ -469,11 +841,11 @@ def _status_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _sync_recalc_finding(s: Session) -> None:
-    """READY-001 ("successful recalculation") is NOT_SUPPORTED in every
+    """READY-001  ("successful recalculation")  is NOT_SUPPORTED in every
     analysis pass -- the pass never runs Excel -- and, worst status winning,
     it would hold the whole report at NOT_SUPPORTED after a clean Recalculate.
-    So when the current version has a real recalculation, the finding says what
-    it found (PASS when no new error, ERROR otherwise) and the report's status
+    So when the current version  has a real recalculation, the finding says what
+    it found (PASS when  no new error, ERROR otherwise) and  the report's status
     and summary are recomputed."""
     if not s.result:
         return
@@ -487,6 +859,11 @@ def _sync_recalc_finding(s: Session) -> None:
     short = next((v["label"].split(" — ")[0] for v in s.versions if v["id"] == s.current_version_id), s.current_version_id)
     finding["status"] = "PASS" if rc["clean"] else "ERROR"
     finding["message"] = f"Recalculated {short} in Excel: {rc['message']}."
+    _recount_report(report)
+
+
+def _recount_report(report: dict[str, Any]) -> None:
+    """The  report's status  and summary again, after a finding was changed in place."""
     statuses = [Status(f["status"]) for f in report["findings"]]
     report["status"] = aggregate_status(statuses).value
     summary = report.setdefault("summary", {})
@@ -495,32 +872,67 @@ def _sync_recalc_finding(s: Session) -> None:
     summary["blocking_rule_ids"] = [f["rule_id"] for f in report["findings"] if f["status"] in ("ERROR", "REQUIRES_USER_INPUT", "NOT_SUPPORTED")]
 
 
+def _analysis_config(s: Session) -> dict[str, Any]:
+    """The  configuration every  rule reads, with what the session knows about the outside input files
+    (INP-010: what the macros open, the files picked, whether this line has them brought in)."""
+    config = load_config()
+    config["outside_inputs"] = _outside_public(s)
+    return config
+
+
+def _patch_outside_finding(s: Session, result: dict[str, Any] | None) -> None:
+    """INP-010  again with  what the session knows now: the outside files are found after the rules ran
+    (the import table needs the scan), and the picked files can change without a new scan."""
+    if not result:
+        return
+    report = result["validation_report"]
+    i = next((k for k, f in enumerate(report["findings"]) if f.get("rule_id") == OUTSIDE_RULE), None)
+    rule = engine().get(OUTSIDE_RULE)
+    if i is None or rule is None:
+        return
+    new = Finding.model_validate(run_rule(rule, result["workbook_analysis"], _analysis_config(s))).model_dump(mode="json")
+    new["correction_available"] = bool(report["findings"][i].get("correction_available"))
+    report["findings"][i] = new
+    _recount_report(report)
+
+
 def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
     label, module = MODE_MAP[s.mode]
     work = s.work_dir / "analysis" / s.current_version_id
     previous = s.result["validation_report"] if s.result else None
-    with formula_memo():  # the rules and the planners parse each formula once between them
-        result = module.run(path, work, load_config(), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
+    with formula_memo():  # the  rules and  the planners parse each formula once between them
+        result = module.run(path, work, _analysis_config(s), engine=engine(), ignore_sheets=s.ignore_sheets or None, progress=progress)
         analysis = result["workbook_analysis"]
-        if s.original_environment is None and Path(path) == _original_path(s):
-            s.original_environment = environment_values(analysis)
+        if Path(path) == _upload_path(s):
+            if s.original_environment is None:
+                s.original_environment = environment_values(analysis)
+            # what the macros open, the import table and the picked files: read off the upload once
+            # its scan exists (the table needs it), then INP-010  again with them
+            _scan_outside(s, Path(path), analysis)
+            if s.outside_inputs is not None:
+                _patch_outside_finding(s, result)
         analysis["original_environment_values"] = _original_environment(s)
         if progress is not None:
             progress("plan", "Planning the fixes", None)
         s.plan = plan_actions(result["workbook_analysis"], result["validation_report"], s.grid_names or None, s.pivot_mode)
     report = result["validation_report"]
-    # "Fix available" means the current prep plan has an operation for the rule.
+    # "Fix available" means the current prep plan has an  operation for the rule.
     fixable = {rid for a in s.plan if a["count"] > 0 for rid in a["rule_ids"]} | {o["rule_id"] for a in s.plan for o in a["operations"]}
     for f in report["findings"]:
         f["correction_available"] = f["rule_id"] in fixable
     report["_version_id"] = s.current_version_id
     s.result = result
-    if s.original_ref_formulas is None and not s.ignore_sheets and Path(path) == _original_path(s):
-        s.original_ref_formulas = {
+    # a baseline's #REF!  formulas from its own scan: the upload's,  and those of the version the
+    # outside files were brought into (the  baseline of its line)
+    if not s.ignore_sheets and str(path) not in s.ref_formulas and Path(path) in (_upload_path(s), _original_path(s)):
+        refs = {
             (f["sheet"], f["cell"]) for f in result["workbook_analysis"]["workbooks"][0]["formulas"]
             if not f.get("array_ref") and not f.get("data_table") and "#REF!" in str(f.get("formula") or "")
         }
-    _sync_recalc_finding(s)  # a re-analysis of a version already recalculated keeps that result
+        s.ref_formulas[str(path)] = refs
+        if s.original_ref_formulas is None and Path(path) == _upload_path(s):
+            s.original_ref_formulas = refs
+    _sync_recalc_finding(s)  # a re-analysis of a  version already recalculated keeps that result
     delta = _delta(previous, report, s.current_version_id)
     s.last_delta = delta  # shown again when the page reopens the session
     summary = _summary(result["workbook_analysis"])
@@ -550,11 +962,13 @@ def _analyze(s: Session, path: Path, progress=None) -> dict[str, Any]:
         # the pivot setting travels with every analysis too: an upload must show its choices
         "pivot_mode": s.pivot_mode,
         "pivot_modes": PIVOT_MODES,
+        # what  the macros open from outside and which picked file goes with each (None: nothing)
+        "outsideInputs": _outside_public(s),
     }
 
 
 def _convert(s: Session, path: Path, progress) -> Path:
-    """An .xlsb is converted through Excel first (openpyxl cannot read it);
+    """An  .xlsb is  converted through Excel first (openpyxl cannot read it);
     the converted file becomes a version of its own."""
     target = "xlsm" if has_vba_project(path) else "xlsx"
     progress("convert", f"Converting .xlsb to .{target} through Excel (openpyxl cannot read .xlsb)", None)
@@ -566,10 +980,12 @@ def _convert(s: Session, path: Path, progress) -> Path:
     return out
 
 
-def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
-    """One scan of `path` (default: the current version) with the session's
+def _run_scan(s: Session, path: Path | None = None, save: bool = True) -> dict[str, Any]:
+    """One  scan of  `path` (default: the current version) with the session's
     ignore list, converting an .xlsb first, reporting every stage into
-    `s.scan` (GET /status) -- one at a time per session."""
+    `s.scan` (GET /status) -- one at a time per session. `save=False` (17 Nov 2026): the  state file is
+    not written, the caller saves (the check of an  assistant's fix that is not judged  yet: a crash
+    before the judge must not  reopen the workbook on that fix)."""
     if not s.lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="a scan is already running for this session")
     try:
@@ -583,14 +999,32 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
                 path = _convert(s, path, progress)
             with perf_stage("scan", file=path.name):
                 out = _analyze(s, path, progress)
+        except cancel.Cancelled:
+            # 17 Nov 2026: the status is  closed where it was opened (a cancelled  scan inside the fixer or
+            # the bring-in would leave it "running", and the workbook "still being analysed", for good);
+            # not saved here: the job's restore saves
+            _scan_finish(s, cancelled=True)
+            raise
         except HTTPException as exc:
+            if cancel.flagged():  # a set flag wins over any error (the convert's Excel was ended)
+                _scan_finish(s, cancelled=True)
+                raise cancel.Cancelled() from None
             _scan_finish(s, error=str(exc.detail))
+            if save:
+                _save(s)
             raise
         except Exception as exc:
-            _scan_finish(s, error=f"analysis failed: {exc}")
-            raise HTTPException(status_code=500, detail=f"analysis failed: {exc}") from exc
+            if cancel.flagged():
+                _scan_finish(s, cancelled=True)
+                raise cancel.Cancelled() from None
+            _scan_finish(s, error=f"analysis failed: {plain_error(exc)}")
+            if save:
+                _save(s)
+            raise HTTPException(status_code=500, detail=f"analysis failed: {plain_error(exc)}") from exc
         _scan_finish(s)
         s.pending = False
+        if save:
+            _save(s)
         current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
         return {**out, "version": current, "versions": s.versions, "size": s.size, "scan": _scan_snapshot(s)}
     finally:
@@ -598,7 +1032,7 @@ def _run_scan(s: Session, path: Path | None = None) -> dict[str, Any]:
 
 
 def _parse_ignore(s: Session, raw: Any) -> list[str]:
-    """The sheets to skip, validated against the sheet list read from the
+    """The  sheets to  skip, validated against the sheet list read from the
     package (when it could be read): unknown names are refused, and at least
     one sheet must remain to scan."""
     if raw in (None, ""):
@@ -636,12 +1070,12 @@ def _apply_result(res: dict[str, Any], output_name: str) -> dict[str, Any]:
 
 
 def _before_apply(s: Session) -> dict[str, Any]:
-    """What the analysis said before an Apply -- the other half of its outcome."""
+    """What  the analysis  said before an Apply -- the other half of its outcome."""
     return {"plan": s.plan, "report": s.result["validation_report"] if s.result else None, "version_id": s.current_version_id}
 
 
 def _outcome(s: Session, ops: list[dict[str, Any]], res: dict[str, Any], before: dict[str, Any], reanalyzed: bool) -> dict[str, Any]:
-    """The Apply, repair by repair (app.readiness.apply_outcome), against the
+    """The  Apply, repair  by repair (app.readiness.apply_outcome), against the
     analysis that preceded it and -- when one ran -- the one that followed."""
     after_report = s.result["validation_report"] if reanalyzed and s.result else None
     outcome = apply_outcome(ops, res, before["plan"], before["report"], s.plan if reanalyzed else None, after_report, s.current_version_id, before["version_id"])
@@ -662,6 +1096,339 @@ def _validate_ops(raw_ops: Any) -> list[dict[str, Any]]:
     return ops
 
 
+# ---  outside input  files (app/outside_inputs.py) -------------------------------------------
+# A workbook whose macro opens other files and pastes their data in: the user picks the workbook
+# and those files together; they are kept beside the session (never as versions),  matched to the
+# workbook's import table, and brought in by the workbook's  own macro on a copy (the  job below).
+def _main_name(s: Session) -> str:
+    """The  name of  the workbook the user uploaded."""
+    return Path(s.paths[s.versions[0]["id"]]).name if s.versions else ""
+
+
+def _inputs_public(s: Session) -> list[dict[str, Any]]:
+    return [{"name": i["name"], "bytes": i["bytes"], "stand_in": bool(i.get("stand_in"))} for i in s.inputs]
+
+
+def _stand_in_names(s: Session) -> set[str]:
+    """The  input files  the assistant made (stand-ins), not the user: a real file of the same name replaces one."""
+    return {i["name"] for i in s.inputs if i.get("stand_in")}
+
+
+def _check_input_names(names: list[str]) -> None:
+    """Every  picked file  is a workbook or a data file a macro can open; anything else is refused (400)."""
+    allowed = sorted(outside_inputs.INPUT_FILE_EXTENSIONS)
+    for n in names:
+        if Path(n).suffix.lower() not in outside_inputs.INPUT_FILE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"{n}: Mind Ready takes the workbook and the files its macros open ({', '.join(allowed)}), not this kind of file.")
+
+
+def _save_upload(upload: UploadFile, folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / Path(upload.filename or "file").name
+    with path.open("wb") as out:
+        shutil.copyfileobj(upload.file, out)
+    return path
+
+
+def _keep_input(s: Session, path: Path) -> dict[str, Any]:
+    """Record  a received  input file; a file of the same name replaces the earlier one (any language:
+    names compare as Excel shows them)."""
+    from app.inventory import sha256_of
+
+    entry = {"name": path.name, "path": str(path), "bytes": path.stat().st_size, "sha256": sha256_of(path)}
+    key = outside_inputs.normalize_name(path.name)
+    s.inputs = [i for i in s.inputs if outside_inputs.normalize_name(i["name"]) != key] + [entry]
+    return entry
+
+
+def _input_folder(s: Session) -> Path:
+    s.input_seq += 1
+    return s.work_dir / "inputs" / f"{s.input_seq:02d}"
+
+
+def _input_path(s: Session, name: str | None) -> Path | None:
+    return next((Path(i["path"]) for i in s.inputs if i["name"] == name), None)
+
+
+def _outside_vba_of(path: Path) -> dict[str, Any]:
+    """What  the macros  of `path` open and which macro runs the import (outside_inputs.scan_vba,
+    without the per-procedure detail)."""
+    modules = model_map_module.read_vba(path) if has_vba_project(path) else []
+    found = outside_inputs.scan_vba(modules)
+    # messages: every MsgBox line as the source writes it (run_import shows a message box's text with it)
+    return {"imports": found["imports"], "import_macro": found["import_macro"], "chain": found["chain"], "messages": found.get("messages") or []}
+
+
+def _pick_main(paths: list[Path]) -> tuple[Path, dict[str, Any] | None]:
+    """The  main workbook  among files picked together: the one whose macros open outside files (an
+    import macro found), else the only one with macros, else the largest workbook. Returns it and
+    what its macros open when  that was read."""
+    books = [p for p in paths if p.suffix.lower() in ALLOWED_SUFFIXES]
+    if not books:
+        raise HTTPException(status_code=422, detail="Pick the workbook itself (.xlsx, .xlsm or .xlsb) together with its input files.")
+    read = {p: _outside_vba_of(p) for p in books if has_vba_project(p)}
+    importers = [p for p, vba in read.items() if vba["imports"] and vba["import_macro"]]
+    if importers:
+        main = max(importers, key=lambda p: p.stat().st_size)
+    elif len(read) == 1:
+        main = next(iter(read))
+    else:
+        main = max(books, key=lambda p: p.stat().st_size)
+    return main, read.get(main)
+
+
+def _scan_outside(s: Session, path: Path, analysis: dict[str, Any]) -> None:
+    """After  a scan  of the upload: what its macros open (read once), its import table and which
+    picked file goes with each row. Never fails the scan: a table that cannot be read is empty."""
+    if s.outside_vba is None:
+        s.outside_vba = _outside_vba_of(path)
+    if not s.outside_vba["imports"]:
+        s.outside_inputs = None
+        return
+    try:
+        table = outside_inputs.import_table_from_analysis(analysis)
+    except Exception as exc:  # an  odd workbook: say so in the table's place, never stop the  scan
+        perf_record("outside_inputs_table_failed", 0.0, file=path.name, error=str(exc)[:160])
+        table = []
+    s.outside_inputs = {"version_id": s.current_version_id, "vba": s.outside_vba, "table": table, "match": None}
+    _rematch(s)
+
+
+def _rematch(s: Session) -> None:
+    """Which  picked file  goes with each row of the import table (no rescan)."""
+    if s.outside_inputs is not None:
+        s.outside_inputs["match"] = outside_inputs.match_files(s.outside_inputs["table"], [i["name"] for i in s.inputs])
+
+
+def _match_rows(s: Session) -> list[dict[str, Any]]:
+    """The  rows of  the import table, each with the picked file that goes with it (none: missing)."""
+    oi = s.outside_inputs or {}
+    if not oi:
+        return []
+    match = oi.get("match") or outside_inputs.match_files(oi["table"], [i["name"] for i in s.inputs])
+    return list(match.get("rows") or [])
+
+
+def _inputs_fingerprint(s: Session, rows: list[dict[str, Any]] | None = None) -> str:
+    """The  picked files  the rows of the import table read, as one sha256: each row's cell with the
+    content (sha256) of the file that goes with it, or none. A bring-in records it; a file  replaced
+    since (same name, other content) or a row matched since changes  it."""
+    sha = {i["name"]: i.get("sha256") or "" for i in s.inputs}
+    lines = sorted(
+        f"{r.get('sheet')}!{r.get('cell')}\t" + ((sha.get(r["file"]) or "?") if r.get("file") else "-")
+        for r in (_match_rows(s) if rows is None else rows)
+    )
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+# why a line that went through  a bring-in does not count as brought  in (INP-010 and the card say it)
+_FILES_CHANGED = "the input files changed since they were brought in"
+_NOT_FINISHED = "the last bring-in did not finish"
+
+
+def _brought_in_state(s: Session, version_id: str | None = None) -> tuple[bool, str | None]:
+    """Whether  the line  of `version_id` (default: the current version) has the outside files brought
+    in -- through a bring-in that finished, with the files picked now -- and, when its line went
+    through a bring-in that  does not count, why (_FILES_CHANGED / _NOT_FINISHED; None otherwise)."""
+    line = _lineage(s, version_id or s.current_version_id)
+    for v in reversed(line):
+        recorded = s.brought_in_files.get(v["id"])
+        if recorded is not None:
+            return (True, None) if recorded == _inputs_fingerprint(s) else (False, _FILES_CHANGED)
+    if (s.outside_run or {}).get("state") != "running" and any(v.get("source") in ("import", "mind_inputs") for v in line):
+        return False, _NOT_FINISHED  # stopped half-way, or  its Mind inputs were refused (they  changed values)
+    return False, None
+
+
+def _brought_in(s: Session, version_id: str | None = None) -> bool:
+    """The  version descends  from one a finished bring-in made, and the picked files are still the ones it read."""
+    return _brought_in_state(s, version_id)[0]
+
+
+def _outside_public(s: Session) -> dict[str, Any] | None:
+    """What  the macros  open from outside and which picked file goes with each row of the import
+    table (the "outsideInputs" of every scan answer); None when the macros open no outside file."""
+    oi = s.outside_inputs
+    if not oi:
+        return None
+    match = oi.get("match") or outside_inputs.match_files(oi["table"], [])
+    rows = match["rows"]
+    if rows:
+        summary = outside_inputs.describe_match(match)
+    elif oi["vba"].get("import_macro"):
+        summary = "The macros open outside files, but no cell names them."
+    else:
+        summary = "The macros open outside files, but which macro brings them in is not clear."
+    brought_in, why_not = _brought_in_state(s) if s.versions else (False, None)
+    made = _stand_in_names(s)
+    return {
+        "imports": True,
+        "macro": oi["vba"].get("import_macro"),
+        "calls": [{"procedure": c.get("procedure"), "call": c.get("call"), "line": c.get("line")} for c in oi["vba"].get("imports") or []],
+        "rows": [
+            {"cell": f"{r['sheet']}!{r['cell']}", "expected": r.get("expected"), "keys": list(r.get("keys") or []), "target_sheet": r.get("target_sheet"),
+             "file": r.get("file"), "how": r.get("how"), "candidates": list(r.get("candidates") or []), "stand_in": r.get("file") in made}
+            for r in rows
+        ],
+        # the matched files the  assistant made (stand-ins built from the model's own numbers): best
+        # results come  with the actual files -- INP-010  and the card say so
+        "stand_ins": [r["file"] for r in rows if r.get("file") in made],
+        # the assistant can  make the missing files (an AI key is saved)
+        "assistant": llm_available(),
+        "matched": int(match["matched"]),
+        "missing": [f"{r['sheet']}!{r['cell']}" for r in match["missing"]],
+        "extra": list(match["extra"]),
+        "summary": summary,
+        "brought_in": brought_in,
+        # why the line's  bring-in does not count, in words (the  input files changed since, it did not
+        # finish); None when brought in or when the line never went through one
+        "brought_in_reason": why_not,
+        # the /Input grids the bring-in made for this line (their size is the model's import area)
+        "mind_inputs": [Path(n).stem for n in _mind_input_files(_mind_inputs_dir_for(s))] if s.versions else [],
+    }
+
+
+# --- problem reports (app/feedback.py) ---------------------------------------------------
+# The step a route belongs to, in the words of the screens (the route's path, as declared)
+_STEPS = {
+    "/api/sessions": "Upload",
+    "/api/sessions/{session_id}/analyze": "Check the workbook",
+    "/api/sessions/{session_id}/reanalyze": "Check the workbook",
+    "/api/sessions/{session_id}/apply": "Fix the formulas",
+    "/api/sessions/{session_id}/prep-run": "Fix the formulas and the structure",
+    "/api/sessions/{session_id}/auto-fix": "Fix all issues",
+    "/api/sessions/{session_id}/mind-loop-plan": "Build the Mind loop",
+    "/api/sessions/{session_id}/mind-loop-plan/apply": "Build the Mind loop",
+    "/api/sessions/{session_id}/mind-instances-plan": "Build the Mind instances",
+    "/api/sessions/{session_id}/mind-instances-plan/apply": "Build the Mind instances",
+    "/api/sessions/{session_id}/mind-instances/download": "Build the Mind instances",
+    "/api/sessions/{session_id}/instance-finder": "Find where instances could help",
+    "/api/sessions/{session_id}/recalculate": "Recalculate",
+    "/api/sessions/{session_id}/numbers-check": "Compare the numbers",
+    "/api/sessions/{session_id}/chat": "Assistant",
+    "/api/sessions/{session_id}/chat/stream": "Assistant",
+    "/api/sessions/{session_id}/suggest": "Assistant",
+    "/api/sessions/{session_id}/grid-names": "Grid Namer",
+    "/api/sessions/{session_id}/grid-namer": "Grid Namer",
+    "/api/sessions/{session_id}/mind-loop": "Run in Mind",
+    "/api/sessions/{session_id}/mind-loop/delete-project": "Run in Mind",
+    "/api/sessions/{session_id}/model-map": "Model map",
+    "/api/sessions/{session_id}/reports": "Download the report",
+    "/api/sessions/{session_id}/files/{file_name}": "Download",
+    "/api/sessions/{session_id}/pivot-mode": "Pivot table setting",
+    "/api/sessions/{session_id}/sheet-cells": "Workbook view",
+    "/api/sessions/{session_id}/cells": "Workbook view",
+    "/api/sessions/{session_id}/estimate": "Time estimate",
+    "/api/sessions/{session_id}/readiness": "Verdict",
+    "/api/sessions/{session_id}/inputs": "Input files",
+    "/api/sessions/{session_id}/outside-inputs": "Bring in the outside files",
+    "/api/sessions/{session_id}/outside-inputs/run": "Bring in the outside files",
+    "/api/sessions/{session_id}/next-quarter-inputs": "Make next quarter's Mind input files",
+    "/api/assistant-key": "AI key",
+}
+
+
+def _workbook_names(s: Session | None) -> list[str]:
+    """The  workbook's own  names (file, sheets, defined names): masked in every problem report."""
+    if s is None:
+        return []
+    names: list[str] = []
+    for p in list(s.paths.values())[:1]:
+        names.append(Path(p).stem)
+    names += [Path(i["name"]).stem for i in s.inputs]  # the outside files' names are the client's too
+    names += [sh.get("name", "") for sh in (s.size or {}).get("sheets", [])]
+    if s.result:
+        wb = s.result["workbook_analysis"]["workbooks"][0]
+        names += [sh.get("name", "") for sh in wb.get("sheets", [])]
+        names += [str(d.get("name", "")).split("!")[-1] for d in wb.get("defined_names", [])]
+    return [n for n in dict.fromkeys(names) if n]
+
+
+def _report_problem(exc: BaseException | None, step: str, s: Session | None = None, **kw: Any) -> dict[str, Any]:
+    """One  incident for  Send feedback, with the rule and the stage the scan or the Apply was in when
+    it failed, when the session knows them."""
+    if s is not None:
+        if not kw.get("rule_id") and (s.scan or {}).get("state") in ("error", "running"):
+            kw["rule_id"] = s.scan.get("rule_id")
+        if not kw.get("stage"):
+            busy = s.apply_status if (s.apply_status or {}).get("state") in ("error", "running") else s.scan if (s.scan or {}).get("state") in ("error", "running") else {}
+            if busy.get("stage"):
+                kw["stage"] = str(busy["stage"])
+    try:
+        counts = feedback.workbook_counts(_summary(s.result["workbook_analysis"]) if s and s.result else None, s.size if s else None)
+    except Exception:
+        counts = None
+    incident = feedback.record(exc, step=step, workbook=counts, names=_workbook_names(s), **kw)
+    incident["plain"] = _plain_problem(exc, step, kw.get("failed_ops"))  # for this screen only, never sent
+    return incident
+
+
+def _plain_problem(exc: BaseException | None, step: str, failed_ops: list[dict[str, Any]] | None) -> str:
+    """What  stopped the  user's work, in one plain sentence, for the box on their own screen (their
+    workbook's words may appear here: it is not part of the message to the team)."""
+    if failed_ops:
+        # the rules the refused  changes served, each with its plain name (the screens' own changes,  "UI", are no rule)
+        rules = sorted({str(o.get("rule_id")) for o in failed_ops if rule_name(o.get("rule_id"))})
+        return (
+            f"{step}: Excel did not accept {len(failed_ops)} of the changes" + (f", for {cite_all(rules[:4])}" if rules else "")
+            + ". The other changes were made. The ones left out are listed with Excel's reason, and the check that follows shows what still blocks Mind."
+        )
+    said = ""
+    if exc is not None:
+        said = plain_com_error(exc) if is_com_error(exc) else plain_com_errors_in(str(getattr(exc, "detail", "") or exc or type(exc).__name__))
+    said = re.sub(r"\s+", " ", said).strip().rstrip(".")[:220]
+    who = "The app" if step == "Other" else step
+    return f"{who} stopped on an error" + (f": {said}" if said else "") + ". Your original file is not changed."
+
+
+def _problem_fields(incident: dict[str, Any] | None) -> dict[str, Any]:
+    """The  `incident` ref  (for the message to the team) and the plain sentence (for the screen)."""
+    return {"incident": incident["ref"], "problem": incident.get("plain")} if incident else {}
+
+
+def _problem_from_request(request: Request, exc: BaseException) -> dict[str, Any] | None:
+    try:
+        route = request.scope.get("route")
+        step = _STEPS.get(getattr(route, "path", ""), "Other")
+        s = SESSIONS.get(str(request.path_params.get("session_id") or ""))
+        return _report_problem(exc, step, s)
+    except Exception:
+        return None  # the  report must  never hide the error itself
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error(request: Request, exc: StarletteHTTPException):
+    """As  FastAPI answers;  a 5xx also gets an incident (its `ref` as `incident`), the error it
+    wraps (`raise HTTPException(...) from exc`) reported rather than the wrapper."""
+    if isinstance(exc, _StoppedOnRequest):  # 17 Nov 2026: a cancelled request says so, with its  kind; never an incident
+        return JSONResponse({"detail": exc.detail, "cancelled": True, "kind": exc.kind}, status_code=409)
+    if exc.status_code < 500:
+        return await http_exception_handler(request, exc)
+    incident = _problem_from_request(request, exc.__cause__ or exc)
+    detail = plain_com_errors_in(exc.detail) if isinstance(exc.detail, str) else exc.detail
+    body: dict[str, Any] = {"detail": detail, **_problem_fields(incident)}
+    return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(Exception)
+async def _crash(request: Request, exc: Exception):
+    """An  error no  route caught: a 500 with its incident."""
+    incident = _problem_from_request(request, exc)
+    body: dict[str, Any] = {"detail": _exc_text(exc)[:400], **_problem_fields(incident)}
+    return JSONResponse(body, status_code=500)
+
+
+def _exc_text(exc: BaseException) -> str:
+    """An  error no  step expected, for the screen: Excel's errors said plainly, others with their type.
+    A sentence that already says what Excel did ("Excel stopped with an error and did not say why",
+    "Excel closed  ...") stands alone: "Excel stopped with an error: " goes only  in front of one that
+    does not  name Excel ("the macro looked for a  sheet ...", Excel's own words)."""
+    if not is_com_error(exc):
+        return plain_error(exc, with_type=True)
+    said = plain_com_error(exc)
+    return said if said.startswith("Excel ") else f"Excel stopped with an error: {said}"
+
+
 # --- API ----------------------------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict[str, Any]:
@@ -674,7 +1441,7 @@ def health() -> dict[str, Any]:
         "assistant": llm_available(),
         "rules": len(engine().active_rules()),
         "frontend": DIST_DIR.is_dir(),
-        # Deferred upload + sheet selection + scan status are available
+        # Deferred  upload +  sheet selection + scan status are available
         "upload_gate": True,
         "size_threshold_mb": round(size_threshold_bytes(load_config()) / MB, 1),
         # The assistant's model and POST /chat/stream
@@ -682,19 +1449,33 @@ def health() -> dict[str, Any]:
         "streaming": True,
         # POST /auto-fix ("Fix all automatically" on the Recalculate step)
         "autofix": True,
+        # several files per upload, POST .../inputs and .../outside-inputs/run (app/outside_inputs.py)
+        "outside_inputs": True,
+        # a shared copy's end  date (app/expiry.py): "expires": "2026-12-15", "days_left", "expired" and
+        # its message; all None /  False for the developer version. Answered  after the date too.
+        **expiry.current().health(),
+        # GET .../instance-finder ("Find where  instances could help": the finder is not a rule)
+        "finder": True,
     }
+
+
+@app.get("/api/plain-codes")
+def plain_codes() -> dict[str, Any]:
+    """The  plain words  for every code the screens show: each rule's name (rules/plain_names.yaml) and
+    what each of Excel's error values means -- one glossary, the same as the server's (app/plain_codes.py)."""
+    return glossary()
 
 
 @app.get("/api/assistant-key")
 def assistant_key() -> dict[str, Any]:
-    """Whether a gateway key is saved, and its last 4 characters (never the key)."""
+    """Whether  a gateway  key is saved, and its last 4 characters (never the key)."""
     key = ai_key.load()
     return {"saved": key is not None, "last4": ai_key.last4(key)}
 
 
 @app.post("/api/assistant-key")
 def save_assistant_key(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """Check a pasted key with the gateway, then save it encrypted for this Windows user
+    """Check  a pasted  key with the gateway, then save it encrypted for this Windows user
     (app/ai_key.py). A key the gateway refuses is not saved."""
     key = str(payload.get("key") or "").strip()
     problem = ai_key.check_format(key)
@@ -710,10 +1491,43 @@ def save_assistant_key(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return {"saved": True, "last4": ai_key.last4(key), "message": note}
 
 
+@app.post("/api/feedback")
+def compose_feedback(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """The  message for  "Send feedback": the incident `ref` (none from the header), the user's `note`, `useAssistant` (the assistant writes the opening lines when a key
+    is saved), `sessionId` (the workbook's counts when no incident holds  them). In codes, with
+    nothing from the workbook: the screen shows it,  then copies it and opens an  email."""
+    ref = str(payload.get("ref") or "").strip()
+    incident = feedback.find(ref) if ref else None
+    note = str(payload.get("note") or "")[:2000]
+    s = SESSIONS.get(str(payload.get("sessionId") or ""))
+    ai_text = None
+    if payload.get("useAssistant", True):
+        rule = engine().get(str((incident or {}).get("rule_id") or "").split(",")[0].strip())
+        try:
+            with llm.usage_scope(_ai_sink(s) if s is not None else None):  # this call counts for the workbook too
+                ai_text = feedback.assistant_lines(incident, note, (rule or {}).get("title"))
+        except Exception:
+            ai_text = None
+    counts = None
+    if incident is None and s is not None and s.result:
+        counts = feedback.workbook_counts(_summary(s.result["workbook_analysis"]), s.size)
+    return feedback.compose(incident, note, ai_text, counts, ai_usage=dict(s.ai_usage) if s is not None else None)
+
+
 @app.post("/api/sessions")
-def create_session(file: UploadFile = File(...), mode: str = Form("plan"), defer: str = Form(""), ignore_sheets: str = Form("")) -> dict[str, Any]:
-    """Upload a workbook. The file is stored and *inspected* (sizes, sheet
+def create_session(
+    file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None),
+    mode: str = Form("plan"), defer: str = Form(""), ignore_sheets: str = Form(""),
+) -> dict[str, Any]:
+    """Upload  a workbook.  The file is stored and *inspected* (sizes, sheet
     list -- from the package alone, nothing is parsed) before anything else.
+
+    `files` (repeated, optional): every file the user picked together -- the
+    workbook and the  outside files its macros open. Without `file`, the main
+    workbook is picked  among them (the one whose macros  open outside files,
+    else the only one with  macros, else the largest workbook); the others are
+    kept as its input  files (<work>/inputs/<nn>/<name>, never versions) and
+    matched to its  import table after the scan ("outsideInputs").
 
     `defer` truthy: stop there and return `{pending: true, size}` so the
     front-end can ask about skipping sheets when the workbook is above the
@@ -722,37 +1536,166 @@ def create_session(file: UploadFile = File(...), mode: str = Form("plan"), defer
     optional `ignore_sheets` JSON list."""
     if mode not in MODE_MAP:
         raise HTTPException(status_code=422, detail=f"unknown mode {mode}")
-    name = Path(file.filename or "workbook.xlsx").name
-    if Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
+    picked = [f for f in (files or []) if f is not None and (f.filename or "").strip()]
+    if file is None and not picked:
         raise HTTPException(status_code=422, detail="upload an .xlsx, .xlsm or .xlsb file")
+    if file is not None:
+        name = Path(file.filename or "workbook.xlsx").name
+        if Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
+            raise HTTPException(status_code=422, detail="upload an .xlsx, .xlsm or .xlsb file")
+    _check_input_names([Path(f.filename or "").name for f in picked])
+    if file is None and not any(Path(f.filename or "").suffix.lower() in ALLOWED_SUFFIXES for f in picked):
+        raise HTTPException(status_code=422, detail="Pick the workbook itself (.xlsx, .xlsm or .xlsb) together with its input files.")
     sid = uuid.uuid4().hex[:12]
-    work_dir = Path(tempfile.mkdtemp(prefix="mind_ready_"))
+    try:
+        work_dir = session_store.new_folder(sid)  # <data folder>/sessions/<id>: kept between runs of the app
+        session_store.hold(sid)  # this copy of the app holds it: another  copy's list leaves it out
+    except OSError as exc:  # the data folder cannot be written: the session lives for this run only, as before
+        print(f"Could not make the session folder in the data folder ({str(exc)[:160]}): using a temporary one.", flush=True)
+        work_dir = Path(tempfile.mkdtemp(prefix="mind_ready_"))
     upload_dir = work_dir / "upload"
     upload_dir.mkdir(parents=True)
-    raw_path = upload_dir / name
-    with raw_path.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
     s = Session(id=sid, work_dir=work_dir, mode=mode)
+    received = [_save_upload(f, _input_folder(s)) for f in picked]
+    if file is not None:
+        raw_path = _save_upload(file, upload_dir)
+        main_key = outside_inputs.normalize_name(raw_path.name)
+        others = [p for p in received if outside_inputs.normalize_name(p.name) != main_key]  # the workbook sent twice is not its own input
+    else:
+        chosen, vba = _pick_main(received)
+        raw_path = upload_dir / chosen.name
+        shutil.move(str(chosen), str(raw_path))
+        s.outside_vba = vba  # read already: the scan does not read the macros again
+        others = [p for p in received if p != chosen]
+    for p in others:
+        _keep_input(s, p)
     SESSIONS[sid] = s
 
     from app.inventory import sha256_of
 
     version = _add_version(s, raw_path, "upload", "original upload", [], None, sha256_of(raw_path))
+    s.name = raw_path.name
     s.size = size_gate(raw_path, load_config())
     s.ignore_sheets = _parse_ignore(s, ignore_sheets)
+    picked_out = {"main": raw_path.name, "inputs": _inputs_public(s)}
     if str(defer).strip().lower() in ("1", "true", "yes", "on"):
         s.pending = True
-        return {"sessionId": sid, "pending": True, "mode": mode, "size": s.size, "version": version, "versions": s.versions, "scan": _scan_snapshot(s)}
-    return {"sessionId": sid, **_run_scan(s, raw_path)}
+        _save(s)
+        return {"sessionId": sid, **_pending_state(s)}
+    return {"sessionId": sid, **_run_scan(s, raw_path), **picked_out}
+
+
+def _pending_state(s: Session) -> dict[str, Any]:
+    """An  uploaded, not  yet analysed session, in the shape a deferred upload returns."""
+    return {"pending": True, "mode": s.mode, "size": s.size, "version": _current_version(s) or s.versions[-1], "versions": s.versions, "scan": _scan_snapshot(s), "main": _main_name(s), "inputs": _inputs_public(s)}
+
+
+@app.get("/api/saved-workbooks")
+def saved_workbooks() -> dict[str, Any]:
+    """The  workbooks kept  in the data folder (app/session_store.py), the last opened first: id, name,
+    when uploaded and last opened, how many versions, the file's size, whether a check result exists.
+    Nothing is loaded: the main screen  shows the list and waits. A workbook another copy of the  app
+    (another port, the same data folder)  holds open is left out: it is  that copy's to show."""
+    return {"workbooks": session_store.list_saved()}
+
+
+def _held_elsewhere(session_id: str) -> None:
+    """409  when another  copy of the app that is still running holds the session (app/session_store.py)."""
+    who = session_store.held_elsewhere(session_id) if session_store.valid_id(session_id) else None
+    if who:
+        raise HTTPException(status_code=409, detail=f"This workbook is open in {who}. Use it there, or close that copy of the app first.")
+
+
+@app.post("/api/saved-workbooks/{session_id}/open")
+def open_saved_workbook(session_id: str) -> dict[str, Any]:
+    """Load  a saved  workbook into memory under the same id and answer as GET /api/sessions/{id} does
+    (every version, the last check result, the plan, the recalculation, the plans and results of the
+    other steps), so the  screens open where they were. A workbook uploaded but never analysed  answers
+    in the shape of a deferred  upload (`pending`). A job that was running  when the app stopped shows
+    as stopped: "The app was closed while  this ran." 409 when another copy of  the app holds it."""
+    s = SESSIONS.get(session_id)
+    if s is None:
+        _held_elsewhere(session_id)
+        loaded = session_store.load(session_id, Session) if session_store.valid_id(session_id) else None
+        if loaded is None:
+            raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")
+        s, autofix = loaded
+        session_store.hold(session_id)
+        SESSIONS[session_id] = s
+        if autofix:
+            AUTOFIX[session_id] = autofix
+    s.last_opened = time.time()
+    _save(s)
+    if not s.result:
+        return {"sessionId": s.id, **_pending_state(s)}
+    return session_state(s.id)
+
+
+def _remove_saved(session_id: str) -> bool:
+    """Remove  one saved  workbook (folder and session in memory); True when a folder was there. Raises
+    409 while a step still runs on it (Run in Mind too) or when another copy of the app  holds it."""
+    s = SESSIONS.get(session_id)
+    if s is not None:
+        busy = _busy_with(s)
+        if _loop_busy(session_id):  # not in _busy_with: Run in Mind checks that itself (17  Nov 2026: also while it is  stopping)
+            busy = "Run in Mind is still running"
+        if busy and busy != "the workbook has not been analysed yet":  # an upload never scanned may go; a  running step may not
+            raise HTTPException(status_code=409, detail=f"Not removed: {busy}. Wait for it to finish, then remove it.")
+        excel_worker.release(session_id)  # an Excel that holds a version open would  keep the folder
+        SESSIONS.pop(session_id, None)
+        AUTOFIX.pop(session_id, None)
+        PREP_RUNS.pop(session_id, None)  # 17 Nov 2026: the last  prep-run and what the assistant failed on go with the workbook
+        HANDOFF_MEMO.pop(session_id, None)
+    else:
+        _held_elsewhere(session_id)
+    existed = session_store.remove(session_id) if session_store.valid_id(session_id) else False
+    if not existed and s is None:
+        raise HTTPException(status_code=404, detail="This workbook is not saved here any more.")
+    return True
+
+
+@app.delete("/api/saved-workbooks/{session_id}")
+def remove_saved_workbook(session_id: str) -> dict[str, Any]:
+    """Remove  a saved  workbook from this computer: its folder (every version and result) and the
+    session in memory. Refused while a step still runs on it (Run in Mind too), and when another
+    copy of the  app holds it."""
+    _remove_saved(session_id)
+    return {"removed": True, "id": session_id}
+
+
+@app.delete("/api/saved-workbooks")
+def remove_all_saved_workbooks() -> dict[str, Any]:
+    """Remove  every saved  workbook (1.15.0, the list's "Remove all"), except the ones another running
+    copy of the app holds open (the open.lock rule: they are not even in the list) and the ones a step
+    is  still running on here. Answers how many were removed and how  many were kept, with the
+    kept ones'  names and why."""
+    removed = 0
+    kept: list[dict[str, str]] = []
+    for row in session_store.list_saved():
+        sid = row["id"]
+        try:
+            _remove_saved(sid)
+            removed += 1
+        except HTTPException as e:
+            if e.status_code == 404:  # gone meanwhile: nothing to keep,  nothing removed by us
+                continue
+            kept.append({"id": sid, "name": str(row.get("name") or ""), "why": str(e.detail)})
+    return {"removed": removed, "kept": len(kept), "kept_workbooks": kept}
 
 
 @app.get("/api/sessions/{session_id}")
 def session_state(session_id: str) -> dict[str, Any]:
-    """The state of an analysed session, in the shape an upload returns, so the web app
+    """The  state of  an analysed session, in the shape an upload returns, so the web app
     can open it again (`/?session=<id>`, or `/model-map?session=<id>`) after a reload."""
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    return _session_public(s)
+
+
+def _session_public(s: Session) -> dict[str, Any]:
+    """An  analysed session  as GET /api/sessions/{id} gives it (17 Nov 2026: POST .../cancel answers with
+    the same, after the restore)."""
     current = next((v for v in s.versions if v["id"] == s.current_version_id), s.versions[-1])
     return {
         "sessionId": s.id,
@@ -769,40 +1712,156 @@ def session_state(session_id: str) -> dict[str, Any]:
         "prep_progress": prep_progress(s.plan_history, s.apply_history),
         "pivot_mode": s.pivot_mode,
         "pivot_modes": PIVOT_MODES,
+        "outsideInputs": _outside_public(s),
+        "main": _main_name(s),
+        "inputs": _inputs_public(s),
+        # the last recalculation, when it is the current version's (a saved workbook opened again
+        # shows its error  list under Advanced > Recalculate without recalculating)
+        "recalc": s.recalc if s.recalc and s.recalc_version_id == s.current_version_id else None,
+        # the tokens and calls the  assistant spent on this workbook (GET  .../ai-usage after a step)
+        "aiUsage": dict(s.ai_usage),
     }
+
+
+@app.get("/api/sessions/{session_id}/ai-usage")
+def ai_usage(session_id: str) -> dict[str, Any]:
+    """The  tokens and  calls the assistant spent on this workbook since it was uploaded -- counted
+    after every completed call, streamed or not, whichever step made it; saved with the workbook:
+    {aiUsage: {calls, input_tokens, output_tokens, cache_read_tokens,  cache_write_tokens},
+    line: "AI used: 12,340 tokens in 7 calls" (input + output),  or "AI not used yet on  this workbook"}."""
+    s = _session(session_id)
+    return {"aiUsage": dict(s.ai_usage), "line": llm.usage_line(s.ai_usage)}
 
 
 @app.post("/api/sessions/{session_id}/pivot-mode")
 def set_pivot_mode(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """What Prep does with the pivot tables -- "formulas" or "values" (every one blocks Mind's
+    """What  Prep does  with the pivot tables -- "formulas" or "values" (every one blocks Mind's
     converter) -- and the plan made again with it (Do everything applies the blocking actions of
     that plan)."""
     s = _session(session_id)
     mode = str(payload.get("mode") or "")
     if mode not in PIVOT_MODES:
         raise HTTPException(status_code=422, detail=f"mode must be one of {', '.join(PIVOT_MODES)}")
+    _refuse_while_changing(s)  # 17 Nov 2026: a  cancelled job's restore would put the old plan back under the  new mode
     s.pivot_mode = mode
     if s.result:
         s.plan = plan_actions(s.result["workbook_analysis"], s.result["validation_report"], s.grid_names or None, s.pivot_mode)
+    _save(s)
     return {"pivot_mode": s.pivot_mode, "plan": s.plan, "readiness": s.readiness()}
 
 
 @app.post("/api/sessions/{session_id}/analyze")
 def analyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Scan a deferred upload (or scan the current version again) with the
+    """Scan  a deferred  upload (or scan the current version again) with the
     given `ignore_sheets`. Long call: poll GET .../status meanwhile."""
     s = _session(session_id)
-    if "ignore_sheets" in payload:
-        s.ignore_sheets = _parse_ignore(s, payload.get("ignore_sheets"))
-    return {"sessionId": s.id, **_run_scan(s)}
+    _refuse_while_bringing_in(s)  # the job scans its own versions (and every sheet of the first)
+    ignore = _parse_ignore(s, payload.get("ignore_sheets")) if "ignore_sheets" in payload else None
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        if ignore is not None:
+            s.ignore_sheets = ignore  # inside the job: a cancelled  check puts the list back too
+        return {"sessionId": s.id, **_run_scan(s)}
+
+    return _job_route(s, "scan", work)
 
 
 @app.get("/api/sessions/{session_id}/status")
 def scan_status(session_id: str) -> dict[str, Any]:
-    """Where the current (or last) scan is: state pending|running|ready|error,
+    """Where  the current  (or last) scan is: state pending|running|ready|error,
     stage + title + message, in-stage fraction, overall progress, the sheet
     or rule being worked on, elapsed seconds, per-stage timings."""
     return _scan_snapshot(_session(session_id))
+
+
+def _cancel_kinds(payload: dict[str, Any]) -> frozenset[str] | None:
+    """The  kinds of  work a Cancel is for, from its body: "kind" (one), "kinds" (a list; with "kind"
+    too, both), or None for every job of the workbook. An empty list stops nothing."""
+    kind = str(payload.get("kind") or "").strip()
+    raw = payload.get("kinds")
+    if raw is None:
+        return frozenset([kind]) if kind else None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="kinds: a list of kinds of work")
+    return frozenset({str(k).strip() for k in raw if str(k or "").strip()} | ({kind} if kind else set()))
+
+
+@app.post("/api/sessions/{session_id}/cancel")
+def cancel_work(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """The  Cancel button  (17 Nov 2026). Body {"kind": "<kind>"} for one kind of work, {"kinds":
+    ["<kind>", ...]} for those kinds only (Start's Cancel: the kinds of its own steps, so a Run in Mind
+    or an  assistant's answer started elsewhere goes on), or {} for everything that  runs for this
+    workbook. Always 200 (404  for an unknown workbook, 422 when "kinds"  is not a list).
+
+    It sets the flag of every job that  has not passed its gate, ends the  Excels those jobs started
+    (only Excels this app started) and lets go of their place in the session's Excel worker; ends a
+    wait for the input files as POST .../outside-inputs/stop does; closes a waiting sign-in window;
+    then waits up to CANCEL_WAIT_S for the flagged jobs to end, and answers:
+
+    {cancelled: [kinds stopped by this call], late: [kinds whose result stands: they had passed their
+    gate, or  ended by themselves], stopping: [kinds still on their way out: look at GET .../jobs],
+    ahead: a recalculation made ahead was stopped, message, session: the workbook as GET
+    /api/sessions/{id} gives it after the restore (null while anything is still stopping, and before
+    the first check), mind: the project a stopped Run in Mind left in Mind, or null}."""
+    s = _session(session_id)
+    kinds = _cancel_kinds(payload)
+    found = cancel.request(s.id, kinds)
+    flagged: list[cancel.Job] = list(found.get("flagged") or [])
+    cancelled: list[str] = []
+    late = [j.kind for j in found.get("late") or []]
+    if (kinds is None or "outside" in kinds) and (s.outside_run or {}).get("state") == "waiting_for_inputs":
+        _end_wait(s)  # the wait is no job: it held nothing, so it is simply over (state "stopped")
+        cancelled.append("outside")
+    sign_in_closed = False
+    if (kinds is None or "mind" in kinds) and MIND_SIGN_IN["state"] == "waiting":
+        MIND_SIGN_IN["stop"] = True  # the Edge window closes on its own thread
+        sign_in_closed = True
+    deadline = time.time() + CANCEL_WAIT_S
+    for job in flagged:
+        job.ended.wait(max(0.0, deadline - time.time()))
+    stopping: list[str] = []
+    for job in flagged:
+        if not job.ended.is_set():
+            stopping.append(job.kind)
+        elif job.outcome == "cancelled":
+            cancelled.append(job.kind)
+        else:  # it finished, or failed, before it saw  the flag: its result stands
+            late.append(job.kind)
+    ahead = bool(found.get("ahead"))
+    mind = _mind_fields(s.id, MIND_LOOPS.get(s.id)) if "mind" in cancelled else None
+    if stopping:
+        message = "Stopping…"
+    elif mind is not None:
+        message = mind["message"] or _CANCELLED
+    elif cancelled or ahead:
+        message = _CANCELLED
+    elif sign_in_closed:
+        message = "Stopped. Nothing was uploaded to Mind."
+    elif late:
+        message = "It had already finished."
+    else:
+        message = "Nothing was running."
+    return {
+        "cancelled": cancelled, "late": late, "stopping": stopping, "ahead": ahead, "message": message,
+        # never  while a job is still on its  way out: its  restore has  not happened yet
+        "session": _session_public(s) if s.result and not stopping else None,
+        "mind": mind["project"] if mind is not None else None,
+    }
+
+
+@app.get("/api/sessions/{session_id}/jobs")
+def running_jobs(session_id: str) -> dict[str, Any]:
+    """What  is running  for this workbook right now (17 Nov 2026), oldest first: each job's kind, its
+    title in plain words ("Still working: {title}."), when it started, and whether Cancel was already
+    pressed for it (`stopping`)."""
+    s = _session(session_id)
+    now = time.time()
+    return {"jobs": [
+        {"kind": j.kind, "title": _JOB_TITLES.get(j.kind, "Working"), "started": j.started, "elapsed_s": round(now - j.started, 1), "stopping": j.flag.is_set()}
+        for j in cancel.jobs(s.id)
+    ]}
 
 
 @app.post("/api/sessions/{session_id}/reanalyze")
@@ -812,38 +1871,57 @@ def reanalyze(session_id: str, payload: dict[str, Any] = Body(default={})) -> di
     vid = payload.get("versionId") or s.current_version_id
     if vid not in s.paths:
         raise HTTPException(status_code=404, detail=f"unknown version {vid}")
-    s.current_version_id = vid
-    return _run_scan(s, s.paths[vid])
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        s.current_version_id = vid  # inside  the job:  a cancelled check puts the pointer back
+        return _run_scan(s, s.paths[vid])
+
+    return _job_route(s, "scan", work)
 
 
-def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool = False) -> dict[str, Any]:
-    """Write `ops` into a fresh copy of the current version, register the result as the next
+def _apply_and_version(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool = False, save: bool = True) -> dict[str, Any]:
+    """Write  `ops` into  a fresh copy of the current version, register the result as the next
     version, re-analyse it when asked, and report the outcome (the shape every Apply returns).
-    One Apply at a time per session: a second one is refused while the first runs."""
+    One Apply at a time per  session: a second one is refused while the first runs.
+
+    `save` False  (17 Nov 2026): nothing is written  to the state file here -- the  caller judges the
+    new version first and saves, or restores. Nothing is  saved after a Cancel either: the job's
+    restore  does the saving."""
     if not s.apply_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="an Apply is already running for this session")
     try:
         return _apply_and_version_locked(s, ops, source, who, reanalyze, minor)
+    except cancel.Cancelled:
+        # the Apply had finished ("done") and the Cancel came during its scan: the version it reports is going
+        if (s.apply_status or {}).get("state") not in (None, "cancelled"):
+            _apply_finish(s, cancelled=True)
+        raise
     finally:
         s.apply_lock.release()
+        if save and not cancel.flagged():
+            _save(s)  # the new version (its label settled after the check that it opens), the gauge
 
 
 def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str, who: str, reanalyze: bool, minor: bool) -> dict[str, Any]:
     before = _before_apply(s)
     reanalyze_wanted = reanalyze
     with perf_stage("apply_operations", file=s.current_path.name, operations=len(ops), source=source):
-        # With a re-analysis to run, the check that the new file opens in Excel (a second
+        # With  a re-analysis  to run, the check that the new file opens in Excel (a second
         # Excel, ~40 s on a 30 MB model) runs alongside it instead of before it
         res = _tracked_apply(s, ops, reanalyze, defer_verify=reanalyze_wanted, source=source)
     output = Path(res["output_path"])
     finish = res.pop("finish", None)
     checker: threading.Thread | None = None
     if finish is not None:
+        job = cancel.current()  # 17 Nov 2026: the thread  below works for the same job (a new thread has no  context)
+
         def check() -> None:
             try:
-                with perf_stage("verify_opens_alongside", file=output.name):
+                with cancel.bind(job), perf_stage("verify_opens_alongside", file=output.name):
                     finish()
-            except Exception as exc:  # the check itself failed: the version stays unverified
+            except cancel.Cancelled:
+                pass  # the Apply's own thread sees the  flag and puts the session back
+            except Exception as exc:  # the check  itself failed: the version stays unverified
                 res.setdefault("warnings", []).append(f"The check that the file opens in Excel did not run: {str(exc)[:160]}")
 
         checker = threading.Thread(target=check, name=f"verify-{s.id}", daemon=True)
@@ -853,7 +1931,12 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
         verified = res.get("verified_opens_in_excel")
         return f"{who}: {len(res.get('applied', []))} change(s) via {'Excel' if res.get('method') == 'excel_com' else 'openpyxl'} · {'verified' if verified else 'unverified' if verified is None else 'FAILED TO OPEN'}"
 
-    version = _add_version(s, output, source, label_of(), res.get("applied", []), res.get("verified_opens_in_excel"), res["change_log_entry"]["output_sha256"], minor=minor)
+    try:
+        version = _add_version(s, output, source, label_of(), res.get("applied", []), res.get("verified_opens_in_excel"), res["change_log_entry"]["output_sha256"], minor=minor)
+    except cancel.Cancelled:
+        if checker is not None:
+            checker.join()  # 17 Nov 2026: it leaves by  itself (its Excel was ended, or it  met the flag): nothing is left running
+        raise
     reanalyzed = reanalyze and res["status"] in ("APPLIED", "PARTIAL")
     scanned: dict[str, Any] = {}
     scan_error: str | None = None
@@ -876,6 +1959,9 @@ def _apply_and_version_locked(s: Session, ops: list[dict[str, Any]], source: str
         out["scan_error"] = scan_error
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
+    if res.get("failed"):
+        step = {"loop": "Build the Mind loop", "instances": "Build the Mind instances", "assistant": "Assistant", "formula": "Formula fix"}.get(source, "Fix the formulas")
+        out.update(_problem_fields(_report_problem(None, step, s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
     return out
 
 
@@ -887,8 +1973,8 @@ def apply(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any
     action_ids = {o.get("action_id") for o in ops}
     source = "assistant" if action_ids == {"assistant"} else "formula" if action_ids == {"formula_replacement"} else "prep"
     who = {"assistant": "Assistant", "formula": "Formula fix", "prep": "Prep"}[source]
-    minor = payload.get("versionStep") == "minor"  # a fix on the Recalculate step
-    return _apply_and_version(s, ops, source, who, bool(payload.get("reanalyze", True)), minor=minor)
+    minor = payload.get("versionStep") == "minor"  # a  fix on  the Recalculate step
+    return _job_route(s, "apply", lambda _job: _apply_and_version(s, ops, source, who, bool(payload.get("reanalyze", True)), minor=minor))
 
 
 @app.post("/api/sessions/{session_id}/suggest")
@@ -901,21 +1987,23 @@ def suggest(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, A
     if finding is None:
         raise HTTPException(status_code=404, detail=f"no finding for rule {rule_id}")
     formula = next((x["formula"] for x in s.result["workbook_analysis"]["workbooks"][0]["formulas"] if x["sheet"] == sheet and x["cell"] == cell), "")
-    res = suggest_formula_fix(finding, formula)
+    with _ai_scope(s):
+        res = suggest_formula_fix(finding, formula)
     return {"suggestion": res.get("suggestion"), "formula": extract_formula(res.get("suggestion")), "message": res.get("message")}
 
 
 @app.post("/api/sessions/{session_id}/grid-names")
 def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Ask the assistant to name the grids whose deterministic name carries no
+    """Ask  the assistant  to name the grids whose deterministic name carries no
     meaning ('Cashflows C4', 'I'), and fold the answers into the prep plan.
 
     Nothing is written: the names only change what `create_grid_titles` would
-    *propose*, which the user still reviews and approves. `apply: false`
-    returns the comparison without changing the session's plan."""
+    *propose*, which the  user still reviews and approves. `apply: false`
+    returns the comparison without changing  the session's plan."""
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    _refuse_while_changing(s)  # 17 Nov 2026: a  cancelled job's restore would drop the names  (their tokens paid)
     analysis = s.result["workbook_analysis"]
     labels = standalone_labels(analysis)
     targets = []
@@ -928,95 +2016,546 @@ def grid_names(session_id: str, payload: dict[str, Any] = Body(default={})) -> d
     if not targets:
         return {"available": True, "names": [], "message": "every grid already has a meaningful name", "applied": False}
     contexts = [build_grid_context(analysis, g) for g, _, _ in targets]
-    res = suggest_names(contexts)
-    if not res["available"]:
-        return {"available": False, "names": [], "message": res.get("message"), "applied": False}
-    proposed = res["names"]
-    rows = [
-        {
-            "grid": f'{g["sheet"]}!{g["ref"]}',
-            "sheet": g["sheet"],
-            "ref": g["ref"],
-            "size": f'{g["n_rows"]}x{g["n_cols"]}',
-            "current": g.get("name"),
-            "deterministic": deterministic,
-            "deterministic_source": source,
-            "suggested": proposed.get(f'{g["sheet"]}!{g["ref"]}'),
-        }
-        for g, deterministic, source in targets
-    ]
-    applied = bool(payload.get("apply", True))
-    if applied:
-        s.grid_names.update({k: v for k, v in proposed.items() if v})
-        s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
-    return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
+
+    def work(job: cancel.Job) -> dict[str, Any]:
+        with _ai_scope(s):
+            res = suggest_names(contexts)
+        cancel.check()  # 17 Nov 2026: a call given up on a  Cancel is not "the assistant is not  there"
+        if not res["available"]:
+            return {"available": False, "names": [], "message": res.get("message"), "applied": False}
+        proposed = res["names"]
+        rows = [
+            {
+                "grid": f'{g["sheet"]}!{g["ref"]}',
+                "sheet": g["sheet"],
+                "ref": g["ref"],
+                "size": f'{g["n_rows"]}x{g["n_cols"]}',
+                "current": g.get("name"),
+                "deterministic": deterministic,
+                "deterministic_source": source,
+                "suggested": proposed.get(f'{g["sheet"]}!{g["ref"]}'),
+            }
+            for g, deterministic, source in targets
+        ]
+        applied = bool(payload.get("apply", True))
+        if applied:
+            _commit_alone(job)  # the gate before the one write: cancelled before it, the names and the plan stay as they were
+            s.grid_names.update({k: v for k, v in proposed.items() if v})
+            s.plan = plan_actions(analysis, s.result["validation_report"], s.grid_names or None, s.pivot_mode)
+            _save(s)
+        return {"available": True, "names": rows, "message": res.get("message"), "applied": applied, "plan": s.plan if applied else None, "readiness": s.readiness() if applied else None}
+
+    return _job_route(s, "names", work)
 
 
 # --- the app runs itself against real Mind ------------------------------------
-MIND_LOOPS: dict[str, dict[str, Any]] = {}  # session id -> {state, events, report, started, work_dir}
+MIND_LOOPS: dict[str, dict[str, Any]] = {}  # session  id ->  {state, events, report, started, work_dir}
 _MIND_LOOP_LOCK = threading.Lock()
 
 
+# 17  Nov 2026:  a cancelled run says "cancelling" until its thread has left Mind, then "cancelled": the
+# Edge profile takes one browser at a time, so "cancelling" keeps Mind taken exactly as "running" does
+_MIND_BUSY_STATES = ("running", "cancelling")
+# the  project "Delete  it from Mind" is deleting right now (set and cleared under _MIND_LOOP_LOCK)
+_MIND_DELETE: dict[str, Any] = {"name": None}
+
+
 def _loop_running() -> str | None:
+    """The  session whose  Run in Mind is running or still stopping (one loop for the whole app)."""
     for sid, st in MIND_LOOPS.items():
-        if st.get("state") == "running":
+        if st.get("state") in _MIND_BUSY_STATES:
             return sid
     return None
 
 
+def _loop_busy(sid: str) -> bool:
+    """This  session's Run  in Mind is running or still stopping."""
+    return (MIND_LOOPS.get(sid) or {}).get("state") in _MIND_BUSY_STATES
+
+
+def _mind_in_use() -> str | None:
+    """What  holds the  Edge profile of Mind right now -- "loop" (Run in Mind, running or stopping),
+    "waiting" (the sign-in window), "checking" (the sign-in check) or "delete" (a project being
+    deleted) -- or None. Asked, under  _MIND_LOOP_LOCK, by every route that opens that profile."""
+    if _loop_running():
+        return "loop"
+    if MIND_SIGN_IN["state"] in ("waiting", "checking"):
+        return str(MIND_SIGN_IN["state"])
+    if _MIND_DELETE["name"]:
+        return "delete"
+    return None
+
+
+_MIND_BUSY = "Mind is busy. Try again in a moment."
+
+
+# ---  the Mind  projects the app made (17 Nov 2026) --------------------------------------------------
+# <data folder>\mind_projects.json: {name: {session, folder, status, ran, made, cancelled, deleted, tries}}.
+# A cancelled Run in Mind keeps its half-made project and offers "Delete it from  Mind"; the list
+# outlives the next run (which replaces MIND_LOOPS[sid]), a restart  and Remove. Read and written
+# only here,  under _MIND_LOOP_LOCK.
+_MIND_LIVE = ("creating", "created", "model added", "run")  # a  project that  is, or may be, in Mind
+
+
+def _mind_projects_path() -> Path:
+    return Path(SETTINGS.data_folder) / "mind_projects.json"  # read  at call  time: the tests point it at a folder of their own
+
+
+def _mind_projects_read() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(_mind_projects_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def _mind_projects_write(data: dict[str, dict[str, Any]]) -> None:
+    path = _mind_projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)  # written  whole, then  renamed: a stop in the middle leaves the previous file
+
+
+def _mind_project_note(sid: str, folder: str, e: dict[str, Any]) -> None:
+    """A  `project` event  of the loop (app/mind_loop.py sends one at every change of a project's
+    state): added to the file, or updated. Never raises: the list must not stop a run."""
+    name = str(e.get("project") or "")
+    if not name:
+        return
+    try:
+        with _MIND_LOOP_LOCK:
+            data = _mind_projects_read()
+            entry = data.get(name) or {"session": sid, "folder": folder, "status": "not created", "ran": False,
+                                       "made": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "cancelled": False, "deleted": None, "tries": 0}
+            entry.update(status=str(e.get("status") or entry["status"]), ran=bool(e.get("ran")))
+            if entry["status"] == "deleted":  # the loop removed it by  itself (a project that was never run)
+                entry["deleted"] = "deleted"
+            data[name] = entry
+            _mind_projects_write(data)
+    except Exception as exc:
+        print(f"The list of Mind projects could not be written: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+
+
+def _mind_projects_cancelled(names: list[str]) -> None:
+    """The  run was  cancelled: its newest project that is, or may be, in Mind is the one the screens
+    offer to delete (`cancelled`)."""
+    with _MIND_LOOP_LOCK:
+        data = _mind_projects_read()
+        for name in reversed(names):
+            entry = data.get(name)
+            if entry and entry.get("status") in _MIND_LIVE and entry.get("deleted") is None:
+                entry["cancelled"] = True
+                _mind_projects_write(data)
+                return
+
+
+def _mind_project_public(name: str, entry: dict[str, Any]) -> dict[str, Any]:
+    from app import mind_client as mc
+
+    return {"name": name, "status": entry.get("status"), "ran": bool(entry.get("ran")), "deleted": entry.get("deleted"), "url": mc.MAIN_URL}
+
+
+def _mind_fields(sid: str, st: dict[str, Any] | None) -> dict[str, Any]:
+    """What  GET .../mind-loop  says about the projects (also when idle): `project` (the newest project
+    of this run that is, or may be, in Mind), `kept` (this workbook's projects from cancelled runs
+    that are still in Mind:  each gets a "Delete it from Mind" button), `earlier` (other projects  this
+    run left in Mind: earlier rounds  that were run) and the `message` of  a stopped run."""
+    from app import mind_client as mc
+
+    with _MIND_LOOP_LOCK:
+        data = _mind_projects_read()
+    made = [n for n in ((st or {}).get("projects") or []) if (data.get(n) or {}).get("status") in _MIND_LIVE]
+    project = _mind_project_public(made[-1], data[made[-1]]) if made else None
+    state = (st or {}).get("state")
+    message = None
+    if state == "cancelling":
+        message = "Stopping…"
+    elif state == "cancelled":
+        if project is None:
+            message = "Stopped. Nothing was uploaded to Mind."
+        elif project["deleted"] == "deleted":  # deleted since, by the person: never "is still in  Mind"
+            message = f"Stopped. The project {project['name']} was deleted from Mind."
+        elif project["deleted"] is not None:
+            message = f"Stopped. The project {project['name']} is not in Mind."
+        elif project["status"] == "creating":
+            message = f"Stopped. A project named {project['name']} may be in Mind."
+        else:
+            message = f"Stopped. The project {project['name']} is still in Mind."
+    return {
+        "project": project,
+        # only names the delete route would take:  this workbook's, with the sandbox prefix
+        "kept": [_mind_project_public(n, e) for n, e in data.items()
+                 if e.get("session") == sid and e.get("cancelled") and e.get("deleted") is None and n.startswith(mc.PROJECT_PREFIX)],
+        "earlier": [n for n in made[:-1] if data[n].get("deleted") is None],
+        "message": message,
+    }
+
+
+def _busy_with(s: Session) -> str | None:
+    """What  is still  changing this session's workbook, in words (None = nothing): Run in Mind must
+    wait for it, or it would upload the version before that change."""
+    # 17 Nov 2026: the registered job that changes  the workbook first -- it stays registered until
+    # after its restore, when  its own status already says how  it ended
+    job = cancel.changing(s.id)
+    if job is not None:
+        return _BUSY_WORDS.get(job.kind, "changes are still being written")
+    if (s.outside_run or {}).get("state") == "running":
+        return "the outside files are still being brought in"
+    if (s.next_quarter or {}).get("state") == "running":
+        # its import macro runs in an  Excel of its own, from the grids of the line as  they were at its start
+        return "next quarter's Mind input files are still being made"
+    if (AUTOFIX.get(s.id) or {}).get("state") == "running":
+        return "Fix all issues is still running"
+    if (PREP_RUNS.get(s.id) or {}).get("state") == "running":  # 17 Nov 2026:  the prep-run job (its rounds, the assistant's fixes)
+        return _BUSY_WORDS["prep"]
+    if s.id in RECALCULATING:
+        return "a recalculation is still running"
+    if (s.apply_status or {}).get("state") == "running" or s.apply_lock.locked():
+        return "changes are still being written"
+    if (s.scan or {}).get("state") == "running" or s.lock.locked() or s.pending:
+        return "the workbook has not been analysed yet" if s.pending and not s.lock.locked() else "the workbook is still being analysed"
+    return None
+
+
+def _current_version(s: Session) -> dict[str, Any] | None:
+    return next((v for v in s.versions if v["id"] == s.current_version_id), None)
+
+
+def _version_public(s: Session) -> dict[str, Any]:
+    v = _current_version(s) or {}
+    return {"id": s.current_version_id, "label": v.get("label"), "file_name": v.get("file_name") or s.current_path.name}
+
+
+def _mind_run_estimate(s: Session, use_assistant: bool, run_model: bool, check_numbers: bool, chosen: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        mb = Path(s.current_path).stat().st_size / 2**20
+    except OSError:
+        mb = 0.0
+    scan_s = None
+    if (s.scan or {}).get("state") == "ready":
+        scan_s = sum(float(x.get("seconds") or 0) for x in s.scan.get("stages", []) if x.get("stage") != "convert") or None
+    wbs = ((s.result or {}).get("workbook_analysis") or {}).get("workbooks") or [{}]
+    formulas = len(wbs[0].get("formulas") or [])
+    ops = sum(int(a.get("count") or 0) for a in chosen)
+    return estimate_mind_run(mb, scan_s, formulas, ops, use_assistant=use_assistant, check_numbers=check_numbers, run_model=run_model,
+                             inputs=len(_mind_input_files(_mind_inputs_dir_for(s))))
+
+
+def _mind_inputs_dir_for(s: Session, version_id: str | None = None) -> str | None:
+    """The  CSV folder  of the Mind inputs of a version's line (default: the current one): the folder the
+    bring-in job made for the newest "mind_inputs" version the line goes through; None without one."""
+    for v in reversed(_lineage(s, version_id or s.current_version_id)):
+        folder = s.mind_inputs_dirs.get(v["id"])
+        if folder:
+            return folder if Path(folder).is_dir() else None
+    return None
+
+
+def _mind_input_files(folder: str | None) -> list[str]:
+    """The  Mind inputs  (CSV / TAB .txt files) in a folder, by name."""
+    if not folder or not Path(folder).is_dir():
+        return []
+    return sorted(p.name for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in (".csv", ".txt"))
+
+
+def _mind_choices(s: Session) -> list[dict[str, Any]]:
+    """The  changes Run  in Mind can make before it uploads: the actions of the current version's plan
+    that have something to do, each ticked (default_on) as the loop would by default."""
+    return [
+        {"id": a["id"], "title": a.get("title") or a["id"], "count": int(a.get("count") or 0), "default_on": bool(a.get("default_on")), "level": a.get("level")}
+        for a in (s.plan or []) if int(a.get("count") or 0) > 0
+    ]
+
+
+@app.get("/api/sessions/{session_id}/mind-loop/options")
+def mind_loop_options(session_id: str, use_assistant: bool = True, run_model: bool = True) -> dict[str, Any]:
+    """What  Run in  Mind will upload (always the session's current version), the changes it can make
+    first (ticked as the loop would by default), what must finish first (busy) and the time estimate."""
+    s = _session(session_id)
+    choices = _mind_choices(s)
+    newest = max(s.versions, key=lambda v: (v.get("created_at") or "", v.get("major", 0), v.get("minor", 0)))["id"] if s.versions else None
+    return {
+        "version": _version_public(s),
+        "newest_version_id": newest,
+        "busy": _busy_with(s),
+        "choices": choices,
+        "estimate": _mind_run_estimate(s, use_assistant, run_model, True, [c for c in choices if c["default_on"]]),
+        # the Mind inputs  uploaded through Mind's Inputs window before the run (the outside files)
+        "inputs": _mind_input_files(_mind_inputs_dir_for(s)),
+    }
+
+
 @app.post("/api/sessions/{session_id}/mind-loop")
 def start_mind_loop(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Start the autonomous run-in-Mind loop on the session's current version, in
+    """Start  the autonomous  run-in-Mind loop on the session's current version, in
     a background thread. One loop at a time (it owns the Excel session and the
-    Mind browser profile). Poll GET for progress."""
+    Mind browser profile). Poll GET for progress. Refused (409) while  something
+    is still changing the workbook: it would upload the version before  that.
+
+    `actions` (optional): the ids of the  changes to make before uploading. Every
+    other change  of the plan is left out, and the loop never switches  it on by
+    itself; an empty list uploads  the version as it is. Without `actions` the
+    loop chooses as before (`enable` / `disable`)."""
     s = _session(session_id)
     if s.current_path.suffix.lower() not in (".xlsx", ".xlsm"):
         raise HTTPException(status_code=422, detail="Mind accepts .xlsx / .xlsm only")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}. Run in Mind uploads the latest version, so start it once that has finished.")
+    if s.outside_inputs and _brought_in_state(s)[1] == _FILES_CHANGED:
+        # the version (and its Mind inputs) hold the data of the files picked before: never uploaded as current
+        raise HTTPException(status_code=409, detail="The input files changed since they were brought in: Run in Mind would use the data of the old files. "
+                                                    "Bring them in again first (the Outside files card on the Custom screen, or Go on the Basic screen), then run in Mind.")
+    # the outside files made Mind inputs for this line: uploaded through Mind's Inputs window after
+    # the model is added and before the run (checked before the loop is registered as running)
+    inputs_dir = _mind_inputs_dir_for(s)
+    if inputs_dir and "inputs_dir" not in getattr(LoopConfig, "__dataclass_fields__", {}):
+        raise HTTPException(status_code=409, detail="This copy of Mind Ready cannot upload the Mind inputs yet: Run in Mind would run the model without the outside files.")
+    enable = [str(a) for a in payload.get("enable", [])]
+    disable = [str(a) for a in payload.get("disable", [])]
+    chosen_ids: list[str] | None = None
+    if isinstance(payload.get("actions"), list):
+        chosen_ids = [str(a) for a in payload["actions"]]
+        plan_ids = {a["id"] for a in (s.plan or [])}
+        enable = sorted(set(chosen_ids) & plan_ids)
+        disable = sorted(plan_ids - set(chosen_ids))
+    use_assistant = bool(payload.get("useAssistant", True))
+    run_model = bool(payload.get("runModel", True))
+    check_numbers = bool(payload.get("checkNumbers", True))
+    max_iterations = int(payload.get("maxIterations", 4))
+    choices = _mind_choices(s)
+    chosen = [c for c in choices if (c["id"] in chosen_ids if chosen_ids is not None else c["default_on"])]
+    estimate = _mind_run_estimate(s, use_assistant, run_model, check_numbers, chosen)
+    skip_mind = bool(payload.get("skipMind", False))
     with _MIND_LOOP_LOCK:
         busy = _loop_running()
         if busy:
             raise HTTPException(status_code=409, detail=f"a Mind loop is already running (session {busy})")
+        in_use = None if skip_mind else _mind_in_use()  # a run  that never opens Mind needs no free Edge profile
+        if in_use in ("waiting", "checking"):
+            raise HTTPException(status_code=409, detail="Finish signing in to Mind first (the Edge window), then start Run in Mind")
+        if in_use:  # 17 Nov 2026: a project is being deleted from Mind
+            raise HTTPException(status_code=409, detail=_MIND_BUSY)
         work = s.work_dir / "mind_loop" / time.strftime("%Y%m%d_%H%M%S")
-        state: dict[str, Any] = {"state": "running", "events": [], "report": None, "started": time.time(), "work_dir": str(work), "error": None}
+        state: dict[str, Any] = {
+            "state": "running", "events": [], "report": None, "started": time.time(), "work_dir": str(work), "error": None,
+            "stage": None, "stage_started": time.time(), "iteration": 0, "max_iterations": max_iterations,
+            "estimate": estimate, "finished": None, "version": _version_public(s), "actions": chosen_ids,
+            "inputs": _mind_input_files(inputs_dir),
+            "projects": [], "message": None,  # 17 Nov 2026: the Mind projects of this run, oldest first (their state: mind_projects.json)
+        }
         MIND_LOOPS[session_id] = state
-    cfg = LoopConfig(
-        source=s.current_path,
-        work_dir=work,
-        max_iterations=int(payload.get("maxIterations", 4)),
-        use_assistant=bool(payload.get("useAssistant", True)),
-        run_model=bool(payload.get("runModel", True)),
-        check_numbers=bool(payload.get("checkNumbers", True)),
-        enable=list(payload.get("enable", [])),
-        disable=list(payload.get("disable", [])),
-        delete_projects=bool(payload.get("deleteProjects", True)),
-        skip_mind=bool(payload.get("skipMind", False)),
-    )
+        # the job begins before the thread starts, so a Cancel in the first millisecond finds it. Its
+        # on_flag runs under the registry's lock, and only for a job neither committed nor ended.
+        job = _begin_job(s, "mind", on_flag=lambda: state.update(state="cancelling", message="Stopping…"))
 
     def progress(e: dict[str, Any]) -> None:
-        state["events"].append({"t": time.time(), **e})
+        now = time.time()
+        if e.get("event") == "iteration" and e.get("n"):
+            state["iteration"] = int(e["n"])
+        stage = e.get("stage")
+        if stage and stage != state.get("stage"):
+            state["stage"], state["stage_started"] = stage, now
+        if e.get("event") == "project" and e.get("project"):
+            # 17 Nov 2026: every change of a Mind project's state is written down, so that after a Cancel
+            # (and after a restart)  the app can still say  what Mind may hold and offer to  delete it
+            if e["project"] not in state["projects"]:
+                state["projects"].append(str(e["project"]))
+            _mind_project_note(session_id, folder, e)
+        state["events"].append({"t": now, **e})
 
     def worker() -> None:
+        # 17 Nov  2026: how  it ended is decided first (a set flag wins over any error), the final word is
+        # written in the finally whatever happened, and the job is ended last
+        final = "error"
         try:
             excel_worker.release(s.id)  # one Excel per session
-            state["report"] = run_loop(cfg, progress)
-            state["state"] = "done"
-        except Exception as exc:  # the thread must never die silently
-            state["error"] = str(exc)[:300]
-            state["state"] = "error"
-            progress({"event": "done", "verdict": "error", "message": f"loop crashed: {exc}"[:300]})
+            report = run_loop(cfg, progress)
+            job.commit()  # the gate:  a Cancel after it finds the run finished and leaves "done"
+            state["report"] = report
+            final = "done"
+        except cancel.Cancelled:
+            final = "cancelled"
+        except Exception as exc:  # the  thread must never die silently
+            if job.flag.is_set():
+                final = "cancelled"
+            else:
+                state["error"] = str(exc)[:300]
+                state.update(_problem_fields(_report_problem(exc, "Run in Mind", s)))
+                progress({"event": "done", "verdict": "error", "message": f"loop crashed: {exc}"[:300]})
+        finally:
+            state["finished"] = time.time()
+            if final == "cancelled":
+                with contextlib.suppress(Exception):
+                    _mind_projects_cancelled(state["projects"])  # the project  is kept: the screens offer "Delete it  from Mind"
+            state.update(state=final, message=None)
+            cancel.end(job, final)
+            # once more, after the end: a first Cancel that landed  between the two lines above wrote
+            # "cancelling" over  the final word, and no on_flag can come after cancel.end
+            state.update(state=final, message=None)
 
-    threading.Thread(target=worker, name=f"mind-loop-{session_id}", daemon=True).start()
-    return {"state": "running", "work_dir": str(work)}
+    try:
+        from app import mind_client as mc
+
+        folder = mc.SANDBOX_FOLDER
+        cfg = LoopConfig(
+            source=s.current_path,
+            work_dir=work,
+            max_iterations=max_iterations,
+            use_assistant=use_assistant,
+            run_model=run_model,
+            check_numbers=check_numbers,
+            enable=enable,
+            disable=disable,
+            delete_projects=bool(payload.get("deleteProjects", True)),
+            skip_mind=skip_mind,
+            **({"inputs_dir": Path(inputs_dir)} if inputs_dir else {}),
+        )
+        folder = str(getattr(cfg, "folder", None) or folder)  # where its projects are made, and deleted from
+        _ai_thread(s, worker, f"mind-loop-{session_id}", job=job).start()
+    except BaseException:  # the thread never started: nothing stays "running", no job stays registered
+        cancel.end(job, "error")
+        state.update(state="error", message=None, error="the run could not start", finished=time.time())
+        raise
+    return {"state": "running", "work_dir": str(work), "version": state["version"], "estimate": estimate}
+
+
+# --- signing in to Mind (the browser profile the loop uses) ------------------------------
+# 19 Nov 2026: `detail` is the raw error of a start that failed (never on a screen: Send feedback only);
+# `feedback_ref` the incident written for  it.
+MIND_SIGN_IN: dict[str, Any] = {"state": "idle", "message": None, "started": None, "finished": None, "stop": False, "checked": None,
+                                "detail": None, "feedback_ref": None}
+
+
+def _sign_in_public() -> dict[str, Any]:
+    from app import mind_client as mc
+
+    sess = mc.load_session()
+    st = MIND_SIGN_IN
+    return {"state": st["state"], "message": st["message"], "last_login": sess.get("last_login"), "checked": st.get("checked"),
+            "elapsed_s": round((st.get("finished") or time.time()) - st["started"]) if st.get("started") else None,
+            "detail": st.get("detail"), "feedback_ref": st.get("feedback_ref"), "kept_in": str(mc.PROFILE_DIR)}
+
+
+@app.get("/api/mind/sign-in")
+def mind_sign_in_status(check: bool = False) -> dict[str, Any]:
+    """The  Mind sign-in:  state (idle | waiting = the Edge window is open | done | failed), its last
+    message, when the last sign-in was saved. `check=true` also loads Mind headless with the saved
+    sign-in (10-40  s) and says whether it still works (`checked`: {signed_in, at})."""
+    if check:
+        with _MIND_LOOP_LOCK:
+            in_use = _mind_in_use()  # 17 Nov  2026: one question for every route  that opens the Edge profile
+            if in_use == "delete":
+                raise HTTPException(status_code=409, detail=_MIND_BUSY)
+            if in_use:
+                raise HTTPException(status_code=409, detail="Mind is in use (Run in Mind or the sign-in window): check again when it has finished")
+            MIND_SIGN_IN["state_before_check"] = MIND_SIGN_IN["state"]
+            MIND_SIGN_IN["state"] = "checking"
+        try:
+            from app import mind_client as mc
+
+            res = mc.is_authenticated()
+            MIND_SIGN_IN["checked"] = {"signed_in": bool(res.get("authenticated")), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        except Exception as exc:  # no Edge, no  Playwright driver...
+            MIND_SIGN_IN["checked"] = {"signed_in": False, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": f"{type(exc).__name__}: {exc}"[:200]}
+        finally:
+            MIND_SIGN_IN["state"] = MIND_SIGN_IN.pop("state_before_check", "idle")
+    return _sign_in_public()
+
+
+@app.post("/api/mind/sign-in")
+def mind_sign_in_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Open  Edge (visible)  on Mind with the app's profile and wait in the background for the user to
+    sign in (app/mind_client.sign_in). Poll GET. `{"stop": true}` closes a waiting window."""
+    if payload.get("stop"):
+        MIND_SIGN_IN["stop"] = True
+        return _sign_in_public()
+    with _MIND_LOOP_LOCK:
+        in_use = _mind_in_use()
+        if in_use == "loop":
+            raise HTTPException(status_code=409, detail="Run in Mind is using Mind right now: sign in when it has finished")
+        if in_use == "waiting":  # 19 Nov 2026: the sentence the screens  use for it (app/mind_client.py)
+            raise HTTPException(status_code=409, detail="The app's Edge window is already open. Close it (look on the taskbar), then press Sign in to Mind again.")
+        if in_use == "checking":
+            raise HTTPException(status_code=409, detail="The sign-in is being checked right now. Press Sign in to Mind again in a moment.")
+        if in_use:  # 17 Nov 2026: a project is being deleted  from Mind
+            raise HTTPException(status_code=409, detail=_MIND_BUSY)
+        MIND_SIGN_IN.update(state="waiting", message="Opening Edge on Mind...", started=time.time(), finished=None, stop=False, detail=None, feedback_ref=None)
+
+    def tell(message: str) -> None:
+        MIND_SIGN_IN["message"] = message
+
+    def worker() -> None:
+        from app import mind_client as mc
+
+        try:
+            res = mc.sign_in(timeout_s=int(payload.get("timeout_s", 600)), progress=tell, should_stop=lambda: bool(MIND_SIGN_IN["stop"]))
+            if res.get("ok"):
+                MIND_SIGN_IN.update(state="done", message="Signed in to Mind.", checked={"signed_in": True, "at": res.get("last_login")})
+            else:
+                MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {res.get('reason')}.")
+        except Exception as exc:  # no Edge, the profile in  use...
+            raw = f"{type(exc).__name__}: {exc}"[:2000]
+            if mc.closed_while_open(exc):
+                MIND_SIGN_IN.update(state="failed", message=f"Not signed in: {mc.CLOSED_BEFORE_SIGN_IN}.", detail=raw)
+            else:
+                ref = None
+                try:
+                    ref = _report_problem(exc, "Sign in to Mind").get("ref")
+                except Exception:  # the report must never be what fails  the sign-in
+                    ref = None
+                MIND_SIGN_IN.update(state="failed", message=mc.sign_in_failure(exc), detail=raw, feedback_ref=ref)
+        finally:
+            MIND_SIGN_IN["finished"] = time.time()
+
+    threading.Thread(target=worker, name="mind-sign-in", daemon=True).start()
+    return _sign_in_public()
+
+
+def _mind_loop_timing(st: dict[str, Any]) -> dict[str, Any]:
+    """Elapsed  time, the  stage in words, the stages of this iteration and a conservative time left
+    (app/estimate.py estimate_mind_run, mind_run_remaining)."""
+    now = st.get("finished") or time.time()
+    est = st.get("estimate") or {}
+    n = max(1, int(st.get("iteration") or 1))
+    stages = [x for x in (est.get("stages") or []) if n == 1 or x["id"] != "names"]  # the assistant names grids once
+    stage = st.get("stage")
+    stage_elapsed = max(0.0, now - float(st.get("stage_started") or now))
+    running = st.get("state") in _MIND_BUSY_STATES  # 17 Nov 2026: still at work while it is stopping
+    left = mind_run_remaining(stages, stage, stage_elapsed) if running else 0.0
+    elapsed = max(0.0, now - float(st["started"]))
+    budget = float(est.get("first_s") or 0) + (n - 1) * float(est.get("retry_s") or 0)
+    ids = [x["id"] for x in stages]
+    cur = ids.index(stage) if stage in ids else -1
+    events = st.get("events") or []
+    return {
+        "elapsed_s": round(elapsed),
+        "remaining_s": round(left),
+        "estimate_s": est.get("first_s"),
+        "retry_s": est.get("retry_s"),
+        "over_estimate": bool(running and budget and elapsed > budget),
+        "stage": stage,
+        "stage_title": MIND_STAGE_TITLES.get(stage or "", "Starting"),
+        "stage_elapsed_s": round(stage_elapsed),
+        "iteration": n,
+        "max_iterations": st.get("max_iterations"),
+        "stages": [{"id": x["id"], "title": x["title"], "seconds": x["seconds"], "state": "done" if (i < cur or not running) else "now" if i == cur else "todo"} for i, x in enumerate(stages)],
+        "last_news_s": round(now - events[-1]["t"]) if events else round(elapsed),
+    }
 
 
 @app.get("/api/sessions/{session_id}/mind-loop")
 def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
-    """Progress of the session's loop: events after index `after`, the report so
-    far (written after every iteration) and the final verdict."""
+    """Progress  of the  session's loop: events after index `after`, the report so
+    far (written after every iteration), the final verdict, the version it
+    uploads and the timing (elapsed, stage, a conservative time left)."""
     _session(session_id)
     st = MIND_LOOPS.get(session_id)
+    # 17 Nov 2026: project  / kept / earlier / message -- what a cancelled run  left in Mind (also when
+    # idle: the  projects of earlier cancelled runs of this  workbook keep their "Delete it from Mind")
     if not st:
-        return {"state": "idle", "events": [], "report": None, "next": 0}
+        return {"state": "idle", "events": [], "report": None, "next": 0, **_mind_fields(session_id, None)}
     report = st.get("report")
     if report is None:
         candidate = Path(st["work_dir"]) / "loop_report.json"
@@ -1026,11 +2565,62 @@ def mind_loop_status(session_id: str, after: int = 0) -> dict[str, Any]:
             except Exception:
                 report = None
     events = st["events"][after:]
-    return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None}
+    return {"state": st["state"], "events": events, "next": after + len(events), "report": report, "error": st.get("error"), "incident": st.get("incident"), "problem": st.get("problem"), "started": st["started"], "work_dir": st["work_dir"], "summary": summarize(report) if report else None,
+            "version": st.get("version"), "actions": st.get("actions"), "timing": _mind_loop_timing(st), **_mind_fields(session_id, st)}
+
+
+@app.post("/api/sessions/{session_id}/mind-loop/delete-project")
+def delete_mind_project(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """"Delete  it from  Mind" (17 Nov 2026): delete one project a Run in Mind of this workbook made --
+    only a name the app itself wrote down for this workbook (mind_projects.json) and that starts with
+    the  sandbox prefix (404 otherwise). 409 while anything else uses Mind. Blocking,  about a minute.
+    -> {name, result, message,  url}; result: deleted | not found |  still present | refused |
+    unreachable. Nothing is deleted without this call:  the person's own click."""
+    from app import mind_client as mc
+
+    _session(session_id)
+    name = str(payload.get("name") or "").strip()
+    with _MIND_LOOP_LOCK:
+        entry = _mind_projects_read().get(name)
+        if not name or entry is None or entry.get("session") != session_id or not name.startswith(mc.PROJECT_PREFIX):
+            raise HTTPException(status_code=404, detail="This workbook has no Mind project of that name.")
+        if _mind_in_use():
+            raise HTTPException(status_code=409, detail=_MIND_BUSY)
+        _MIND_DELETE["name"] = name  # its own flag: the  other routes that open the Edge profile wait
+    folder = str(entry.get("folder") or mc.SANDBOX_FOLDER)
+    try:
+        try:
+            with mc.mind_session() as (_ctx, page):
+                # first: did Mind open at all? (delete_project alone would call a Mind that did not open "not found")
+                result = mc.delete_project(page, name, folder) if mc.open_manager(page) else "unreachable"
+        except Exception as exc:  # no Edge, the profile in use, a page that never loaded
+            print(f"Delete from Mind did not run for {name}: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+            result = "unreachable"
+        with _MIND_LOOP_LOCK:
+            data = _mind_projects_read()
+            kept = data.get(name) or dict(entry)
+            if result == "deleted":
+                kept["deleted"], message = "deleted", "Deleted from Mind."
+            elif result == "not found" and kept.get("status") == "creating" and not int(kept.get("tries") or 0):
+                # the run was stopped while Mind was making it: Mind may still be making it. Asked once more.
+                kept["tries"], message = 1, "It is not in Mind yet. Try again in a minute."
+            elif result == "not found":
+                kept["deleted"], message = "not found", "It was not in Mind: nothing to delete."
+            elif result == "unreachable":
+                message = "Mind did not open. Sign in to Mind, then try again."
+            else:  # still present, refused
+                message = f"Mind did not delete it. Delete it by hand in Mind: open the Project manager, folder {folder}."
+            data[name] = kept
+            with contextlib.suppress(Exception):
+                _mind_projects_write(data)
+    finally:
+        with _MIND_LOOP_LOCK:
+            _MIND_DELETE["name"] = None
+    return {"name": name, "result": result, "message": message, "url": mc.MAIN_URL}
 
 
 def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]], str, str | None]:
-    """(history, question, extra_context) for one chat turn; raises the
+    """(history,  question, extra_context)  for one chat turn; raises the
     409/422 HTTP errors before any model call."""
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
@@ -1043,8 +2633,8 @@ def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]
     if isinstance(focus, dict) and (focus.get("rule_id") or focus.get("error")):
         # A focused mini chat: naming the rule id and the cell makes
         # app.chat_context.retrieve() pull the finding's observed data and the
-        # cell contents into the turn; a recalculation error carries the error
-        # value and the formula Excel evaluated.
+        # cell contents  into the turn; a recalculation error carries the error
+        # value and the  formula Excel evaluated.
         where = f" at {focus['sheet']}!{focus['cell']}" if focus.get("sheet") and focus.get("cell") else ""
         cells = [c for c in (focus.get("cells") or []) if isinstance(c, dict) and c.get("sheet") and c.get("cell")]
         if focus.get("kind") == "recalc-group" or len(cells) > 1:
@@ -1110,7 +2700,7 @@ def _chat_turn(s: Session, payload: dict[str, Any]) -> tuple[list[dict[str, str]
             )
             question = f"[About the recalculation error {focus.get('error', '')}{where}{formula}.{siblings}{array_note}] {question}"
         else:
-            # A replacement is judged by a full Excel recalculation afterwards -- say so up front
+            # A replacement is judged  by a full Excel recalculation afterwards --  say so up front
             question = (
                 f"[About finding {focus['rule_id']}{where}. If you propose a replacement formula, it must behave like the original on "
                 "blank cells, text and errors (e.g. wrap with IF(x=\"\",0,...) when the original tolerated blanks); every new error "
@@ -1134,78 +2724,135 @@ def _chat_payload(reply: dict[str, Any]) -> dict[str, Any]:
 def chat(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     s = _session(session_id)
     history, question, extra = _chat_turn(s, payload)
-    reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra)
+    with _ai_scope(s):
+        reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra)
     return _chat_payload(reply)
 
 
 @app.post("/api/sessions/{session_id}/chat/stream")
 def chat_stream(session_id: str, payload: dict[str, Any] = Body(...)) -> StreamingResponse:
-    """The same turn as /chat, streamed as NDJSON (one JSON object per line):
+    """The  same turn  as /chat, streamed as NDJSON (one JSON object per line):
     {"type": "phase", "phase": "answer"|"lookup"|"repair", "n"} before every
     model call, {"type": "delta", "text"} for each chunk of the reply, then
-    {"type": "done", <the /chat payload>} or {"type": "error", "detail"}."""
+    {"type": "done", <the /chat payload>}  or {"type": "error", "detail"}.
+
+    17 Nov 2026: the turn is a job  (kind "chat"). Cancelled, the stream ends  with the line
+    {"type": "cancelled"}: the reader below  looks at the flag every half second, the thread's next
+    event raises,  and the model call in flight is  given up (app/llm.py)."""
     s = _session(session_id)
     history, question, extra = _chat_turn(s, payload)
     events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+    job = _begin_job(s, "chat")
+
+    def tell(ev: dict[str, Any]) -> None:
+        cancel.check()
+        events.put(ev)
 
     def work() -> None:
+        outcome = "error"
         try:
-            reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra, on_event=events.put)
+            reply = answer_question(history, question, s.result["workbook_analysis"], s.result["validation_report"], s.plan, extra_context=extra, on_event=tell)
+            job.commit()  # it writes nothing: the gate is the answer itself
             events.put({"type": "done", **_chat_payload(reply)})
+            outcome = "done"
+        except cancel.Cancelled:
+            outcome = "cancelled"
         except Exception as exc:  # the stream has started: report in-band
-            events.put({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+            if job.flag.is_set():
+                outcome = "cancelled"
+            else:
+                events.put({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
         finally:
+            cancel.end(job, outcome)
             events.put(None)
 
-    threading.Thread(target=work, name=f"chat-{session_id}", daemon=True).start()
+    try:
+        _ai_thread(s, work, f"chat-{session_id}", job=job).start()
+    except BaseException:
+        cancel.end(job, "error")
+        raise
 
     def lines():
         while True:
-            ev = events.get()
+            try:
+                ev = events.get(timeout=0.5)
+            except queue.Empty:
+                if not job.flag.is_set():
+                    continue
+                # cancelled while the model was thinking: the stream ends now, the thread by itself
+                yield json.dumps({"type": "cancelled"}) + "\n"
+                return
             if ev is None:
+                if job.outcome == "cancelled":  # written by cancel.end, before the None was queued
+                    yield json.dumps({"type": "cancelled"}) + "\n"
                 return
             yield json.dumps(ev, ensure_ascii=False, default=str) + "\n"
 
     return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def _original_path(s: Session) -> Path | None:
-    """The original upload as Excel-readable file: the first .xlsx / .xlsm version."""
+def _upload_path(s: Session) -> Path | None:
+    """The  original upload  as Excel-readable file: the first .xlsx / .xlsm version."""
     return next((s.paths[v["id"]] for v in s.versions if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
 
 
+def _imported_version(s: Session, version_id: str | None = None) -> dict[str, Any] | None:
+    """The  newest version  of the line of `version_id` (default: the current one) that the outside
+    files were brought into (source "import"); None when the line has none."""
+    return next((v for v in reversed(_lineage(s, version_id or s.current_version_id)) if v.get("source") == "import"), None)
+
+
+def _original_path(s: Session) -> Path | None:
+    """The  workbook the  current version's numbers and errors are compared with: the version the
+    outside files were brought into when the current line has one (new outside data changes values
+    on purpose), else the original upload."""
+    imported = _imported_version(s)
+    return s.paths[imported["id"]] if imported is not None else _upload_path(s)
+
+
 def _original_baseline(s: Session, original: Path) -> dict[str, Any] | None:
-    """The original upload after the same full Excel recalculation: its error
-    cells (and its formulas that already contain #REF!). Computed once per
-    session on a fresh copy; None when Excel could not recalculate it, in which
+    """The  original (`_original_path`)  after the same full Excel recalculation: its error
+    cells (and its formulas that already contain #REF!). Computed once per baseline
+    file on a fresh copy; None when Excel could not recalculate it, in  which
     case the caller falls back to the original's cached values."""
-    if s.original_baseline is None:
+    key = str(original)
+    base = s.baselines.get(key)
+    if base is None:
         copy_path, _ = make_immutable_copy(original, s.work_dir / "recalc_original")
         with perf_stage("recalc_original_baseline", file=original.name):
-            res = recalculate(copy_path, save=False)  # a disposable copy -- nothing reads it again
+            res = recalculate(copy_path, save=False)  # a disposable  copy -- nothing reads it again
+        cancel.check()  # 17  Nov 2026: an Excel ended by a  Cancel answers "did not run" -- never kept as the baseline
         ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED"))
-        s.original_baseline = {
+        known_refs = s.ref_formulas.get(key)
+        if known_refs is None and Path(original) == _upload_path(s):
+            known_refs = s.original_ref_formulas
+        base = {
             "ran": ran,
             "errors": list(res.get("formula_errors") or []) + list(res.get("addin_gap_errors") or []) if ran else [],
-            "ref_formulas": s.original_ref_formulas if s.original_ref_formulas is not None else formulas_with_broken_refs(original),
+            "ref_formulas": known_refs if known_refs is not None else formulas_with_broken_refs(original),
             "message": res.get("message"),
+            "path": key,
         }
-    return s.original_baseline if s.original_baseline.get("ran") else None
+        s.baselines[key] = base
+    s.original_baseline = base
+    return base if base.get("ran") else None
 
 
 @app.post("/api/sessions/{session_id}/recalculate")
 def recalc(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     _refuse_while_fixing(session_id)
+    _refuse_while_changing(s)  # 17  Nov 2026:  an Apply's Cancel would take this recalculation back
     if session_id in RECALCULATING:
         raise HTTPException(status_code=409, detail="a recalculation is already running for this workbook")
-    RECALCULATING.add(session_id)
-    try:
+
+    def work(job: cancel.Job) -> dict[str, Any]:
         with perf_stage("recalc_endpoint", file=s.current_path.name):
             # After a Mind loop the session's Excel worker recalculated this version while it
-            # was being analysed; otherwise (or when that did not happen) as before, in its own Excel
+            # was being analysed; otherwise (or when that did not happen) as before,  in its own Excel
             ew = excel_worker.WORKERS.get(s.id)
             ahead = ew.take_recalc(s.current_path) if ew is not None and not ew._stopped else None
+            cancel.check()  # 17 Nov 2026: a wait in the worker's  queue ended by a Cancel never  falls through to an Excel of its  own
             excel_worker.release(s.id)  # one Excel per session
             if ahead is not None:
                 copy_path, res = ahead
@@ -1213,17 +2860,27 @@ def recalc(session_id: str) -> dict[str, Any]:
             else:
                 copy_path, _ = make_immutable_copy(s.current_path, s.work_dir / "recalc")
                 res = recalculate(copy_path)
+            # its Excel ended by a Cancel answers "did  not run": never stored over the last  good recalculation
+            cancel.check()
             with perf_stage("recalc_out", file=s.current_path.name):
-                return _recalc_out(s, res, copy_path)
+                return _recalc_out(s, res, copy_path, gate=lambda: _commit_alone(job))
+
+    RECALCULATING.add(session_id)
+    try:
+        return _job_route(s, "recalc", work)
     finally:
         RECALCULATING.discard(session_id)
 
 
-def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True) -> dict[str, Any]:
-    """What a recalculation of the current version means for the session: the
+def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: bool = True, gate: Callable[[], None] | None = None) -> dict[str, Any]:
+    """What  a recalculation  of the current version means for the session: the
     errors against the original's, the root-cause groups, READY-001, the verdict.
     `res` has the shape of app.recalc.recalculate -- the automatic fixer
-    ends with a full recalculation of its own and hands it in the same way."""
+    ends with a full recalculation  of its own and hands it in the same way.
+
+    `gate` (17  Nov 2026): called just before the  first write -- the Recalculate route hands  its job's
+    commit, so a Cancel before it leaves the last recalculation  as it was and one after it  is too
+    late. The fixer passes none: its own job puts the session back."""
     out = {
         "status": res["status"],
         "message": res["message"],
@@ -1258,6 +2915,12 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
     else:
         out["preexisting_errors"], out["new_errors"] = 0, len(out["formula_errors"])
         out["compared_with_original"] = original is not None
+    # 17  Nov 2026 (Model A): with a Mind loop built, Excel computes the loop's first value, which the
+    # original never computed: which new errors also show without the loop (part of this same job)
+    if out["ran"] and out["new_errors"] and s.loop_built():
+        out["loop_check"] = _loop_check(s, out["formula_errors"])
+    if gate is not None:
+        gate()
     # A recalculation after fixes (v2.1, v2.2, ...) closes the round: the
     # same file becomes the next major version (v3), and the recalculation is its own
     current = next((v for v in s.versions if v["id"] == s.current_version_id), None)
@@ -1274,12 +2937,125 @@ def _recalc_out(s: Session, res: dict[str, Any], copy_path: Path, close_round: b
         out["plan"] = s.plan
     s.recalc_path = copy_path
     out["readiness"] = s.readiness()  # a clean recalculation is what turns the verdict green
+    _save(s)
     return out
 
 
-# --- did the preparation change what the model computes? ---------------------------------
+def _before_loop(s: Session) -> tuple[dict[str, Any], Moves, list[dict[str, Any]]] | None:
+    """The  last version  before the current line's first Mind loop, how its cells moved since (the
+    loop's own changes and every Apply after it, as the numbers check follows them), and the versions
+    after the loop's;  None when the line has no loop."""
+    path = _lineage(s, s.current_version_id)
+    i = next((k for k, v in enumerate(path) if v.get("source") == "loop"), None)
+    if not i:
+        return None
+    return path[i - 1], Moves(v.get("change_log") or [] for v in path[i:]), path[i + 1:]
+
+
+# what an Apply writes into  a cell (a formula or a  value): an error there is that Apply's
+_CELL_WRITES = ("set_formula", "set_array_formula", "set_value")
+_MAX_WRITTEN_RANGE = 100_000  # cells  of one  written range (an array formula's) that are followed
+
+
+def _written_since(later: list[dict[str, Any]], errors: list[dict[str, Any]]) -> list[bool]:
+    """17  Nov 2026  (review LBr): for each of `errors` (cells of the current version), whether an Apply
+    after the Mind loop wrote that cell -- Prep again, the fixer, an Apply under Advanced. An error  there
+    is that Apply's, not the loop's first value's, and blocks as  any new error does (a later  loop's own
+    writes stay the loop's). Each written  cell is followed to where it is now with the numbers  check's
+    Moves, through classify_errors: an Apply writes its  cells before it inserts its rows, unless the
+    write is for the rows it inserts (`after_inserts`)."""
+    hit = [False] * len(errors)
+    for k, v in enumerate(later):
+        if v.get("source") == "loop":
+            continue
+        log = v.get("change_log") or []
+        for after_inserts in (False, True):
+            cells: list[dict[str, Any]] = []
+            for op in log:
+                if op.get("op") not in _CELL_WRITES or bool(op.get("after_inserts")) != after_inserts:
+                    continue
+                at = parse_ref(str(op.get("cell") or ""))
+                if not at or at.get("whole_column") or at.get("whole_row"):
+                    continue
+                r2, c2 = at.get("r2") or at["r1"], at.get("c2") or at["c1"]
+                if (r2 - at["r1"] + 1) * (c2 - at["c1"] + 1) > _MAX_WRITTEN_RANGE:
+                    r2 = at["r1"] + max(0, _MAX_WRITTEN_RANGE // (c2 - at["c1"] + 1) - 1)
+                cells += [{"sheet": op.get("sheet", ""), "cell": ref_text(c, r)} for r in range(at["r1"], r2 + 1) for c in range(at["c1"], c2 + 1)]
+            if cells:
+                moves = Moves(x.get("change_log") or [] for x in later[k + after_inserts:])
+                cls = classify_errors(errors, cells, None, moves.forward)
+                hit = [h or c["preexisting"] for h, c in zip(hit, cls["errors"])]
+    return hit
+
+
+def _errors_before_loop(s: Session, version_id: str) -> tuple[list[dict[str, Any]] | None, bool, str | None]:
+    """(the  error cells  of `version_id` after a full Excel recalculation, reused?, why not when None).
+    A recalculation the session already holds of that file is reused (the last one, or a baseline);
+    else the file is  recalculated once, on a disposable copy, in an Excel of its  own (as the original's
+    baseline is), and  kept with the baselines for the next  time."""
+    path = s.paths[version_id]
+    last = s.recalc
+    if last and last.get("ran") and last.get("version_id") in s.paths and s.paths[last["version_id"]] == path:
+        return list(last.get("formula_errors") or []) + list(last.get("addin_gap_errors") or []), True, None
+    for key in (str(path), f"before_loop:{path}"):
+        base = s.baselines.get(key)
+        if base is not None and base.get("ran"):
+            return list(base.get("errors") or []), True, None
+    copy_path, _ = make_immutable_copy(path, s.work_dir / "recalc_before_loop")
+    with perf_stage("recalc_before_loop", file=path.name):
+        res = recalculate(copy_path, save=False)  # a disposable copy -- nothing reads it again
+    cancel.check()  # an Excel ended by  a Cancel answers "did not run": the  job puts everything back
+    ran = bool(res.get("ran", res.get("status") != "NOT_SUPPORTED" and not str(res.get("message", "")).startswith("Excel COM recalculation failed")))
+    if not ran:
+        return None, False, res.get("message")
+    errors = list(res.get("formula_errors") or []) + list(res.get("addin_gap_errors") or [])
+    s.baselines[f"before_loop:{path}"] = {"ran": True, "errors": errors, "ref_formulas": None, "message": res.get("message"), "path": str(path)}
+    return errors, False, None
+
+
+def _loop_check(s: Session, errors: list[dict[str, Any]]) -> dict[str, Any]:
+    """17  Nov 2026  (Model A: 667 #N/A in Decrements once the loop made Excel compute policy 1, whose
+    projection runs past the mortality table): which of the recalculation's NEW errors also show
+    without the Mind loop.  The version before the loop is recalculated too (or its recalculation
+    reused),  and the two are compared cell  by cell, its cells followed to where  they are now. A new
+    error cell that is no error there  shows only for the loop's first value:  it is marked
+    `loop_only` (in place) and never blocks (app/readiness.py) -- unless an Apply after the loop wrote
+    that cell (`written_after`: counted with the errors that block). When that recalculation cannot
+    run, nothing is guessed: `ran` False, and the errors block as before."""
+    found = _before_loop(s)
+    if found is None:
+        return {"ran": False, "message": "the version before the Mind loop was not found"}
+    before, moves, later = found
+    label = str(before.get("label") or before["id"]).split(" — ")[0]
+    t0 = time.perf_counter()
+    before_errors, reused, why = _errors_before_loop(s, before["id"])
+    seconds = round(time.perf_counter() - t0, 1)
+    if before_errors is None:
+        return {"ran": False, "version_id": before["id"], "label": label, "seconds": seconds, "message": why}
+    new = [e for e in errors if not e.get("preexisting")]
+    cls = classify_errors(new, before_errors, None, moves.forward)
+    # (review LBr: nor a cell an Apply after the loop wrote -- an error there is that Apply's)
+    written = _written_since(later, new)
+    loop_only = [e for e, c, w in zip(new, cls["errors"], written) if not c["preexisting"] and not w]
+    for e in loop_only:
+        e["loop_only"] = True
+    first = loop_only[0] if loop_only else None
+    return {
+        "ran": True,
+        "version_id": before["id"],
+        "label": label,
+        "from_loop": len(loop_only),
+        "also_without": len(new) - len(loop_only),
+        "written_after": sum(1 for c, w in zip(cls["errors"], written) if w and not c["preexisting"]),
+        "example":{"sheet": first.get("sheet", ""), "cell": first.get("cell", ""), "error": first.get("error", "")} if first else None,
+        "reused": reused,
+        "seconds": seconds,
+    }
+
+
+# --- did the preparation change  what the model computes? ---------------------------------
 def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
-    """The versions that lead to `version_id`, oldest first (a version restored
+    """The  versions that  lead to `version_id`, oldest first (a version restored
     from History branches: the list order alone is not the path)."""
     by_id = {v["id"]: v for v in s.versions}
     path: list[dict[str, Any]] = []
@@ -1293,12 +3069,12 @@ def _lineage(s: Session, version_id: str) -> list[dict[str, Any]]:
 
 
 def _original_environment(s: Session) -> dict[str, Any] | None:
-    """What each CELL / INFO formula shows in the original upload, keyed "Sheet!A1" by where that
+    """What  each CELL  / INFO formula shows in the original upload, keyed "Sheet!A1" by where that
     cell sits in the current version (rows / columns inserted, sheets renamed since): the values
-    FRM-012 freezes (app/prep.py). None until the original has been scanned."""
+    FRM-012 freezes (app/prep.py). None until  the original has been scanned."""
     if s.original_environment is None:
         return None
-    found = _original_and_moves(s)
+    found = _upload_and_moves(s)  # always the upload's values: the user's own  Excel saved them
     moves = found[1] if found else Moves()
     out: dict[str, Any] = {}
     for (sheet, cell), value in s.original_environment.items():
@@ -1309,15 +3085,32 @@ def _original_environment(s: Session) -> dict[str, Any] | None:
     return out
 
 
-def _original_and_moves(s: Session) -> tuple[Path, Moves] | None:
-    """The first Excel-readable version in the current version's lineage, and
-    how its cells moved since (rows / columns inserted, sheets renamed) --
-    None when the current version *is* that original."""
+def _line_base_and_moves(s: Session, after_import: bool) -> tuple[Path, Moves] | None:
+    """A  base version  of the current version's lineage and how its cells moved since (rows /
+    columns inserted, sheets renamed) -- None when the current version *is* that base. The base is
+    the first Excel-readable version  (the upload), or with `after_import` the newest version the
+    outside files were  brought into when the line has  one."""
     path = _lineage(s, s.current_version_id)
-    start = next((i for i, v in enumerate(path) if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
+    start = next((i for i in range(len(path) - 1, -1, -1) if path[i].get("source") == "import"), None) if after_import else None
+    if start is None:
+        start = next((i for i, v in enumerate(path) if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
     if start is None or start == len(path) - 1:
         return None
     return s.paths[path[start]["id"]], Moves(v.get("change_log") or [] for v in path[start + 1:])
+
+
+def _original_and_moves(s: Session) -> tuple[Path, Moves] | None:
+    """The  version the  current one is compared with -- the numbers check, and the fixer's "a good
+    value never changes" gate -- and how its cells moved since: the version the outside files were
+    brought into  when the line has one (new outside data changes values on  purpose), else the
+    upload. None when the  current version *is* that original."""
+    return _line_base_and_moves(s, after_import=True)
+
+
+def _upload_and_moves(s: Session) -> tuple[Path, Moves] | None:
+    """The  upload (the  first Excel-readable version of the current line) and how its cells moved
+    since: where the CELL / INFO values the user's own Excel saved sit now."""
+    return _line_base_and_moves(s, after_import=False)
 
 
 def _numbers_public(res: dict[str, Any], version_id: str) -> dict[str, Any]:
@@ -1326,33 +3119,902 @@ def _numbers_public(res: dict[str, Any], version_id: str) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/numbers-check")
 def numbers_check(session_id: str) -> dict[str, Any]:
-    """Recalculate the original and the current version in Excel and compare every
+    """Recalculate  the original  and the current version in Excel and compare every
     formula cell (app/numbers_check.py): did Prep change a computed value?"""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
     found = _original_and_moves(s)
     if found is None:
-        return {"ran": False, "clean": True, "version_id": s.current_version_id, "verdict": "This is the original workbook: nothing to compare.", "counts": {}}
+        imported = _imported_version(s)
+        verdict = ("This is the version the outside files were brought into: nothing to compare." if imported is not None and imported["id"] == s.current_version_id
+                   else "This is the original workbook: nothing to compare.")
+        return {"ran": False, "clean": True, "version_id": s.current_version_id, "verdict": verdict, "counts": {}}
     original, moves = found
-    excel_worker.release(s.id)
-    return _numbers_public(compare_workbooks(original, s.current_path, moves), s.current_version_id)
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        excel_worker.release(s.id)
+        res = compare_workbooks(original, s.current_path, moves)
+        cancel.check()  # 17 Nov 2026: its Excel ended by a Cancel answers "could not be compared" --  that is no verdict
+        return _numbers_public(res, s.current_version_id)
+
+    return _job_route(s, "numbers", work)
 
 
-# --- fix all automatically ----------------------------------------------------------------
-AUTOFIX: dict[str, dict[str, Any]] = {}  # session id -> live state of the current / last run
-RECALCULATING: set[str] = set()          # sessions with a manual recalculation in progress
+# --- bringing the outside files in (app/outside_inputs.py) --------------------------------------
+_OUTSIDE_TITLES = {
+    "start": "Starting", "stand_ins": "Making stand-in input files with the assistant",
+    "import": "Running the workbook's import macro", "scan": "Checking the workbook with the outside data",
+    "mind_inputs": "Making the Mind inputs", "numbers": "Checking that no computed value changed", "rescan": "Checking the new version", "done": "Done",
+    "waiting": "Waiting for the input files", "stopped": "Stopped",
+}
+
+# Do  everything stopped  while it waited for the input files (POST .../outside-inputs/stop)
+_WAIT_STOPPED = "Stopped while waiting for the input files. Nothing was changed: pick the files, then press Do everything again."
+_ASSISTANT_NOT_SET_UP = ("The assistant is not set up, so it cannot make the missing input files: "
+                         "add the actual files, or paste an AI key under Advanced › Assistant.")
+
+
+def _row_name(r: dict[str, Any]) -> str:
+    """A  row of  the import table by the file it expects, else its key, else its cell (as the screens name it)."""
+    return str(r.get("expected") or " / ".join(str(k) for k in (r.get("keys") or []) if k) or f"{r.get('sheet')}!{r.get('cell')}")
+
+
+def _needed_public(s: Session) -> list[dict[str, Any]]:
+    """The  input files  the model's macro opens, one per row of the import table: its name, whether a
+    picked file is there for it (and which), and the sheet it fills -- what the wait  is about."""
+    return [
+        {"name": _row_name(r), "cell": f"{r.get('sheet')}!{r.get('cell')}", "present": bool(r.get("file")), "file": r.get("file"),
+         "fills": r.get("target_sheet")}
+        for r in _match_rows(s)
+    ]
+
+
+def _waiting_message(s: Session) -> str:
+    """'Waiting  for 2  input files: a.xlsm, b.xlsm' -- live: a file picked meanwhile leaves the list."""
+    missing = [n["name"] for n in _needed_public(s) if not n["present"]]
+    if not missing:
+        return "Every input file is there: press Go on."
+    return f"Waiting for {len(missing)} input file{'' if len(missing) == 1 else 's'}: {', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}"
+
+
+class _BringInStopped(Exception):
+    """The  job stopped  for a reason the user can act on: said in plain words, no problem report."""
+
+
+class _MindInputsRefused(_BringInStopped):
+    """The  Mind inputs  would change a computed value: not kept. Its text says the whole story (which
+    version holds the outside data), so it is shown as it is."""
+
+
+def _bring_in_base(s: Session) -> tuple[dict[str, Any], str | None]:
+    """The  version the  workbook's import macro runs on, and why when it is not the current one.
+
+    The current version -- unless its line already has the outside files brought in (they would come
+    in twice:  the macro runs again on the version before the first bring-in),  or rows, columns or
+    sheet names moved  since the upload (the macro writes to  fixed places: it runs on the newest
+    version before the first move).  The changes made after that version are  not in the new line."""
+    line = _lineage(s, s.current_version_id)
+    start = next((i for i, v in enumerate(line) if s.paths[v["id"]].suffix.lower() in (".xlsx", ".xlsm")), None)
+    if start is None:
+        raise HTTPException(status_code=422, detail="The workbook must be .xlsx or .xlsm for its macro to run.")
+    base, why = line[start], None
+    for v in line[start + 1:]:
+        if v.get("source") in ("import", "mind_inputs"):
+            why = "again"
+            break
+        if Moves([v.get("change_log") or []]).batches:
+            why = "moved"
+            break
+        base = v
+    if base["id"] == s.current_version_id:
+        return base, None
+    short = base["label"].split(" — ")[0]
+    after = line[next(i for i, v in enumerate(line) if v["id"] == base["id"]) + 1:]
+    if why == "again" and all(v.get("source") in ("import", "mind_inputs") for v in after):
+        # only the versions of the earlier bring-in follow it (one that changed the files, or one that
+        # did not finish): the new line leaves nothing else out
+        return base, f"Brought in on {short}: the outside files were already brought in after it."
+    reason = ("the outside files were already brought in after it" if why == "again"
+              else "rows, columns or sheet names changed after it, and the workbook's macro writes to fixed places")
+    return base, f"Brought in on {short}: {reason}. The changes made after {short} are not in this new line: run Do everything again."
+
+
+def _import_ok(report: dict[str, Any]) -> bool:
+    """The  import macro's  run can be kept: the core's own verdict ("ok": no error, no early stop, every
+    picked file opened and written), or -- from a core without it -- saved and not stopped  early."""
+    if "ok" in report:
+        return bool(report["ok"])
+    return bool(report.get("saved")) and not report.get("stopped_early")
+
+
+def _import_stopped(report: dict[str, Any]) -> str:
+    """Why  the import  macro's run is not kept, in plain words (its own message boxes, any language)."""
+    said = [str(d.get("message_repaired") or d.get("message") or "").strip() for d in report.get("dialogs") or []]
+    said = [x for x in said if x]
+    not_opened = [str(e["file"]) for e in report.get("files") or [] if e.get("file") and not e.get("opened")]
+    not_written = [str(e["file"]) for e in report.get("files") or [] if e.get("file") and e.get("opened") and not e.get("areas")]
+    # a VBA / COM error in plain words, Excel's own in brackets ('Subscript out of range'), else the  text as it is
+    err = plain_com_error(re.sub(r"\s+", " ", str(report.get("error") or "")).strip())
+
+    def names(xs: list[str]) -> str:
+        return ", ".join(xs[:6]) + (" ..." if len(xs) > 6 else "")
+
+    if not report.get("saved") and "longer than" in err:
+        text = "The workbook's import macro " + re.sub(r"^the import macro\s+", "", err).rstrip(".") + "."
+    elif report.get("stopped_early") or not_opened:
+        text = "The workbook's import macro stopped early" + (f': "{said[0][:200]}"' if said else f": {err[:200]}" if err else "") + "."
+        if not_opened:
+            text += f" Not opened: {names(not_opened)}."
+    elif not_written:
+        text = f"The workbook's import macro opened {names(not_written)} but wrote nothing from {'it' if len(not_written) == 1 else 'them'}" + (f': "{said[0][:200]}"' if said else f": {err[:200]}" if err else "") + "."
+    else:
+        text = "The workbook's import macro did not finish" + (f": {err[:200]}" if err else "") + "."
+    return text + " Nothing was changed: check the input files, then try again."
+
+
+def _import_log(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The  change log  of the "import" version: each area a picked file filled."""
+    return [
+        {"action_id": "outside_inputs", "rule_id": OUTSIDE_RULE, "op": "bring_in_file", "sheet": a.get("sheet"), "cell": a.get("ref"), "after": e.get("file"),
+         "note": f"{a.get('sheet')}!{a.get('ref')} filled from {e.get('file')} by the workbook's own macro"}
+        for e in report.get("files") or [] if e.get("opened") for a in e.get("areas") or []
+    ]
+
+
+def _mind_inputs_log(made: dict[str, Any]) -> list[dict[str, Any]]:
+    """The  change log  of the "mind_inputs" version: each area moved to its Mind input grid."""
+    return [
+        {"action_id": "outside_inputs", "rule_id": OUTSIDE_RULE, "op": "make_mind_input", "sheet": i.get("sheet"), "cell": i.get("ref"), "after": f"#{i.get('name')} /Input",
+         "note": f"{i.get('sheet')}!{i.get('ref')} moved to the Mind input {i.get('name')} ({Path(str(i.get('csv') or '')).name}); {i.get('readers', 0)} formula(s) read it there"}
+        for i in made.get("inputs") or []
+    ]
+
+
+def _import_public(report: dict[str, Any], version: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "macro": report.get("macro"),
+        "seconds": report.get("seconds"),
+        "files": [
+            {"cell": e.get("cell"), "file": e.get("file"), "expected": e.get("expected"), "exact": bool(e.get("exact")), "opened": bool(e.get("opened")),
+             "areas": [{"sheet": a.get("sheet"), "ref": a.get("ref"), "rows": a.get("rows"), "cols": a.get("cols")} for a in e.get("areas") or []],
+             "cleared": list(e.get("cleared") or [])}
+            for e in report.get("files") or []
+        ],
+        "kept": list(report.get("kept") or []),
+        "dialogs": list(report.get("dialogs") or []),
+        "stopped_early": bool(report.get("stopped_early")),
+        "error": report.get("error"),
+        "ok": _import_ok(report),
+        "saved": version["file_name"] if version else None,
+    }
+
+
+def _mind_inputs_public(made: dict[str, Any], version: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "inputs": [
+            {"name": i.get("name"), "sheet": i.get("sheet"), "ref": i.get("ref"), "file": i.get("file"), "rows": i.get("rows"), "cols": i.get("cols"),
+             "csv": Path(str(i.get("csv") or "")).name, "separator": i.get("separator"), "readers": i.get("readers")}
+            for i in made.get("inputs") or []
+        ],
+        "kept": list(made.get("kept") or []),
+        "formulas_changed": made.get("formulas_changed", 0),
+        "names_changed": made.get("names_changed", 0),
+        "sums_split": made.get("sums_split", 0),
+        "saved": version["file_name"] if version else None,
+    }
+
+
+def _register_mind_inputs(s: Session, made: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """Every  CSV /  TAB .txt for download under its own name (the name Mind's Input Manager matches:
+    never renamed -- the newest bring-in wins), and one zip with all of them at its root."""
+    names = []
+    for i in made.get("inputs") or []:
+        p = Path(i["csv"])
+        s.files[p.name] = p
+        names.append(p.name)
+    zip_path = run_dir / "Mind inputs.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in made.get("inputs") or []:
+            zf.write(i["csv"], arcname=Path(i["csv"]).name)
+    s.files[zip_path.name] = zip_path
+    return {"zip": zip_path.name, "files": names}
+
+
+def _changed_values(numbers: dict[str, Any] | None) -> int:
+    """The  computed values  a numbers check found changed: now an error, another value, or no longer a formula."""
+    c = (numbers or {}).get("counts") or {}
+    return int(c.get("good_to_error", 0)) + int(c.get("good_to_other", 0)) + int(c.get("missing_good", 0))
+
+
+def _shown_changed(numbers: dict[str, Any] | None) -> int:
+    """17  Nov 2026,  for the assistant's fix in the Prep job only (Joseph: "if any value changed, the fix is
+    undone"): the cells that show something else now -- the computed values that changed, AND  an
+    error that now shows a value, AND a formula that showed  an error and is gone. A  guessed repair of
+    #REF! that shows 42 is  a changed value: undone, and the person is asked. Elsewhere the  numbers
+    check counts only `_changed_values` (Fix all issues  turns errors into values on purpose)."""
+    c = (numbers or {}).get("counts") or {}
+    gone_errors = max(0, int(c.get("missing", 0)) - int(c.get("missing_good", 0)))
+    return _changed_values(numbers) + int(c.get("error_to_good", 0)) + gone_errors
+
+
+def _mind_inputs_refused(compared: dict[str, Any], v_import: dict[str, Any]) -> str:
+    """Why  the Mind  inputs are not kept (they would change computed values), in plain words, with the
+    first value that would change -- in the version that stays, where the user can look."""
+    n = _changed_values(compared)
+    what = f"{n:,} computed value{'' if n == 1 else 's'}" if n else "computed values"
+    short = v_import["label"].split(" — ")[0]
+    samples = compared.get("samples") or {}
+    first = next((x for kind in ("good_to_error", "good_to_other", "missing") for x in samples.get(kind) or []), None)
+    example = ""
+    if first and first.get("original"):
+        example = (f" For example {first['original']} would show {first['is']} instead of {first.get('was')}." if "is" in first
+                   else f" For example {first['original']} ({first.get('was')}) would no longer be a formula.")
+    return f"Making the Mind inputs would change {what}; the outside data stays inside the model ({short}); nothing else was changed.{example}"
+
+
+def _bring_in_summary(report: dict[str, Any], made: dict[str, Any] | None, numbers: dict[str, Any] | None, note: str | None) -> str:
+    """One  plain line:  '6 outside files brought in; 6 Mind inputs made (IN_BBA_01, ...); no computed value changed.'"""
+    opened = sum(1 for e in report.get("files") or [] if e.get("opened"))
+    parts = [f"{opened} outside file{'' if opened == 1 else 's'} brought in"]
+    names = [str(i.get("name")) for i in (made or {}).get("inputs") or []]
+    parts.append(f"{len(names)} Mind input{'' if len(names) == 1 else 's'} made ({', '.join(names[:8])}{', ...' if len(names) > 8 else ''})" if names else "no Mind input made")
+    if numbers and numbers.get("ran") and numbers.get("clean"):
+        parts.append("no computed value changed")
+    elif numbers and numbers.get("ran"):
+        changed = _changed_values(numbers)
+        parts.append(f"{changed:,} computed value{'' if changed == 1 else 's'} changed: see Compare the numbers")
+    elif numbers:  # the comparison was asked for and could not run (Excel failed it): said plainly
+        why = str(numbers.get("verdict") or "").strip().rstrip(".")
+        parts.append("the computed values were NOT checked" + (f" ({why})" if why else ""))
+    else:
+        parts.append("the computed values are not checked yet")
+    return "; ".join(parts) + "." + (f" {note}" if note else "")
+
+
+_STAND_IN_NOTE = ("Made with stand-in input files from the assistant, built from the numbers the model already holds: "
+                  "best results come with the actual input files (add them, then bring them in again).")
+
+
+def _make_stand_ins(s: Session, base_path: Path, macro: str, stage, say) -> str | None:
+    """The  missing files  of the import table, made by the assistant from the model's own numbers and
+    proven with the model's own macro before anything is kept (app/stand_in_inputs.py); then kept as
+    picked files marked stand_in (a  real file of the same name replaces one). None: nothing missing."""
+    rows = _match_rows(s)
+    missing = [r for r in rows if not r.get("file")]
+    if not missing:
+        return None
+    ask = stand_in_inputs.assistant_ask()
+    if ask is None:
+        raise _BringInStopped("The assistant is not set up, so it cannot make the missing input files: "
+                              "add the actual files, or paste an AI key under Advanced › Assistant.")
+    need = [f"{r['sheet']}!{r['cell']}" for r in missing]
+    real: dict[str, Path] = {}
+    for r in rows:
+        p = _input_path(s, r.get("file"))
+        if p is not None and p.is_file():
+            real[f"{r['sheet']}!{r['cell']}"] = p
+    stage("stand_ins", f"Making {len(need)} stand-in input file{'' if len(need) == 1 else 's'} with the assistant")
+    work = s.work_dir / "stand_ins" / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    excel_worker.release(s.id)  # the  stand-in steps open the model in  Excels of their own
+    with perf_stage("outside_inputs_stand_ins", file=base_path.name, files=len(need)):
+        made = stand_in_inputs.make_stand_ins(base_path, rows, need, macro, model_map_module.read_vba(base_path), work, ask,
+                                              real_files=real, messages=((s.outside_inputs or {}).get("vba") or {}).get("messages") or [],
+                                              progress=say)
+    cancel.check()  # 17 Nov 2026: a  set flag wins over whatever the stopped Excels and the abandoned  call answered
+    s.outside_run["stand_ins"] = {"ok": bool(made.get("ok")), "explain": made.get("explain"), "files": sorted(p.name for p in (made.get("files") or {}).values()),
+                                  "left_out": list(made.get("left_out") or []),
+                                  "attempts": [{"n": a.get("n"), "problem": a.get("problem"), "details": a.get("details")} for a in made.get("attempts") or []]}
+    if not made.get("ok"):
+        n = len(made.get("attempts") or [])
+        raise _BringInStopped(f"The assistant could not make input files the workbook's macro accepts ({n} attempt{'' if n == 1 else 's'}): "
+                              f"{made.get('problem')}. Nothing was changed: add the actual input files.")
+    if not made["files"] and not real:
+        raise _BringInStopped("The model holds no data for its input files, so the assistant had nothing to make stand-ins from. "
+                              "Nothing was changed: add the actual input files.")
+    for path in made["files"].values():
+        dest = _input_folder(s) / Path(path).name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+        _keep_input(s, dest)["stand_in"] = True
+    _rematch(s)
+    left = [next((str(r.get("expected") or (r.get("keys") or [None])[0] or k) for r in missing if f"{r['sheet']}!{r['cell']}" == k), k)
+            for k in made.get("left_out") or []]
+    if left:
+        return (_STAND_IN_NOTE + f" No stand-in for {', '.join(left[:6])}{' ...' if len(left) > 6 else ''}: the model holds no data for "
+                f"{'it' if len(left) == 1 else 'them'} and zeros would change a result, so {'its block stays' if len(left) == 1 else 'their blocks stay'} as the model holds {'it' if len(left) == 1 else 'them'}.")
+    return _STAND_IN_NOTE
+
+
+def _bring_in(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stage, say, stand_ins: bool = False) -> dict[str, Any]:
+    """The  job: the  workbook's own import macro on a copy of `base` with the matched files -> the
+    "import" version -> its scan (every sheet: a formula that reads an import area may be anywhere)
+    ->  each area a Mind input, on a copy -> every computed  value of that copy compared with  the
+    import version's (`check_numbers`) -> only when none  changed (or the comparison could not run:
+    said plainly, result["numbers"]["ran"] False) the  "mind_inputs" version, its CSVs and zip for
+    download,  and its scan. Mind inputs that would change a value are not kept (_MindInputsRefused):
+    the import version stays current and its line is not brought in. A bring-in counts once it got
+    to the end (s.brought_in_files, with the fingerprint of the files it read)."""
+    from app.inventory import sha256_of
+
+    oi = s.outside_inputs or {}
+    macro = oi["vba"]["import_macro"]
+    made_note = _make_stand_ins(s, s.paths[base["id"]], macro, stage, say) if stand_ins else None
+    rows = (oi.get("match") or {}).get("rows") or []
+    files: dict[str, Path] = {}
+    for r in rows:
+        p = _input_path(s, r.get("file"))
+        if p is not None and p.is_file():
+            files[f"{r['sheet']}!{r['cell']}"] = p
+    fingerprint = _inputs_fingerprint(s, rows)  # the files this bring-in reads (added files are refused meanwhile)
+    base_path = s.paths[base["id"]]
+    run_dir = s.work_dir / "outside_inputs" / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    imported = run_dir / "import" / base_path.name
+    excel_worker.release(s.id)  # one Excel per session: the macro runs in an Excel of  its own
+    stage("import", f"Running the workbook's import macro {macro} with {len(files)} file{'' if len(files) == 1 else 's'}")
+    # a stand-in is not a real import: its row of the import table keeps the model's own status
+    restore = {f"{r['sheet']}!{r['cell']}" for r in rows if r.get("file") in _stand_in_names(s)}
+    with perf_stage("outside_inputs_import", file=base_path.name, files=len(files)):
+        report = outside_inputs.run_import(base_path, rows, files, macro, imported, run_dir, progress=say, messages=oi["vba"].get("messages") or [],
+                                           **({"restore_rows": restore} if restore else {}))
+    cancel.check()  # 17 Nov 2026: the macro's Excel ended by a Cancel is not "the macro stopped early"
+    if not _import_ok(report) or not imported.is_file():
+        raise _BringInStopped(_import_stopped(report))
+    s.current_version_id = base["id"]  # the new line starts from the version the macro ran on
+    v_import = _add_version(s, imported, "import", "Outside files brought in", _import_log(report), None, sha256_of(imported))
+    s.outside_run.setdefault("versions", []).append(v_import["id"])
+    result: dict[str, Any] = {
+        "import": _import_public(report, v_import), "mindInputs": None, "versions": [v_import["id"]], "download": None, "numbers": None,
+        "base_version_id": base["id"], "notes": [note] if note else [],
+    }
+    if made_note:
+        result["notes"].append(made_note)
+        result["standIns"] = s.outside_run.get("stand_ins")
+    not_picked = [str(e.get("expected") or e.get("cell")) for e in report.get("files") or [] if not e.get("file")]
+    if not_picked:
+        result["notes"].append(f"Not picked, so their data stays in the workbook as it was: {', '.join(not_picked[:6])}" + (" ..." if len(not_picked) > 6 else "") + ".")
+    if report.get("error"):
+        result["notes"].append(f"The macro ended with a message from Excel: {str(report['error'])[:200]}")
+    stage("scan", "Checking the workbook with the outside data")
+    ignored, s.ignore_sheets = s.ignore_sheets, []
+    try:
+        _run_scan(s, imported)
+    finally:
+        s.ignore_sheets = ignored
+    wb0 = s.result["workbook_analysis"]["workbooks"][0]
+    sheet_names = [sh["name"] for sh in wb0.get("sheets", [])] + [sh["name"] for sh in wb0.get("ignored_sheets", [])]
+    plan = outside_inputs.plan_mind_inputs(report, sheet_names)
+    made: dict[str, Any] | None = None
+    if not plan:
+        result["notes"].append("The macro wrote nothing the app could see: no Mind input made.")
+    else:
+        stage("mind_inputs", f"Making {len(plan)} Mind input{'' if len(plan) == 1 else 's'}")
+        csv_dir = run_dir / "csv"  # the CSVs alone: Run in Mind uploads the whole folder
+        made_path = run_dir / "mind_inputs" / base_path.name
+        with perf_stage("outside_inputs_mind_inputs", file=base_path.name, inputs=len(plan)):
+            made = outside_inputs.apply_mind_inputs(imported, plan, wb0.get("formulas") or [], made_path, csv_dir, progress=say)
+        cancel.check()
+        if not made.get("inputs") or not made.get("saved") or not made_path.is_file():
+            why = (made.get("kept") or [{}])[0].get("why")
+            result["notes"].append("No Mind input could be made" + (f": {why}" if why else "") + ". The outside data stays inside the model.")
+            result["mindInputs"] = _mind_inputs_public(made, None)
+        else:
+            log = _mind_inputs_log(made)
+            compared: dict[str, Any] | None = None
+            if check_numbers:
+                # before anything is kept: Mind inputs that change a computed value never become a
+                # version, and their CSVs are never offered for download or to Run in Mind
+                stage("numbers", "Comparing every computed value with the version the files were brought into")
+                excel_worker.release(s.id)
+                compared = compare_workbooks(imported, made_path, Moves([log]), lambda _stage, message, *_a, **_k: say(message))
+                cancel.check()  # a comparison whose  Excel was ended "could not  run": never read as "keep the Mind  inputs"
+                if compared.get("ran") and not compared.get("clean"):
+                    raise _MindInputsRefused(_mind_inputs_refused(compared, v_import))
+            v_made = _add_version(s, made_path, "mind_inputs", "Outside files made Mind inputs", log, None, sha256_of(made_path))
+            s.outside_run.setdefault("versions", []).append(v_made["id"])
+            result["versions"].append(v_made["id"])
+            s.mind_inputs_dirs[v_made["id"]] = str(csv_dir)
+            s.mind_inputs_dir = str(csv_dir)
+            result["mindInputs"] = _mind_inputs_public(made, v_made)
+            result["download"] = _register_mind_inputs(s, made, run_dir)
+            if compared is not None:  # clean, or the  comparison could  not run: "ran" False, said in the summary
+                result["numbers"] = _numbers_public(compared, v_made["id"])
+            if made.get("kept"):
+                result["notes"].append(f"{len(made['kept'])} area(s) stay inside the model (Mind cannot swap them): {made['kept'][0].get('why')}")
+            stage("rescan", "Checking the new version")
+            _run_scan(s, made_path)
+    # got to the end: the line counts as brought in, while the picked files are the ones read here
+    s.brought_in_files[result["versions"][-1]] = fingerprint
+    with contextlib.suppress(Exception):  # INP-010 of the last scan ran  before this record
+        _patch_outside_finding(s, s.result)
+    result["summary"] = _bring_in_summary(report, made, result["numbers"], note)
+    if _stand_in_names(s) & {str(r.get("file")) for r in rows}:
+        result["summary"] += " " + _STAND_IN_NOTE
+    return result
+
+
+def _bring_in_worker(s: Session, base: dict[str, Any], note: str | None, check_numbers: bool, stand_ins: bool = False,
+                     job: cancel.Job | None = None, snap: dict[str, Any] | None = None) -> None:
+    """`job`,  `snap` (17  Nov 2026): the job the route began and the session as it was then. Cancelled --
+    or any error once the flag is set: ending Excel makes ordinary errors -- the session  goes back to
+    `snap` (both versions, the pointer, the stand-in files it  picked) and the state is "cancelled"."""
+    st = s.outside_run
+
+    def stage(name: str, message: str) -> None:
+        cancel.check()  # 17  Nov 2026: a cancelled bring-in leaves at  its next stage or message
+        st.update(stage=name, title=_OUTSIDE_TITLES.get(name, name), message=message, updated=time.time())
+        st.setdefault("stages", []).append(name)  # the stages this job went through, in  order
+
+    def say(message: Any) -> None:
+        cancel.check()
+        st.update(message=str(message)[:300], updated=time.time())
+
+    def after_versions(text: str) -> str:
+        made = [v for v in s.versions if v["id"] in (st.get("versions") or [])]
+        if not made:
+            return text
+        short = made[-1]["label"].split(" — ")[0]
+        return f"{short} holds the outside data, but the rest did not finish: {text}"
+
+    # the end is said only once the  workbook is free again: a client that sees "done" or "error"
+    # and starts the next step at once must not find the lock still held (a few ms otherwise);
+    # meanwhile "running" keeps every other job away (_busy_with)
+    end: dict[str, Any] = {}
+    outcome = "error"
+    try:
+        result = _bring_in(s, base, note, check_numbers, stage, say, stand_ins)
+        if job is not None:
+            job.commit()  # 17 Nov 2026, the gate: a Cancel after it is too late, the bring-in stands
+        end = {"result": result, "state": "done", "stage": "done", "title": "Done", "message": result["summary"]}
+        st.setdefault("stages", []).append("done")
+        outcome = "done"
+    except cancel.Cancelled:
+        outcome = "cancelled"
+    except Exception as exc:  # the thread must never die silently
+        if job is not None and job.flag.is_set():  # a set flag wins over any error: no  error, no incident
+            outcome = "cancelled"
+        elif isinstance(exc, _MindInputsRefused):  # says which version holds the outside data itself
+            end = {"state": "error", "error": str(exc)}
+        elif isinstance(exc, _BringInStopped):
+            end = {"state": "error", "error": after_versions(str(exc))}
+        elif isinstance(exc, HTTPException):  # a scan refused or failed
+            end = {"state": "error", "error": after_versions(str(exc.detail))[:400]}
+            if exc.status_code >= 500:
+                with contextlib.suppress(Exception):
+                    end.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+        else:
+            end = {"state": "error", "error": after_versions(_exc_text(exc))[:400]}
+            with contextlib.suppress(Exception):
+                end.update(_problem_fields(_report_problem(exc, "Bring in the outside files", s, stage=str(st.get("stage") or ""))))
+    finally:
+        # 17 Nov 2026, the order: how it ended is decided above; then the restore, the lock, the state,
+        # the save, and last the end of the job -- until then the workbook reads busy (_busy_with)
+        try:
+            if outcome == "cancelled":
+                end = {"state": "cancelled", "stage": "stopped", "title": _OUTSIDE_TITLES["stopped"], "message": _CANCELLED, "error": None,
+                       "result": None, "versions": [], "stand_ins": None}
+                if snap is not None:
+                    _restore(s, snap)
+                if job is not None:
+                    _statuses_stopped(s, job)
+        finally:
+            s.apply_lock.release()
+            st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
+            if st.get("state") == "error":
+                # a job that stopped half-way leaves its line not brought in: INP-010 says why (its last
+                # scan ran while the job was still going)
+                with contextlib.suppress(Exception):
+                    _patch_outside_finding(s, s.result)
+            _save(s)  # the versions it made, the Mind inputs, its result or error
+            cancel.end(job, outcome)
+
+
+@app.post("/api/sessions/{session_id}/outside-inputs/run", status_code=202)
+def run_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Bring  the outside  files in, in the background (poll GET .../outside-inputs): the workbook's own
+    import macro runs once on a copy with the picked files (a new version, "Outside files brought
+    in"); then each area it  filled becomes a Mind input -- an IN_<sheet> /Input grid the  formulas
+    read, and its CSV for Mind's  Input Manager (a new version, "Outside files  made Mind inputs");
+    then (`checkNumbers`, default true) every computed value is compared.  Refused (409) while
+    another job runs on the  session.
+
+    `waitForInputs` (Do everything): when input files are missing, nothing runs -- the job waits
+    (state "waiting_for_inputs", the needed files in GET .../outside-inputs) until POST
+    .../outside-inputs/continue (the files picked meanwhile through POST .../inputs, or
+    `makeStandIns`) or POST .../outside-inputs/stop. The workbook is not touched while it waits."""
+    s = _session(session_id)
+    _bring_in_possible(s)
+    # standIns: the assistant makes the missing files from the model's own numbers first (the user has
+    # only the workbook, or some of the files); best results come with the  actual files
+    missing = [r for r in _match_rows(s) if not r.get("file")]
+    stand_ins = bool(payload.get("standIns")) and bool(missing)
+    if stand_ins and not llm_available():
+        raise HTTPException(status_code=409, detail=_ASSISTANT_NOT_SET_UP)
+    check_numbers = bool(payload.get("checkNumbers", True))
+    if missing and not stand_ins and payload.get("waitForInputs"):
+        _free_for_bring_in(s, session_id)
+        now = time.time()
+        s.outside_run = {"state": "waiting_for_inputs", "stage": "waiting", "title": _OUTSIDE_TITLES["waiting"], "message": _waiting_message(s),
+                         "started": now, "updated": now, "finished": None, "result": None, "error": None, "versions": [], "base_version_id": None,
+                         "check_numbers": check_numbers, "stages": ["waiting"]}
+        _save(s)  # a session reopened after a restart shows this as stopped (app/session_store.py)
+        return {"running": False, "state": "waiting_for_inputs", "needed": _needed_public(s), "message": s.outside_run["message"]}
+    if not stand_ins and not ((s.outside_inputs or {}).get("match") or {}).get("matched"):
+        raise HTTPException(status_code=422, detail="None of the picked files goes with the workbook: add the outside files first.")
+    return _start_bring_in(s, session_id, stand_ins, check_numbers)
+
+
+def _bring_in_possible(s: Session) -> None:
+    """The  app can  run the model's own import: it knows the macro and the cells that name the files (else 422)."""
+    oi = s.outside_inputs
+    if not oi:
+        raise HTTPException(status_code=422, detail="Nothing to bring in: the workbook's macros open no outside file.")
+    if not oi["vba"].get("import_macro"):
+        raise HTTPException(status_code=422, detail="Which macro brings the outside files in is not clear: they cannot be brought in automatically.")
+    if not oi["table"]:
+        raise HTTPException(status_code=422, detail="No cell of the workbook names the outside files: they cannot be brought in automatically.")
+
+
+def _free_for_bring_in(s: Session, session_id: str) -> None:
+    """Nothing  else is  changing the workbook (else 409): Excel is there, no other job, no Run in Mind."""
+    if not com_available():
+        raise HTTPException(status_code=409, detail="Bringing in the outside files needs Excel on this machine.")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
+    if _loop_busy(session_id):  # 17 Nov 2026: also while a cancelled run is still stopping
+        raise HTTPException(status_code=409, detail="Wait a moment: Run in Mind is using this workbook.")
+
+
+def _start_bring_in(s: Session, session_id: str, stand_ins: bool, check_numbers: bool) -> dict[str, Any]:
+    """The  bring-in job  itself, in a thread: a fresh s.outside_run ("running", stage "start"); 409 when
+    the workbook is busy, 422 when the base version has no macros left."""
+    _free_for_bring_in(s, session_id)
+    base, note = _bring_in_base(s)
+    if not has_vba_project(s.paths[base["id"]]):
+        raise HTTPException(status_code=422, detail=f"{base['label'].split(' — ')[0]} has no macros left to run: bring the outside files in on the uploaded workbook.")
+    # 17 Nov 2026: the job begins here, before  the thread starts, so a Cancel in the first millisecond
+    # finds it;  the snapshot is the session a  cancelled bring-in goes back to
+    job = _begin_job(s, "outside")
+    if not s.apply_lock.acquire(blocking=False):
+        cancel.end(job, "error")
+        raise HTTPException(status_code=409, detail="Wait a moment: changes are still being written.")
+    try:
+        snap = _snapshot(s)
+        now = time.time()
+        s.outside_run = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now, "finished": None,
+                         "result": None, "error": None, "versions": [], "base_version_id": base["id"], "stages": ["start"]}
+        _ai_thread(s, _bring_in_worker, f"outside-inputs-{session_id}", (s, base, note, check_numbers, stand_ins, job, snap), job=job).start()
+    except BaseException:
+        if (s.outside_run or {}).get("state") == "running":
+            s.outside_run.update(state="error", error="the job could not start", finished=time.time())
+        s.apply_lock.release()
+        cancel.end(job, "error")
+        raise
+    return {"running": True, "state": "running", "base_version_id": base["id"], "note": note}
+
+
+def _job_live(sid: str, kind: str) -> bool:
+    """A  job of  this kind is still registered for the workbook: its thread has not ended it yet. The
+    status routes of the two thread jobs that change the workbook say "running" until then (17  Nov
+    2026): a screen that reads "done" and starts the next step  at once must find the workbook  free."""
+    return any(j.kind == kind for j in cancel.jobs(sid))
+
+
+def _end_wait(s: Session) -> None:
+    """End  the wait  for the input files (Do everything stopped at its first step): the job is over,
+    state "stopped"; the wait held no lock and no Excel, so nothing was changed."""
+    st = s.outside_run
+    now = time.time()
+    st.update(state="stopped", stage="stopped", title=_OUTSIDE_TITLES["stopped"], message=_WAIT_STOPPED, error=_WAIT_STOPPED, finished=now, updated=now)
+    st.setdefault("stages", []).append("stopped")
+    _save(s)
+
+
+@app.post("/api/sessions/{session_id}/outside-inputs/continue", status_code=202)
+def continue_outside_inputs(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Go  on after  the wait for the input files (state "waiting_for_inputs"): the bring-in runs with
+    the files picked meanwhile -- every file must be there (409 says which are still missing) -- or,
+    with `makeStandIns`, the  assistant first makes the missing ones from the model's own numbers
+    (best  results come with the actual files;  409 without an AI key). Nothing done  before the wait
+    is done again: the wait held nothing, so the  job starts at the import itself."""
+    s = _session(session_id)
+    st = s.outside_run or {}
+    if st.get("state") != "waiting_for_inputs":
+        raise HTTPException(status_code=409, detail="Do everything is not waiting for the input files.")
+    _bring_in_possible(s)
+    missing = [n["name"] for n in _needed_public(s) if not n["present"]]
+    make = bool(payload.get("makeStandIns")) and bool(missing)
+    if make and not llm_available():
+        raise HTTPException(status_code=409, detail=_ASSISTANT_NOT_SET_UP)
+    if missing and not make:
+        raise HTTPException(status_code=409, detail=f"{len(missing)} input file{'' if len(missing) == 1 else 's'} still missing: "
+                            f"{', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}. Pick {'it' if len(missing) == 1 else 'them'}, or let the assistant make stand-ins.")
+    return _start_bring_in(s, session_id, make, bool(st.get("check_numbers", True)))
+
+
+@app.post("/api/sessions/{session_id}/outside-inputs/stop")
+def stop_outside_inputs(session_id: str) -> dict[str, Any]:
+    """End  the wait  for the input files: the job is over (state "stopped", nothing was changed); Do
+    everything stops at its first step. A bring-in that is already running cannot be stopped (409)."""
+    s = _session(session_id)
+    st = s.outside_run or {}
+    if st.get("state") == "waiting_for_inputs":
+        _end_wait(s)
+        return {"running": False, "state": "stopped", "error": _WAIT_STOPPED}
+    if st.get("state") == "running":
+        raise HTTPException(status_code=409, detail="The outside files are being brought in: that cannot be stopped half-way. Wait for it to finish.")
+    return {"running": False, "state": st.get("state") or "idle"}
+
+
+@app.get("/api/sessions/{session_id}/outside-inputs")
+def outside_inputs_state(session_id: str) -> dict[str, Any]:
+    """The  outside files  (what the macros open, which picked file goes with each row, whether this
+    line has them brought in) and the bring-in job: running, its stage, its result or error."""
+    s = _session(session_id)
+    st = s.outside_run or {}
+    started = st.get("started")
+    waiting = st.get("state") == "waiting_for_inputs"
+    state = st.get("state") or "idle"
+    if state in ("done", "error", "cancelled") and _job_live(s.id, "outside"):
+        state = "running"  # 17 Nov 2026: its  thread is still saving -- the end is said once the  workbook is free
+    return {
+        "outsideInputs": _outside_public(s),
+        "inputs": _inputs_public(s),
+        "running": state == "running",
+        "state": state,
+        "stage": st.get("title"),  # in words, for the  screen ("Running the workbook's import macro")
+        "stage_id": st.get("stage"),  # waiting |  start | stand_ins | import | scan | mind_inputs | numbers  | rescan | done | stopped
+        "stages": list(st.get("stages") or []),  # the stages  this job went through, in order
+        # Do everything waits for the input files: which the macro opens, which are there, what each fills
+        "waiting": waiting,
+        "needed": _needed_public(s) if waiting else None,
+        "message": _waiting_message(s) if waiting else st.get("message"),
+        "elapsed_s": round((st.get("finished") or time.time()) - started, 1) if started else 0.0,
+        "result": st.get("result"),
+        "error": st.get("error"),
+        "versions": list(st.get("versions") or []),
+        "incident": st.get("incident"),
+        "problem": st.get("problem"),
+        # the stand-in files the assistant made (or tried to): each try's outcome, also when it failed
+        "standIns": st.get("stand_ins"),
+    }
+
+
+@app.post("/api/sessions/{session_id}/inputs")
+def add_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    """Add  or replace  input files (by name) and match them again to the workbook's import table
+    (no rescan; INP-010 says the new counts)."""
+    s = _session(session_id)
+    _refuse_while_bringing_in(s)
+    _refuse_while_changing(s)  # 17 Nov 2026: a cancelled job's restore would drop the file from the  list
+    picked = [f for f in files if (f.filename or "").strip()]
+    if not picked:
+        raise HTTPException(status_code=422, detail="Pick the input files to add.")
+    _check_input_names([Path(f.filename or "").name for f in picked])
+    main_key = outside_inputs.normalize_name(_main_name(s))
+    for f in picked:
+        if outside_inputs.normalize_name(Path(f.filename or "").name) != main_key:  # the workbook is not its own input
+            _keep_input(s, _save_upload(f, _input_folder(s)))
+    _rematch(s)
+    _patch_outside_finding(s, s.result)
+    _save(s)
+    return {"inputs": _inputs_public(s), "outsideInputs": _outside_public(s), "readiness": s.readiness()}
+
+
+# --- next quarter's Mind input  files (app/next_quarter_inputs.py) ---------------------------------
+# Each quarter the client  gets new RAW input files (the files  the model's import macro opens). Mind
+# cannot take them: its Inputs window  wants one file per /Input grid, shaped  like the grid. The app
+# runs the model's own import macro again on a copy of the version the outside files were first
+# brought into, with the new files, and writes each grid's block out under the grid's name: a zip for
+# Mind's Inputs window. No new model upload, no new version.
+_NEXT_QUARTER_TITLES = {"start": "Starting", "import": "Running the model's import macro with the new files", "files": "Writing the Mind input files", "done": "Done"}
+
+
+def _next_quarter_source(s: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The  version the  model's import macro runs on (the one the outside files were first brought
+    into: it still has the macro and the model's own areas) and the Mind input grids of the current
+    line  (its newest "mind_inputs" version: each grid's sheet, range and header, as  Mind has it)."""
+    oi = s.outside_inputs
+    if not oi:
+        raise HTTPException(status_code=422, detail="The model's macros open no outside file, so it has no Mind input grids to fill.")
+    if not oi["vba"].get("import_macro") or not oi["table"]:
+        raise HTTPException(status_code=422, detail="The app cannot run this model's import macro by itself, so it cannot make the Mind input files.")
+    by_id = {v["id"]: v for v in s.versions}
+    made = next((v for v in reversed(_lineage(s, s.current_version_id)) if v.get("source") == "mind_inputs" and s.mind_inputs_dirs.get(v["id"])), None)
+    if made is None:
+        raise HTTPException(status_code=422, detail="Bring in the outside files first: that makes the Mind input grids these files fill.")
+    imported = by_id.get(made.get("parent") or "")
+    base = by_id.get((imported or {}).get("parent") or "") if (imported or {}).get("source") == "import" else None
+    if base is None or not s.paths.get(base["id"]) or not Path(s.paths[base["id"]]).is_file():
+        raise HTTPException(status_code=422, detail="The version the outside files were brought into is gone: bring them in again.")
+    grids = next_quarter_inputs.grids_of(made.get("change_log") or [], s.mind_inputs_dirs[made["id"]])
+    if not grids:
+        raise HTTPException(status_code=422, detail="The Mind input grids of this version could not be read: bring the outside files in again.")
+    return base, grids
+
+
+def _next_quarter_public(res: dict[str, Any]) -> dict[str, Any]:
+    imp = res.get("import") or None
+    return {
+        "ok": bool(res.get("ok")),
+        "summary": res.get("summary") or "",
+        "files": [{k: f.get(k) for k in ("file", "grid", "from", "source", "rows", "cols", "separator", "changed")} for f in res.get("files") or []],
+        "not_in_zip": list(res.get("not_in_zip") or []),
+        "notes": list(res.get("notes") or []),
+        "unused": list(res.get("unused") or []),
+        "import": None if imp is None else {
+            "macro": imp.get("macro"), "seconds": imp.get("seconds"), "stopped_early": bool(imp.get("stopped_early")),
+            "dialogs": [{"message": d.get("message_repaired") or d.get("message"), "pressed": d.get("pressed")} for d in imp.get("dialogs") or []],
+            "files": [{"cell": e.get("cell"), "file": e.get("file"), "opened": bool(e.get("opened"))} for e in imp.get("files") or [] if e.get("file")],
+        },
+        "zip": Path(res["zip"]).name if res.get("zip") else None,
+        "readme": res.get("readme"),
+        "error": res.get("error"),
+    }
+
+
+def _next_quarter_worker(s: Session, base: dict[str, Any], grids: list[dict[str, Any]], paths: list[Path], folder: Path, has_raw: bool,
+                         job: cancel.Job | None = None) -> None:
+    st = s.next_quarter
+
+    def say(message: Any) -> None:
+        cancel.check()  # 17  Nov 2026:  a cancelled job leaves at its next message
+        text = str(message)[:300]
+        stage = "files" if "Mind input" in text else "import" if has_raw else st.get("stage")
+        st.update(message=text, stage=stage, title=_NEXT_QUARTER_TITLES.get(stage or "", st.get("title")), updated=time.time())
+
+    end: dict[str, Any] = {}
+    outcome = "error"
+    try:
+        oi = s.outside_inputs or {}
+        if has_raw:
+            excel_worker.release(s.id)  # the macro runs in an Excel of its own
+        with perf_stage("next_quarter_inputs", file=Path(s.paths[base["id"]]).name, files=len(paths)):
+            res = next_quarter_inputs.make_next_quarter(
+                s.paths[base["id"]], oi.get("table") or [], paths, grids, oi["vba"]["import_macro"], folder,
+                messages=oi["vba"].get("messages") or [], progress=say, model_name=_main_name(s), made_at=time.strftime("%Y-%m-%d %H:%M"))
+        if job is not None:
+            # 17 Nov 2026, the gate before the one write (the zip registered): a flag set meanwhile  wins
+            # over whatever the macro's Excel, ended by the Cancel, made the  job answer
+            job.commit()
+        if res.get("ok") and res.get("zip"):
+            s.files[Path(res["zip"]).name] = Path(res["zip"])  # newest wins: one download name
+        public = _next_quarter_public(res)
+        end = {"state": "done" if res.get("ok") else "error", "stage": "done", "title": "Done", "result": public,
+               "error": None if res.get("ok") else res.get("error"), "message": public["summary"] or res.get("error")}
+        outcome = "done" if res.get("ok") else "error"
+    except cancel.Cancelled:
+        outcome = "cancelled"
+    except Exception as exc:  # the  thread must never die silently
+        if job is not None and job.flag.is_set():  # a set flag  wins over any error: no error, no incident
+            outcome = "cancelled"
+        else:
+            end = {"state": "error", "error": _exc_text(exc)[:400]}
+            with contextlib.suppress(Exception):
+                end.update(_problem_fields(_report_problem(exc, "Make next quarter's Mind input files", s, stage=str(st.get("stage") or ""))))
+    finally:
+        if outcome == "cancelled":  # nothing was registered: there  is nothing to put back
+            end = {"state": "cancelled", "title": "Stopped", "message": _CANCELLED, "error": None, "result": None}
+        st.update(end or {"state": "error", "error": "the job stopped without saying why"}, finished=time.time(), updated=time.time())
+        _save(s)  # next quarter's zip  and how the job ended
+        cancel.end(job, outcome)
+
+
+@app.post("/api/sessions/{session_id}/next-quarter-inputs", status_code=202)
+def start_next_quarter_inputs(session_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    """Make  next quarter's  Mind input files, in the background (poll GET .../next-quarter-inputs): the
+    picked files are the new quarter's RAW input files (the files the model's import macro opens --
+    .xlsx, .xlsm, .csv ...); a file  already shaped like a Mind input grid goes in as it  is. The model's
+    own import macro runs  on a copy with the raw files,  and each /Input grid's new block is written
+    under the grid's name,  with its header: one zip ("Next quarter  Mind inputs.zip": README.md and the
+    folder "Mind inputs") for Mind's Inputs window. No version is added; the model is not uploaded again."""
+    s = _session(session_id)
+    picked = [f for f in files if (f.filename or "").strip()]
+    if not picked:
+        raise HTTPException(status_code=422, detail="Pick the new quarter's input files.")
+    _check_input_names([Path(f.filename or "").name for f in picked])
+    base, grids = _next_quarter_source(s)
+    if (s.next_quarter or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="Wait a moment: next quarter's Mind input files are still being made.")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
+    seen: set[str] = set()
+    for f in picked:
+        key = outside_inputs.normalize_name(Path(f.filename or "").name)
+        if key in seen:
+            raise HTTPException(status_code=422, detail=f"Two files are named {Path(f.filename or '').name}: pick one.")
+        seen.add(key)
+    folder = s.work_dir / "next_quarter" / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    paths = [_save_upload(f, folder / "picked" / f"{i + 1:02d}") for i, f in enumerate(picked)]
+    sorted_ = next_quarter_inputs.classify_files(paths, grids, (s.outside_inputs or {}).get("table") or [])
+    if not sorted_["grid_files"] and not sorted_["raw"]:
+        why_not = "; ".join(f"{u['file']}: {u['why']}" for u in sorted_["unused"][:3]) or "they fit no Mind input grid"
+        raise HTTPException(status_code=422, detail=f"None of the picked files fills a Mind input grid ({why_not}).")
+    has_raw = bool(sorted_["raw"])
+    if has_raw and not com_available():
+        raise HTTPException(status_code=409, detail="Reading raw input files needs Excel on this machine: the model's own import macro runs on them.")
+    now = time.time()
+    job = _begin_job(s, "next_quarter")  # 17 Nov 2026: before the thread starts, so a Cancel in the first millisecond finds it
+    s.next_quarter = {"state": "running", "stage": "start", "title": "Starting", "message": "Starting", "started": now, "updated": now,
+                      "finished": None, "result": None, "error": None}
+    try:
+        _ai_thread(s, _next_quarter_worker, f"next-quarter-{session_id}", (s, base, grids, paths, folder, has_raw, job), job=job).start()
+    except BaseException:
+        s.next_quarter.update(state="error", error="the job could not start", finished=time.time())
+        cancel.end(job, "error")
+        raise
+    return {
+        "running": True, "state": "running",
+        "raw": list(sorted_["raw"]),
+        "grid_files": [{"file": g["file"], "grid": g["grid"]} for g in sorted_["grid_files"]],
+        "notes": [n["why"] for n in sorted_["notes"]],
+        "unused": list(sorted_["unused"]),
+    }
+
+
+@app.get("/api/sessions/{session_id}/next-quarter-inputs")
+def next_quarter_inputs_state(session_id: str) -> dict[str, Any]:
+    """The  Mind input  grids next quarter's files fill (each with the file name Mind expects) and the
+    last job making them: running, its stage, its result (the files, which grid each fills, the zip)
+    or its  error. `grids` is empty until the outside files are brought in  (`why_not` says so)."""
+    s = _session(session_id)
+    try:
+        _base, grids = _next_quarter_source(s)
+        why_not = None
+    except HTTPException as exc:
+        grids, why_not = [], str(exc.detail)
+    st = s.next_quarter or {}
+    started = st.get("started")
+    return {
+        "grids": [{"name": g["name"], "sheet": g["sheet"], "ref": g["ref"], "rows": g["rows"], "cols": g["cols"],
+                   "file": Path(g["file"]).name if g.get("file") else None} for g in grids],
+        "available": bool(grids),
+        "why_not": why_not,
+        "running": st.get("state") == "running",
+        "state": st.get("state") or "idle",
+        "stage": st.get("title"),
+        "message": st.get("message"),
+        "elapsed_s": round((st.get("finished") or time.time()) - started, 1) if started else 0.0,
+        "result": st.get("result"),
+        "error": st.get("error"),
+        "incident": st.get("incident"),
+        "problem": st.get("problem"),
+    }
+
+
+# --- fix all automatically  ----------------------------------------------------------------
+AUTOFIX: dict[str, dict[str, Any]] = {}  # session  id ->  live state of the current / last run
+RECALCULATING: set[str] = set()          # sessions  with a  manual recalculation in progress
 
 
 def _refuse_while_fixing(session_id: str) -> None:
-    """The fixer ends by adding a version, a recalculation and an analysis to the
+    """The  fixer ends  by adding a version, a recalculation and an analysis to the
     session: a Recalculate or an Apply landing in the middle of that would be
-    attached to the wrong version (seen in the first click-through: the verdict
-    said "not verified" on a version that had just recalculated clean)."""
+    attached to the wrong version (seen in the  first click-through: the verdict
+    said "not verified" on a version that had  just recalculated clean)."""
     state = AUTOFIX.get(session_id)
     if state and state.get("state") == "running":
         raise HTTPException(status_code=409, detail="the automatic fixer is running on this workbook: wait for it to finish, or stop it")
+    # 17 Nov 2026: the  prep-run job adds versions and scans all  along (its rounds, each fix of the
+    # assistant and its undo): a  Recalculate or a numbers check landing in  the middle would speak of
+    # a version that may be taken back. Until the job has ended, not only while its state says so.
+    if (PREP_RUNS.get(session_id) or {}).get("state") == "running" or _job_live(session_id, "prep"):
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {_BUSY_WORDS['prep']}.")
+    _refuse_while_bringing_in(SESSIONS.get(session_id))
 
-_AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values")
+
+def _refuse_while_bringing_in(s: Session | None) -> None:
+    """The  bring-in job  adds its versions and scans at the end of a long Excel run: a change landing
+    in the middle would be attached to the wrong version. The next-quarter job runs the model's
+    import  macro in an Excel of its own, from the grids of  the line at its start: one  macro, one
+    Excel job at a time."""
+    if s is not None and (s.outside_run or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="the outside files are being brought in on this workbook: wait for it to finish")
+    if s is not None and (s.next_quarter or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="next quarter's Mind input files are being made: wait for it to finish")
+
+_AUTOFIX_PUBLIC = ("state", "stage", "title", "message", "fraction", "pass_no", "errors", "errors_before", "kept", "started", "updated", "finished", "error", "version_id", "use_assistant", "keep_good_values", "incident", "problem")
 _AUTOFIX_TITLES = {
     "start": "Starting", "compare": "Comparing with the original", "read": "Reading the workbook", "find": "Finding where the errors start", "advise": "Asking the assistant",
     "fix": "Fixing", "pass": "Fixing", "confirm": "Confirming", "save": "Saving", "verify": "Checking the file opens", "reanalyze": "Re-analyzing the fixed version", "done": "Done",
@@ -1361,15 +4023,15 @@ _AUTOFIX_TITLES = {
 
 @app.post("/api/sessions/{session_id}/auto-fix")
 def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Fix every formula error of the current version that can be fixed without
+    """Fix  every formula  error of the current version that can be fixed without
     changing a value that is good today (app/autofix.py), in a background
     thread: one Excel session that finds the cells where errors start, fixes
-    them, recalculates and rolls back whatever moved a good value, pass after
-    pass. Poll GET for progress; the result is a new version, already
+    them,  recalculates and rolls back whatever moved a good value, pass after
+    pass.  Poll GET for progress; the result  is a new version, already
     recalculated and re-analysed.
 
-    Body (all optional): use_assistant (default true: the assistant says which
-    value an error cell should fall back to, and why), keep_good_values (default
+    Body  (all optional): use_assistant (default true: the assistant says which
+    value an error  cell should fall back to, and why),  keep_good_values (default
     true -- the owner's rule; false also fixes the errors a formula is hiding,
     and lists every value that moved), time_budget_min (default 120)."""
     s = _session(session_id)
@@ -1382,6 +4044,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
     running = AUTOFIX.get(session_id)
     if running and running.get("state") == "running":
         raise HTTPException(status_code=409, detail="the automatic fixer is already running for this session")
+    _refuse_while_bringing_in(s)
     if session_id in RECALCULATING:
         raise HTTPException(status_code=409, detail="a recalculation is running for this workbook: wait for it to finish")
     if s.lock.locked():
@@ -1390,6 +4053,15 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
     keep = bool(payload.get("keep_good_values", True))
     budget = max(1.0, float(payload.get("time_budget_min", 120))) * 60
     advisor = make_advisor() if use_assistant else None
+    # 17 Nov 2026: the job begins here, before the thread starts, so a Cancel in the first millisecond
+    # finds it (409 while another job changes the workbook); the snapshot is the session a cancelled
+    # fixer goes back to. "Stop, keep what  is fixed" (POST .../auto-fix/stop) is another thing and stays.
+    job = _begin_job(s, "autofix")
+    try:
+        snap = _snapshot(s)
+    except BaseException:
+        cancel.end(job, "error")
+        raise
     state: dict[str, Any] = {
         "state": "running", "stage": "start", "title": "Starting", "message": "Opening the workbook in Excel", "fraction": None,
         "pass_no": 0, "errors": None, "errors_before": None, "kept": 0, "started": time.time(), "updated": time.time(), "finished": None,
@@ -1400,6 +4072,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
     source = s.current_path
 
     def progress(stage: str, message: str, fraction: float | None = None, **facts: Any) -> None:
+        cancel.check()  # 17 Nov 2026: a cancelled fixer leaves at its next message, with nothing kept
         state.update(stage=stage, title=_AUTOFIX_TITLES.get(stage, stage), message=message, fraction=fraction, updated=time.time())
         if facts.get("pass_no") is not None:
             state["pass_no"] = facts["pass_no"]
@@ -1411,6 +4084,7 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             state["kept"] += int(facts["kept"])
 
     def worker() -> None:
+        outcome = "error"
         try:
             excel_worker.release(s.id)  # one Excel per session -- the fixer has its own
             # On a prepared version: what did the preparation itself change? An error that was a
@@ -1421,18 +4095,20 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
             if found is not None:
                 progress("compare", "Comparing this version with the original workbook", None)
                 compared = compare_workbooks(found[0], source, found[1], progress)
+                cancel.check()  # 17 Nov 2026: a comparison whose Excel was ended is not "nothing regressed"
                 numbers = _numbers_public(compared, state["version_id"])
                 regressions = compared.get("regressions") or None
             state["numbers"] = numbers
             cfg = AutoFixConfig(time_budget_s=budget, keep_good_values=keep, advisor=advisor, progress=progress, should_stop=lambda: bool(state["stop"]), regressions=regressions)
             res = run_autofix(source, s.work_dir / "autofix", cfg)
+            cancel.check()  # its Excel ended by a Cancel comes back as  status "error": the flag is  read first
             res["numbers_check"] = numbers
             if res.get("status") == "error":
                 raise RuntimeError(res.get("message") or "the automatic fixer failed")
             if not res.get("output_path"):
                 ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
                 if ew is not None:
-                    ew.preopen_async(source)  # nothing changed -- Prep's first round finds this version open
+                    ew.preopen_async(source)  # nothing changed -- Prep's first round  finds this version  open
             if res.get("output_path"):
                 output = Path(res["output_path"])
                 left = int(res.get("errors_after") or 0)
@@ -1446,27 +4122,63 @@ def start_autofix(session_id: str, payload: dict[str, Any] = Body(default={})) -
                 rec = _recalc_out(s, res["recalc"], output, close_round=False)
                 ew = excel_worker.worker_for(s.id, s.work_dir / "apply")
                 if ew is not None:
-                    ew.preopen_async(output)  # Prep's first round finds it open
+                    ew.preopen_async(output)  # Prep's first  round finds it open
                 progress("reanalyze", "Checking the fixed version against the rules", None)
                 state["analysis"] = _run_scan(s, output)
                 rec["readiness"] = s.readiness()
                 rec.pop("report", None)
                 rec.pop("plan", None)
                 state["recalc"] = rec
+            job.commit()  # 17 Nov 2026, the gate: a Cancel after it is too late, the fixer's version stands
             state["result"] = {k: v for k, v in res.items() if k not in ("applied", "change_log_entry", "recalc", "log")}
             state["result"]["log"] = res.get("log", [])[-200:]
             state.update(state="done", stage="done", title="Done", message=res.get("summary") or "", finished=time.time(), updated=time.time())
+            outcome = "done"
+        except cancel.Cancelled:
+            outcome = "cancelled"
         except HTTPException as exc:  # the re-analysis refused (a scan already running)
-            state.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+            if job.flag.is_set():  # a set flag wins over any error:  no error, no incident
+                outcome = "cancelled"
+            else:
+                state.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+                if exc.status_code >= 500:
+                    state.update(_problem_fields(_report_problem(exc.__cause__ or exc, "Fix all issues", s)))
         except Exception as exc:  # the thread must never die silently
-            state.update(state="error", error=f"{type(exc).__name__}: {exc}"[:400], finished=time.time(), updated=time.time())
+            if job.flag.is_set():
+                outcome = "cancelled"
+            else:
+                state.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
+                state.update(_problem_fields(_report_problem(exc, "Fix all issues", s, stage=str(state.get("stage") or ""))))
+        finally:
+            # 17 Nov 2026,  the order: how it ended is  decided above; then the restore (no version,  or the
+            # one just added, goes; the recalculation is back), the state,  the save, and last the end of
+            # the  job. Whatever happened, the state is final here: never "running".
+            try:
+                if outcome == "cancelled":
+                    _restore(s, snap)
+                    _statuses_stopped(s, job)
+                    state.update(state="cancelled", title="Stopped", message=_CANCELLED, error=None, fraction=None, version=None, result=None,
+                                 recalc=None, analysis=None, finished=time.time(), updated=time.time())
+            finally:
+                if state.get("state") == "running":
+                    state.update(state="cancelled" if outcome == "cancelled" else "error", finished=time.time(), updated=time.time(),
+                                 error=None if outcome == "cancelled" else "the job stopped without saying why")
+                _save(s)  # the fixer's version, recalculation and analysis, or how it ended
+                cancel.end(job, outcome)
 
-    threading.Thread(target=worker, name=f"autofix-{session_id}", daemon=True).start()
+    try:
+        _ai_thread(s, worker, f"autofix-{session_id}", job=job).start()
+    except BaseException:  # the thread never started: nothing stays "running", no job stays registered
+        state.update(state="error", error="the job could not start", finished=time.time(), updated=time.time())
+        cancel.end(job, "error")
+        raise
     return _autofix_public(s, state, full=False)
 
 
 def _autofix_public(s: Session, state: dict[str, Any], full: bool) -> dict[str, Any]:
     out = {k: state.get(k) for k in _AUTOFIX_PUBLIC}
+    if out["state"] in ("done", "error", "cancelled") and _job_live(s.id, "autofix"):
+        out["state"] = "running"  # 17  Nov 2026:  its thread is still saving -- the end is said once the workbook is free
     out["elapsed_s"] = round((state.get("finished") or time.time()) - state["started"], 1)
     if state.get("stage") == "reanalyze" and state.get("state") == "running":
         scan = _scan_snapshot(s)
@@ -1484,9 +4196,9 @@ def _autofix_public(s: Session, state: dict[str, Any], full: bool) -> dict[str, 
 
 @app.get("/api/sessions/{session_id}/auto-fix")
 def autofix_status(session_id: str, full: int = 0) -> dict[str, Any]:
-    """Where the automatic fixer is (state running | done | error | idle, the pass,
+    """Where  the automatic  fixer is (state running | done | error | idle, the pass,
     the errors left). `full=1` once it is done adds the whole result (every fix
-    with its reason, what is left and why), the recalculation and the new analysis."""
+    with its reason, what is left and  why), the recalculation and the new analysis."""
     s = _session(session_id)
     state = AUTOFIX.get(session_id)
     if not state:
@@ -1496,7 +4208,7 @@ def autofix_status(session_id: str, full: int = 0) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/auto-fix/stop")
 def stop_autofix(session_id: str) -> dict[str, Any]:
-    """Ask a running fixer to stop after the round it is in. What it has fixed so far is kept."""
+    """Ask  a running  fixer to stop after the round it is in. What it has fixed so far is kept."""
     s = _session(session_id)
     state = AUTOFIX.get(session_id)
     if not state or state.get("state") != "running":
@@ -1505,9 +4217,368 @@ def stop_autofix(session_id: str) -> dict[str, Any]:
     return _autofix_public(s, state, full=False)
 
 
+# --- prep-run: "Fix the formulas and the structure" as one job (app/handoff.py) ---------------------
+# 17 Nov 2026.  Start's Prep step never stops for a person while the app  can fix it: Prep rounds while
+# a  round still changes something; then what is  left goes to the assistant, whose fix is written by
+# itself only  when it is narrow and kept only  when no computed value changed, its problem got
+# smaller and no other blocking problem got worse; anything else is undone first, and only then is
+# the person asked, in plain words. Every rule and every sentence is in app/handoff.py; here is the
+# work it decides about. The screens and scripts/night_chain.py both call this job, so "a round
+# still makes progress" is defined once. One job,  kind "prep": a Cancel throws the whole run away.
+PREP_RUNS: dict[str, dict[str, Any]] = {}  # session  id ->  live state of the current / last run (in memory only: "idle" after a restart)
+# session id -> {handoff.memo_key(...): {"outcome", "tries"}}: the problems the assistant already
+# failed on. The run after the Mind  loop, and Start pressed again on a workbook nobody touched, keep
+# that  outcome with no model call; a  hand edit of the problem's cells gives  another key. In memory
+# only; dropped with the session (_remove_saved).
+HANDOFF_MEMO: dict[str, dict[str, dict[str, Any]]] = {}
+_PREP_RUN_STEP = "Fix the formulas and the structure"  # the  step's name  on Custom, for a problem report
+_PREP_RUN_TITLES = {
+    "pass": "Fixing the formulas and the structure", "assistant": "Asking the assistant", "write": "Writing the assistant's fix",
+    "numbers": "Checking the numbers", "undo": "Taking the fix back", "check": "Checking the workbook", "done": "Done",
+}
+_PREP_RUN_PUBLIC = ("state", "stage", "title", "message", "pass_no", "applied", "refused", "assistant_fixed", "problem_no", "problem_count",
+                    "left", "ask", "from_version_id", "version", "started", "updated", "finished", "error")
+_PREP_RUN_BUTTONS = ("Start", "Do everything")  # the  button that  started the job: the question names it ("... press Start again.")
+
+
+@app.post("/api/sessions/{session_id}/prep-run", status_code=202)
+def start_prep_run(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Fix  the formulas  and the structure, in the background (poll GET .../prep-run): every blocking
+    Prep action that is on by default, round after round while a round still changes something;
+    then, with `assistant` (default true), each  blocking problem that is left goes to the assistant
+    (five problems at  most, two tries each); a fix  it proposes is written only when it  changes the
+    problem's own cells (since 19 Nov 2026 also at most  5 other formula cells that read one  of them; or labels one empty cell), and kept only when the numbers check finds no
+    computed value changed and the check of the workbook finds the problem smaller and no other
+    one worse -- else it is taken back. The end is `done`, or `ask` (something is left for a
+    person: the two sentences, where "Show me" leads, the note for Send feedback,  and whether Start
+    stops here), or `no_key` (something is left and no AI key is saved; the rounds are kept).
+
+    Body (all optional): assistant (false: the rounds only; what is left is asked about), button
+    ("Start" or "Do everything": the word the question uses for the button to press again).
+    409 with no analysis yet and while anything else changes this workbook. Cancel (POST .../cancel,
+    kind "prep") puts the workbook back as it was before this run."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    why = _busy_with(s)
+    if why:
+        raise HTTPException(status_code=409, detail=f"Wait a moment: {why}.")
+    use_assistant = bool(payload.get("assistant", True))
+    button = str(payload.get("button") or "").strip()
+    button = button if button in _PREP_RUN_BUTTONS else _PREP_RUN_BUTTONS[0]
+    # the job begins here, before the thread starts, so a  Cancel in the first millisecond  finds it
+    # (409 while another job changes the  workbook); the snapshot  is the  workbook a cancelled run goes back to
+    job = _begin_job(s, "prep")
+    state: dict[str, Any] = {}
+    try:
+        snap = _snapshot(s)
+        now = time.time()
+        state.update(
+            state="running", stage="pass", title=_PREP_RUN_TITLES["pass"], message="Looking at what blocks the file…",
+            pass_no=0, applied=0, refused=0, assistant_fixed=0, problem_no=0, problem_count=0, problems=[], left=0, ask=None,
+            from_version_id=s.current_version_id, version=None, started=now, updated=now, finished=None, error=None,
+        )
+        PREP_RUNS[session_id] = state
+        _ai_thread(s, _prep_run_worker, f"prep-run-{session_id}", (s, state, job, snap, use_assistant, button), job=job).start()
+    except BaseException:  # the thread never started: nothing stays "running", no job stays registered
+        if state.get("state") == "running":
+            state.update(state="error", error="the job could not start", finished=time.time(), updated=time.time())
+        cancel.end(job, "error")
+        raise
+    return {"state": "running"}
+
+
+def _prep_run_public(s: Session, state: dict[str, Any], full: bool) -> dict[str, Any]:
+    out = {k: state.get(k) for k in _PREP_RUN_PUBLIC}
+    out["problems"] = [dict(p) for p in state.get("problems") or []]
+    if out["state"] != "running" and _job_live(s.id, "prep"):
+        out["state"] = "running"  # its  thread is  still saving -- the end is said once the workbook is free (as the fixer's)
+    out["elapsed_s"] = round((state.get("finished") or time.time()) - state["started"], 1)
+    if state.get("state") == "error":  # only then: a question carries its feedback inside `ask`, with no red box beside it
+        out.update({k: state[k] for k in ("incident", "problem") if state.get(k)})
+    if full and out["state"] != "running" and s.result:
+        out["analysis"] = _session_public(s)
+    return out
+
+
+@app.get("/api/sessions/{session_id}/prep-run")
+def prep_run_status(session_id: str, full: int = 0) -> dict[str, Any]:
+    """Where  the prep-run  job is: state idle | running | done | ask | no_key | cancelled | error; the
+    stage (pass | assistant | write | numbers | undo | check | done) with  one plain sentence; the
+    round, the changes applied and refused, how many  problems the assistant fixed; each problem  that
+    was left after the rounds with its  route, its tries and how it ended; `left` (blocking problems
+    left at  the end, the outside files aside) and  `ask` (the question for the person, or null).
+    While the stage is pass or write, the Apply's own progress is in GET .../status, field "apply".
+    `full=1` once it has ended adds `analysis`: the workbook as GET /api/sessions/{id} gives it."""
+    s = _session(session_id)
+    state = PREP_RUNS.get(session_id)
+    if not state:
+        return {"state": "idle"}
+    return _prep_run_public(s, state, full=bool(full))
+
+
+def _prep_run_worker(s: Session, st: dict[str, Any], job: cancel.Job, snap: dict[str, Any], use_assistant: bool, button: str) -> None:
+    """The  job's thread.  `job`, `snap`: the job the route began and the workbook as it was then.
+    Cancelled -- or any error once the flag is set: ending Excel makes ordinary errors -- the whole
+    run  goes back to `snap` (every round, every fix) and the state  is "cancelled"."""
+    outcome = "error"
+    hold: dict[str, Any] = {"undo": None}  # how to take back a  fix of the assistant that is written  and not judged yet
+    try:
+        _prep_run_work(s, st, use_assistant, hold)  # steps 1 to 5
+        job.commit()  # step 6, the gate: a  Cancel after it is too late, the  run stands
+        _prep_run_end(s, st, button)  # step 7: done, or the question
+        outcome = "done"
+    except cancel.Cancelled:
+        outcome = "cancelled"
+    except HTTPException as exc:  # an Apply or a check refused or failed
+        if job.flag.is_set():  # a set flag wins over any error: no error, no incident
+            outcome = "cancelled"
+        else:
+            st.update(state="error", error=str(exc.detail)[:400], finished=time.time(), updated=time.time())
+            if exc.status_code >= 500:
+                with contextlib.suppress(Exception):
+                    st.update(_problem_fields(_report_problem(exc.__cause__ or exc, _PREP_RUN_STEP, s, stage=str(st.get("stage") or ""))))
+    except Exception as exc:  # the thread must never die silently
+        if job.flag.is_set():
+            outcome = "cancelled"
+        else:
+            st.update(state="error", error=_exc_text(exc)[:400], finished=time.time(), updated=time.time())
+            with contextlib.suppress(Exception):
+                st.update(_problem_fields(_report_problem(exc, _PREP_RUN_STEP, s, stage=str(st.get("stage") or ""))))
+    finally:
+        # the order: how it ended is decided above; then the restore, the state, the save, and last
+        # the end of the job -- until then the workbook reads busy. Whatever happened, the state is
+        # final  here: never "running".
+        try:
+            if outcome == "cancelled":
+                _restore(s, snap)
+                _statuses_stopped(s, job)
+                st.update(state="cancelled", title="Stopped", message=_CANCELLED, error=None, ask=None, version=None, pass_no=0, applied=0, refused=0,
+                          assistant_fixed=0, problem_no=0, problem_count=0, problems=[], left=0, finished=time.time(), updated=time.time())
+            elif outcome == "error" and hold["undo"] is not None:
+                # an error the try itself could not take back: a fix nobody judged never stays current
+                with contextlib.suppress(Exception):
+                    hold["undo"]()
+        finally:
+            if st.get("state") == "running":
+                st.update(state="cancelled" if outcome == "cancelled" else "error", finished=time.time(), updated=time.time(),
+                          error=None if outcome == "cancelled" else "the job stopped without saying why")
+            if outcome == "error":
+                with contextlib.suppress(Exception):
+                    st.update(version=_current_version(s), left=len(handoff.problems_left(s.readiness()["blocking"], s.result["validation_report"])))
+            _save(s)  # the rounds' versions and the kept fixes, or the workbook as it was
+            cancel.end(job, outcome)
+
+
+def _prep_run_work(s: Session, st: dict[str, Any], use_assistant: bool, hold: dict[str, Any]) -> None:
+    """Steps  1 to  5 of the job (DESIGN section 6): the rounds, what is left, the assistant on each
+    problem, and the rounds once more when a kept fix left Prep work."""
+    def stage(name: str, message: str, **facts: Any) -> None:
+        cancel.check()  # a cancelled run leaves  at its next stage, with nothing kept
+        st.update(stage=name, title=_PREP_RUN_TITLES.get(name, name), message=message, updated=time.time(), **facts)
+
+    def rounds() -> None:
+        base = st["pass_no"]  # the rounds after the assistant  go on counting
+
+        def write_round(ops: list[dict[str, Any]], n: int) -> tuple[int, int]:
+            stage("pass", handoff.round_message(base + n, len(ops)), pass_no=base + n)
+            out = _apply_and_version(s, ops, "prep", "Prep", reanalyze=True)
+            res = out["result"]
+            applied, refused = len(res.get("applied") or []), len(res.get("failed") or [])
+            st.update(applied=st["applied"] + applied, refused=st["refused"] + refused, updated=time.time())
+            if out.get("scan_error"):
+                # the round is written  and current, but its check did not  run: what the session knows
+                # is of the version before it, and  nothing may be decided from that
+                raise HTTPException(status_code=500, detail=f"The changes were written, but the check of the workbook that follows did not run: {out['scan_error']}")
+            return applied, refused
+
+        handoff.run_rounds(lambda: s.plan, write_round)
+
+    stage("pass", "Looking at what blocks the file…")
+    rounds()  # step 1
+    problems = handoff.problems_left(s.readiness()["blocking"], s.result["validation_report"])  # step  2
+    st.update(problems=problems, updated=time.time())
+    if not problems or not use_assistant:  # step 3: nothing left, or the rounds only (every problem stays "not_tried")
+        return
+    if not llm_available():
+        st["no_key"] = True  # the rounds that ran are kept; the end says that no AI key is saved
+        return
+    asked = problems[:handoff.MAX_PROBLEMS]  # the others stay "not_tried"
+    st.update(problem_count=len(asked))
+    kept = 0
+    for no, problem in enumerate(asked, start=1):  # step 4
+        st.update(problem_no=no)
+        if _prep_run_problem(s, st, stage, problem, no, len(asked), hold):
+            kept += 1
+            st.update(assistant_fixed=kept)
+        if problem.get("outcome") == "not_reached":
+            if not llm_available():
+                # the key was taken away while Start ran: nothing was sent, so the assistant was not asked,
+                # and the end says that no AI key is saved (as when there was none from  the start)
+                st["no_key"] = True
+                problem.update(outcome="not_tried", tries=0)
+            break  # 17 Nov 2026: not reached for this problem: the next ones stay "not_tried" (not asked)
+    if kept and handoff.pass_ops(s.plan):  # step 5: a kept fix left Prep work -- the rounds once more, no second turn of the assistant
+        rounds()
+
+
+def _prep_run_finding(s: Session, rule_id: str) -> dict[str, Any] | None:
+    """The  finding of  a rule that blocks the current version, or None when it blocks no more."""
+    if not any(b.get("rule_id") == rule_id for b in s.readiness()["blocking"]):
+        return None
+    return next((f for f in s.result["validation_report"]["findings"] if f.get("rule_id") == rule_id), None)
+
+
+def _prep_run_problem(s: Session, st: dict[str, Any], stage: Callable[..., None], problem: dict[str, Any], no: int, count: int, hold: dict[str, Any]) -> bool:
+    """Step  4 for  one problem: the memo, then up to handoff.MAX_TRIES tries (_prep_run_try). The entry
+    of the job's `problems` gets its tries and how it ended. True when a fix of the assistant was kept."""
+    rule = str(problem["rule_id"])
+    memo = HANDOFF_MEMO.setdefault(s.id, {})
+    kept = answered = False
+    earlier: str | None = None
+    detail = ""
+    while problem["tries"] < handoff.MAX_TRIES:
+        cancel.check()
+        finding = _prep_run_finding(s, rule)
+        if finding is None:  # gone:  its own fix cleared it, or the fix of the problem  before it did
+            problem["outcome"] = "fixed"
+            return kept
+        if problem["tries"] == 0:
+            # a. the memo: a  problem the assistant already failed on keeps  that outcome, with no model call
+            known = memo.get(handoff.memo_key(finding, s.result["workbook_analysis"]))
+            if known:
+                problem.update(outcome=known["outcome"], tries=known["tries"])
+                return False
+        stage("assistant", handoff.assistant_message(no, count))
+        problem["tries"] += 1
+        outcome, detail, heard = _prep_run_try(s, stage, rule, finding, earlier, detail, hold)
+        answered = answered or heard
+        problem["outcome"] = earlier = outcome
+        st.update(updated=time.time())
+        if outcome == "fixed":
+            kept = True  # a rule that got smaller and  is still blocking gets its second try  on what is left
+        if outcome == "not_reached":
+            break  # 17 Nov 2026: the assistant could not be reached: no second try (it would wait as long again)
+    finding = _prep_run_finding(s, rule)
+    if finding is None:
+        problem["outcome"] = "fixed"
+    elif answered and problem["outcome"] != "not_reached":
+        # it ends not fixed: remembered under the cells as they are now (after a fix that was kept, what is
+        # left of it). Not when the assistant was not reached on its last try (no connection, a timeout, a
+        # key the gateway refuses):  the next Start asks again.
+        memo[handoff.memo_key(finding, s.result["workbook_analysis"])] = {"outcome": problem["outcome"], "tries": problem["tries"]}
+    return kept
+
+
+def _prep_run_try(s: Session, stage: Callable[..., None], rule: str, finding: dict[str, Any], earlier: str | None, detail: str, hold: dict[str, Any]) -> tuple[str, str, bool]:
+    """One  try of  the assistant on one problem (steps 4b to 4j). -> (the outcome, a few words on it for
+    the next try's question, whether the assistant answered at all). On "fixed" the new  version is
+    kept and saved; on every other outcome the workbook is  exactly as before the try."""
+    snap = _snapshot(s)  # b.
+    statuses = (dict(s.scan), dict(s.apply_status))
+    before = s.current_version_id
+    blocking_before = handoff.sites_by_rule(s.readiness()["blocking"])
+    cells = handoff.cells_of(finding)
+    heard = writing = False
+
+    def undo() -> None:
+        """The workbook  as before this try. The scan and  the Apply status go back too (first: the
+        restore saves): nobody stopped  anything, and they would speak of a  version that is gone."""
+        s.scan, s.apply_status = dict(statuses[0]), dict(statuses[1])
+        _restore(s, snap)
+        hold["undo"] = None
+
+    try:
+        # c. the question, as the Assistant tab's "Propose a fix" for this finding, with every cell named
+        reply = answer_question([], handoff.question_for(finding, cells, earlier, detail), s.result["workbook_analysis"], s.result["validation_report"], s.plan)
+        cancel.check()
+        # 17 Nov 2026: heard only when an answer came. A call that failed (no connection, a timeout, a key
+        # the gateway refuses, a 500) comes back with "reached" False: never "it had no fix". A model
+        # that answered with no text (it declined) did  answer: "no_fix", remembered like any other.
+        heard = bool(reply.get("available", True)) and reply.get("reached", True) is not False
+        if not heard:
+            return "not_reached", "", heard
+        ops = list(reply.get("proposal") or [])
+        errors = [str(e) for e in reply.get("proposal_errors") or []]
+        if not ops or errors:  # d.
+            return "no_fix", (errors[0][:300] if errors else ""), heard
+        # e. the guard (handoff.narrow_problem): what may be written without a person. It is told which cells the
+        # scan lists as formula cells: a text typed as "=..." is a typed-in value, and those are never replaced
+        formulas_now = ((f.get("sheet"), f.get("cell")) for f in s.result["workbook_analysis"]["workbooks"][0].get("formulas", []))
+        wide = handoff.narrow_problem(ops, cells, formulas_now)
+        if wide:
+            return "too_wide", wide, heard
+        stage("write", handoff.WRITE_MESSAGE)  # f. nothing of the fix is saved until it is judged
+        hold["undo"] = undo
+        writing = True
+        out = _apply_and_version(s, ops, "assistant", "Assistant", reanalyze=False, save=False)
+        writing = False  # from here an error is one of the checks, not of the write
+        failed = out["result"].get("failed") or []
+        if failed:
+            undo()
+            return "not_written", str(failed[0].get("error") or "")[:300], heard
+        # g. the numbers check itself, between the version just before the fix and the version with
+        # it: only the fix is  judged. A check that could  not run is never a pass.
+        stage("numbers", handoff.NUMBERS_MESSAGE)
+        excel_worker.release(s.id)
+        numbers = compare_workbooks(s.paths[before], s.current_path, Moves([out["version"].get("change_log") or []]))
+        cancel.check()  # its Excel  ended by a  Cancel answers  "could not be compared": that is no verdict
+        changed = _shown_changed(numbers) if numbers.get("ran") else None
+        blocking_after = None
+        if changed == 0:  # h.
+            stage("check", handoff.CHECK_MESSAGE)
+            _run_scan(s, save=False)  # 17 Nov 2026: the fix is not judged yet: nothing of it reaches the state file
+            blocking_after = handoff.sites_by_rule(s.readiness()["blocking"])
+        outcome = handoff.judge(blocking_before, blocking_after, rule, changed)  # i.
+        if outcome == "fixed":
+            hold["undo"] = None
+            _save(s)  # the version is kept
+            return outcome, "", heard
+        stage("undo", handoff.undo_message(outcome))
+        undo()
+        return outcome, (handoff.changed_sample(numbers) if outcome == "numbers_changed" else ""), heard
+    except Exception as exc:  # j. an error between the write  and the judge never leaves the fix current
+        if cancel.flagged():  # a set flag wins  over any error
+            raise cancel.Cancelled() from None
+        if hold["undo"] is None:  # before the write: there  is no fix to take back, and  none to check
+            return ("no_fix" if heard else "not_reached"), "", heard
+        undo()
+        return ("not_written" if writing else "not_checked"), plain_error(exc)[:300], heard
+
+
+def _prep_run_end(s: Session, st: dict[str, Any], button: str) -> None:
+    """Step  7, after  the gate: what is left comes from the FINAL blocking list (the outside files
+    aside), not from the list the assistant was given. Nothing left: "done". Else "ask" about the
+    first one left,  in the words of app/handoff.py; "no_key" when the assistant was needed  and no AI
+    key is saved."""
+    final = handoff.problems_left(s.readiness()["blocking"], s.result["validation_report"])
+    seen = {p["rule_id"]: p for p in st.get("problems") or []}
+    for p in final:  # what the  run did with each one that is  still there ("not_tried": the assistant never saw it)
+        was = seen.get(p["rule_id"])
+        if was is not None:
+            p.update(tries=was["tries"], outcome=was["outcome"])
+    if not final:
+        end = {"state": "done", "title": _PREP_RUN_TITLES["done"], "message": " ".join(handoff.done_lines(st["applied"], st["assistant_fixed"])), "ask": None}
+    elif st.pop("no_key", False):
+        ask = handoff.no_key_ask(button)
+        end = {"state": "no_key", "title": "No AI key is saved", "message": " ".join(ask["lines"]), "ask": ask}
+    else:
+        first = final[0]
+        ref = None
+        with contextlib.suppress(Exception):  # the question never waits  on its report
+            what = {"not_tried": "left for a person: the assistant was not asked",
+                    "not_reached": "left for a person: the assistant could not be reached"}.get(str(first.get("outcome")), "not fixed by the assistant")
+            ref = _report_problem(None, "Assistant", s, rule_id=first.get("rule_id"), what=what)["ref"]
+        ask = handoff.build_ask(final, s.plan, ref, button)
+        end = {"state": "ask", "title": "Something is left", "message": " ".join(ask["lines"]), "ask": ask}
+    now = time.time()
+    # in one step: a look  that lands here never reads the last stage with a sentence of the one before
+    st.update(end, left=len(final), version=_current_version(s), stage="done", finished=now, updated=now, error=None)
+
+
 @app.get("/api/sessions/{session_id}/readiness")
 def readiness(session_id: str) -> dict[str, Any]:
-    """The one verdict -- blocked / unverified / ready -- with what stands
+    """The  one verdict  -- blocked / unverified / ready -- with what stands
     in the way and the next step, plus the Prep gauge history."""
     s = _session(session_id)
     r = s.readiness()
@@ -1517,10 +4588,10 @@ def readiness(session_id: str) -> dict[str, Any]:
 
 
 def _stored_errors(s: Session) -> int | None:
-    """Formula cells whose value Excel last stored is an error, from the scan's own load (still in the
-    workbook cache); None when that load is gone or kept no values, or when the fixer has work the
-    count cannot see: a sheet the scan skipped (the fixer reads every sheet), and -- with no error
-    counted -- an error typed as a constant or a formula holding #REF! (the fixer settles both)."""
+    """Formula  cells whose  value Excel last stored is an error, from the scan's own load (still in the
+    workbook cache); None when that load is gone or kept no values, or when the fixer has  work the
+    count cannot see: a sheet the scan skipped (the fixer  reads every sheet), and -- with  no error
+    counted -- an error typed as  a constant or a formula holding #REF! (the fixer settles both)."""
     from openpyxl.cell.cell import ERROR_CODES
 
     from app.inventory import _WORKBOOK_CACHE
@@ -1535,7 +4606,7 @@ def _stored_errors(s: Session) -> int | None:
     n = 0
     for ws in wb.worksheets:
         if getattr(ws, "mind_ready_ignored", False):
-            return None  # its errors are not known
+            return None  # its  errors are not known
         cached = getattr(ws, "mind_ready_cached", None)
         if cached is None:
             if not hasattr(ws, "_cells"):
@@ -1552,7 +4623,7 @@ def _stored_errors(s: Session) -> int | None:
 
 @app.get("/api/sessions/{session_id}/estimate")
 def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
-    """How long "Do everything" may take, per step (low / likely / high seconds) with the
+    """How  long "Do  everything" may take, per step (low / likely / high seconds) with the
     caveat; `loop=false` when the chain will skip the loop. See app/estimate.py."""
     s = _session(session_id)
     if not s.result:
@@ -1566,7 +4637,7 @@ def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
         scan_s = sum(float(x.get("seconds") or 0) for x in s.scan.get("stages", []) if x.get("stage") != "convert") or None
     wb0 = s.result["workbook_analysis"]["workbooks"][0]
     blocking = sum(int(a.get("count") or 0) for a in s.plan if a.get("level") == "blocking" and a.get("default_on"))
-    # the pivot tables Prep turns into cells cost far more than a plain write: priced by their size
+    # the pivot tables Prep turns into cells cost far  more than a plain write: priced by their size
     from openpyxl.utils.cell import range_boundaries
 
     pivots: list[tuple[str, int]] = []
@@ -1580,37 +4651,42 @@ def chain_estimate(session_id: str, loop: bool = True) -> dict[str, Any]:
                     cells = 0
                 pivots.append((str(o.get("op")), cells))
     stored = _stored_errors(s)
-    # with errors left, the original's own recalculation runs once per session (the first time)
+    # with errors left,  the original's own recalculation runs once  per session (the first time)
     baseline_mb = 0.0
     original = _original_path(s)
-    if s.original_baseline is None and stored != 0 and original is not None:
+    if original is not None and str(original) not in s.baselines and stored != 0:
         try:
             baseline_mb = original.stat().st_size / 2**20
         except OSError:
             baseline_mb = 0.0
-    # the worker holds the next copy open only with enough free memory, and works out the
-    # recalculation ahead only when that is on: otherwise every step pays its own Excel
+    # the worker holds  the next copy open only with enough free memory, and works  out the
+    # recalculation ahead only when that is  on: otherwise every step pays its own Excel
     worker = excel_worker.enabled() and com_available() and excel_worker.free_mb() >= excel_worker.HOLD_MIN_FREE_MB
     return estimate_chain(mb, scan_s, len(wb0.get("formulas", [])), stored, blocking, loop, worker=worker,
                           recalc_ahead=excel_worker.speculative_recalc(), baseline_mb=baseline_mb, pivots=pivots)
 
 
 def _model_map_of(s: Session, refresh: bool = False) -> dict[str, Any]:
-    """The model map of the current analysed version, built once per version."""
+    """The  model map  of the current analysed version, built once per version."""
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
     if s.model_map is None or refresh or s.model_map_version_id != s.current_version_id:
+        analysis = s.result["workbook_analysis"]
         try:
-            s.model_map = json.loads(json.dumps(build_model_map(s.result["workbook_analysis"]), default=str))  # dates and openpyxl values as text
+            # 17 Nov 2026: through cancel.call, so a job's Cancel is heard while a big model's map is built
+            # (38 s on Model A): the  job leaves at once and the map, built to its end,  is dropped
+            built = cancel.call(lambda: build_model_map(analysis))
+            s.model_map = json.loads(json.dumps(built, default=str))  # dates and openpyxl values as  text
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"model map failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
         s.model_map_version_id = s.current_version_id
+        _save(s)
     return s.model_map
 
 
 @app.get("/api/sessions/{session_id}/model-map")
 def model_map(session_id: str, refresh: bool = False) -> dict[str, Any]:
-    """Where the model's inputs, loop driver, run settings and outputs are: read off the
+    """Where  the model's  inputs, loop driver, run settings and outputs are: read off the
     analysed copy's macros, names, dropdowns, sheet names and formulas. Cached per analysed version."""
     s = _session(session_id)
     _model_map_of(s, refresh)
@@ -1622,25 +4698,36 @@ def _truthy(v: Any) -> bool:
 
 
 def _loop_plan_of(s: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    """The Mind loop plan for the current version with the caller's choices:
-    name / names, first, last, count_cell, clear_old."""
+    """The  Mind loop  plan for the current version with the caller's choices:
+    name / names, first, last, count_cell, clear_old, loops, macro (whose loops: one macro at a time);
+    repairs (default on): the formula repairs Prep still  has for this version are written with the loop."""
     mp = _model_map_of(s)
     names = payload.get("names") if isinstance(payload.get("names"), dict) else None
+    loops = payload.get("loops")
+    if isinstance(loops, str):  # the GET sends  each loop's choices as JSON
+        try:
+            loops = json.loads(loops) if loops.strip() else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="loops: not JSON") from exc
+    if loops is not None and not isinstance(loops, dict):
+        raise HTTPException(status_code=422, detail="loops: an object by driver cell")
     try:
         plan = build_loop_plan(s.result["workbook_analysis"], mp, names=names, name=payload.get("name") or None, first=payload.get("first"), last=payload.get("last"),
-                               count_cell=payload.get("count_cell") or None, dynamic=not _truthy(payload.get("fixed_ranges")), clear_old=bool(payload.get("clear_old")))
+                               count_cell=payload.get("count_cell") or None, dynamic=not _truthy(payload.get("fixed_ranges")), clear_old=bool(payload.get("clear_old")), loops=loops,
+                               prep_plan=s.plan, repairs=payload.get("repairs") is None or _truthy(payload.get("repairs")), macro=str(payload.get("macro") or "").strip() or None)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"loop plan failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
     return json.loads(json.dumps(plan, default=str))
 
 
 @app.get("/api/sessions/{session_id}/mind-loop-plan")
-def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False, fixed_ranges: bool = False) -> dict[str, Any]:
-    """The macro's run loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
+def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str = "", count_cell: str = "", clear_old: bool = False, fixed_ranges: bool = False, loops: str = "", repairs: bool = True,
+                   macro: str = "") -> dict[str, Any]:
+    """The  macro's run  loop as Mind formulas -- MM_LOOP in the driver cells, MM_RESULT in
     the block the macro writes per pass -- as a plan (nothing written): the loops, the outputs,
-    the cleared areas, the operations, and what cannot be built and why."""
+    the cleared areas, the  operations, and what cannot be built and why."""
     s = _session(session_id)
-    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old, "fixed_ranges": fixed_ranges})
+    plan = _loop_plan_of(s, {"name": name, "first": first, "last": last, "count_cell": count_cell, "clear_old": clear_old, "fixed_ranges": fixed_ranges, "loops": loops, "repairs": repairs, "macro": macro})
     public = {k: v for k, v in plan.items() if k != "operations"}
     public["operations"] = [_public_op(o) for o in plan["operations"][:200]]
     public["operation_count"] = len(plan["operations"])
@@ -1649,22 +4736,289 @@ def mind_loop_plan(session_id: str, name: str = "", first: str = "", last: str =
 
 @app.post("/api/sessions/{session_id}/mind-loop-plan/apply")
 def mind_loop_apply(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Write the Mind loop plan (built again from the same choices, so what is written is
+    """Write  the Mind  loop plan (built again from the same choices, so what is written is
     what was shown) into a new version and re-analyse it."""
     s = _session(session_id)
     _refuse_while_fixing(session_id)
-    plan = _loop_plan_of(s, payload)
-    ops = plan["operations"]
-    if not ops:
-        raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan["notes"]) or "no loop could be built"))
-    out = _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True)))
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        # 17 Nov 2026: the plan is built inside the job.  On a new version it builds the model map first
+        # (38 s  on Model A): a Cancel in  those seconds must find the job, not  "Nothing was running."
+        plan = _loop_plan_of(s, payload)
+        cancel.check()
+        ops = plan["operations"]
+        if not ops:
+            raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan["notes"]) or "no loop could be built"))
+        out = _apply_and_version(s, ops, "loop", "Mind loop", bool(payload.get("reanalyze", True)))
+        out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
+        return out
+
+    return _job_route(s, "apply", work)
+
+
+# --- Mind instances (one copy of the model per  key of the model-point table) ----------------
+def _instances_stem(s: Session) -> str:
+    """The  uploaded workbook's  file stem with only letters, digits and underscores: the model's
+    name in Mind and the start of every file this feature writes."""
+    original = _original_path(s) or s.current_path
+    stem = re.sub(r"[^A-Za-z0-9_]+", "_", Path(original).stem).strip("_")
+    return stem or "model"
+
+
+def _loop_names(raw: Any) -> list[str]:
+    """The  loops copies  are made from: a list of loop names or driver cells, or the same as text
+    (comma separated, or a JSON list)."""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="loops: not JSON") from exc
+        else:
+            raw = [x for x in text.split(",")]
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise HTTPException(status_code=422, detail="loops: a list of loop names or driver cells")
+    return [x.strip() for x in raw if x.strip()]
+
+
+def _instance_plan_of(s: Session, key: Any, keys: Any, loops: Any = None, results: Any = None, loop_choices: Any = None, macro: Any = None) -> dict[str, Any]:
+    """The  Mind instances  plan for the current version with the caller's choices: the key column
+    (a header text or a column letter; empty = the plan's own choice) and which keys the main
+    workbook lists ("present"  = only keys that have rows, "all" = every key of  the macro's list).
+    `loops` (loop names or  driver cells) makes one copy per combination  of those loops' values
+    instead, `results` names the block the main workbook  shows for every copy, and `loop_choices`
+    holds each  loop's own choices as the Mind loop panel sends them (by driver cell); `macro` is the
+    macro whose loop the copies by the table use (the loops asked for name their own macro).
+    The plan with no key, keys=present and no loops is kept per version: the panel's preview and the
+    instance finder both ask for exactly that one. Any other is built fresh  every time.
+
+    As with the Mind loop, the formula repairs Prep still has for this version (CELL / INFO frozen,
+    OFFSET ranges written out, ...) are written with a ready plan: a version that goes to Mind before
+    Prep must compute what Excel does (Model D: CELL("filename") made every calculation sheet NaN)."""
+    keys = str(keys or "present").strip().lower()
+    if keys not in ("present", "all"):
+        raise HTTPException(status_code=422, detail="keys must be 'present' or 'all'")
+    key = str(key).strip() if key is not None else ""
+    names = _loop_names(loops)
+    results = str(results).strip() if results not in (None, "") else ""
+    if isinstance(loop_choices, str):
+        try:
+            loop_choices = json.loads(loop_choices) if loop_choices.strip() else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="loop_choices: not JSON") from exc
+    if loop_choices is not None and not isinstance(loop_choices, dict):
+        raise HTTPException(status_code=422, detail="loop_choices: an object by driver cell")
+    mp = _model_map_of(s)
+    macro = str(macro or "").strip() or None
+    default = key == "" and keys == "present" and not names and not results and not loop_choices and not macro
+    if default and s.instance_plan_default is not None and s.instance_plan_default_version_id == s.current_version_id:
+        return s.instance_plan_default
+    analysis = s.result["workbook_analysis"]
+    try:
+        loop_plan = build_loop_plan(analysis, mp, loops=loop_choices or None, macro=macro)
+        # one loop plan per macro (Excel runs each on its own): the loops asked for pick theirs
+        loop_plans = [loop_plan] + [build_loop_plan(analysis, mp, loops=loop_choices or None, macro=m["name"]) for m in loop_plan.get("macros") or [] if not m.get("chosen")]
+        if names:
+            loop_plan = pick_loop_plan(loop_plans, names)
+        plan = build_instance_plan(analysis, mp, loop_plan=loop_plan, key=key or None, keys=keys, model_name=f"{_instances_stem(s)}_instances",
+                                   loops=names or None, results=results or None)
+        if len(loop_plans) > 1:
+            plan["loop_options"] = loop_options_of(loop_plans)
+        if plan.get("status") == "ready" and plan.get("operations"):
+            plan.setdefault("counts", {})
+            _add_repairs(plan, plan["operations"], s.plan, True, what="the instances")
+            plan["operation_count"] = len(plan["operations"])
+            plan["counts"]["operations"] = len(plan["operations"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"instances plan failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
+    plan = json.loads(json.dumps(plan, default=str))
+    if default:
+        s.instance_plan_default, s.instance_plan_default_version_id = plan, s.current_version_id
+    return plan
+
+
+@app.get("/api/sessions/{session_id}/mind-instances-plan")
+def mind_instances_plan(session_id: str, key: str = "", keys: str = "present", loops: str = "", results: str = "", loop_choices: str = "", macro: str = "") -> dict[str, Any]:
+    """The  macro's run  loop as Mind instances -- one copy of the model per value of a key column of
+    the model-point table, a loop inside each copy over its own rows, and a second  small main
+    workbook with the keys and the results -- as a  plan (nothing written): the loop, the  table, the
+    key and its candidates, the output  block, the operations, and what cannot be built and why.
+    `loops` (comma  separated loop names or driver cells): one  copy per combination of their values
+    instead; `results`: the block the main workbook shows for every copy."""
+    s = _session(session_id)
+    plan = _instance_plan_of(s, key, keys, loops, results, loop_choices, macro)
+    public = {k: v for k, v in plan.items() if k != "operations"}
+    operations = list(plan.get("operations") or [])
+    public["operations"] = [_public_op(o) for o in operations[:200]]
+    public["operation_count"] = len(operations)
+    return {"version_id": s.current_version_id, "plan": public}
+
+
+@app.post("/api/sessions/{session_id}/mind-instances-plan/apply")
+def mind_instances_apply(session_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Write  the Mind  instances plan (built again from the same choices, so what is written is what
+    was shown) into a new version and re-analyse it; then copy that version under the model's Mind
+    name, write  the main workbook beside it and zip both for the download.  Once the version exists
+    a failure of  the main-workbook step is reported in `warnings`,  not raised: the version stays."""
+    s = _session(session_id)
+    _refuse_while_fixing(session_id)
+
+    def work(_job: cancel.Job) -> dict[str, Any]:
+        # 17 Nov 2026: the plan is built  inside the job (as for the Mind  loop): a Cancel while the model
+        # map of a new version is built finds the job
+        plan = _instance_plan_of(s, payload.get("key"), payload.get("keys"), payload.get("loops"), payload.get("results"), payload.get("loop_choices"), payload.get("macro"))
+        cancel.check()
+        ops = list(plan.get("operations") or [])
+        if not ops:
+            raise HTTPException(status_code=422, detail="nothing to write: " + ("; ".join(plan.get("notes") or []) or "no instances could be built"))
+        return _instances_apply(s, plan, ops, payload)
+
+    return _job_route(s, "apply", work)
+
+
+def _instances_apply(s: Session, plan: dict[str, Any], ops: list[dict[str, Any]], payload: dict[str, Any]) -> dict[str, Any]:
+    """The  work of  POST .../mind-instances-plan/apply, all of it inside the route's one job (17 Nov
+    2026): cancelled at any point, the new version, the main workbook's zip and the pointer to the
+    older zip all go  back (the main workbook's Excel is this thread's, so the Cancel  ends it)."""
+    out = _apply_and_version(s, ops, "instances", "Mind instances", bool(payload.get("reanalyze", True)))
+    stem = _instances_stem(s)
+    main = plan.get("main") if isinstance(plan.get("main"), dict) else {}
+    model_file = str(main.get("model_file") or f"{stem}_instances{s.current_path.suffix}")
+    main_file = str(main.get("file") or f"{stem}_Main.xlsx")
+    s.instances_zip = None  # an older zip belongs to  an older version
+    warnings: list[str] = []
+    download: str | None = None
+    status = out["result"]["status"]
+    # a refused change (the key  column, the driver, a result cell) leaves a model the plan  does not
+    # describe: no main workbook and no  zip for it. A paste-area cell that stayed is not that.
+    refused = [f for f in out["result"].get("failed") or [] if f.get("op") != "clear_cell"]
+    if status == "APPLIED" or (status == "PARTIAL" and not refused):
+        try:
+            folder = s.work_dir / "instances" / str(out["version"]["id"])
+            folder.mkdir(parents=True, exist_ok=True)
+            model_path = folder / model_file  # the external references of the main workbook use this name
+            shutil.copyfile(s.current_path, model_path)
+            main_path = folder / main_file
+            with perf_stage("instances_main_workbook", file=main_path.name, keys=len(main.get("keys") or [])):
+                out["main_workbook"] = write_main_workbook(plan, model_path, main_path)
+            s.instances_zip = Path(zip_for_mind(model_path, main_path, folder / f"{stem}_instances.zip"))
+            download = f"/api/sessions/{s.id}/mind-instances/download"
+        except Exception as exc:
+            cancel.check()  # its Excel ended by a Cancel is not a warning: the whole build goes back
+            warnings.append(f"The main workbook could not be written: {type(exc).__name__}: {str(exc)[:200]}. The new version of the model exists; build the instances again to retry.")
+    elif status == "PARTIAL":
+        where = ", ".join(f"{f.get('sheet')}!{f.get('cell') or f.get('ref') or f.get('row') or f.get('column')}" for f in refused[:4])
+        warnings.append(f"{len(refused)} change(s) were refused ({where}{', …' if len(refused) > 4 else ''}): the new version is not the model the plan describes, "
+                        "so the main workbook and the zip were not made. Look at the refused changes, then build the instances again.")
+    else:
+        warnings.append("The changes were not written into the model, so the main workbook and the zip were not made.")
     out["plan"] = {k: v for k, v in plan.items() if k != "operations"}
-    return out
+    out["download"] = download
+    out["files"] = [model_file, main_file]
+    out["warnings"] = warnings
+    if not cancel.flagged():  # after a Cancel the job's restore does the saving
+        _save(s)  # the zip of this build (the version itself was saved by the Apply)
+    return json.loads(json.dumps(out, default=str))
+
+
+@app.get("/api/sessions/{session_id}/mind-instances/download")
+def mind_instances_download(session_id: str):
+    """Both  files of  the last "Build the Mind instances" -- the model and its main workbook -- as one
+    zip, to upload together to one Mind project."""
+    s = _session(session_id)
+    path = s.instances_zip
+    if path is None or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="nothing built yet")
+    return FileResponse(str(path), media_type="application/zip", filename=f"{_instances_stem(s)}_instances.zip")
+
+
+# --- Instance finder (where Mind instances or a loop  would help; nothing written) -------------
+def _builder_block(s: Session, result: dict[str, Any]) -> dict[str, Any]:
+    """The  builder's real  choice of key for this version -- its plan with no key chosen, built once
+    per version and kept (the panel's preview computes exactly this plan) -- compared with the
+    finder's top dimension  that has a key. Falls back to the finder's own rule  block (`source`
+    "rule") when the plan cannot  be built."""
+    if s.instance_plan_default is None or s.instance_plan_default_version_id != s.current_version_id:
+        try:
+            _instance_plan_of(s, "", "present")  # fills the cache: the builder's sheet  reads happen once per version
+        except HTTPException:
+            return dict(result.get("builder") or {})
+    plan_key = (s.instance_plan_default or {}).get("key") or {}
+    top = next((d for d in result.get("dimensions") or [] if d.get("key")), None)
+    # None when there is nothing to compare  -- no column dimension, or a plan  without a key (a looped table
+    # with no text column) -- so the panel shows no builder line instead of "another key: column null"
+    same = (top["key"].get("column") == plan_key.get("column")) if (top and plan_key.get("column")) else None
+    return {"column": plan_key.get("column"), "header": plan_key.get("header"), "chosen_by": plan_key.get("chosen_by"),
+            "candidates": [c.get("column") for c in plan_key.get("candidates") or [] if isinstance(c, dict)],
+            "matches_top": same, "source": "plan"}
+
+
+def _instance_finder_of(s: Session, refresh: bool = False) -> dict[str, Any]:
+    """The  instance finder's  result for the current analysed version, built once per version. A new
+    version or `refresh` builds it again and forgets the assistant's block."""
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+    if s.instance_finder is None or refresh or s.instance_finder_version_id != s.current_version_id:
+        mp = _model_map_of(s)
+        analysis = s.result["workbook_analysis"]
+        try:
+            with perf_stage("instance_finder", file=s.current_path.name, formulas=len(analysis["workbooks"][0].get("formulas") or [])):
+                loop_plan = build_loop_plan(analysis, mp)
+                result = json.loads(json.dumps(find_instances(analysis, mp, loop_plan=loop_plan), default=str))
+                result["builder"] = _builder_block(s, result)
+                cancel.check()  # 17 Nov 2026: cancelled before the result is kept, the  last one (and its explanation) stays
+                s.instance_finder = result
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"instance finder failed: {type(exc).__name__}: {str(exc)[:200]}") from exc
+        s.instance_finder_version_id = s.current_version_id
+        s.instance_finder_assistant = None
+        _save(s)
+    return s.instance_finder
+
+
+@app.get("/api/sessions/{session_id}/instance-finder")
+def instance_finder(session_id: str, assistant: str = "0", refresh: str = "0") -> dict[str, Any]:
+    """Where  Mind instances  or a loop would help: grouping columns of the looped table, repeated
+    blocks and sheets, near copies -- ranked, with evidence; nothing written. `assistant=1` adds the
+    assistant's explanation and order on top (the  deterministic result alone when there is no key or
+    no answer: the  assistant never turns into an error).  `refresh=1` builds the result again."""
+    s = _session(session_id)
+    if not s.result:
+        raise HTTPException(status_code=409, detail="no analysis yet")
+
+    def work(job: cancel.Job) -> dict[str, Any]:
+        result = _instance_finder_of(s, _truthy(refresh))
+        if not _truthy(assistant):
+            return {"version_id": s.current_version_id, "finder": result}
+        if s.instance_finder_assistant is None:
+            advise = make_finder_advisor()
+            if advise is None:
+                block = {**EMPTY_ASSISTANT, "asked": True, "available": False, "message": "No AI key is saved yet: paste one under Advanced > Assistant."}
+            else:
+                cancel.check()  # 17 Nov 2026:  between the finder and the assistant's call
+                try:  # last line of defence: the  assistant never turns into an error
+                    with perf_stage("instance_finder_assistant", file=s.current_path.name), _ai_scope(s):
+                        block = advise(result)
+                except Exception as exc:
+                    block = {**EMPTY_ASSISTANT, "asked": True, "available": True, "message": f"Request failed: {type(exc).__name__}"}
+                cancel.check()  # a call  given up on a Cancel is not "Request failed"
+            if block.get("available") and not block.get("message"):
+                job.commit()  # the gate before the explanation is kept
+                s.instance_finder_assistant = block  # an answer is kept per version; no key or a failed call is asked again next time
+                _save(s)
+        else:
+            block = s.instance_finder_assistant
+        return {"version_id": s.current_version_id, "finder": merge_assistant(result, block)}
+
+    return _job_route(s, "finder", work)
 
 
 @app.get("/api/sessions/{session_id}/cells")
 def cells(session_id: str, sheet: str, cell: str, rows: int = 3, cols: int = 3) -> dict[str, Any]:
-    """What is in the workbook around a cell: contents (values) and formulas,
+    """What  is in  the workbook around a cell: contents (values) and formulas,
     for the per-error workbook view. Values come from the last recalculation
     of the current version when there is one, else from the analysis copy."""
     s = _session(session_id)
@@ -1674,10 +5028,10 @@ def cells(session_id: str, sheet: str, cell: str, rows: int = 3, cols: int = 3) 
     return cell_window(s.result["workbook_analysis"], sheet, cell, rows=rows, cols=cols, values_path=fresh)
 
 
-# --- Grid Namer ---------------------------------------------------------------
+# ---  Grid Namer ---------------------------------------------------------------
 @app.get("/api/mind-flags")
 def mind_flags() -> dict[str, Any]:
-    """The documented Mind title flags (references/mind-flags.yaml), for the
+    """The  documented Mind  title flags (references/mind-flags.yaml), for the
     Grid Namer's flag picker. Header-cell markers and alias spellings are
     left out -- they are not written into a grid title."""
     flags = [
@@ -1690,10 +5044,10 @@ def mind_flags() -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/sheet-cells")
 def sheet_cells(session_id: str, sheet: str, max_rows: int = 400, max_cols: int = 60) -> dict[str, Any]:
-    """The whole (used) area of one sheet of the current version, for the Grid
+    """The  whole (used)  area of one sheet of the current version, for the Grid
     Namer's workbook view: per cell the calculated value when the file carries
-    one, else the formula text. Values come from the last recalculation of the
-    current version when there is one, else from the analysis copy."""
+    one, else the formula text. Values come from the last  recalculation of the
+    current version when there is one, else from the  analysis copy."""
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
@@ -1745,14 +5099,15 @@ def sheet_cells(session_id: str, sheet: str, max_rows: int = 400, max_cols: int 
 
 @app.post("/api/sessions/{session_id}/grid-namer")
 def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """The Grid Namer's Submit: each user-selected area becomes a '#Name /Flags'
+    """The  Grid Namer's  Submit: each user-selected area becomes a '#Name /Flags'
     grid title (written with the reference-safety rules -- a refused area comes
     back in `skipped` with the reason); with nameRest (default) every other
-    untitled grid is titled by the existing conventions in the same apply. The
-    result is a new verified version of the workbook."""
+    untitled grid is  titled by the existing conventions in the same apply. The
+    result is  a new verified version of the  workbook."""
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    _refuse_while_bringing_in(s)
     raw_areas = payload.get("areas")
     if not isinstance(raw_areas, list) or not raw_areas:
         raise HTTPException(status_code=422, detail="areas must be a non-empty list")
@@ -1776,12 +5131,18 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         auto_ops, auto_skipped = plan_create_grid_titles(
             analysis, report, s.grid_names or None,
             exclude=manual["exclude"], reserved=manual["reserved"],
-            pre_titled=manual["titled_cells"], pre_inserted=manual["inserted_rows"],
+            pre_titled=manual["titled_cells"], pre_inserted=manual["inserted_rows"], pre_banded=manual.get("banded_rows"),
         )
         ops += auto_ops
         skipped += auto_skipped
         auto_count = len(auto_ops)
+    # 17 Nov 2026: the write, the new  version and its scan are one job (kind "apply"): cancelled at  any
+    # point, the session goes back to what  it was (409 while another job changes the workbook)
+    return _job_route(s, "apply", lambda _job: _grid_namer_apply(s, payload, manual, ops, skipped, auto_count))
 
+
+def _grid_namer_apply(s: Session, payload: dict[str, Any], manual: dict[str, Any], ops: list[dict[str, Any]], skipped: list[str], auto_count: int) -> dict[str, Any]:
+    """The  work of  the Grid Namer's Submit, inside the route's job."""
     before = _before_apply(s)
     res = _tracked_apply(s, ops, bool(payload.get("reanalyze", True)))
     output = Path(res["output_path"])
@@ -1801,6 +5162,10 @@ def grid_namer(session_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
         out.update(_run_scan(s, output))
     out["outcome"] = _outcome(s, ops, res, before, reanalyzed)
     out["prep_progress"] = prep_progress(s.plan_history, s.apply_history)  # the gauge, this Apply included
+    if res.get("failed"):
+        out.update(_problem_fields(_report_problem(None, "Grid Namer", s, what="not written", stage="apply_writes", failed_ops=res["failed"])))
+    if not cancel.flagged():  # after a Cancel the job's restore does the saving
+        _save(s)
     return out
 
 
@@ -1809,26 +5174,45 @@ def reports(session_id: str) -> dict[str, Any]:
     s = _session(session_id)
     if not s.result:
         raise HTTPException(status_code=409, detail="no analysis yet")
+    _refuse_while_changing(s)  # 17  Nov 2026:  a cancelled job's restore would drop the two files from the downloads
     analysis = s.result["workbook_analysis"]
     report = s.result["validation_report"]
     copy_path = Path(analysis["source"]["copy_path"])
     stem = s.current_path.stem
     out_dir = s.work_dir / "reports" / s.current_version_id
-    excel_worker.release(s.id)
-    standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
-    built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
-    return {
-        "standalone_name": _register_file(s, standalone),
-        "workbook_name": _register_file(s, Path(built.path)),
-        "method": built.method,
-        "verified_opens_in_excel": built.verified_opens_in_excel,
-        "warnings": built.warnings,
-    }
+
+    def work(job: cancel.Job) -> dict[str, Any]:
+        excel_worker.release(s.id)
+        standalone = build_standalone_report(report, out_dir / f"{stem}_mind_readiness_report.xlsx", rules_by_id=engine().rules, source_name=s.current_path.name)
+        cancel.check()  # 17 Nov 2026: between the two files
+        built = build_report_workbook(copy_path, report, out_dir / f"{stem}_with_report{s.current_path.suffix}", rules_by_id=engine().rules, source_name=s.current_path.name)
+        _commit_alone(job)  # the gate before the one write: cancelled before it, the two files are not  registered
+        out = {
+            "standalone_name": _register_file(s, standalone),
+            "workbook_name": _register_file(s, Path(built.path)),
+            "method": built.method,
+            "verified_opens_in_excel": built.verified_opens_in_excel,
+            "warnings": built.warnings,
+        }
+        _save(s)  # the two report files stay downloadable after a reopen
+        return out
+
+    return _job_route(s, "reports", work)
 
 
 @app.get("/api/sessions/{session_id}/versions")
 def versions(session_id: str) -> list[dict[str, Any]]:
     return _session(session_id).versions
+
+
+_MEDIA_TYPES = {
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    # the  Mind inputs  (UTF-8, no BOM: what Mind's Input Manager reads) and their zip
+    ".csv": "text/csv; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".zip": "application/zip",
+}
 
 
 @app.get("/api/sessions/{session_id}/files/{file_name}")
@@ -1837,11 +5221,11 @@ def download(session_id: str, file_name: str):
     path = s.files.get(file_name)
     if path is None or not Path(path).is_file():
         raise HTTPException(status_code=404, detail=f"no file {file_name} in this session")
-    media = "application/vnd.ms-excel.sheet.macroEnabled.12" if Path(path).suffix.lower() == ".xlsm" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    media = _MEDIA_TYPES.get(Path(path).suffix.lower(), _MEDIA_TYPES[".xlsx"])
     return FileResponse(str(path), media_type=media, filename=file_name)
 
 
-# --- built front-end ------------------------------------------------------------------------
+# ---  built front-end  ------------------------------------------------------------------------
 if DIST_DIR.is_dir():
     from fastapi.staticfiles import StaticFiles
 
@@ -1865,7 +5249,7 @@ else:
 
 
 def _answers_as_mind_ready(port: int, timeout: float = 20) -> bool:
-    """A Mind Ready server already answers on `port` (slowly, when it is in
+    """A  Mind Ready  server already answers on `port` (slowly, when it is in
     the middle of analysing a large workbook -- hence the long timeout)."""
     import urllib.request
 
@@ -1890,7 +5274,7 @@ def main() -> None:
 
     port = int(os.environ.get("MIND_READY_PORT") or SETTINGS.port)
     url = f"http://localhost:{port}"
-    # Started a second time (F5 while the .bat window is open, or the reverse): say so and
+    # Started  a second  time (F5 while the .bat window is open, or the reverse): say so and
     # open the app, instead of failing on "only one usage of each socket address".
     if _port_is_taken(port):
         print(f"Port {port} is already in use. Checking whether it is Mind Ready (up to 20 s) ...")

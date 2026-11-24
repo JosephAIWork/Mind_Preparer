@@ -1,9 +1,9 @@
-"""RSK-* validators: upload-risk review items. RSK-003/004/005 are
+"""RSK-*  validators: upload-risk  review items. RSK-003/004/005 are
 inventory-style (the doc's own text is "Review hyperlinks." / "Review LET
 formulas." / "Inventory external named ranges."); RSK-001/002 are the two
-BLOCKER checks the doc phrases as FAIL IF conditions, implemented on the
-detected grids (KB 'MM_SETSIZE function' example 3 / 'Dynamic resizing of
-grids' for resize drivers; 'MM_RANGE function' for array results)."""
+BLOCKER checks the doc phrases as FAIL IF conditions,  implemented on the
+detected grids (KB 'MM_SETSIZE function' example 3 / 'Dynamic  resizing of
+grids' for resize drivers; 'MM_RANGE  function' for array results)."""
 from __future__ import annotations
 
 from typing import Any
@@ -11,6 +11,7 @@ from typing import Any
 from ..formula_utils import ref_text, called_functions, parse_ref
 from ..grids import all_grids, grid_containing
 from ..inventory import mm_calls
+from ..plain_codes import cite
 from ._common import finding, fmt_grids, fmt_sites, grid_location
 
 RESIZE_FLAGS = {"resize", "resizerow", "resizecolumn"}
@@ -41,7 +42,7 @@ def external_named_ranges(rule, analysis: dict[str, Any], config: dict[str, Any]
 
 
 def rsk_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RSK-001: a grid with two resize drivers (two MM_SETSIZE cells, or
+    """RSK-001:  a grid  with two resize drivers (two MM_SETSIZE cells, or
     conflicting row-resize flags) has an ambiguous dynamic-reference group."""
     setsize_by_grid: dict[tuple[str, str], list[str]] = {}
     for c in mm_calls(analysis, "MM_SETSIZE"):
@@ -73,7 +74,7 @@ def rsk_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """RSK-002: array formulas whose target range crosses the grid boundary,
+    """RSK-002:  array formulas  whose target range crosses the grid boundary,
     (MM_RANGE placement -- KB: 'must be contained in a table without any
     other formulas or inputs' -- is RNG-001 in validators/kb.py)."""
     oversized = []
@@ -90,7 +91,7 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
                 continue
             g = grid_containing(by_sheet.get(f["sheet"], []), origin["r1"], origin["c1"])
             if g and (target["r2"] > g["last_row"] or target["c2"] > g["last_col"]):
-                # the first cell Mind names: just past the grid's last column (or its last row)
+                # the  first cell Mind names: just past the grid's last column (or  its last row)
                 beyond = ref_text(g["last_col"] + 1, target["r1"]) if target["c2"] > g["last_col"] else ref_text(target["c1"], g["last_row"] + 1)
                 oversized.append({"sheet": f["sheet"], "cell": f["cell"], "array_ref": f["array_ref"], "grid_ref": g["ref"], "grid": g["display_name"], "first_cell_outside": beyond, "headers": g["ref"].split(":")[0] + ":" + ref_text(g["last_col"], g["first_row"])})
     if oversized:
@@ -101,7 +102,7 @@ def rsk_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
             f"Ensure that the column headers cover the entire array formula'). First: {first['sheet']}!{first['cell']} spans {first['array_ref']} but its grid "
             f"{first['grid']} stops at {first['grid_ref'].split(':')[-1]} (first cell outside: {first['first_cell_outside']}). "
             "Fix: extend the header row over every column the array covers (a merged header counts for all the columns it spans), or shorten the array. "
-            f"All: {fmt_sites(oversized)} (MM_RANGE placement is checked by RNG-001).",
+            f"All: {fmt_sites(oversized)}. MM_RANGE placement is checked by {cite('RNG-001')}.",
             {"oversized_array_formulas": oversized[:50]},
             location={"sheet": oversized[0]["sheet"], "cell": oversized[0]["cell"]},
             evidence="INFERENCE",

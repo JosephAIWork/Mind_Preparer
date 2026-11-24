@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""One-time deterministic extraction of the Mind Readiness Standard into rules/*.yaml.
+"""One-time  deterministic extraction  of the Mind Readiness Standard into rules/*.yaml.
 
 Source: 01_Mind_Readiness_Standard.md (sibling doc to this package). That doc
 uses a fully regular structure per rule:
 
     ## <ID> <Title>
     [intro text]
-    PASS IF: / FAIL IF: / Allowed: / Review ... / Inventory ... (criteria)
+    PASS IF: / FAIL IF: / Allowed: /  Review ... / Inventory ... (criteria)
     SEVERITY:
     <LEVEL>
     ---
 
-This script is a plain regex parser (no LLM involved), so re-running it
-against an updated source doc reproduces the same rules/*.yaml content.
+This script is a plain regex  parser (no LLM involved), so re-running  it
+against an updated source doc reproduces the  same rules/*.yaml content.
 
-Two existing hand-authored rule files predate this doc and overlap with it:
-  - loop-rules.yaml (LOOP-001..003) duplicates the doc's own LOOP-001..004
+Two existing hand-authored rule files predate this doc and  overlap with it:
+  - loop-rules.yaml (LOOP-001..003) duplicates the  doc's own LOOP-001..004
     (section 7). The doc's IDs become canonical; the one rule with no doc
     equivalent (MM_LOOPLABELS size matching, old LOOP-003) is kept, renamed
     to LBL-001.
@@ -35,7 +35,7 @@ import yaml
 
 SECTION_RE = re.compile(r"^## ([A-Z]+-\d{3}) (.+)$")
 
-# rule ID prefix -> (target rules file, category name used in validator dotted paths)
+# rule  ID prefix  -> (target rules file, category name used in validator dotted paths)
 CATEGORY_TARGETS: dict[str, tuple[str, str]] = {
     "STR": ("structure-rules.yaml", "structure"),
     "FMT": ("format-rules.yaml", "format"),
@@ -56,7 +56,7 @@ CATEGORY_TARGETS: dict[str, tuple[str, str]] = {
     "RSK": ("risk-rules.yaml", "risk"),
 }
 
-# rule_id -> validator function name, for the MVP-implemented subset.
+# rule_id  -> validator  function name, for the MVP-implemented subset.
 # Everything else in the mined set gets a registered but NOT_SUPPORTED validator.
 IMPLEMENTED: dict[str, str] = {
     "STR-001": "grid_detection_heuristic",
@@ -83,7 +83,7 @@ SEVERITY_TO_PRIORITY = {
     "INFO": "INFORMATIONAL",
 }
 
-# Cross-workbook categories: config/default.yaml has multiple_workbook_context.enabled=false.
+# Cross-workbook  categories: config/default.yaml  has multiple_workbook_context.enabled=false.
 DRAFT_PREFIXES = {"INS", "LNK"}
 
 
@@ -225,7 +225,7 @@ def main() -> int:
         filename, _ = CATEGORY_TARGETS[prefix]
         grouped.setdefault(filename, []).append(build_rule(rule_id, title, body, src_path.name))
 
-    # loop-rules.yaml: drop the old hand-authored LOOP-001..003 (superseded by
+    # loop-rules.yaml:  drop the  old hand-authored LOOP-001..003 (superseded by
     # the doc's own LOOP-001..004), keep the one rule with no doc equivalent
     # (MM_LOOPLABELS size matching) renamed to LBL-001.
     loop_path = rules_dir / "loop-rules.yaml"

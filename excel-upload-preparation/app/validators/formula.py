@@ -1,17 +1,17 @@
-"""FRM-*/FORMULA-* validators.
+"""FRM-*/FORMULA-*  validators.
 
-FRM-002 checks every function call against two mined lists:
+FRM-002 checks  every function call against two mined lists:
   * MM_ functions: references/mm-function-registry.yaml (doc 02) UNION
     references/mm-function-registry-kb.yaml (the KB scrape,
     tools/mine_kb_docx.py) -- doc 02's own rule 1.1 is "do not invent MM
-    function syntax; if a function is not listed, do not auto-generate or
+    function syntax; if a function is  not listed, do not auto-generate or
     auto-correct it";
   * native Excel functions: references/supported-excel-functions.yaml, the
-    KB page "Supported Excel formulas",
-    UNION references/mind-confirmed-functions.yaml (accepted by Mind on
-    evidence other than that page, each entry with its source).
-The KB page names what Mind supports and says nothing about the rest,
-so a native function missing from it is *not documented*, not refused: it is
+    KB  page "Supported Excel formulas",
+    UNION references/mind-confirmed-functions.yaml (accepted  by Mind on
+    evidence other than that page,  each entry with its source).
+The KB page names what Mind supports  and says nothing about the rest,
+so a  native function missing from it is *not documented*, not refused: it is
 reported as a WARNING. Only what the Mind documentation refuses is an ERROR.
 A name that is on neither list and is not an Excel function at all is a
 probable VBA UDF / custom formula and is reported by FORMULA-002 instead.
@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from ..formula_utils import STORAGE_PREFIX_RE, called_functions, mask_strings
+from ..plain_codes import cite
 from ._common import finding, fmt_sites
 from .excel_functions import EXCEL_FUNCTIONS
 
@@ -36,7 +37,7 @@ KB_REGISTRY_PATH = REFERENCES / "mm-function-registry-kb.yaml"
 SUPPORTED_PATH = REFERENCES / "supported-excel-functions.yaml"
 CONFIRMED_PATH = REFERENCES / "mind-confirmed-functions.yaml"
 
-# Storage-only tokens Excel writes for dynamic-array features; reviewed by FRM-003, not FRM-002.
+# Storage-only  tokens Excel  writes for dynamic-array features; reviewed by FRM-003, not FRM-002.
 DYNAMIC_ARRAY_ARTIFACTS = {"SINGLE", "ANCHORARRAY"}
 
 
@@ -49,13 +50,13 @@ def _confirmed() -> dict[str, Any]:
 
 
 def confirmed_functions() -> dict[str, dict[str, Any]]:
-    """Native functions the KB page omits and Mind accepts, each with its
+    """Native  functions the  KB page omits and Mind accepts, each with its
     evidence (a conversion in Mind, or the statement of a Mind user)."""
     return {str(f["function"]).upper(): f for f in _confirmed().get("functions", []) if f.get("function")}
 
 
 def kb_page_note() -> str:
-    """'the KB page "Supported Excel formulas" (last updated 2021-11-17)'."""
+    """'the  KB page  "Supported Excel formulas" (last updated 2021-11-17)'."""
     page = _confirmed().get("kb_page") or {}
     updated = f" (last updated {page['last_updated']})" if page.get("last_updated") else ""
     return f"the KB page 'Supported Excel formulas'{updated}"
@@ -121,7 +122,7 @@ def unsupported_functions(rule, analysis: dict[str, Any], config: dict[str, Any]
 
     unknown_mm = sorted(fn for fn in usage if fn.startswith("MM_") and fn not in known_mm)
     deprecated_mm = sorted(fn for fn in usage if fn.startswith("MM_") and known_mm.get(fn, {}).get("deprecated"))
-    # not on the KB page and no other evidence: the Mind documentation is silent about them
+    # not  on the  KB page and no other evidence: the Mind documentation is silent about them
     undocumented_native = sorted(
         fn for fn in usage if not fn.startswith("MM_") and fn in EXCEL_FUNCTIONS and fn not in supported_native and fn not in DYNAMIC_ARRAY_ARTIFACTS
     )
@@ -171,12 +172,12 @@ def unsupported_functions(rule, analysis: dict[str, Any], config: dict[str, Any]
     if deprecated_mm:
         msg += f" Deprecated MM_ function(s) in use: {deprecated_mm}."
     if not_excel:
-        msg += f" Unknown non-Excel name(s) reviewed by FORMULA-002: {not_excel}."
+        msg += f" Unknown non-Excel name(s) reviewed by {cite('FORMULA-002')}: {not_excel}."
     return finding("WARNING" if deprecated_mm else "PASS", msg, observed)
 
 
 def frm_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FRM-001: formula inventory."""
+    """FRM-001:  formula inventory."""
     per_sheet = {s["name"]: s["formula_count"] for wb in analysis["workbooks"] for s in wb["sheets"] if s["formula_count"]}
     usage = analysis["features"].get("function_usage", {})
     top = sorted(usage.items(), key=lambda kv: -kv[1])[:25]
@@ -189,7 +190,7 @@ def frm_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def frm_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FRM-003: dynamic-array / implicit-intersection review (KB 'Implicit
+    """FRM-003:  dynamic-array /  implicit-intersection review (KB 'Implicit
     intersection operator since Office 365')."""
     at_sites, array_sites, spill_sites = [], [], []
     for wb in analysis["workbooks"]:
@@ -230,7 +231,7 @@ def frm_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
     if array_sites:
         return finding(
             "PASS",
-            f"No '@' / spill references; {len(array_sites)} fixed-size array formula(s) present (supported; sizes checked by RSK-002).",
+            f"No '@' / spill references; {len(array_sites)} fixed-size array formula(s) present: supported, their sizes are checked by {cite('RSK-002')}.",
             observed,
         )
     return finding("PASS", "No implicit-intersection operators, spill references or array formulas.", observed)
@@ -248,10 +249,10 @@ def _vba_bytes(analysis: dict[str, Any]) -> bytes:
 
 
 def detect_vba_udf_calls(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FORMULA-002: a called name that is neither an MM_ function nor any
+    """FORMULA-002:  a called  name that is neither an MM_ function nor any
     native Excel function is a user-defined function (VBA or add-in). When
     a VBA project is present its binary is searched (read-only, never
-    executed) for a 'Function <name>' declaration to confirm."""
+    executed) for a  'Function <name>' declaration to confirm."""
     usage = analysis["features"].get("function_usage", {})
     candidates = sorted(fn for fn in usage if not fn.startswith("MM_") and fn not in EXCEL_FUNCTIONS and fn not in DYNAMIC_ARRAY_ARTIFACTS)
     if not candidates:
@@ -286,25 +287,26 @@ def detect_vba_udf_calls(rule, analysis: dict[str, Any], config: dict[str, Any])
 
 
 def vba_presence(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """FRM-004's actual FAIL condition is 'VBA logic is required' -- not merely
+    """FRM-004's  actual FAIL  condition is 'VBA logic is required' -- not merely
     present. Mind silently ignores VBA it can't run; it does not block upload
     over it. Presence alone can't tell us whether the workbook's *correctness*
-    depends on a macro running, so this is a WARNING (confirm no needed
-    behavior depends on it) rather than a blocking ERROR."""
+    depends  on a macro running, so this is a WARNING (confirm no  needed
+    behavior depends on it) rather than  a blocking ERROR."""
     has_vba = analysis["features"]["has_vba"]
     return finding(
         "WARNING" if has_vba else "PASS",
         "Workbook contains a VBA project. This does not block upload -- Mind ignores VBA it "
         "can't run -- but confirm nothing in the workbook depends on the macro actually "
-        "executing, since it won't in Mind (UDF calls are checked by FORMULA-002)."
+        f"executing, since it won't in Mind. UDF calls are checked by {cite('FORMULA-002')}."
         if has_vba
         else "No VBA project detected.",
         {"has_vba": has_vba, "vba_project_bytes": analysis["features"].get("vba_project_bytes", 0)},
     )
 
 
-# FRM-005 / FRM-006 live in validators/references.py; exposed here so the rule's
-# category ("formula") and its implementation path agree.
+# FRM-005 / FRM-006 live in  validators/references.py; exposed here so the rule's
+# category ("formula") and its implementation path  agree.
 from .references import circular_references, three_d_references  # noqa: E402,F401
 from .references import indirect_as_value  # noqa: E402,F401  (FRM-007)
 from .mind_values import blank_text_arithmetic, blank_text_error_kept, blank_text_lookup_key, empty_cell_compared, environment_formulas, line_break_in_text  # noqa: E402,F401  (FRM-008, FRM-013, FRM-010, FRM-009, FRM-012, FRM-011)
+from .mind_values import offset_range_arithmetic  # noqa: E402,F401  (FRM-014)

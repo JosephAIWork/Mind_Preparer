@@ -1,0 +1,30 @@
+@use "@carbon/styles/scss/theme" as theme;
+@use "@carbon/styles/scss/type" as type;
+@use "@carbon/styles/scss/spacing" as *;
+
+// Small and quiet: a link-coloured word after the instruction, underlined only on hover.
+:host {
+  display: inline;
+}
+
+.show-me-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: $spacing-03;
+  color: theme.$link-primary;
+  font: inherit;
+  @include type.type-style("helper-text-01");
+  white-space: nowrap;
+  cursor: pointer;
+
+  &:hover {
+    color: theme.$link-primary-hover;
+    text-decoration: underline;
+  }
+
+  &:focus {
+    outline: 1px solid theme.$focus;
+    outline-offset: 1px;
+  }
+}

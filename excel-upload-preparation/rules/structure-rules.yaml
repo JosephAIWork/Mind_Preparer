@@ -250,17 +250,17 @@ rules:
   pass_if:
   - No text cell standing alone on its sheet is read by a formula.
   fail_if:
-  - A formula reads a text cell that belongs to no grid and has no title above it or label beside it.
+  - A formula reads a text cell that belongs to no grid and has no title above it or label beside it (directly, or through a defined name some formula reads -- a name no formula reads, such as a macro's, does not count).
   severity_source: BLOCKER
 - id: STR-009
   version: 1.0.0
   status: active
   category: structure
-  description: 'Pivot table -- Mind''s converter stops on pivot tables ("The method or operation is not implemented"), plain ones too, not only one with a grouped field. Prep turns every pivot table into formulas or values, per the pivot setting in Advanced.'
+  description: 'Pivot table -- Mind''s converter stops on pivot tables ("The method or operation is not implemented"), plain ones too, not only one with a grouped field; a pivot with a custom style stops it with "Requested value ''<style name>'' was not found". Prep turns every pivot table into values (or formulas, per the pivot setting in Advanced); GETPIVOTDATA reading it then reads the cell it returned.'
   confidence: MEDIUM
   priority: REQUIRED
   source:
-    document: real Mind conversion testing (2026-10-18 and 2026-10-25, a client model -- rejected with its 8 pivot tables, rejected with only the grouped one as values, accepted with all of them as values)
+    document: real Mind conversion testing (2026-10-18 and 2026-10-25, a client model -- rejected with its 8 pivot tables, rejected with only the grouped one as values, accepted with all of them as values; 2026-10-26, another model with pivot tables styled 'Results' -- "Requested value 'Results' was not found")
     article: STR-009
   validation:
     deterministic: true

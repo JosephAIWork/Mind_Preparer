@@ -1,5 +1,5 @@
-"""Stage 3: turn the analysis into a check report. For each repetition: what is there, whether the
-copies are parallel or a chain, and for each option (loop / instances / leave as is) whether it
+"""Stage  3: turn  the analysis into a check report. For each repetition: what is there, whether the
+copies are parallel or a chain, and for each option (loop / instances / leave as is) whether  it
 fits and why. It never picks one."""
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import pickle
 import sys
 from pathlib import Path
 
-SMALL_GAIN = 200        # formula cells: below this a change buys little
-CHAIN_SHARE = 0.10      # share of a copy's formulas reading an earlier copy that makes it a chain
+SMALL_GAIN = 200        # formula  cells: below  this a change buys little
+CHAIN_SHARE = 0.10      # share  of a  copy's formulas reading an earlier copy that makes it a chain
 
 
 def gain(f):
@@ -16,7 +16,7 @@ def gain(f):
 
 
 def assess(f):
-    """f: copies, per_copy, chain, kinds, numbers_differ, size_differs, adding, whole_sheets."""
+    """f:  copies, per_copy,  chain, kinds, numbers_differ, size_differs, adding, whole_sheets."""
     k = f["kinds"]
     logic = k.get("different logic", 0)
     driver = k.get("reads a different input", 0)

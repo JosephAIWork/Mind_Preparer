@@ -1,4 +1,4 @@
-"""PAR-* validators: the /Parameters grid (KB 'Setup parameters editor':
+"""PAR-*  validators: the  /Parameters grid (KB 'Setup parameters editor':
 columns Label | Type | PossibleValues | Values...; nine types; PossibleValues
 syntax per type)."""
 from __future__ import annotations

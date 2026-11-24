@@ -95,3 +95,39 @@ def test_a_value_that_only_holds_the_workbooks_own_folder_is_not_a_change():
     assert _without_location(r"C:\Users\x\usecases\[model.xlsm]Control", original) == _without_location(r"C:\Temp\mind_ready_b1\apply\v3\[model.xlsm]Control", copy)
     assert _without_location("Premium", original) == "Premium" and _without_location(12.5, original) == 12.5
     assert _without_location("Total 2024", original) != _without_location("Total 2025", copy)
+
+
+def test_a_formula_caption_replaced_by_its_title_is_known_to_the_moves():
+    moves = Moves([
+        [{"op": "insert_row", "sheet": "S", "row": 3},
+         {"op": "set_value", "sheet": "S", "cell": "A5", "before": '="Run ["&B1&"]"', "after": "#Run [3]"},
+         {"op": "set_value", "sheet": "S", "cell": "C1", "before": None, "after": "#Plain title"}],
+    ])
+    assert moves.is_replaced("S", 6, 1)         # A5 moved down by the insert at row 3
+    assert not moves.is_replaced("S", 5, 1)
+    assert not moves.is_replaced("S", 1, 3)     # a title written into an empty cell replaced no formula
+
+
+@needs_excel
+def test_numbers_check_counts_a_replaced_caption_as_expected_not_as_a_lost_formula(tmp_path):
+    def make(path, caption):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Calc"
+        ws["B1"] = 3
+        ws["A1"] = caption
+        ws["A2"] = "x"
+        ws["B2"] = 10
+        ws["C2"] = "=B2*2"
+        wb.save(path)
+    orig, prep_ = tmp_path / "o.xlsx", tmp_path / "p.xlsx"
+    make(orig, '="Run ["&B1&"]"')
+    make(prep_, "#Run [3]")
+    log = [{"op": "set_value", "sheet": "Calc", "cell": "A1", "before": '="Run ["&B1&"]"', "after": "#Run [3]"}]
+    res = compare_workbooks(orig, prep_, Moves([log]))
+    assert res["ran"] and res["clean"] is True, res["verdict"]
+    assert res["counts"]["missing_good"] == 0 and res["counts"]["replaced_on_purpose"] == 1
+    assert "on purpose" in res["verdict"]
+    # a formula that vanished for no stated reason is still reported
+    other = compare_workbooks(orig, prep_, Moves())
+    assert other["counts"]["missing_good"] == 1 and other["clean"] is False

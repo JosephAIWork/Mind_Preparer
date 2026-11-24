@@ -1,15 +1,15 @@
-"""Unattended: wait for a person to sign in to Milliman Mind once, then push a
+"""Unattended:  wait for  a person to sign in to Milliman Mind once, then push a
 workbook through the running Mind Ready app's run-in-Mind loop.
 
     python scripts/run_after_login.py "C:\\path\\Model.xlsm" [--port 8600]
         [--max-iterations 4] [--check-numbers] [--delete-projects]
         [--login-timeout-h 24] [--out DIR]
 
-What it does, in order:
-  1. Opens a headed Edge window (the app's dedicated MindReady profile) on the
-     Mind project URL and waits until the page is an authenticated Mind page
-     (or until the login timeout). Nothing else is done before that.
-  2. Uploads the workbook to the app (POST /api/sessions, one-shot scan) and
+What it  does, in order:
+  1. Opens a headed Edge window (the app's dedicated  MindReady profile) on the
+     Mind project URL  and waits until the page is an  authenticated Mind page
+     (or until the login timeout). Nothing else is done  before that.
+  2. Uploads the workbook to the  app (POST /api/sessions, one-shot scan) and
      waits for the analysis.
   3. Starts the loop (POST /api/sessions/{id}/mind-loop) and polls it to the
      end, echoing every event to the console and to <out>/run_after_login.log.
@@ -17,7 +17,7 @@ What it does, in order:
      projects) and copies loop_report.json next to it.
 
 Defaults are the "get it into Mind" ones the runbook does not use: the numbers
-gate is OFF (--check-numbers turns it on) and the sandbox projects are KEPT
+gate is OFF (--check-numbers turns it  on) and the sandbox projects are KEPT
 (--delete-projects deletes the deletable ones), so the converted model stays
 visible in Mind's MindReady_Sandbox folder.
 """
@@ -46,7 +46,7 @@ def _log(out: Path, msg: str) -> None:
 
 
 def wait_for_login(out: Path, timeout_s: float, poll_s: float = 3.0) -> bool:
-    """Headed Edge on the saved project URL until it shows an authenticated
+    """Headed  Edge on  the saved project URL until it shows an authenticated
     Mind page for 8 s in a row. Saves the resolved URL to mind_session.json."""
     sess = mc.load_session()
     url = sess.get("project_url") or mc.MAIN_URL

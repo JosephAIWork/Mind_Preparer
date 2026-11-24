@@ -1,9 +1,9 @@
 import { Injectable, computed, signal } from "@angular/core";
 
-export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
-import { ChatMessage, Delta, FixTarget, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
+export type AdvancedTab = "findings" | "prep" | "recalc" | "loop" | "instances" | "map" | "namer" | "assistant" | "mind" | "deliver" | "versions";
+import { AiUsage, ChatMessage, Delta, FixTarget, LoopChoice, OutsideInputs, PivotMode, NumbersCheck, PrepAction, PrepProgress, Readiness, RecalcResult, ReportBuild, SessionStart, ValidationReport, Version, WorkbookSummary } from "./models";
 
-/** The loaded session, as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
+/** The  loaded session,  as signals. The backend keeps sessions in memory; `?session=<id>` reopens one. */
 @Injectable({ providedIn: "root" })
 export class SessionStore {
   readonly sessionId = signal<string | null>(null);
@@ -14,16 +14,28 @@ export class SessionStore {
   readonly currentVersion = signal<Version | null>(null);
   readonly readiness = signal<Readiness | null>(null);
   readonly prepProgress = signal<PrepProgress | null>(null);
-  readonly delta = signal<Delta | null>(null); // what changed since the previous analysis
+  readonly delta = signal<Delta | null>(null); // what  changed since  the previous analysis
   readonly recalc = signal<RecalcResult | null>(null); // the last recalculation shown on the Advanced page
+  readonly aiUsage = signal<AiUsage | null>(null); // 1.14.1: what the assistant used on this workbook (Advanced > Assistant)
   readonly chatHistory = signal<ChatMessage[]>([]);
   readonly fixTarget = signal<FixTarget | null>(null); // what the Assistant tab is asked about
   readonly numbers = signal<NumbersCheck | null>(null);
   readonly reports = signal<ReportBuild | null>(null);
   readonly advancedTab = signal<AdvancedTab>("findings");
-  /** 1.11.7: what Prep (and Do everything) does with the pivot tables */
-  readonly pivotMode = signal<PivotMode>("formulas");
+  /** 1.11.7: what Prep (and Do everything)  does with the pivot tables */
+  readonly pivotMode = signal<PivotMode>("values");
   readonly pivotModes = signal<Record<string, string>>({});
+  /** The outside files the model's macros open,  matched with the input files picked  with it
+   *  (null: the macros open none). Set  by the scan of the upload; the match and `brought_in` follow
+   *  Add  files and Bring in the outside files. */
+  readonly outsideInputs = signal<OutsideInputs | null>(null);
+  /** The  Mind loop panel's last previewed choices (each loop's own, and the macro): the instances panel
+   *  builds its copies from loops with them, so both panels show the same loops. */
+  readonly loopChoices = signal<{ loops?: Record<string, LoopChoice>; macro?: string } | null>(null);
+  /** 1.14.0: the server's sentence when the session it was asked about is one the restart closed ("This
+   *  workbook is not open any more (the app was restarted). Open it again from Recent workbooks on the
+   *  main  screen."): the page let go of the session and the main screen shows this above the list. */
+  readonly restartNotice = signal("");
   /** STR-009's pivots: [{sheet, name, ref, blocking}] (empty when the workbook has none) */
   readonly pivots = computed(() => {
     const f = this.findings().find((x) => x.rule_id === "STR-009");
@@ -46,6 +58,7 @@ export class SessionStore {
   });
 
   setSession(start: SessionStart): void {
+    this.restartNotice.set("");
     this.sessionId.set(start.sessionId);
     this.summary.set(start.summary);
     this.report.set(start.report);
@@ -55,9 +68,11 @@ export class SessionStore {
     this.readiness.set(start.readiness ?? null);
     this.prepProgress.set(start.prep_progress ?? null);
     this.delta.set(start.delta ?? null);
-    this.pivotMode.set(start.pivot_mode ?? "formulas");
+    this.pivotMode.set(start.pivot_mode ?? "values");
     if (start.pivot_modes) this.pivotModes.set(start.pivot_modes);
-    this.recalc.set(null);
+    this.outsideInputs.set(start.outsideInputs ?? null);
+    this.recalc.set(start.recalc ?? null); // a saved workbook opened again brings its last recalculation
+    this.aiUsage.set(start.aiUsage ?? null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);
     this.numbers.set(null);
@@ -74,12 +89,20 @@ export class SessionStore {
     if (a.readiness) this.readiness.set(a.readiness);
     if (a.prep_progress) this.prepProgress.set(a.prep_progress);
     if (a.delta !== undefined) this.delta.set(a.delta ?? null);
+    // a property of the upload: a later answer refreshes it,  none clears it
+    if (a.outsideInputs) this.outsideInputs.set(a.outsideInputs);
   }
 
   addVersion(v: Version): void {
     const list = this.versions();
     if (!list.some((x) => x.id === v.id)) this.versions.set([...list, v]);
     this.currentVersion.set(v);
+  }
+
+  /** The server no  longer holds the session (the app was  restarted): let go  of it,  keep the sentence. */
+  closedByRestart(sentence: string): void {
+    this.reset();
+    this.restartNotice.set(sentence);
   }
 
   reset(): void {
@@ -92,7 +115,9 @@ export class SessionStore {
     this.readiness.set(null);
     this.prepProgress.set(null);
     this.delta.set(null);
+    this.outsideInputs.set(null);
     this.recalc.set(null);
+    this.aiUsage.set(null);
     this.chatHistory.set([]);
     this.fixTarget.set(null);
     this.numbers.set(null);

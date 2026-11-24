@@ -1,4 +1,4 @@
-"""MMX-* validators: authoring environment (KB home page: 'Milliman Mind for
+"""MMX-*  validators: authoring  environment (KB home page: 'Milliman Mind for
 Excel ... Available for Microsoft Excel 2007+ for Windows'; 'How to install
 MM4Excel')."""
 from __future__ import annotations
@@ -8,7 +8,7 @@ from typing import Any
 from ._common import finding
 from .formula import _known_mm_functions
 
-# KB article category -> the rule's classification vocabulary
+# KB  article category  -> the rule's classification vocabulary
 CATEGORY_MAP = {
     "resize": "Resize",
     "loopbatch": "Loop",
@@ -31,7 +31,7 @@ INPUT_EXPORT_FUNCTIONS = {"MM_INPUTSTATUS": "Input"}
 
 
 def mmx_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """MMX-001: MM_ functions need the MMForExcel add-in to be maintained /
+    """MMX-001:  MM_ functions  need the MMForExcel add-in to be maintained /
     recalculated in Excel. A '_xludf.' storage prefix on a formula means the
     file was last saved by an Excel that could not resolve the function."""
     mm = analysis["features"].get("mm_functions_used", {})
@@ -56,7 +56,7 @@ def mmx_001(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def mmx_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """MMX-002: which application last saved the file (docProps/app.xml)."""
+    """MMX-002:  which application  last saved the file (docProps/app.xml)."""
     app = analysis["features"].get("application")
     version = analysis["features"].get("app_version")
     observed = {"application": app, "app_version": version}
@@ -71,7 +71,7 @@ def mmx_002(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
 
 
 def mmx_003(rule, analysis: dict[str, Any], config: dict[str, Any]) -> dict:
-    """MMX-003: classify every MM_ function used, from the mined registries."""
+    """MMX-003:  classify every  MM_ function used, from the mined registries."""
     known = _known_mm_functions()
     mm = analysis["features"].get("mm_functions_used", {})
     classified: dict[str, list[str]] = {}
